@@ -19,9 +19,9 @@ classifiers = [
 #license-file = ["LICENSE"]
 dependencies = [
     "matplotlib>=3,<4",
-    "numpy<3",
+    "numpy>1,<3",
     "pandas>=2.2,<3",
-    "scipy",
+    "scipy>=1.11.0,<2",
     "shapely>1,<=2.0.7",
     "seaborn>=0.12,<=0.13.2",
     "scikit-learn>=1.5,<2",
