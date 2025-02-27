@@ -9,7 +9,7 @@ packages = ["landau"]
 version_file = "landau/_version.py"
 
 [project]
-name = "landau"
+name = "landaupkg"
 dynamic = ["version"]
 authors = [
     { name="Marvin Poul", email="pmrv@posteo.de" },
