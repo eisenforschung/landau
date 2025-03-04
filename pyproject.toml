@@ -30,7 +30,7 @@ dependencies = [
     "scipy>=1.11.0,<2",
     "shapely>1,<=2.0.7",
     "seaborn>=0.12,<=0.13.2",
-    "scikit-learn>=1.5,<2",
+    "scikit-learn>=1.2,<2",
 ]
 
 [project.urls]
