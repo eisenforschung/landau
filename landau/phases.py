@@ -122,7 +122,6 @@ class TemperatureDependentLinePhase(AbstractLinePhase):
     """Temperatures at which the free energy of the phase has been sampled."""
     free_energies: Iterable[float]
     """Sampled free energy of the phase has been computed."""
-    # interpolator: TemperatureInterpolator = field(default_factory=lambda: SGTE.from_zero(3))
     interpolator: TemperatureInterpolator = SGTE(3)
     """How to interpolate to arbitrary temperatures from the samples."""
     _hash: int = field(default=0, init=False)
