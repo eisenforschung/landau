@@ -4,12 +4,16 @@ Calculates phase diagrams from sets of Phases.
 
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
+import numbers
 
 import numpy as np
 import pandas as pd
 import scipy.optimize as so
 from scipy.spatial import Delaunay
 from typing import Iterable
+
+from scipy.constants import Boltzmann, eV
+kB = Boltzmann / eV
 
 from .phases import Phase
 
@@ -256,10 +260,64 @@ def refine_phase_diagram(df, phases):
             data.append(Tdf.drop('level_1', axis='columns'))
     return pd.concat(data, ignore_index=True)
 
+def guess_mu_range(
+        phases: Iterable[Phase], T: float, samples: int,
+        tolerance: float = 1e-3
+):
+    """Guess chemical potential window from the ideal solution.
+
+    Searches numerically for chemical potentials which stabilize
+    concentrations close to 0 and 1 and then use the concentrations
+    encountered along the way to numerically invert the c(mu) mapping.
+    Using an even c grid with mu(c) then yields a decent sampling of mu
+    space so that the final phase diagram is described everywhere equally.
+
+    Args:
+        phases: list of phases to consider
+        T: temperature at which to estimate mu(c)
+        samples: how many mu samples to return
+
+    Returns:
+        array of chemical potentials that likely cover the whole concentration space
+    """
+    # TODO: this can be used immediately also for the actual phase diagram
+    # calculation: keep track of which phase is the most likely
+    import scipy.optimize as so
+    import scipy.interpolate as si
+    import numpy as np
+    # semigrand canonical "average" concentration
+    # use this to avoid discontinuities and be phase agnostic
+    def c(mu):
+        phis = np.array([p.semigrand_potential(T, mu) for p in phases])
+        conc = np.array([p.concentration(T, mu) for p in phases])
+        phis -= phis.min()
+        beta = 1/(kB*T)
+        prob = np.exp(-beta*phis)
+        prob /= prob.sum()
+        return (prob * conc).sum()
+    cc, mm = [], []
+    mu0, mu1 = 0, 0
+    c0 = 0 + tolerance
+    c1 = 1 - tolerance
+    while (ci := c(mu0)) > c0:
+        cc.append(ci)
+        mm.append(mu0)
+        mu0 -= 0.05
+    while (ci := c(mu1)) < c1:
+        cc.append(ci)
+        mm.append(mu1)
+        mu1 += 0.05
+    cc = np.array(cc)
+    mm = np.array(mm)
+    I = cc.argsort()
+    cc = cc[I]
+    mm = mm[I]
+    return si.interp1d(cc, mm)(np.linspace(min(cc), max(cc), samples))
+
 def calc_phase_diagram(
         phases: Iterable[Phase],
         Ts: Iterable[float] | float,
-        mu: Iterable[float] | float,
+        mu: Iterable[float] | float | int,
         refine: bool = True,
         keep_unstable: bool = False
 ):
@@ -269,7 +327,8 @@ def calc_phase_diagram(
     Args:
         phases (iterable of Phases)
         Ts (iterable of floats): sampling points in temperature
-        mu (iterable of floats): sampling points in chemical potential
+        mu (iterable of floats): sampling points in chemical potential; if int
+            guess sampling points with guess_mu_range at max(Ts)
         refine (bool): add additional sampling points at exact phase transitions
         keep_unstable (bool): only keep entries of stable phases, otherwise keep entries of all phases at all sampling points
 
@@ -277,6 +336,8 @@ def calc_phase_diagram(
         dataframe of phase points
     """
     phases = {p.name: p for p in phases}
+    if isinstance(mu, numbers.Integral):
+        mu = guess_mu_range(phases.values(), max(Ts), int(mu))
     def get(s, T):
         phi = s.semigrand_potential(T, mu)
         return {'T': T, 'phase': s.name,
