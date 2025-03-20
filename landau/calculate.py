@@ -260,9 +260,10 @@ def refine_phase_diagram(df, phases):
             data.append(Tdf.drop('level_1', axis='columns'))
     return pd.concat(data, ignore_index=True)
 
+
 def guess_mu_range(
         phases: Iterable[Phase], T: float, samples: int,
-        tolerance: float = 1e-3
+        tolerance: float = 1e-2
 ):
     """Guess chemical potential window from the ideal solution.
 
@@ -287,32 +288,23 @@ def guess_mu_range(
     import numpy as np
     # semigrand canonical "average" concentration
     # use this to avoid discontinuities and be phase agnostic
+
     def c(mu):
         phis = np.array([p.semigrand_potential(T, mu) for p in phases])
         conc = np.array([p.concentration(T, mu) for p in phases])
-        phis -= phis.min()
+        phis -= phis.min(axis=0)
         beta = 1/(kB*T)
         prob = np.exp(-beta*phis)
-        prob /= prob.sum()
-        return (prob * conc).sum()
-    cc, mm = [], []
-    mu0, mu1 = 0, 0
-    c0 = 0 + tolerance
-    c1 = 1 - tolerance
-    while (ci := c(mu0)) > c0:
-        cc.append(ci)
-        mm.append(mu0)
-        mu0 -= 0.05
-    while (ci := c(mu1)) < c1:
-        cc.append(ci)
-        mm.append(mu1)
-        mu1 += 0.05
-    cc = np.array(cc)
-    mm = np.array(mm)
-    I = cc.argsort()
-    cc = cc[I]
-    mm = mm[I]
-    return si.interp1d(cc, mm)(np.linspace(min(cc), max(cc), samples))
+        prob /= prob.sum(axis=0)
+        ci = (prob * conc).sum(axis=0)
+        return ci
+    resi = so.minimize(lambda x: +c(x[0]), x0=[0], tol=tolerance, method='BFGS')
+    resa = so.minimize(lambda x: -c(x[0]), x0=[0], tol=tolerance, method='BFGS')
+    mu0 = resi.x[0]
+    mu1 = resa.x[0]
+    mm = np.linspace(mu0, mu1, samples)
+    cc = c(mm)
+    return si.interp1d(cc, mm)(np.linspace(min(cc) + tolerance, max(cc) - tolerance, samples))
 
 def calc_phase_diagram(
         phases: Iterable[Phase],
