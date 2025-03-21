@@ -5,6 +5,7 @@ Calculates phase diagrams from sets of Phases.
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 import numbers
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -140,8 +141,8 @@ def find_triangle(phases, cand):
     Assumes two of the three points in cand are of the same phase.
 
     Args:
-        cand (dataframe): subset of phase diagram dataframe of the three points of the triangle
         phases (Phases): all phases
+        cand (dataframe): subset of phase diagram dataframe of the three points of the triangle
     """
     # one of p1, p2 will be the peak of the triangle, the other one the center of the base
     p1, p2 = cand.groupby('phase')[['T','mu']].mean().to_numpy()
@@ -149,10 +150,12 @@ def find_triangle(phases, cand):
         T, mu = p1 + (p2 - p1) * t
         return T, mu
     phase1, phase2 = [phases[p] for p in cand.phase.unique()]
-    t = find_one_point(phase1, phase2, lambda phase, t: phase.semigrand_potential(*project(t)), (0, 1))
-    # ret = so.root_scalar(projected_root, args=(*(phases[p] for p in cand.phase.unique()), p1, p2), bracket=(0, 1))
-    # if not ret.converged:
-    #     raise ValueError(ret)
+    try:
+        t = find_one_point(phase1, phase2, lambda phase, t: phase.semigrand_potential(*project(t)), (0, 1))
+    except ValueError:
+        warnings.warn(f"Failed to refine triangle between {p1} and {p2} of phases {cand.phase.unique()}!",
+                      stacklevel=2)
+        return []
     T, mu = p1 + (p2 - p1) * t
     return [{
         'T': T,
