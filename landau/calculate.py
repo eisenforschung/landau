@@ -162,7 +162,7 @@ def find_triangle(phases, cand):
         'phase': p
     } for p in cand.phase.unique()]
 
-def refine_phase_diagram(df, phases):
+def refine_phase_diagram(df, phases, min_c=0, max_c=1):
     """Add additional points to a coarse phase diagram by searching for exact transitions."""
     udf = df.query('not stable').reset_index()
     udf['border'] = False
@@ -181,13 +181,13 @@ def refine_phase_diagram(df, phases):
         # hackier
         left = df.loc[df['mu'] == df['mu'].min()][['phase','T']]
         left['mu'] = -np.inf
-        left['c'] = 0
+        left['c'] = min_c
         left['border'] = True
         left['stable'] = True
         data.append(left)
         right = df.loc[df['mu'] == df['mu'].max()][['phase','T']]
         right['mu'] = +np.inf
-        right['c'] = 1
+        right['c'] = max_c
         right['border'] = True
         right['stable'] = True
         data.append(right)
@@ -304,7 +304,9 @@ def guess_mu_range(
     mu1 = resa.x[0]
     mm = np.linspace(mu0, mu1, samples)
     cc = c(mm)
-    return si.interp1d(cc, mm)(np.linspace(min(cc) + tolerance, max(cc) - tolerance, samples))
+    c0 = min(cc) + tolerance
+    c1 = max(cc) - tolerance
+    return si.interp1d(cc, mm)(np.linspace(c0, c1, samples)), c0, c1
 
 def calc_phase_diagram(
         phases: Iterable[Phase],
@@ -329,7 +331,9 @@ def calc_phase_diagram(
     """
     phases = {p.name: p for p in phases}
     if isinstance(mu, numbers.Integral):
-        mu = guess_mu_range(phases.values(), max(Ts), int(mu))
+        mu, min_c, max_c = guess_mu_range(phases.values(), max(Ts), int(mu))
+    elif refine:
+        min_c, max_c = None, None
     def get(s, T):
         phi = s.semigrand_potential(T, mu)
         return {'T': T, 'phase': s.name,
@@ -342,7 +346,10 @@ def calc_phase_diagram(
     pdf['stable'] = False
     pdf.loc[pdf.groupby(['T', 'mu'], group_keys=False).phi.idxmin(), 'stable'] = True
     if refine:
-        pdf = refine_phase_diagram(pdf, phases)
+        if min_c is None or max_c is None:
+            min_c = pdf.c.min()
+            max_c = pdf.c.max()
+        pdf = refine_phase_diagram(pdf, phases, min_c=min_c, max_c=max_c)
     pdf['f'] = pdf.phi + pdf.mu * pdf.c
     def sub(dd):
         dd = dd.query('-inf<mu<inf')
