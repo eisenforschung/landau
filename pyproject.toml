@@ -8,6 +8,9 @@ packages = ["landau"]
 [tool.setuptools_scm]
 version_file = "landau/_version.py"
 
+[tool.ruff]
+line-length = 120
+
 [project]
 name = "landaupkg"
 dynamic = ["version"]
