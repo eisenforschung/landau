@@ -13,21 +13,20 @@ from .calculate import get_transitions
 def make_concave_poly(dd, alpha=0.1, plot=False, min_c_width=1e-3, variables=["c", "T"]):
     # concave hull algo seems more stable when both variables are of the same order
     # since c in [0, 1]; so let's rescale T relative to the extrema as well
-    Tmin = dd["T"].min()
-    Tmax = dd["T"].max()
 
-    # pp = dd.sort_values('mu')[['mu', 'T']].to_numpy()
-    # pp = dd.sort_values("c")[["c", "T"]].to_numpy()
     pp = dd.sort_values(variables[0])[variables].to_numpy()
     pp = pp[np.isfinite(pp).all(axis=-1)]
+
     if plot:
         plt.scatter(*pp.T, marker=".")
-    pp[:, 0] = np.clip(pp[:, 0], -1e3, 1e3)
-    pp[:, 1] -= Tmin
-    pp[:, 1] /= Tmax - Tmin
+    refnorm = {}
+    for i, var in enumerate(variables):
+        refnorm[var] = pp[:, i].min(), (np.ptp(pp[:, i]) or 1)
+        pp[:, i] -= refnorm[var][0]
+        pp[:, i] /= refnorm[var][1]
     shape = shapely.concave_hull(shapely.MultiPoint(pp), ratio=alpha)
     # check for c-degenerate line phase
-    if isinstance(shape, shapely.LineString):
+    if variables[0] == "c" and isinstance(shape, shapely.LineString):
         coords = np.asarray(shape.coords)
         if np.allclose(coords[:, 0], coords[0, 0]):
             match coords[0, 0]:
@@ -52,12 +51,9 @@ def make_concave_poly(dd, alpha=0.1, plot=False, min_c_width=1e-3, variables=["c
             coords[:, 0] += bias
     else:
         coords = np.asarray(shape.exterior.coords)
-    coords[:, 1] *= Tmax - Tmin
-    coords[:, 1] += Tmin
-    # doesn't work nicely because of our regular grid; or rather a regular grid
-    # with a few "refined" points on top.  This seems to confuse the
-    # interpolators a lot
-    # coords[:,0] = si.griddata(pp, dd['c'], coords, method='nearest', rescale=True)
+    for i, var in enumerate(variables):
+        coords[:, i] *= refnorm[var][1]
+        coords[:, i] += refnorm[var][0]
     return Polygon(coords)
 
 
@@ -152,6 +148,7 @@ def make_poly(td, min_c_width=1e-3, variables=["c", "T"]):
             ]
         )
     sd = sort_segments(td)
+    sd = sd.loc[ np.isfinite(sd[variables[0]]) & np.isfinite(sd[variables[1]]) ]
     return Polygon(np.transpose([sd[v] for v in variables]))
 
 
@@ -239,4 +236,55 @@ def plot_phase_diagram(
         plt.xlabel(rf"$c_\mathrm{{{element}}}$")
     else:
         plt.xlabel("$c$")
+    plt.ylabel("$T$ [K]")
+
+def get_phase_colors(phase_names, override: dict[str, str] | None = None):
+    # the default map
+    color_map = dict(zip(phase_names, sns.palettes.SEABORN_PALETTES["pastel"]))
+    # disregard overriden phases that are not present
+    override = {p: c for p, c in override.items() if p in color_map}
+    # if the override uses the same colors as the default map, multiple phases
+    # would be mapped to the same color; so instead let's update the color map of phases that would
+    # use the same color as a phase in the override to use the default colors of the overriden phases
+    # instead
+    duplicates_map = {c: color_map[o] for o, c in override.items()}
+    diff = {k: duplicates_map[c] for k, c in color_map.items() if c in duplicates_map}
+    color_map.update(diff | override)
+    return color_map
+
+def plot_mu_phase_diagram(
+    df, alpha=0.1, element=None, color_override: dict[str, str] = {}
+):
+    df = df.query("stable")
+
+    color_map = get_phase_colors(df.phase.unique(), color_override)
+
+    if "refined" in df.columns:
+        tdf = get_transitions(df)
+        polys = tdf.groupby("phase").apply(
+            make_poly,
+            variables=["mu", "T"],
+        )
+    else:
+        polys = df.groupby("phase").apply(
+            make_concave_poly,
+            alpha=alpha,
+            variables=["mu", "T"],
+        )
+
+    ax = plt.gca()
+    for i, (phase, p) in enumerate(polys.items()):
+        p.zorder = 1/p.get_extents().size.prod()
+        p.set_color(color_map[phase])
+        p.set_edgecolor("k")
+        # p.set_alpha(.8)
+        p.set_label(polys.index[i])
+        ax.add_patch(p)
+
+    mus = df["mu"].unique()
+    mus = mus[np.isfinite(mus)]
+    plt.xlim(mus.min(), mus.max())
+    plt.ylim(df["T"].min(), df["T"].max())
+    plt.legend(ncols=2)
+    plt.xlabel(r"$\Delta\mu$ [eV]")
     plt.ylabel("$T$ [K]")
