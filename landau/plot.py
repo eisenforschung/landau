@@ -187,7 +187,7 @@ def plot_phase_diagram(
 
     ax = plt.gca()
     for i, (phase, p) in enumerate(polys.items()):
-        p.zorder = -1
+        p.zorder = 1/p.get_extents().size.prod()
         p.set_color(color_map[phase])
         p.set_edgecolor("k")
         # p.set_alpha(.8)
