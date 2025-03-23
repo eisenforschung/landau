@@ -87,6 +87,9 @@ def sort_segments(df, x_col='c', y_col='T', segment_label='border_segment'):
 
     # Step 1: PCA Projection
     def pca_projection(group):
+        # avoid warnings when clustering only found one or two points
+        if len(group) < 2:
+            return group
         pca = PCA(n_components=1)
         projected = pca.fit_transform(group[[x_col, y_col]])
         group['projected'] = projected
