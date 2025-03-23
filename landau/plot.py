@@ -12,7 +12,8 @@ from .calculate import (
         get_transitions
 )
 
-def make_concave_poly(dd, alpha=.1, plot=False, min_c_width=1e-3):
+
+def make_concave_poly(dd, alpha=0.1, plot=False, min_c_width=1e-3, variables=["c", "T"]):
     # concave hull algo seems more stable when both variables are of the same order
     # since c in [0, 1]; so let's rescale T relative to the extrema as well
     Tmin = dd['T'].min()
@@ -128,11 +129,12 @@ def sort_segments(df, x_col='c', y_col='T', segment_label='border_segment'):
 
     return pd.concat(segments, ignore_index=True)
 
-def make_poly(td, min_c_width=1e-3):
+
+def make_poly(td, min_c_width=1e-3, variables=["c", "T"]):
     """
     Requires a grouped dataframe from find_transitions (by phase).
     """
-    if np.ptp(td.c) < min_c_width:
+    if "c" in variables and np.ptp(td.c) < min_c_width:
         meanc = td.c.mean()
         Tmin = td['T'].min()
         Tmax = td['T'].max()
@@ -143,7 +145,8 @@ def make_poly(td, min_c_width=1e-3):
             [meanc - min_c_width/2, Tmax],
         ])
     sd = sort_segments(td)
-    return Polygon( np.transpose([sd.c, sd['T']]) )
+    return Polygon(np.transpose([sd[v] for v in variables]))
+
 
 def plot_phase_diagram(
         df, alpha=.1, element=None, min_c_width=5e-3,
