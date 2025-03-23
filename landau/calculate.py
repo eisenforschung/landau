@@ -138,6 +138,8 @@ def find_triangle(phases, cand):
         warnings.warn(f"Failed to refine triangle between {p1} and {p2} of phases {cand.phase.unique()}!", stacklevel=2)
         return []
     T, mu = p1 + (p2 - p1) * t
+    if T < 0:
+        return []
     phi = phase1.semigrand_potential(T, mu)
     # check that no other phase is lower than the refined boundary
     if any(p.semigrand_potential(T, mu) < phi for p in phases.values() if p.name not in (phase1.name, phase2.name)):
@@ -213,6 +215,8 @@ def refine_phase_diagram(df, phases, min_c=0, max_c=1):
                 return abs(phi1 - phi2) + abs(phi2 - phi3) + abs(phi3 - phi1)
 
             T, mu = so.fmin(triplemin, (T, mu), disp=False)
+            if T < 0:
+                return []
             return [
                 {
                     "T": T,
