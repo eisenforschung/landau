@@ -1,37 +1,37 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from functools import lru_cache, cache
-from typing import Iterable, Dict
-from warnings import warn
+from typing import Iterable
 
 import matplotlib.pyplot as plt
 import scipy.interpolate as si
 import scipy.spatial as ss
 import scipy.special as se
-import scipy.optimize as so
 
 import numpy as np
-import pandas as pd
 
-from .interpolate import (
-        TemperatureInterpolator, ConcentrationInterpolator,
-        SGTE, PolyFit, RedlichKister
-)
+from .interpolate import TemperatureInterpolator, SGTE, PolyFit, RedlichKister
 
 from scipy.constants import Boltzmann, eV
+
 kB = Boltzmann / eV
+
+
 def S(c):
-    return kB * ( se.entr(c) + se.entr(1-c) )
+    return kB * (se.entr(c) + se.entr(1 - c))
+
 
 def Sprime(c):
-    with np.errstate(divide='ignore'):
-        s = -kB*(np.log(c/(1-c)))
+    with np.errstate(divide="ignore"):
+        s = -kB * (np.log(c / (1 - c)))
     s[np.isclose(c, 0)] = +np.inf
     s[np.isclose(c, 1)] = -np.inf
     return s
 
+
 def c_from_dmu(dmu, T, e_defect):
-    return 1 / (1 + np.exp(-(dmu-e_defect)/kB/T))
+    return 1 / (1 + np.exp(-(dmu - e_defect) / kB / T))
+
 
 @dataclass(frozen=True)
 class Phase(ABC):
@@ -60,9 +60,9 @@ class Phase(ABC):
 
     __str__ = __repr__
 
+
 @dataclass(frozen=True)
 class AbstractLinePhase(Phase):
-
     @property
     @abstractmethod
     def line_concentration(self):
@@ -85,6 +85,7 @@ class AbstractLinePhase(Phase):
     def semigrand_potential(self, T, dmu):
         f = self.line_free_energy(T)
         return f - self.line_concentration * dmu
+
 
 @dataclass(frozen=True)
 class LinePhase(AbstractLinePhase):
@@ -111,7 +112,7 @@ class LinePhase(AbstractLinePhase):
 
 @dataclass(frozen=True)
 class TemperatureDependentLinePhase(AbstractLinePhase):
-    """"
+    """ "
     Simple phase with a fixed concentration and temperature dependent free
     energy.
     """
@@ -131,28 +132,37 @@ class TemperatureDependentLinePhase(AbstractLinePhase):
             a = np.array(iterable)
             a.flags.writeable = False
             return a
+
         object.__setattr__(self, "temperatures", to_ro_numpy(self.temperatures))
         object.__setattr__(self, "free_energies", to_ro_numpy(self.free_energies))
         # precompute hash: hashing arrays every cache lookup is too expensive
         # and we any way advertise as frozen
-        object.__setattr__(self, '_hash', hash((
-                hash(self.fixed_concentration),
-                hash(self.temperatures.tobytes()),
-                hash(self.free_energies.tobytes()),
-                hash(self.interpolator),
-            ))
+        object.__setattr__(
+            self,
+            "_hash",
+            hash(
+                (
+                    hash(self.fixed_concentration),
+                    hash(self.temperatures.tobytes()),
+                    hash(self.free_energies.tobytes()),
+                    hash(self.interpolator),
+                )
+            ),
         )
 
     def __hash__(self):
         return self._hash
 
     def __eq__(self, other):
-        if type(other) != type(self): return False
-        return all((
-            self.fixed_concentration == other.fixed_concentration,
-            np.array_equal(self.temperatures, other.temperatures),
-            np.array_equal(self.free_energies, other.free_energies),
-        ))
+        if type(other) != type(self):
+            return False
+        return all(
+            (
+                self.fixed_concentration == other.fixed_concentration,
+                np.array_equal(self.temperatures, other.temperatures),
+                np.array_equal(self.free_energies, other.free_energies),
+            )
+        )
 
     @property
     @cache
@@ -167,21 +177,20 @@ class TemperatureDependentLinePhase(AbstractLinePhase):
         return self._interpolation(T)
 
     def check_interpolation(self, Tl=0.9, Tu=1.1, samples=50):
-        Ts = np.linspace(np.min(self.temperatures) * Tl,
-                         np.max(self.temperatures) * Tu,
-                         samples)
-        l, = plt.plot(Ts, self.line_free_energy(Ts), label=self.name)
+        Ts = np.linspace(np.min(self.temperatures) * Tl, np.max(self.temperatures) * Tu, samples)
+        (l,) = plt.plot(Ts, self.line_free_energy(Ts), label=self.name)
         # try to plot about 100 points
         n = max(int(len(self.temperatures) // 100), 1)
         plt.scatter(self.temperatures[::n], self.free_energies[::n], c=l.get_color())
+
 
 def TemperatureDepandantLinePhase(*args, **kwargs):
     print("TYPO ALERT!")
     return TemperatureDependentLinePhase(*args, **kwargs)
 
+
 @dataclass(frozen=True, eq=True)
 class IdealSolution(Phase):
-
     phase1: AbstractLinePhase
     phase2: AbstractLinePhase
 
@@ -198,7 +207,7 @@ class IdealSolution(Phase):
         f1 = p1.line_free_energy(T)
         f2 = p2.line_free_energy(T)
         df = f2 - f1
-        phi = f1 - kB*T*np.log(1 + np.exp(-(df - dmu)/kB/T))
+        phi = f1 - kB * T * np.log(1 + np.exp(-(df - dmu) / kB / T))
         return phi
 
     def concentration(self, T, dmu):
@@ -207,7 +216,8 @@ class IdealSolution(Phase):
         f1 = p1.line_free_energy(T)
         f2 = p2.line_free_energy(T)
         df = f2 - f1
-        return 1/(1 + np.exp(+(df - dmu)/kB/T))
+        return 1 / (1 + np.exp(+(df - dmu) / kB / T))
+
 
 @dataclass(frozen=True, eq=True)
 class RegularSolution(Phase):
@@ -232,7 +242,9 @@ class RegularSolution(Phase):
         assert 0 in concs and 1 in concs, "Must give the terminal phases!"
         left_terminals = sum(c == 0 for c in concs)
         right_terminals = sum(c == 1 for c in concs)
-        assert left_terminals == 1 and right_terminals == 1, "Cannot pass multiple terminal phases of the same concentration!"
+        assert left_terminals == 1 and right_terminals == 1, (
+            "Cannot pass multiple terminal phases of the same concentration!"
+        )
 
     @lru_cache(maxsize=250)
     def _get_interpolation(self, T):
@@ -254,7 +266,7 @@ class RegularSolution(Phase):
         ff = self.free_energy(T, cc)
         f0 = ff[0]
         f1 = ff[-1]
-        return si.interp1d(cc, ff - (f0 * (1-cc) + f1 * cc), kind='cubic')(c)
+        return si.interp1d(cc, ff - (f0 * (1 - cc) + f1 * cc), kind="cubic")(c)
 
     def semigrand_potential(self, T, dmu, plot=False, raw=False):
         def get_mu_c(c):
@@ -262,19 +274,15 @@ class RegularSolution(Phase):
 
             f0 = f[0]
             f1 = f[-1]
-            I = f <= c * f1 + (1-c) * f0
+            I = f <= c * f1 + (1 - c) * f0
             fI = f[I]
             cI = c[I]
 
             # system is fully demixing
             if I.sum() == 2:
                 M = f1 - f0
-                f12 = (f0 + f1)/2
-                return (
-                        np.array([0, 0.5,  1]),
-                        np.array([f0, f12, f1]),
-                        np.array([M-1e-3, M, M+1e-3])
-                )
+                f12 = (f0 + f1) / 2
+                return (np.array([0, 0.5, 1]), np.array([f0, f12, f1]), np.array([M - 1e-3, M, M + 1e-3]))
 
             hull = ss.ConvexHull(list(zip(cI, fI)))
             cH, fH = hull.points[hull.vertices].T
@@ -295,18 +303,18 @@ class RegularSolution(Phase):
             c, f, M = get_mu_c(c)
             if plot:
                 plt.subplot(121)
-                plt.plot(c[:-1], np.diff(M), 'v', label=n)
+                plt.plot(c[:-1], np.diff(M), "v", label=n)
                 plt.subplot(122)
-                plt.plot(c, M, '.')
+                plt.plot(c, M, ".")
         if plot and n > 50:
             plt.subplot(121)
             plt.title("Spacing of Chemical Potential Sampling")
-            plt.xlabel('c')
-            plt.ylabel('np.diff(mu)')
-            plt.legend(title='grid points')
+            plt.xlabel("c")
+            plt.ylabel("np.diff(mu)")
+            plt.legend(title="grid points")
             plt.subplot(122)
-            plt.xlabel('c')
-            plt.ylabel(r'$\Delta \mu$')
+            plt.xlabel("c")
+            plt.ylabel(r"$\Delta \mu$")
             plt.show()
 
         p = f - c * M
@@ -316,10 +324,15 @@ class RegularSolution(Phase):
         assert np.median(abs(np.diff(M))) <= limit, "Weird"
 
         # schon etwas dreist, aber naja
-        pi = si.interp1d(M, p, fill_value=np.nan, bounds_error=False,
-                         # needs to be at least quadratic, otherwise we'll see
-                         # jumps in the numerically calculated concentration
-                         kind='quadratic')(dmu)
+        pi = si.interp1d(
+            M,
+            p,
+            fill_value=np.nan,
+            bounds_error=False,
+            # needs to be at least quadratic, otherwise we'll see
+            # jumps in the numerically calculated concentration
+            kind="quadratic",
+        )(dmu)
         pl = self.free_energy(T, 1) - dmu * 1
         f0 = self.free_energy(T, 0)
         if not isinstance(dmu, np.ndarray):
@@ -333,8 +346,8 @@ class RegularSolution(Phase):
         I = np.isnan(pi)
         pi[I] = pl[I]
         if plot:
-            plt.plot(M, p, 'o-', label='calculated')
-            plt.plot(dmu, pi, label='extrapolated')
+            plt.plot(M, p, "o-", label="calculated")
+            plt.plot(dmu, pi, label="extrapolated")
             plt.legend()
         return pi
 
@@ -342,10 +355,7 @@ class RegularSolution(Phase):
         if not isinstance(dmu, np.ndarray):
             dmus = np.linspace(-1, 1, 5) * 1e-3 + dmu
             return self.concentration(T, dmus)[2]
-        return np.clip(
-                -np.gradient(self.semigrand_potential(T, dmu), dmu, edge_order=2),
-                0, 1
-        )
+        return np.clip(-np.gradient(self.semigrand_potential(T, dmu), dmu, edge_order=2), 0, 1)
 
     def check_interpolation(self, T=1000, samples=50):
         x = np.linspace(0, 1, samples)
@@ -354,8 +364,8 @@ class RegularSolution(Phase):
             plt.scatter(p.line_concentration, p.line_free_energy(T))
 
 
-
 from numbers import Real
+
 
 @dataclass(frozen=True, eq=True)
 class InterpolatingPhase(Phase):
@@ -392,9 +402,7 @@ class InterpolatingPhase(Phase):
         dmu = np.asarray(dmu)
         cs = [p.line_concentration for p in self.phases]
         conc = np.linspace(
-                max(0, min(cs) - self.maximum_extrapolation),
-                min(1, max(cs) + self.maximum_extrapolation),
-                self.num_samples
+            max(0, min(cs) - self.maximum_extrapolation), min(1, max(cs) + self.maximum_extrapolation), self.num_samples
         )
         ff = self.free_energy(T, conc)
         phi = ff[None, :] - conc[None, :] * dmu.reshape(-1, 1)
@@ -408,10 +416,7 @@ class InterpolatingPhase(Phase):
         if not isinstance(dmu, np.ndarray):
             dmus = np.linspace(-1, 1, 5) * 1e-3 + dmu
             return self.concentration(T, dmus)[2]
-        return np.clip(
-                -np.gradient(self.semigrand_potential(T, dmu), dmu, edge_order=2),
-                0, 1
-        )
+        return np.clip(-np.gradient(self.semigrand_potential(T, dmu), dmu, edge_order=2), 0, 1)
 
     def check_interpolation(self, T=1000, samples=50):
         x = np.linspace(0, 1, samples)
@@ -430,13 +435,14 @@ class AbstractPointDefect(ABC):
     def excess_solutes(self):
         pass
 
+
 @dataclass(frozen=True)
 class ConstantPointDefect(AbstractPointDefect):
     """
     A point defect that adds a contribution to the free energy of a host
     lattice.
 
-    Excess energy and entropy are assumed to be 
+    Excess energy and entropy are assumed to be
     """
 
     name: str
@@ -475,7 +481,7 @@ class ConstantPointDefect(AbstractPointDefect):
     def semigrand_potential_contribution(self, T, dmu):
         fe = self.excess_free_energy(T)
         ne = self.excess_solutes
-        return -kB*T*np.log(1 + np.exp(-(fe - ne*dmu)/kB/T))
+        return -kB * T * np.log(1 + np.exp(-(fe - ne * dmu) / kB / T))
 
     def concentration_contribution(self, T, dmu):
         ne = self.excess_solutes
@@ -488,7 +494,8 @@ class ConstantPointDefect(AbstractPointDefect):
         # we want to return x
         fe = self.storage.excess_energy
         ne = self.storage.excess_solutes
-        return 1/(1 + np.exp(+(fe - ne*dmu)/kB/T))
+        return 1 / (1 + np.exp(+(fe - ne * dmu) / kB / T))
+
 
 @dataclass(frozen=True)
 class PointDefectSublattice:
@@ -505,11 +512,11 @@ class PointDefectSublattice:
     def _get_zes(self, T, dmu):
         fes = [d.excess_free_energy(T) for d in self.defects]
         nes = [d.excess_solutes for d in self.defects]
-        return np.array([np.exp(-(fe-ne*dmu)/kB/T) for fe, ne in zip(fes, nes)])
+        return np.array([np.exp(-(fe - ne * dmu) / kB / T) for fe, ne in zip(fes, nes)])
 
     def semigrand_potential_contribution(self, T, dmu):
         zes = self._get_zes(T, dmu).sum(axis=0)
-        dphi = -kB*T*np.log(1 + zes)
+        dphi = -kB * T * np.log(1 + zes)
         return self.sublattice_fraction * dphi
 
     # def defect_concentration(self, T, dmu):
@@ -529,6 +536,7 @@ class PointDefectSublattice:
         eta = self.storage.sublattice_fraction
         return eta * sum(ne * ze for ne, ze in zip(nes, zes)) / (1 + zes.sum(axis=0))
         # return eta * ne * self.defect_concentration(T, dmu)
+
 
 @dataclass(frozen=True)
 class PointDefectedPhase(Phase):
