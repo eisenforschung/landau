@@ -157,6 +157,11 @@ def find_triangle(phases, cand):
                       stacklevel=2)
         return []
     T, mu = p1 + (p2 - p1) * t
+    phi = phase1.semigrand_potential(T, mu)
+    # check that no other phase is lower than the refined boundary
+    if any(p.semigrand_potential(T, mu) < phi for p in phases.values() if p.name not in (phase1.name, phase2.name)):
+        # TODO: could try and refine here on the boundary (p1, more_stable_phase) and (p2, more_stable_phase)
+        return []
     return [{
         'T': T,
         'mu': mu,
