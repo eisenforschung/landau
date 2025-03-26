@@ -1,11 +1,15 @@
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 import scipy.optimize as so
 
 from scipy.constants import Boltzmann, eV
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.pipeline import make_pipeline
+from sklearn.linear_model import Ridge, Lasso, LinearRegression
 
 kB = Boltzmann / eV
 
@@ -50,10 +54,32 @@ class ConcentrationInterpolator(Interpolator):
 
 @dataclass(frozen=True, eq=True)
 class PolyFit(TemperatureInterpolator, ConcentrationInterpolator):
-    nparam: int
+    nparam: int | Literal["auto"]
+    regularizer_strength: float = 1e-8
 
     def fit(self, x, y):
-        return np.poly1d(np.polyfit(x, y, self.nparam - 1))
+        x = np.asarray(x)
+        y = np.asarray(y)
+        if self.nparam == "auto":
+            reg = make_pipeline(
+                    PolynomialFeatures(10),
+                    Lasso(self.regularizer_strength,
+                          fit_intercept=False)
+            )
+            reg.fit(x.reshape(-1, 1), y)
+            nparam = sum(abs(reg.steps[-1][1].coef_) > 1e-10)
+            # refit with simple function below to make sure to return a
+            # 'simple' picklable object
+        else:
+            nparam = self.nparam
+        reg = make_pipeline(
+                PolynomialFeatures(nparam - 1),
+                Ridge(self.regularizer_strength,
+                      fit_intercept=False)
+        )
+        reg.fit(x.reshape(-1, 1), y)
+        coef = reg.steps[-1][1].coef_
+        return np.poly1d(coef[::-1])
 
 
 @dataclass(frozen=True, eq=True)
