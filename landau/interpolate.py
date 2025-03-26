@@ -5,6 +5,7 @@ from typing import Literal
 
 import numpy as np
 import scipy.optimize as so
+import polyfit
 
 from scipy.constants import Boltzmann, eV
 from sklearn.preprocessing import PolynomialFeatures
@@ -55,7 +56,11 @@ class ConcentrationInterpolator(Interpolator):
 @dataclass(frozen=True, eq=True)
 class PolyFit(TemperatureInterpolator, ConcentrationInterpolator):
     nparam: int | Literal["auto"]
+    """Number of parameters, if "auto" fit a 10 parameter polynomial under L1 and discard parameters <1e-10, then refit."""
     regularizer_strength: float = 1e-8
+    """Strength of L2-norm regularization."""
+    enforce_curvature: bool = False
+    """Ensure that the interpolation has negative curvature as excepted for thermodynamic potentials."""
 
     def fit(self, x, y):
         x = np.asarray(x)
@@ -68,18 +73,25 @@ class PolyFit(TemperatureInterpolator, ConcentrationInterpolator):
             )
             reg.fit(x.reshape(-1, 1), y)
             nparam = sum(abs(reg.steps[-1][1].coef_) > 1e-10)
-            # refit with simple function below to make sure to return a
-            # 'simple' picklable object
         else:
             nparam = self.nparam
-        reg = make_pipeline(
-                PolynomialFeatures(nparam - 1),
-                Ridge(self.regularizer_strength,
-                      fit_intercept=False)
-        )
-        reg.fit(x.reshape(-1, 1), y)
-        coef = reg.steps[-1][1].coef_
-        return np.poly1d(coef[::-1])
+        if not self.enforce_curvature:
+            reg = make_pipeline(
+                    PolynomialFeatures(nparam - 1),
+                    Ridge(self.regularizer_strength,
+                        fit_intercept=False)
+            )
+            reg.fit(x.reshape(-1, 1), y)
+            coef = reg.steps[-1][1].coef_[::-1]
+        else:
+            reg = polyfit.PolynomRegressor(
+                    nparam, lam=self.regularizer_strength
+            ).fit(
+                    x.reshape(-1, 1), y,
+                    constraints={0: polyfit.Constraints(curvature="concave")}
+            )
+            coef = reg.coeffs_[::-1]
+        return np.poly1d(coef)
 
 
 @dataclass(frozen=True, eq=True)
