@@ -82,7 +82,9 @@ def sort_segments(df, x_col="c", y_col="T", segment_label="border_segment"):
     a "segment".  A "proper" fix would be to modify b to allow joining also to the start of "head" rather than just the end.
     """
 
-    total_center_of_mass = df[[x_col, y_col]].mean().values
+    com = df[[x_col, y_col]].mean()
+    norm = np.ptp(df[[x_col, y_col]], axis=0).values
+
 
     # Step 1: PCA Projection
     def pca_projection(group):
@@ -98,6 +100,13 @@ def sort_segments(df, x_col="c", y_col="T", segment_label="border_segment"):
     for label, dd in df.groupby(segment_label):
         segments.append(pca_projection(dd))
 
+    # initial sorting by center of mass angle
+    segments = sorted(
+            segments,
+            key=lambda s: np.atan2( (s[y_col].mean() - com[y_col]) / norm[1],
+                                    (s[x_col].mean() - com[x_col]) / norm[0])
+    )
+
     def start(s):
         return s.iloc[0][[x_col, y_col]]
 
@@ -105,7 +114,7 @@ def sort_segments(df, x_col="c", y_col="T", segment_label="border_segment"):
         return s.iloc[-1][[x_col, y_col]]
 
     def dist(p1, p2):
-        return np.linalg.norm((p2 - p1) / np.ptp(df[[x_col, y_col]], axis=0))
+        return np.linalg.norm((p2 - p1) / norm)
 
     def flip(s):
         s.reset_index(drop=True, inplace=True)
@@ -147,8 +156,9 @@ def make_poly(td, min_c_width=1e-3, variables=["c", "T"]):
                 [meanc - min_c_width / 2, Tmax],
             ]
         )
-    sd = sort_segments(td)
-    sd = sd.loc[ np.isfinite(sd[variables[0]]) & np.isfinite(sd[variables[1]]) ]
+    td = td.loc[ np.isfinite(td[variables[0]]) & np.isfinite(td[variables[1]]) ]
+    sd = sort_segments(td, x_col=variables[0], y_col=variables[1])
+    # sd = sd.loc[ np.isfinite(sd[variables[0]]) & np.isfinite(sd[variables[1]]) ]
     return Polygon(np.transpose([sd[v] for v in variables]))
 
 
