@@ -2,10 +2,14 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
+import warnings
 
 import numpy as np
 import scipy.optimize as so
-import polyfit
+try:
+    import polyfit
+except ImportError:
+    polyfit = None
 
 from scipy.constants import Boltzmann, eV
 from sklearn.preprocessing import PolynomialFeatures
@@ -60,7 +64,7 @@ class PolyFit(TemperatureInterpolator, ConcentrationInterpolator):
     regularizer_strength: float = 1e-8
     """Strength of L2-norm regularization."""
     enforce_curvature: bool = False
-    """Ensure that the interpolation has negative curvature as excepted for thermodynamic potentials."""
+    """Ensure that the interpolation has negative curvature as expected for thermodynamic potentials."""
 
     def fit(self, x, y):
         x = np.asarray(x)
@@ -68,18 +72,19 @@ class PolyFit(TemperatureInterpolator, ConcentrationInterpolator):
         if self.nparam == "auto":
             reg = make_pipeline(
                     PolynomialFeatures(10),
-                    Lasso(self.regularizer_strength,
-                          fit_intercept=False)
+                    Lasso(self.regularizer_strength, fit_intercept=False)
             )
             reg.fit(x.reshape(-1, 1), y)
             nparam = sum(abs(reg.steps[-1][1].coef_) > 1e-10)
         else:
             nparam = self.nparam
-        if not self.enforce_curvature:
+        if not self.enforce_curvature or polyfit is None:
+            if self.enforce_curvature:
+                warnings.warn("enforce_curvature=True is only supported when the `polyfit` package from PyPI is installed. "
+                              "Falling back to regular fitting.")
             reg = make_pipeline(
                     PolynomialFeatures(nparam - 1),
-                    Ridge(self.regularizer_strength,
-                        fit_intercept=False)
+                    Ridge(self.regularizer_strength, fit_intercept=False)
             )
             reg.fit(x.reshape(-1, 1), y)
             coef = reg.steps[-1][1].coef_[::-1]
