@@ -358,9 +358,8 @@ def calc_phase_diagram(
     pdf["stable"] = False
     pdf.loc[pdf.groupby(["T", "mu"], group_keys=False).phi.idxmin(), "stable"] = True
     if refine:
-        if min_c is None or max_c is None:
-            min_c = pdf.c.min()
-            max_c = pdf.c.max()
+        min_c = pdf.c.min()
+        max_c = pdf.c.max()
         pdf = refine_phase_diagram(pdf, phases, min_c=min_c, max_c=max_c)
     pdf["f"] = pdf.phi + pdf.mu * pdf.c
 
