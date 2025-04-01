@@ -1,3 +1,4 @@
+from typing import Literal
 
 from matplotlib.patches import Polygon
 import shapely
@@ -163,7 +164,8 @@ def make_poly(td, min_c_width=1e-3, variables=["c", "T"]):
 
 
 def plot_phase_diagram(
-    df, alpha=0.1, element=None, min_c_width=5e-3, color_override: dict[str, str] = {}, tielines=False
+    df, alpha=0.1, element=None, min_c_width=5e-3, color_override: dict[str, str] = {}, tielines=False,
+    poly_method: Literal["concave", "segments"] = 'concave',
 ):
     df = df.query("stable")
 
@@ -179,7 +181,7 @@ def plot_phase_diagram(
     diff = {k: duplicates_map[c] for k, c in color_map.items() if c in duplicates_map}
     color_map.update(diff | color_override)
 
-    if "refined" in df.columns:
+    if "refined" in df.columns and poly_method == "segments":
         tdf = get_transitions(df)
         polys = tdf.groupby("phase").apply(
             make_poly,
@@ -205,7 +207,7 @@ def plot_phase_diagram(
         # TODO: quite buggy and not nice; can benefit a lot from
         # get_transitions
         if "refined" in df.columns:
-
+            tdf = get_transitions(df)
             def plot_tie(dd):
                 Tmin = dd["T"].min()
                 Tmax = dd["T"].max()
@@ -263,13 +265,14 @@ def get_phase_colors(phase_names, override: dict[str, str] | None = None):
     return color_map
 
 def plot_mu_phase_diagram(
-    df, alpha=0.1, element=None, color_override: dict[str, str] = {}
+    df, alpha=0.1, element=None, color_override: dict[str, str] = {},
+    poly_method: Literal["concave", "segments"] = 'concave',
 ):
     df = df.query("stable")
 
     color_map = get_phase_colors(df.phase.unique(), color_override)
 
-    if "refined" in df.columns:
+    if "refined" in df.columns and poly_method == "segments":
         tdf = get_transitions(df)
         polys = tdf.groupby("phase").apply(
             make_poly,
