@@ -301,23 +301,51 @@ def plot_mu_phase_diagram(
     plt.xlabel(r"$\Delta\mu$ [eV]")
     plt.ylabel("$T$ [K]")
 
-def plot_1d_T_phase_diagram(df):
+def plot_1d_mu_phase_diagram(df):
+    """Plot a one dimensional isothermal phase diagram."""
+    if len(df['T'].unique()) > 1:
+        raise ValueError("data contains more than one temperature!")
     sns.lineplot(
         data=df,
-        x='T', y='f',
+        x='mu', y='phi',
         hue='phase',
         style='stable', style_order=[True, False],
     )
     if 'border' not in df.columns: return
 
-    dfa = np.ptp(df['f'].dropna())
+    dfa = np.ptp(df['phi'].dropna())
+    dfm = np.ptp(df['mu'].dropna())
+
+    for mt, dd in df.query("mu.min()<mu<mu.max() and border").groupby("mu"):
+        ft = dd['phi'].iloc[0]
+        plt.axvline(mt, color='k', linestyle='dotted', alpha=.5)
+        plt.scatter(mt, ft, marker='o', c='k', zorder=10)
+
+        plt.text(mt - .05 * dfm, ft - dfa * .1, rf"$\Delta\mu = {mt:.03f}\,\mathrm{{eV}}$",
+                 rotation='vertical', ha='center', va='top')
+    plt.xlabel("Chemical Potential Difference [ev]")
+    plt.ylabel("Semi-grandcanonical Potential [eV/atom]")
+
+def plot_1d_T_phase_diagram(df):
+    """Plot a one dimensional equipotential phase diagram."""
+    if len(df.mu.unique()) > 1:
+        raise ValueError("data contains more than one chemical potential!")
+    sns.lineplot(
+        data=df,
+        x='T', y='phi',
+        hue='phase',
+        style='stable', style_order=[True, False],
+    )
+    if 'border' not in df.columns: return
+
+    dfa = np.ptp(df['phi'].dropna())
     dft = np.ptp(df['T'].dropna())
 
     for Tt, dd in df.query("T.min()<T<T.max() and border").groupby("T"):
-        ft = dd['f'].iloc[0]
+        ft = dd['phi'].iloc[0]
         plt.axvline(Tt, color='k', linestyle='dotted', alpha=.5)
         plt.scatter(Tt, ft, marker='o', c='k', zorder=10)
 
         plt.text(Tt + .05 * dft, ft + dfa * .1, rf"$T = {Tt:.0f}\,\mathrm{{K}}$", rotation='vertical', ha='center')
     plt.xlabel("Temperature [K]")
-    plt.ylabel("Free Energy [eV/atom]")
+    plt.ylabel("Semi-grandcanonical potential [eV/atom]")
