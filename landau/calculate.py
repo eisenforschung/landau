@@ -16,7 +16,7 @@ from scipy.constants import Boltzmann, eV
 
 kB = Boltzmann / eV
 
-from .phases import Phase
+from .phases import Phase, AbstractLinePhase
 
 
 def find_one_point(phase1, phase2, potential, var_range):
@@ -299,6 +299,13 @@ def guess_mu_range(phases: Iterable[Phase], T: float, samples: int, tolerance: f
     resa = so.minimize(lambda x: -c(x[0]), x0=[0], tol=tolerance, method="BFGS")
     mu0 = resi.x[0]
     mu1 = resa.x[0]
+    if mu0 == mu1:
+        if tolerance > 1e-7:
+            return guess_mu_range(phases, T, samples, tolerance/10)
+        raise ValueError(
+                "chemical potential range degenerate! Check that phases that not all phases have the same fixed "
+                "concentration!"
+        )
     mm = np.linspace(mu0, mu1, samples)
     cc = c(mm)
     c0 = min(cc) + tolerance
@@ -328,8 +335,17 @@ def calc_phase_diagram(
         dataframe of phase points
     """
     phases = {p.name: p for p in phases}
-    if isinstance(mu, numbers.Integral):
-        mu, min_c, max_c = guess_mu_range(phases.values(), max(Ts), int(mu))
+    if isinstance(mu, numbers.Integral) and mu != 0:
+        # we would often pass mu=0 to calculate a fixed mu, temperature only diagram and it'd be a bit annoying to pass
+        # mu=0.0 all the time, so we special case as above
+        try:
+            mu, min_c, max_c = guess_mu_range(phases.values(), max(Ts), int(mu))
+        except ValueError:
+            if all(isinstance(p, AbstractLinePhase) for p in phases.values()):
+                raise ValueError(
+                        "Cannot guess chemical potential range of line phases with all the same concentration!"
+                ) from None
+            raise
     elif refine:
         min_c, max_c = None, None
 
