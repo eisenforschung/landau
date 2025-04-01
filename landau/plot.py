@@ -11,15 +11,12 @@ import numpy as np
 from .calculate import get_transitions
 
 
-def make_concave_poly(dd, alpha=0.1, plot=False, min_c_width=1e-3, variables=["c", "T"]):
+def make_concave_poly(dd, alpha=0.1, min_c_width=1e-3, variables=["c", "T"]):
     # concave hull algo seems more stable when both variables are of the same order
-    # since c in [0, 1]; so let's rescale T relative to the extrema as well
 
     pp = dd.sort_values(variables[0])[variables].to_numpy()
     pp = pp[np.isfinite(pp).all(axis=-1)]
 
-    if plot:
-        plt.scatter(*pp.T, marker=".")
     refnorm = {}
     for i, var in enumerate(variables):
         refnorm[var] = pp[:, i].min(), (np.ptp(pp[:, i]) or 1)
@@ -218,7 +215,9 @@ def plot_phase_diagram(
                 if len(dd.phase.unique()) in [1, 2]:
                     return
                 plt.hlines(Tmin, di.c.min(), di.c.max(), color="k", zorder=-2, alpha=0.5, lw=4)
-                plt.hlines(Tmax, da.c.min(), da.c.max(), color="k", zorder=-2, alpha=0.5, lw=4)
+                # current marvin to past marvin: Why is that even necessary?
+                if Tmin != Tmax:
+                    plt.hlines(Tmax, da.c.min(), da.c.max(), color="k", zorder=-2, alpha=0.5, lw=4)
 
             # FIXME: WARNING reuses local var define in if branch
             tdf.groupby("border_segment").apply(plot_tie)
