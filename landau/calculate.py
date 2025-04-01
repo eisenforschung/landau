@@ -153,9 +153,9 @@ def find_triangle(phases, cand):
 
 def refine_phase_diagram(df, phases, min_c=0, max_c=1):
     """Add additional points to a coarse phase diagram by searching for exact transitions."""
-    udf = df.query("not stable").reset_index()
+    udf = df.query("not stable").reset_index(drop=True)
     udf["border"] = False
-    df = df.query("stable").reset_index()
+    df = df.query("stable").reset_index(drop=True)
     df["border"] = False
     df["refined"] = "no"
     data = [df, udf]
