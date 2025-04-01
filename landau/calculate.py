@@ -64,13 +64,13 @@ def find_all_points(stable_df, phases, by="mu"):
     boundary_guesses = stable_df.index[(stable_df.phase != stable_df.phase.shift(-1).ffill())]
     if by == "mu":
         boundaries = [
-            {"mu": -np.inf, "c": 0, "phase": stable_df.phase.iloc[0]},
-            {"mu": np.inf, "c": 1, "phase": stable_df.phase.iloc[-1]},
+            # {"mu": -np.inf, "c": 0, "phase": stable_df.phase.iloc[0]},
+            # {"mu": np.inf, "c": 1, "phase": stable_df.phase.iloc[-1]},
         ]
     else:
         boundaries = [
-            {"T": stable_df["T"].min(), "c": stable_df.c.iloc[0], "phase": stable_df.phase.iloc[0]},
-            {"T": stable_df["T"].max(), "c": stable_df.c.iloc[-1], "phase": stable_df.phase.iloc[-1]},
+            # {"T": stable_df["T"].min(), "c": stable_df.c.iloc[0], "phase": stable_df.phase.iloc[0]},
+            # {"T": stable_df["T"].max(), "c": stable_df.c.iloc[-1], "phase": stable_df.phase.iloc[-1]},
         ]
     for g in boundary_guesses:
         r1 = stable_df.loc[g]
