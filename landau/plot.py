@@ -298,3 +298,24 @@ def plot_mu_phase_diagram(
     plt.legend(ncols=2)
     plt.xlabel(r"$\Delta\mu$ [eV]")
     plt.ylabel("$T$ [K]")
+
+def plot_1d_T_phase_diagram(df):
+    sns.lineplot(
+        data=df,
+        x='T', y='f',
+        hue='phase',
+        style='stable', style_order=[True, False],
+    )
+    if 'border' not in df.columns: return
+
+    dfa = np.ptp(df['f'].dropna())
+    dft = np.ptp(df['T'].dropna())
+
+    for Tt, dd in df.query("T.min()<T<T.max() and border").groupby("T"):
+        ft = dd['f'].iloc[0]
+        plt.axvline(Tt, color='k', linestyle='dotted', alpha=.5)
+        plt.scatter(Tt, ft, marker='o', c='k', zorder=10)
+
+        plt.text(Tt + .05 * dft, ft + dfa * .1, rf"$T = {Tt:.0f}\,\mathrm{{K}}$", rotation='vertical', ha='center')
+    plt.xlabel("Temperature [K]")
+    plt.ylabel("Free Energy [eV/atom]")
