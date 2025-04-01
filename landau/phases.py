@@ -63,6 +63,12 @@ class Phase(ABC):
 
 @dataclass(frozen=True)
 class AbstractLinePhase(Phase):
+    """Base class for fixed concentration phases.
+
+    Required overloads are :meth:`.AbstractLinePhase.line_concentration` and
+    :meth:`.AbstractLinePhase.line_free_energy`.
+    """
+
     @property
     @abstractmethod
     def line_concentration(self):
@@ -90,8 +96,7 @@ class AbstractLinePhase(Phase):
 @dataclass(frozen=True)
 class LinePhase(AbstractLinePhase):
     """
-    Simple phase with a fixed concentration and temperature independent free
-    energy.
+    Simple phase with a fixed concentration and temperature independent entropy.
     """
 
     fixed_concentration: float
