@@ -207,12 +207,24 @@ class IdealSolution(Phase):
         object.__setattr__(self, "phase2", phase2)
 
     def semigrand_potential(self, T, dmu):
+        T = np.asarray(T)
+        dmu = np.asarray(dmu)
         p1 = self.phase1
         p2 = self.phase2
         f1 = p1.line_free_energy(T)
         f2 = p2.line_free_energy(T)
         df = f2 - f1
-        phi = f1 - kB * T * np.log(1 + np.exp(-(df - dmu) / kB / T))
+        with np.errstate(divide='ignore', over="ignore", invalid='ignore'):
+            expo = -(df - dmu) / kB / T
+            phi = f1 - kB * T * np.log(1 + np.exp(expo))
+            I = ~np.isfinite(phi)
+            if I.any():
+                if phi.shape == ():
+                    phi = f2 - dmu[I]
+                else:
+                    phi[I] = f2 - dmu[I]
+        if phi.shape == ():
+            phi = phi.item()
         return phi
 
     def concentration(self, T, dmu):
@@ -221,7 +233,8 @@ class IdealSolution(Phase):
         f1 = p1.line_free_energy(T)
         f2 = p2.line_free_energy(T)
         df = f2 - f1
-        return 1 / (1 + np.exp(+(df - dmu) / kB / T))
+        with np.errstate(divide='ignore', over='ignore'):
+            return 1 / (1 + np.exp(+(df - dmu) / kB / T))
 
 
 @dataclass(frozen=True, eq=True)
