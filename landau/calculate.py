@@ -334,6 +334,8 @@ def calc_phase_diagram(
     Returns:
         dataframe of phase points
     """
+    if not isinstance(Ts, Iterable):
+        Ts = [Ts]
     phases = {p.name: p for p in phases}
     if isinstance(mu, numbers.Integral) and mu != 0:
         # we would often pass mu=0 to calculate a fixed mu, temperature only diagram and it'd be a bit annoying to pass
