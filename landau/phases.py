@@ -412,10 +412,10 @@ class InterpolatingPhase(Phase):
         # we try to fit the redlich kister coeffs
         if not self.add_entropy:
             ff += T * S(cc)
-        # if cc[0] == 0 and cc[-1] == 1:
-        #     return RedlichKister(self.num_coeffs - 2).fit(cc, ff)
-        # else:
-        return PolyFit(self.num_coeffs).fit(cc, ff)
+        if cc[0] == 0 and cc[-1] == 1:
+            return RedlichKister(max(1, self.num_coeffs - 2)).fit(cc, ff)
+        else:
+            return PolyFit(self.num_coeffs).fit(cc, ff)
 
     def free_energy(self, T, c):
         return np.vectorize(
