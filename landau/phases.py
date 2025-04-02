@@ -5,6 +5,7 @@ from typing import Iterable
 
 import matplotlib.pyplot as plt
 import scipy.interpolate as si
+import scipy.optimize as so
 import scipy.spatial as ss
 import scipy.special as se
 
@@ -411,30 +412,77 @@ class InterpolatingPhase(Phase):
         # we try to fit the redlich kister coeffs
         if not self.add_entropy:
             ff += T * S(cc)
+        # if cc[0] == 0 and cc[-1] == 1:
+        #     return RedlichKister(self.num_coeffs - 2).fit(cc, ff)
+        # else:
         return PolyFit(self.num_coeffs).fit(cc, ff)
 
     def free_energy(self, T, c):
-        return self._get_interpolation(T)(c) - T * S(c)
+        return np.vectorize(
+            lambda T, c: self._get_interpolation(T)(c) - T * S(c),
+            otypes=[float]
+        )(T, c)
+        # return self._get_interpolation(T)(c) - T * S(c)
 
-    def semigrand_potential(self, T, dmu):
-        dmu = np.asarray(dmu)
+    def _find_phi_c(self, T, dmu):
+        """Calculate potential and concentration together.
+
+        Formally we need to solve
+
+        phi = min_c { f(c) - c * dmu }
+
+        but this is too slow to solve with normal optimizers from scipy and can
+        get stuck in local minima.  Instead do the brute force minimization on
+        a grid (self.num_samples), then refine the gridded concentrations with
+        a single step of a newton-raphson like optimization.  This makes sure
+        that the output concentrations are smooth and non-degenerate.
+        """
+        output_shape = np.broadcast_shapes(np.shape(T), np.shape(dmu))
+        T = np.atleast_1d(T)[..., np.newaxis]
+        dmu = np.atleast_1d(dmu)[..., np.newaxis]
+
         cs = [p.line_concentration for p in self.phases]
         conc = np.linspace(
-            max(0, min(cs) - self.maximum_extrapolation), min(1, max(cs) + self.maximum_extrapolation), self.num_samples
+            max(0, min(cs) - self.maximum_extrapolation),
+            min(1, max(cs) + self.maximum_extrapolation),
+            self.num_samples
         )
         ff = self.free_energy(T, conc)
-        phi = ff[None, :] - conc[None, :] * dmu.reshape(-1, 1)
-        phi = phi.min(axis=-1)
-        phi = np.squeeze(phi)
+        phi = ff - conc * dmu
+        I = phi.argmin(axis=-1, keepdims=True)
+        phi = np.take_along_axis(phi, I, axis=-1)[..., 0]
+        c = conc[I[..., 0]]
+
+        df = np.take_along_axis(
+                np.gradient(ff, conc, axis=-1, edge_order=2),
+                I, axis=-1
+        )
+        d2f = np.take_along_axis(
+                np.gradient(
+                    np.gradient(ff, conc, axis=-1, edge_order=2),
+                    conc, axis=-1, edge_order=2
+                ),
+                I, axis=-1
+        )
+        dc = (dmu - df) / d2f
+        nc = np.clip(c + dc[..., 0], 0, 1)
+        phi -= (nc-c)*(dmu-df)[..., 0]
+        c = nc
+
+        c = c.reshape(output_shape)
+        phi = phi.reshape(output_shape)
+
+        if c.ndim == 0:
+            c = c.item()
         if phi.ndim == 0:
             phi = phi.item()
-        return phi
+        return phi, c
+
+    def semigrand_potential(self, T, dmu):
+        return self._find_phi_c(T, dmu)[0]
 
     def concentration(self, T, dmu):
-        if not isinstance(dmu, np.ndarray):
-            dmus = np.linspace(-1, 1, 5) * 1e-3 + dmu
-            return self.concentration(T, dmus)[2]
-        return np.clip(-np.gradient(self.semigrand_potential(T, dmu), dmu, edge_order=2), 0, 1)
+        return self._find_phi_c(T, dmu)[1]
 
     def check_interpolation(self, T=1000, samples=50):
         x = np.linspace(0, 1, samples)
