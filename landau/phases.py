@@ -496,10 +496,10 @@ class AbstractPointDefect(ABC):
     def excess_free_energy(self, T):
         pass
 
-    @property
-    @abstractmethod
-    def excess_solutes(self):
-        pass
+    # @property
+    # @abstractmethod
+    # def excess_solutes(self):
+    #     pass
 
 
 @dataclass(frozen=True)
@@ -573,7 +573,7 @@ class PointDefectSublattice:
     name: str
     sublattice: int
     sublattice_fraction: float
-    defect: list[AbstractPointDefect]
+    defects: list[AbstractPointDefect]
 
     def _get_zes(self, T, dmu):
         fes = [d.excess_free_energy(T) for d in self.defects]
@@ -585,23 +585,11 @@ class PointDefectSublattice:
         dphi = -kB * T * np.log(1 + zes)
         return self.sublattice_fraction * dphi
 
-    # def defect_concentration(self, T, dmu):
-    #     # analytical derivative of the semigrand potential above
-    #     # c = -dphi/dmu
-    #     # c = [n]_N eta x
-    #     # we want to return x
-    #     # fe = self.storage.excess_energy
-    #     # ne = self.storage.excess_solutes
-    #     # return 1/(1 + np.exp(+(fe - ne*dmu)/kB/T))
-    #     zes = self._get_zes(T, dmu)
-    #     return 1/(1 + zes)
-
     def concentration_contribution(self, T, dmu):
         zes = self._get_zes(T, dmu)
-        nes = np.array([p.excess_solutes for p in self.storage.defects])
-        eta = self.storage.sublattice_fraction
+        nes = np.array([p.excess_solutes for p in self.defects])
+        eta = self.sublattice_fraction
         return eta * sum(ne * ze for ne, ze in zip(nes, zes)) / (1 + zes.sum(axis=0))
-        # return eta * ne * self.defect_concentration(T, dmu)
 
 
 @dataclass(frozen=True)
@@ -620,13 +608,13 @@ class PointDefectedPhase(Phase):
         pass
 
     def semigrand_potential(self, T, dmu):
-        phi = self.line.semigrand_potential(T, dmu)
-        for l in self.defects:
+        phi = self.line_phase.semigrand_potential(T, dmu)
+        for l in self.sublattices:
             phi += l.semigrand_potential_contribution(T, dmu)
         return phi
 
     def concentration(self, T, dmu):
-        c = self.line.line_concentration
-        for d in self.defects:
+        c = self.line_phase.line_concentration
+        for d in self.sublattices:
             c += d.concentration_contribution(T, dmu)
         return c
