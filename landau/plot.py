@@ -101,8 +101,8 @@ def sort_segments(df, x_col="c", y_col="T", segment_label="border_segment"):
     # initial sorting by center of mass angle
     segments = sorted(
             segments,
-            key=lambda s: np.atan2( (s[y_col].mean() - com[y_col]) / norm[1],
-                                    (s[x_col].mean() - com[x_col]) / norm[0])
+            key=lambda s: np.arctan2( (s[y_col].mean() - com[y_col]) / norm[1],
+                                      (s[x_col].mean() - com[x_col]) / norm[0])
     )
 
     def start(s):
