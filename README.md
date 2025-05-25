@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/931240296.svg)](https://doi.org/10.5281/zenodo.15513439)
+
 # landau.py
 
 A library to calculate thermodynamic equilibria and plot phase diagrams in the
