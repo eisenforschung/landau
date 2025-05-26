@@ -24,3 +24,9 @@ This code is part of a [publication](https://doi.org/10.21203/rs.3.rs-4732459/v1
   year={2024}
 }
 ```
+
+# Examples
+
+## Phase Diagram of Two Ideal Solutions
+
+![image](https://github.com/user-attachments/assets/02730176-be36-4f72-bf95-b607d2b5fa3d)
