@@ -398,7 +398,7 @@ def reduce(dd):
     )
 
 
-def cluster(dd, eps=0.01):
+def cluster(dd, eps=0.01, use_mu=True):
     t = dd["T"]
     # Guard against isothermal segments
     if t.min() != t.max():
@@ -413,15 +413,18 @@ def cluster(dd, eps=0.01):
         distance_threshold=0.5,
         linkage="single",
     )
-    # on the left and right side of the phase diagram refining adds points with
-    # mu +- inf, which chokes the cluster methods, but we know they should be
-    # their own segments, so special case them below
-    F = np.isfinite(dd.mu)
-    if F.any() and sum(F) >= 2:
-        ids.loc[F] = cluster.fit_predict(np.transpose([t.loc[F], dd.c.loc[F], dd.mu.loc[F]]))
-    m = ids.max()
-    ids.loc[dd.mu == +np.inf] = m + 1
-    ids.loc[dd.mu == -np.inf] = m + 2
+    if use_mu:
+        # on the left and right side of the phase diagram refining adds points with
+        # mu +- inf, which chokes the cluster methods, but we know they should be
+        # their own segments, so special case them below
+        F = np.isfinite(dd.mu)
+        if F.any() and sum(F) >= 2:
+            ids.loc[F] = cluster.fit_predict(np.transpose([t.loc[F], dd.c.loc[F], dd.mu.loc[F]]))
+        m = ids.max()
+        ids.loc[dd.mu == +np.inf] = m + 1
+        ids.loc[dd.mu == -np.inf] = m + 2
+    else:
+        ids.loc[:] = cluster.fit_predict(np.transpose([t, dd.c]))
     return ids
 
 

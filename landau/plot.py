@@ -8,22 +8,26 @@ import pandas as pd
 from sklearn.decomposition import PCA
 import numpy as np
 
-from .calculate import get_transitions
+from .calculate import get_transitions, cluster
 
 
 def make_concave_poly(dd, alpha=0.1, min_c_width=1e-3, variables=["c", "T"]):
     # concave hull algo seems more stable when both variables are of the same order
 
+    if "border" in dd.columns:
+        dd = dd.query("border")
+
     pp = dd.sort_values(variables[0])[variables].to_numpy()
-    pp = pp[np.isfinite(pp).all(axis=-1)]
+    pp = np.unique(pp[np.isfinite(pp).all(axis=-1)], axis=0)
 
     refnorm = {}
     for i, var in enumerate(variables):
         refnorm[var] = pp[:, i].min(), (np.ptp(pp[:, i]) or 1)
         pp[:, i] -= refnorm[var][0]
         pp[:, i] /= refnorm[var][1]
-    shape = shapely.concave_hull(shapely.MultiPoint(pp), ratio=alpha)
+    points = shapely.MultiPoint(pp)
     # check for c-degenerate line phase
+    shape = shapely.convex_hull(points)
     if variables[0] == "c" and isinstance(shape, shapely.LineString):
         coords = np.asarray(shape.coords)
         if np.allclose(coords[:, 0], coords[0, 0]):
@@ -48,6 +52,7 @@ def make_concave_poly(dd, alpha=0.1, min_c_width=1e-3, variables=["c", "T"]):
             )
             coords[:, 0] += bias
     else:
+        shape = shapely.concave_hull(points, ratio=alpha)
         coords = np.asarray(shape.exterior.coords)
     for i, var in enumerate(variables):
         coords[:, i] *= refnorm[var][1]
@@ -140,7 +145,7 @@ def sort_segments(df, x_col="c", y_col="T", segment_label="border_segment"):
 
 def make_poly(td, min_c_width=1e-3, variables=["c", "T"]):
     """
-    Requires a grouped dataframe from find_transitions (by phase).
+    Requires a grouped dataframe from get_transitions (by phase).
     """
     if "c" in variables and np.ptp(td.c) < min_c_width:
         meanc = td.c.mean()
@@ -159,12 +164,28 @@ def make_poly(td, min_c_width=1e-3, variables=["c", "T"]):
     # sd = sd.loc[ np.isfinite(sd[variables[0]]) & np.isfinite(sd[variables[1]]) ]
     return Polygon(np.transpose([sd[v] for v in variables]))
 
+def cluster_phase(df):
+    """Cluster the stable, single phase regions.
+
+    When a (e.g solid solution) phase has multiple disconnected regions of stability, the make_poly and
+    make_concave_poly functions give wrong results, because they draw a single polygon.
+    Instead this function adds two new columns `phase_unit` and `phase_id` and the latter will always refer to only a
+    single connected stability region.  `phase_unit` enumerates disconnected regions of one phase.
+    """
+    df["phase_unit"] = df.groupby("phase", group_keys=False).apply(
+            cluster, use_mu=False,
+            include_groups=False
+    )
+    df["phase_id"] = df[["phase", "phase_unit"]].apply(
+        lambda r: "_".join(map(str, r.tolist())), axis="columns"
+    )
+    return df
 
 def plot_phase_diagram(
     df, alpha=0.1, element=None, min_c_width=5e-3, color_override: dict[str, str] = {}, tielines=False,
     poly_method: Literal["concave", "segments"] = 'concave',
 ):
-    df = df.query("stable")
+    df = df.query("stable").copy()
 
     # the default map
     color_map = dict(zip(df.phase.unique(), sns.palettes.SEABORN_PALETTES["pastel"]))
@@ -178,14 +199,18 @@ def plot_phase_diagram(
     diff = {k: duplicates_map[c] for k, c in color_map.items() if c in duplicates_map}
     color_map.update(diff | color_override)
 
+    df = cluster_phase(df)
     if "refined" in df.columns and poly_method == "segments":
+        df.loc[:, "phase"] = df.phase_id
         tdf = get_transitions(df)
-        polys = tdf.groupby("phase").apply(
+        tdf["phase_unit"] = tdf.phase.str.rsplit('_', n=1).map(lambda x: int(x[1]))
+        tdf["phase"] = tdf.phase.str.rsplit('_', n=1).map(lambda x: x[0])
+        polys = tdf.groupby(["phase", "phase_unit"]).apply(
             make_poly,
             min_c_width=min_c_width,
         )
     else:
-        polys = df.groupby("phase").apply(
+        polys = df.groupby(["phase", "phase_unit"]).apply(
             make_concave_poly,
             alpha=alpha,
             min_c_width=min_c_width,
@@ -194,10 +219,14 @@ def plot_phase_diagram(
     ax = plt.gca()
     for i, (phase, p) in enumerate(polys.items()):
         p.zorder = 1/p.get_extents().size.prod()
+        if isinstance(phase, tuple):
+            phase, rep = phase
+        else:
+            rep = 0
         p.set_color(color_map[phase])
         p.set_edgecolor("k")
-        # p.set_alpha(.8)
-        p.set_label(polys.index[i])
+        p.set_label(phase + '\'' * rep)
+        # p.set_label(polys.index[i])
         ax.add_patch(p)
 
     if tielines:
@@ -267,13 +296,17 @@ def plot_mu_phase_diagram(
     df, alpha=0.1, element=None, color_override: dict[str, str] = {},
     poly_method: Literal["concave", "segments"] = 'concave',
 ):
-    df = df.query("stable")
+    df = df.query("stable").copy()
 
     color_map = get_phase_colors(df.phase.unique(), color_override)
 
+    df = cluster_phase(df)
     if "refined" in df.columns and poly_method == "segments":
+        df.loc[:, "phase"] = df.phase_id
         tdf = get_transitions(df)
-        polys = tdf.groupby("phase").apply(
+        tdf["phase_unit"] = tdf.phase.str.rsplit('_', n=1).map(lambda x: int(x[1]))
+        tdf["phase"] = tdf.phase.str.rsplit('_', n=1).map(lambda x: x[0])
+        polys = tdf.groupby(["phase", "phase_unit"]).apply(
             make_poly,
             variables=["mu", "T"],
         )
@@ -287,10 +320,13 @@ def plot_mu_phase_diagram(
     ax = plt.gca()
     for i, (phase, p) in enumerate(polys.items()):
         p.zorder = 1/p.get_extents().size.prod()
+        if isinstance(phase, tuple):
+            phase, rep = phase
+        else:
+            rep = 0
         p.set_color(color_map[phase])
         p.set_edgecolor("k")
-        # p.set_alpha(.8)
-        p.set_label(polys.index[i])
+        p.set_label(phase + '\'' * rep)
         ax.add_patch(p)
 
     mus = df["mu"].unique()
