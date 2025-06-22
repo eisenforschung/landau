@@ -12,7 +12,7 @@ version_file = "landau/_version.py"
 line-length = 120
 
 [project]
-name = "landaupkg"
+name = "landau"
 dynamic = ["version"]
 authors = [
     { name="Marvin Poul", email="pmrv@posteo.de" },
