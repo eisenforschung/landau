@@ -362,26 +362,59 @@ def plot_1d_mu_phase_diagram(df):
     plt.xlabel("Chemical Potential Difference [ev]")
     plt.ylabel("Semi-grandcanonical Potential [eV/atom]")
 
-def plot_1d_T_phase_diagram(df):
-    """Plot a one dimensional equipotential phase diagram."""
+def plot_1d_T_phase_diagram(
+        df, 
+        ax=None, 
+        show=True, 
+        mark_transitions=True):
+    """
+    Plots a one-dimensional equipotential phase diagram as a function of temperature.
+
+    Args:
+        df (pandas.DataFrame): 
+            Input data containing columns for temperature ('T'), potential ('phi'),
+            phase information ('phase'), and optionally a 'border' column indicating
+            phase transition points.
+        ax (matplotlib.axes.Axes, optional): 
+            Existing matplotlib Axes to plot on. If None, a new figure and axes are created.
+        show (bool, optional): 
+            If True, the plot is displayed immediately. Defaults to True.
+        mark_transitions (bool, optional): 
+            If True, all transition temperatures are marked on the plot. Defaults to True.
+
+    Returns:
+        matplotlib.axes.Axes: 
+            The Axes object with the phase diagram plot.
+    """
+
     if len(df.mu.unique()) > 1:
-        raise ValueError("data contains more than one chemical potential!")
+        raise ValueError("Data contains more than one chemical potential!")
+    if ax is None:
+        fig, ax = plt.subplots()
     sns.lineplot(
         data=df,
         x='T', y='phi',
         hue='phase',
         style='stable', style_order=[True, False],
     )
+
     if 'border' not in df.columns: return
 
     dfa = np.ptp(df['phi'].dropna())
     dft = np.ptp(df['T'].dropna())
 
-    for Tt, dd in df.query("T.min()<T<T.max() and border").groupby("T"):
-        ft = dd['phi'].iloc[0]
-        plt.axvline(Tt, color='k', linestyle='dotted', alpha=.5)
-        plt.scatter(Tt, ft, marker='o', c='k', zorder=10)
+    if mark_transitions and 'border' in df.columns:
+        for Tt, dd in df.query("T.min()<T<T.max() and border").groupby("T"):
+            ft = dd['phi'].iloc[0]
+            plt.axvline(Tt, color='k', linestyle='dotted', alpha=.5)
+            plt.scatter(Tt, ft, marker='o', c='k', zorder=10)
 
-        plt.text(Tt + .05 * dft, ft + dfa * .1, rf"$T = {Tt:.0f}\,\mathrm{{K}}$", rotation='vertical', ha='center')
+            plt.text(Tt + .05 * dft, ft + dfa * .1, rf"$T = {Tt:.0f}\,\mathrm{{K}}$", rotation='vertical', ha='center')
+
     plt.xlabel("Temperature [K]")
     plt.ylabel("Semi-grandcanonical potential [eV/atom]")
+
+    if show==True:
+        plt.show()
+
+    return ax
