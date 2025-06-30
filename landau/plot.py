@@ -374,9 +374,9 @@ def plot_1d_T_phase_diagram(
     Parameters
     ----------
     df : pandas.DataFrame
-    Input data containing columns for temperature ('T'), potential ('phi'),
-    phase information ('phase'), and optionally a 'border' column indicating
-    phase transition points.
+        Input data containing columns for temperature ('T'), potential ('phi'),
+        phase information ('phase'), and optionally a 'border' column indicating
+        phase transition points.
     ax : matplotlib.axes.Axes, optional
         Existing matplotlib Axes to plot on. If None, a new figure and axes are created.
     show : bool, default True
