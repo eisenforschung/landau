@@ -398,7 +398,6 @@ def plot_1d_T_phase_diagram(
         style='stable', style_order=[True, False],
     )
 
-    Tt_values = []
     if 'border' not in df.columns: return
 
     dfa = np.ptp(df['phi'].dropna())
@@ -411,7 +410,6 @@ def plot_1d_T_phase_diagram(
             plt.scatter(Tt, ft, marker='o', c='k', zorder=10)
 
             plt.text(Tt + .05 * dft, ft + dfa * .1, rf"$T = {Tt:.0f}\,\mathrm{{K}}$", rotation='vertical', ha='center')
-            Tt_values.append(Tt)
 
     plt.xlabel("Temperature [K]")
     plt.ylabel("Semi-grandcanonical potential [eV/atom]")
