@@ -366,36 +366,29 @@ def plot_1d_T_phase_diagram(
         df, 
         ax=None, 
         show=True, 
-        mark_transitions=True,
-        return_Tt=False):
+        mark_transitions=True):
     """
-    Plot a one dimensional equipotential phase diagram as a function of temperature.
+    Plots a one-dimensional equipotential phase diagram as a function of temperature.
 
-    Parameters
-    ----------
-    df : pandas.DataFrame
-        Input data containing columns for temperature ('T'), potential ('phi'),
-        phase information ('phase'), and optionally a 'border' column indicating
-        phase transition points.
-    ax : matplotlib.axes.Axes, optional
-        Existing matplotlib Axes to plot on. If None, a new figure and axes are created.
-    show : bool, default True
-        If True, the plot is displayed immediately.
-    mark_transitions : bool, default True
-        If True, all transition temperatures are marked on the plot.
-    return_transitions : bool, default False
-        If True, returns a list of transition temperatures alongside the Axes.
+    Args:
+        df (pandas.DataFrame): 
+            Input data containing columns for temperature ('T'), potential ('phi'),
+            phase information ('phase'), and optionally a 'border' column indicating
+            phase transition points.
+        ax (matplotlib.axes.Axes, optional): 
+            Existing matplotlib Axes to plot on. If None, a new figure and axes are created.
+        show (bool, optional): 
+            If True, the plot is displayed immediately. Defaults to True.
+        mark_transitions (bool, optional): 
+            If True, all transition temperatures are marked on the plot. Defaults to True.
 
-    Returns
-    -------
-    ax : matplotlib.axes.Axes
-        The Axes object with the phase diagram plot.
-    transitions : list of float, optional
-        List of transition temperature values (only returned if return_transitions is True).
+    Returns:
+        matplotlib.axes.Axes: 
+            The Axes object with the phase diagram plot.
     """
 
     if len(df.mu.unique()) > 1:
-        raise ValueError("data contains more than one chemical potential!")
+        raise ValueError("Data contains more than one chemical potential!")
     if ax is None:
         fig, ax = plt.subplots()
     sns.lineplot(
@@ -426,6 +419,4 @@ def plot_1d_T_phase_diagram(
     if show==True:
         plt.show()
 
-    if return_Tt:
-        return ax, Tt_values
     return ax
