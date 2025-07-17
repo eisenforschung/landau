@@ -1,5 +1,4 @@
 from typing import Literal
-from warnings import warn
 
 from matplotlib.patches import Polygon
 import shapely
@@ -54,9 +53,6 @@ def make_concave_poly(dd, alpha=0.1, min_c_width=1e-3, variables=["c", "T"]):
             coords[:, 0] += bias
     else:
         shape = shapely.concave_hull(points, ratio=alpha)
-        if not isinstance(shape, shapely.Polygon):
-            warn(f"Failed to construct polygon, got {shape} instead, skipping.")
-            return None
         coords = np.asarray(shape.exterior.coords)
     for i, var in enumerate(variables):
         coords[:, i] *= refnorm[var][1]
@@ -204,9 +200,6 @@ def plot_phase_diagram(
     color_map.update(diff | color_override)
 
     df = cluster_phase(df)
-    if (df.phase_unit==-1).any():
-        warn("Clustering of phase points failed for some points, dropping them.")
-        df = df.query('phase_unit>=0')
     if "refined" in df.columns and poly_method == "segments":
         df.loc[:, "phase"] = df.phase_id
         tdf = get_transitions(df)
@@ -221,7 +214,7 @@ def plot_phase_diagram(
             make_concave_poly,
             alpha=alpha,
             min_c_width=min_c_width,
-        ).dropna()
+        )
 
     ax = plt.gca()
     for i, (phase, p) in enumerate(polys.items()):
@@ -322,7 +315,7 @@ def plot_mu_phase_diagram(
             make_concave_poly,
             alpha=alpha,
             variables=["mu", "T"],
-        ).dropna()
+        )
 
     ax = plt.gca()
     for i, (phase, p) in enumerate(polys.items()):
@@ -344,50 +337,103 @@ def plot_mu_phase_diagram(
     plt.xlabel(r"$\Delta\mu$ [eV]")
     plt.ylabel("$T$ [K]")
 
-def plot_1d_mu_phase_diagram(df):
-    """Plot a one dimensional isothermal phase diagram."""
+def plot_1d_mu_phase_diagram(
+        df,
+        ax=None, 
+        mark_transitions=True,
+        show=True
+        ):
+    """
+    Plot a one dimensional isothermal phase diagram of the semi-grandcanonical 
+    potential as function of the chemical potential difference.
+
+    Args:
+        df (pandas.DataFrame): 
+            Input data containing columns for chemical potential difference ('mu'),
+            semi-grandcanonical potential ('phi'), phase name ('phase'), stability
+            ('stable'), and optionally a 'border' column indicating phase transition.
+        ax (matplotlib.axes.Axes, optional): 
+            Existing matplotlib Axes to plot on. If None, a new figure and axes are created.
+        mark_transitions (bool, optional): 
+            If True, all transition temperatures are marked on the plot. Defaults to True.
+        show (bool, optional): 
+            If True, the plot is displayed immediately. Defaults to True.
+    
+    Returns:
+        matplotlib.axes.Axes: 
+            The Axes object with the phase diagram plot.
+    """
+
     if len(df['T'].unique()) > 1:
-        raise ValueError("data contains more than one temperature!")
+        raise ValueError("Data contains more than one temperature!")
+    if ax is None:
+        fig, ax = plt.subplots()
+
+    if 'border' not in df.columns: 
+        sns.lineplot(
+            data=df,
+            x='mu', y='phi',
+            hue='phase',
+            style='stable', style_order=[True, False],
+        )
+        return ax
+
+    df = df.copy()
+    border_rows = df.query("border")
+    border_mus = np.sort(border_rows['mu'].unique())
+
+    split_points = np.concatenate(([-np.inf], border_mus, [np.inf]))
+
+    for i, (l,r) in enumerate(zip(split_points[:-1], split_points[1:])):
+        df.loc[df.query('@l <= mu <= @r').index, "segment"] = i
+    
     sns.lineplot(
         data=df,
         x='mu', y='phi',
         hue='phase',
-        style='stable', style_order=[True, False],
+        units='segment',
+        style='stable', style_order=[True, False]
     )
-    if 'border' not in df.columns: return
 
     dfa = np.ptp(df['phi'].dropna())
     dfm = np.ptp(df['mu'].dropna())
 
-    for mt, dd in df.query("mu.min()<mu<mu.max() and border").groupby("mu"):
-        ft = dd['phi'].iloc[0]
-        plt.axvline(mt, color='k', linestyle='dotted', alpha=.5)
-        plt.scatter(mt, ft, marker='o', c='k', zorder=10)
+    if mark_transitions and 'border' in df.columns:
+        for mt, dd in df.query("mu.min()<mu<mu.max() and border").groupby("mu"):
+            ft = dd['phi'].iloc[0]
+            plt.axvline(mt, color='k', linestyle='dotted', alpha=.5)
+            plt.scatter(mt, ft, marker='o', c='k', zorder=10)
 
-        plt.text(mt - .05 * dfm, ft - dfa * .1, rf"$\Delta\mu = {mt:.03f}\,\mathrm{{eV}}$",
-                 rotation='vertical', ha='center', va='top')
-    plt.xlabel("Chemical Potential Difference [ev]")
+            plt.text(mt - .05 * dfm, ft - dfa * .1, rf"$\Delta\mu = {mt:.03f}\,\mathrm{{eV}}$",
+                    rotation='vertical', ha='center', va='top')
+    plt.xlabel("Chemical Potential Difference [eV]")
     plt.ylabel("Semi-grandcanonical Potential [eV/atom]")
+
+    if show==True:
+        plt.show()
+
+    return ax
 
 def plot_1d_T_phase_diagram(
         df, 
         ax=None, 
-        show=True, 
-        mark_transitions=True):
+        mark_transitions=True,
+        show=True
+        ):
     """
     Plots a one-dimensional equipotential phase diagram as a function of temperature.
 
     Args:
         df (pandas.DataFrame): 
-            Input data containing columns for temperature ('T'), potential ('phi'),
-            phase information ('phase'), and optionally a 'border' column indicating
-            phase transition points.
+            Input data containing columns for temperature ('T'), semi-grandcanonical
+            potential ('phi'), phase name ('phase'), and optionally a 'border' column
+            indicating phase transition.
         ax (matplotlib.axes.Axes, optional): 
             Existing matplotlib Axes to plot on. If None, a new figure and axes are created.
-        show (bool, optional): 
-            If True, the plot is displayed immediately. Defaults to True.
         mark_transitions (bool, optional): 
             If True, all transition temperatures are marked on the plot. Defaults to True.
+        show (bool, optional): 
+            If True, the plot is displayed immediately. Defaults to True.
 
     Returns:
         matplotlib.axes.Axes: 
@@ -395,17 +441,35 @@ def plot_1d_T_phase_diagram(
     """
 
     if len(df.mu.unique()) > 1:
-        raise ValueError("Data contains more than one chemical potential!")
+        raise ValueError("Data contains more than one chemical potential!") 
     if ax is None:
         fig, ax = plt.subplots()
+
+    if 'border' not in df.columns:
+        sns.lineplot(
+            data=df,
+            x='T', y='phi',
+            hue='phase',
+            style='stable', style_order=[True, False],
+        )
+        return ax
+
+    df = df.copy()
+    border_rows = df.query('border')
+    border_Ts = np.sort(border_rows['T'].unique())
+
+    split_points = np.concatenate(([-np.inf], border_Ts, [np.inf]))
+
+    for i, (l,r) in enumerate(zip(split_points[:-1], split_points[1:])):
+        df.loc[df.query('@l <= T <= @r').index, 'segment'] = i
+
     sns.lineplot(
         data=df,
         x='T', y='phi',
         hue='phase',
-        style='stable', style_order=[True, False],
+        units='segment',
+        style='stable', style_order=[True, False]
     )
-
-    if 'border' not in df.columns: return
 
     dfa = np.ptp(df['phi'].dropna())
     dft = np.ptp(df['T'].dropna())
