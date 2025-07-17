@@ -54,6 +54,9 @@ def make_concave_poly(dd, alpha=0.1, min_c_width=1e-3, variables=["c", "T"]):
             coords[:, 0] += bias
     else:
         shape = shapely.concave_hull(points, ratio=alpha)
+        if not isinstance(shape, shapely.Polygon):
+            warn(f"Failed to construct polygon, got {shape} instead, skipping.")
+            return None
         coords = np.asarray(shape.exterior.coords)
     for i, var in enumerate(variables):
         coords[:, i] *= refnorm[var][1]
@@ -218,7 +221,7 @@ def plot_phase_diagram(
             make_concave_poly,
             alpha=alpha,
             min_c_width=min_c_width,
-        )
+        ).dropna()
 
     ax = plt.gca()
     for i, (phase, p) in enumerate(polys.items()):
@@ -319,7 +322,7 @@ def plot_mu_phase_diagram(
             make_concave_poly,
             alpha=alpha,
             variables=["mu", "T"],
-        )
+        ).dropna()
 
     ax = plt.gca()
     for i, (phase, p) in enumerate(polys.items()):
