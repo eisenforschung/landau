@@ -1,4 +1,5 @@
 from typing import Literal
+from warnings import warn
 
 from matplotlib.patches import Polygon
 import shapely
@@ -200,6 +201,9 @@ def plot_phase_diagram(
     color_map.update(diff | color_override)
 
     df = cluster_phase(df)
+    if (df.phase_unit==-1).any():
+        warn("Clustering of phase points failed for some points, dropping them.")
+        df = df.query('phase_unit>=0')
     if "refined" in df.columns and poly_method == "segments":
         df.loc[:, "phase"] = df.phase_id
         tdf = get_transitions(df)

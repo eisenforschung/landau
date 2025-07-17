@@ -5,18 +5,20 @@ Calculates phase diagrams from sets of Phases.
 from functools import partial
 import numbers
 import warnings
+from typing import Iterable
 
 import numpy as np
 import pandas as pd
 import scipy.optimize as so
 from scipy.spatial import Delaunay
-from typing import Iterable
-
 from scipy.constants import Boltzmann, eV
+from sklearn.cluster import AgglomerativeClustering
 
-kB = Boltzmann / eV
 
 from .phases import Phase, AbstractLinePhase
+
+
+kB = Boltzmann / eV
 
 
 def find_one_point(phase1, phase2, potential, var_range):
@@ -384,9 +386,6 @@ def calc_phase_diagram(
     return pdf
 
 
-from sklearn.cluster import AgglomerativeClustering
-
-
 def reduce(dd):
     dd = dd.sort_values("c")
     return pd.Series(
@@ -404,8 +403,6 @@ def cluster(dd, eps=0.01, use_mu=True):
     if t.min() != t.max():
         t = (t - t.min()) / (t.max() - t.min())
     ids = pd.Series(np.zeros_like(dd.index), index=dd.index)
-    # picking eps is a pain and HDBSCAN not available in my env yet
-    # cluster = DBSCAN(eps=eps, min_samples=3)
     cluster = AgglomerativeClustering(
         n_clusters=None,
         # FIXME: hand optimized value; smaller values tend to partition the
