@@ -344,44 +344,20 @@ def plot_mu_phase_diagram(
     plt.xlabel(r"$\Delta\mu$ [eV]")
     plt.ylabel("$T$ [K]")
 
-def plot_1d_mu_phase_diagram(df):
-    """Plot a one dimensional isothermal phase diagram."""
-    if len(df['T'].unique()) > 1:
-        raise ValueError("data contains more than one temperature!")
-    sns.lineplot(
-        data=df,
-        x='mu', y='phi',
-        hue='phase',
-        style='stable', style_order=[True, False],
-    )
-    if 'border' not in df.columns: return
-
-    dfa = np.ptp(df['phi'].dropna())
-    dfm = np.ptp(df['mu'].dropna())
-
-    for mt, dd in df.query("mu.min()<mu<mu.max() and border").groupby("mu"):
-        ft = dd['phi'].iloc[0]
-        plt.axvline(mt, color='k', linestyle='dotted', alpha=.5)
-        plt.scatter(mt, ft, marker='o', c='k', zorder=10)
-
-        plt.text(mt - .05 * dfm, ft - dfa * .1, rf"$\Delta\mu = {mt:.03f}\,\mathrm{{eV}}$",
-                 rotation='vertical', ha='center', va='top')
-    plt.xlabel("Chemical Potential Difference [ev]")
-    plt.ylabel("Semi-grandcanonical Potential [eV/atom]")
-
-def plot_1d_T_phase_diagram(
-        df, 
+def plot_1d_mu_phase_diagram(
+        df,
         ax=None, 
         show=True, 
         mark_transitions=True):
     """
-    Plots a one-dimensional equipotential phase diagram as a function of temperature.
+    Plot a one dimensional isothermal phase diagram of the semi-grandcanonical 
+    potential as function of the chemical potential difference.
 
     Args:
         df (pandas.DataFrame): 
-            Input data containing columns for temperature ('T'), potential ('phi'),
-            phase information ('phase'), and optionally a 'border' column indicating
-            phase transition points.
+            Input data containing columns for chemical potential difference ('mu'),
+            semi-grandcanonical potential ('phi'), phase name ('phase'), stability
+            ('stable'), and optionally a 'border' column indicating phase transition.
         ax (matplotlib.axes.Axes, optional): 
             Existing matplotlib Axes to plot on. If None, a new figure and axes are created.
         show (bool, optional): 
@@ -394,8 +370,89 @@ def plot_1d_T_phase_diagram(
             The Axes object with the phase diagram plot.
     """
 
+    if len(df['T'].unique()) > 1:
+        raise ValueError("data contains more than one temperature!")
+    if ax is None:
+        fig, ax = plt.subplots()
+
+    if 'border' not in df.columns: 
+        sns.lineplot(
+        data=df,
+        x='mu', y='phi',
+        hue='phase',
+        style='stable', style_order=[True, False],
+        )
+        return
+
+    df_sorted = df.sort_values("mu").reset_index(drop=True)
+    border_rows = df_sorted.query("border")
+    border_mus = np.sort(border_rows['mu'])
+
+    split_points = np.concatenate(([-np.inf], border_mus, [np.inf]))
+
+    for i in range(len(split_points) - 1):
+        left = split_points[i]
+        right = split_points[i + 1]
+
+        seg = df_sorted.query("@left < mu <= @right")
+        print(seg)
+        if not seg.empty:
+            sns.lineplot(
+                data=seg,
+                x='mu', y='phi',
+                hue='phase',
+                style='stable', style_order=[True, False],
+                legend='auto' if i == 0 else False
+            )
+
+    dfa = np.ptp(df['phi'].dropna())
+    dfm = np.ptp(df['mu'].dropna())
+
+    if mark_transitions and 'border' in df.columns:
+        for mt, dd in df.query("mu.min()<mu<mu.max() and border").groupby("mu"):
+            ft = dd['phi'].iloc[0]
+            plt.axvline(mt, color='k', linestyle='dotted', alpha=.5)
+            plt.scatter(mt, ft, marker='o', c='k', zorder=10)
+
+            plt.text(mt - .05 * dfm, ft - dfa * .1, rf"$\Delta\mu = {mt:.03f}\,\mathrm{{eV}}$",
+                    rotation='vertical', ha='center', va='top')
+    plt.xlabel("Chemical Potential Difference [eV]")
+    plt.ylabel("Semi-grandcanonical Potential [eV/atom]")
+
+    if show==True:
+        plt.show()
+
+    return ax
+
+def plot_1d_T_phase_diagram(
+        df, 
+        ax=None, 
+        mark_transitions=True,
+        show=True
+        ):
+    """
+    Plots a one-dimensional equipotential phase diagram as a function of temperature.
+
+    Args:
+        df (pandas.DataFrame): 
+            Input data containing columns for temperature ('T'), semi-grandcanonical
+            potential ('phi'), phase name ('phase'), and optionally a 'border' column
+            indicating phase transition.
+        ax (matplotlib.axes.Axes, optional): 
+            Existing matplotlib Axes to plot on. If None, a new figure and axes are created.
+        mark_transitions (bool, optional): 
+            If True, all transition temperatures are marked on the plot. Defaults to True.
+        show (bool, optional): 
+            If True, the plot is displayed immediately. Defaults to True.
+
+    Returns:
+        matplotlib.axes.Axes: 
+            The Axes object with the phase diagram plot.
+    """
+
     if len(df.mu.unique()) > 1:
         raise ValueError("Data contains more than one chemical potential!")
+    
     if ax is None:
         fig, ax = plt.subplots()
     sns.lineplot(
