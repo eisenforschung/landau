@@ -339,9 +339,10 @@ def plot_mu_phase_diagram(
 
 def plot_1d_mu_phase_diagram(
         df,
-        ax=None, 
-        show=True, 
-        mark_transitions=True):
+        ax=None,
+        mark_transitions=True,
+        show=True
+        ):
     """
     Plot a one dimensional isothermal phase diagram of the semi-grandcanonical 
     potential as function of the chemical potential difference.
@@ -353,10 +354,10 @@ def plot_1d_mu_phase_diagram(
             ('stable'), and optionally a 'border' column indicating phase transition.
         ax (matplotlib.axes.Axes, optional): 
             Existing matplotlib Axes to plot on. If None, a new figure and axes are created.
-        show (bool, optional): 
-            If True, the plot is displayed immediately. Defaults to True.
         mark_transitions (bool, optional): 
             If True, all transition temperatures are marked on the plot. Defaults to True.
+        show (bool, optional): 
+            If True, the plot is displayed immediately. Defaults to True.
 
     Returns:
         matplotlib.axes.Axes: 
@@ -364,39 +365,35 @@ def plot_1d_mu_phase_diagram(
     """
 
     if len(df['T'].unique()) > 1:
-        raise ValueError("data contains more than one temperature!")
+        raise ValueError("Data contains more than one temperature!")
     if ax is None:
         fig, ax = plt.subplots()
 
     if 'border' not in df.columns: 
         sns.lineplot(
-        data=df,
-        x='mu', y='phi',
-        hue='phase',
-        style='stable', style_order=[True, False],
+            data=df,
+            x='mu', y='phi',
+            hue='phase',
+            style='stable', style_order=[True, False],
         )
-        return
+        return ax
 
-    df_sorted = df.sort_values("mu").reset_index(drop=True)
-    border_rows = df_sorted.query("border")
-    border_mus = np.sort(border_rows['mu'])
+    df = df.copy()
+    border_rows = df.query("border")
+    border_mus = np.sort(border_rows['mu'].unique())
 
     split_points = np.concatenate(([-np.inf], border_mus, [np.inf]))
 
-    for i in range(len(split_points) - 1):
-        left = split_points[i]
-        right = split_points[i + 1]
-
-        seg = df_sorted.query("@left < mu <= @right")
-        print(seg)
-        if not seg.empty:
-            sns.lineplot(
-                data=seg,
-                x='mu', y='phi',
-                hue='phase',
-                style='stable', style_order=[True, False],
-                legend='auto' if i == 0 else False
-            )
+    for i, (l,r) in enumerate(zip(split_points[:-1], split_points[1:])):
+        df.loc[df.query('@l <= mu <= @r').index, "segment"] = i
+    
+    sns.lineplot(
+        data=df,
+        x='mu', y='phi',
+        hue='phase',
+        units='segment',
+        style='stable', style_order=[True, False]
+    )
 
     dfa = np.ptp(df['phi'].dropna())
     dfm = np.ptp(df['mu'].dropna())
@@ -444,18 +441,35 @@ def plot_1d_T_phase_diagram(
     """
 
     if len(df.mu.unique()) > 1:
-        raise ValueError("Data contains more than one chemical potential!")
-    
+        raise ValueError("Data contains more than one chemical potential!") 
     if ax is None:
         fig, ax = plt.subplots()
+
+    if 'border' not in df.columns:
+        sns.lineplot(
+            data=df,
+            x='T', y='phi',
+            hue='phase',
+            style='stable', style_order=[True, False],
+        )
+        return ax
+
+    df = df.copy()
+    border_rows = df.query('border')
+    border_Ts = np.sort(border_rows['T'].unique())
+
+    split_points = np.concatenate(([-np.inf], border_Ts, [np.inf]))
+
+    for i, (l,r) in enumerate(zip(split_points[:-1], split_points[1:])):
+        df.loc[df.query('@l <= T <= @r').index, 'segment'] = i
+
     sns.lineplot(
         data=df,
         x='T', y='phi',
         hue='phase',
-        style='stable', style_order=[True, False],
+        units='segment',
+        style='stable', style_order=[True, False]
     )
-
-    if 'border' not in df.columns: return
 
     dfa = np.ptp(df['phi'].dropna())
     dft = np.ptp(df['T'].dropna())
