@@ -339,7 +339,7 @@ def plot_mu_phase_diagram(
 
 def plot_1d_mu_phase_diagram(
         df,
-        ax=None, 
+        ax=None,
         mark_transitions=True,
         show=True
         ):
@@ -358,7 +358,7 @@ def plot_1d_mu_phase_diagram(
             If True, all transition temperatures are marked on the plot. Defaults to True.
         show (bool, optional): 
             If True, the plot is displayed immediately. Defaults to True.
-    
+
     Returns:
         matplotlib.axes.Axes: 
             The Axes object with the phase diagram plot.
