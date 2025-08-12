@@ -7,9 +7,40 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import pairwise_distances
+import fast_tsp
 import numpy as np
 
 from .calculate import get_transitions, cluster
+
+
+def make_tsp_poly(dd, min_width=1e-2, variables=["c", "T"]):
+    """Find polygons by solving the Travelling Salesmen Problem.
+
+    Somewhat slower than the other methods but much more stable.
+    fast_tsp technically only solves an approximation to the TSP, but our phase boundaries should be well-behaved.
+    """
+    c = dd.query('border')[variables].to_numpy()
+    c = c[np.isfinite(c).all(axis=-1)]
+    shape = shapely.convex_hull(shapely.MultiPoint(c))
+    if isinstance(shape, shapely.LineString):
+        coords = np.array(shape.buffer(min_width/2).exterior.coords)
+        if "c" in variables:
+            match c[0, variables.index("c")]:
+                case 0.0:
+                    bias = +min_width / 2
+                case 1.0:
+                    bias = -min_width / 2
+                case _:
+                    bias = 0
+        coords[:, variables.index("c")] += bias
+        return Polygon(coords)
+    sc = StandardScaler().fit_transform(c)
+    dm = pairwise_distances(sc)
+    dm = (dm / dm[dm > 0].min()).round().astype(int)
+    tour = fast_tsp.find_tour(dm)
+    return Polygon(c[tour])
 
 
 def make_concave_poly(dd, alpha=0.1, min_c_width=1e-3, variables=["c", "T"]):
@@ -187,7 +218,7 @@ def cluster_phase(df):
 
 def plot_phase_diagram(
     df, alpha=0.1, element=None, min_c_width=1e-2, color_override: dict[str, str] = {}, tielines=False,
-    poly_method: Literal["concave", "segments"] = 'concave',
+    poly_method: Literal["concave", "segments", "tsp"] = 'concave',
 ):
     df = df.query("stable").copy()
 
@@ -215,6 +246,11 @@ def plot_phase_diagram(
         polys = tdf.groupby(["phase", "phase_unit"]).apply(
             make_poly,
             min_c_width=min_c_width,
+        )
+    elif poly_method == "tsp":
+        polys = df.groupby(["phase", "phase_unit"]).apply(
+                make_tsp_poly,
+                min_width=min_c_width,
         )
     else:
         polys = df.groupby(["phase", "phase_unit"]).apply(
@@ -316,6 +352,11 @@ def plot_mu_phase_diagram(
         polys = tdf.groupby(["phase", "phase_unit"]).apply(
             make_poly,
             variables=["mu", "T"],
+        )
+    elif poly_method == "tsp":
+        polys = df.groupby(["phase", "phase_unit"]).apply(
+                make_tsp_poly,
+                variables=["mu", "T"],
         )
     else:
         polys = df.groupby("phase").apply(
