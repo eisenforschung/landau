@@ -32,7 +32,7 @@ def make_concave_poly(dd, alpha=0.1, min_c_width=1e-3, variables=["c", "T"]):
     if variables[0] == "c" and isinstance(shape, shapely.LineString):
         coords = np.asarray(shape.coords)
         if np.allclose(coords[:, 0], coords[0, 0]):
-            match coords[0, 0]:
+            match refnorm["c"][0]:
                 case 0.0:
                     bias = +min_c_width / 2
                 case 1.0:
