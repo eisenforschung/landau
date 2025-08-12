@@ -186,7 +186,7 @@ def cluster_phase(df):
     return df
 
 def plot_phase_diagram(
-    df, alpha=0.1, element=None, min_c_width=5e-3, color_override: dict[str, str] = {}, tielines=False,
+    df, alpha=0.1, element=None, min_c_width=1e-2, color_override: dict[str, str] = {}, tielines=False,
     poly_method: Literal["concave", "segments"] = 'concave',
 ):
     df = df.query("stable").copy()
