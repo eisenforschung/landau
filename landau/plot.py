@@ -395,12 +395,11 @@ def plot_1d_mu_phase_diagram(
         right = split_points[i + 1]
 
         seg = df_sorted.query("@left < mu <= @right")
-        print(seg)
         if not seg.empty:
             sns.lineplot(
                 data=seg,
                 x='mu', y='phi',
-                hue='phase',
+                hue='phase', hue_order=sorted(df.phase.unique()),
                 style='stable', style_order=[True, False],
                 legend='auto' if i == 0 else False
             )
@@ -452,13 +451,13 @@ def plot_1d_T_phase_diagram(
 
     if len(df.mu.unique()) > 1:
         raise ValueError("Data contains more than one chemical potential!")
-    
+
     if ax is None:
         fig, ax = plt.subplots()
     sns.lineplot(
         data=df,
         x='T', y='phi',
-        hue='phase',
+        hue='phase', hue_order=sorted(df.phase.unique()),
         style='stable', style_order=[True, False],
     )
 
