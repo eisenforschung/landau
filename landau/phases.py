@@ -490,6 +490,82 @@ class InterpolatingPhase(Phase):
         for p in self.phases:
             plt.scatter(p.line_concentration, p.line_free_energy(T), label=self.name)
 
+@dataclass(frozen=True, eq=True)
+class SlowInterpolatingPhase(Phase):
+    """
+    A slower version of RegularSolutionPhase that does not depend on terminals.
+    FIXME: These two classes should be unified.
+    """
+
+    phases: Iterable[AbstractLinePhase]
+    num_coeffs: int = None
+    add_entropy: bool = False
+    maximum_extrapolation: float = 0
+    concentration_range: tuple[float, float] = (0., 1.)
+
+    def __post_init__(self, *args, **kwargs):
+        object.__setattr__(self, "phases", tuple(self.phases))
+        object.__setattr__(self, "num_coeffs", min(len(self.phases), self.num_coeffs or np.inf))
+
+        cs = [p.line_concentration for p in self.phases]
+        concentration_range = (
+            max(0, min(cs) - self.maximum_extrapolation),
+            min(1, max(cs) + self.maximum_extrapolation)
+        )
+
+        object.__setattr__(self, "concentration_range", concentration_range)
+
+    @lru_cache(maxsize=250)
+    def _get_interpolation(self, T):
+        if not isinstance(T, Real):
+            raise TypeError(T)
+        cc = np.array([l.line_concentration for l in self.phases])
+        ff = np.array([l.line_free_energy(T) for l in self.phases])
+
+        # TODO: needs better naming: If the free energies of the phase objects
+        # already contain the entropy of mixing, remove it here first, before
+        # we try to fit the redlich kister coeffs
+        if not self.add_entropy:
+            ff += T * S(cc)
+        if cc[0] == 0 and cc[-1] == 1:
+            return RedlichKister(max(1, self.num_coeffs - 2)).fit(cc, ff)
+        else:
+            return PolyFit(self.num_coeffs).fit(cc, ff)
+
+    def free_energy(self, T, c):
+        return np.vectorize(
+            lambda T, c: self._get_interpolation(T)(c) - T * S(c),
+            otypes=[float]
+        )(T, c)
+        # return self._get_interpolation(T)(c) - T * S(c)
+
+    @lru_cache(maxsize=5000)
+    def _find_phi_c_scalar(self, T, dmu):
+        semi = lambda c: self.free_energy(T, c) - dmu * c if self.concentration_range[0] <= c <= self.concentration_range[1] else np.nan
+        cmin, phimin, *_ = so.brute(semi, (self.concentration_range,), full_output=True)
+        cmin = np.squeeze(np.clip(cmin, *self.concentration_range)).item()
+        phimin = semi(cmin)
+        return phimin, cmin
+
+    def _find_phi_c(self, T, dmu):
+        phi, c = np.squeeze(np.vectorize(self._find_phi_c_scalar)(T, dmu))
+        if c.ndim == 0:
+            c = c.item()
+        if phi.ndim == 0:
+            phi = phi.item()
+        return phi, c
+
+    def semigrand_potential(self, T, dmu):
+        return self._find_phi_c(T, dmu)[0]
+
+    def concentration(self, T, dmu):
+        return self._find_phi_c(T, dmu)[1]
+
+    def check_interpolation(self, T=1000, samples=50):
+        x = np.linspace(0, 1, samples)
+        plt.plot(x, self.free_energy(T, x))
+        for p in self.phases:
+            plt.scatter(p.line_concentration, p.line_free_energy(T), label=self.name)
 
 class AbstractPointDefect(ABC):
     @abstractmethod
