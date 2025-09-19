@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from functools import lru_cache, cache
 from typing import Iterable
+import warnings
 
 import matplotlib.pyplot as plt
 import scipy.interpolate as si
@@ -490,6 +491,7 @@ class InterpolatingPhase(Phase):
         for p in self.phases:
             plt.scatter(p.line_concentration, p.line_free_energy(T), label=self.name)
 
+
 @dataclass(frozen=True, eq=True)
 class SlowInterpolatingPhase(Phase):
     """
@@ -537,7 +539,6 @@ class SlowInterpolatingPhase(Phase):
             lambda T, c: self._get_interpolation(T)(c) - T * S(c),
             otypes=[float]
         )(T, c)
-        # return self._get_interpolation(T)(c) - T * S(c)
 
     @lru_cache(maxsize=5000)
     def _find_phi_c_scalar(self, T, dmu):
@@ -562,10 +563,35 @@ class SlowInterpolatingPhase(Phase):
         return self._find_phi_c(T, dmu)[1]
 
     def check_interpolation(self, T=1000, samples=50):
-        x = np.linspace(0, 1, samples)
-        plt.plot(x, self.free_energy(T, x))
+        warnings.warn(
+            "check_interpolation() is deprecated and will be removed in a future version."
+            "Use check_interpolation_over_concentration() instead.",
+            category=DeprecationWarning,
+            stacklevel=2
+        )
+        x = np.linspace(*self.concentration_range, samples) 
+        plt.plot(x, self.free_energy(T, x)) 
+        for p in self.phases: 
+            plt.scatter(p.line_concentration, p.line_free_energy(T), label=self.name)
+
+    def check_interpolation_over_concentration(
+            self, 
+            T=1000, 
+            samples=50, 
+            respect_add_entropy=True, 
+            plot_excess=False
+        ):
+        x = np.linspace(*self.concentration_range, samples)
+
+        free_energy = self.free_energy(T, x) + (
+            T * S(x) 
+            if (not respect_add_entropy==True and self.add_entropy==True) 
+            else 0.0)
+        plt.plot(x, free_energy)
+
         for p in self.phases:
             plt.scatter(p.line_concentration, p.line_free_energy(T), label=self.name)
+
 
 class AbstractPointDefect(ABC):
     @abstractmethod
