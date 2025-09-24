@@ -2,7 +2,6 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from functools import lru_cache, cache
 from typing import Iterable
-import warnings
 from pyiron_snippets.deprecate import deprecate
 
 import matplotlib.pyplot as plt
