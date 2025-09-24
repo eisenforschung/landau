@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache, cache
 from typing import Iterable
 import warnings
+from pyiron_snippets.deprecate import deprecate
 
 import matplotlib.pyplot as plt
 import scipy.interpolate as si
@@ -562,74 +563,50 @@ class SlowInterpolatingPhase(Phase):
     def concentration(self, T, dmu):
         return self._find_phi_c(T, dmu)[1]
 
+    @deprecate('Use check_concentration_interpolation instead')
     def check_interpolation(self, T=1000, samples=50):
-        warnings.warn(
-            "check_interpolation() is deprecated and will be removed in a future version."
-            "Use check_interpolation_over_concentration() instead.",
-            category=DeprecationWarning,
-            stacklevel=2
-        )
-        x = np.linspace(*self.concentration_range, samples) 
-        plt.plot(x, self.free_energy(T, x)) 
-        for p in self.phases: 
-            plt.scatter(p.line_concentration, p.line_free_energy(T), label=self.name)
+        self.check_concentration_interpolation(T=T, samples=samples)
 
-    def check_interpolation_over_concentration(
+    def check_concentration_interpolation(
             self, 
             T=1000, 
             samples=50, 
-            respect_add_entropy=True, 
             plot_excess=False,
-            end_phases_list=None
         ):
         x = np.linspace(*self.concentration_range, samples)
 
         if plot_excess==True: 
-            if isinstance(end_phases_list, Iterable):
-                f0=end_phases_list[0].free_energy(T,0)
-                f1=end_phases_list[1].free_energy(T,1)
+            p0 = min(self.phases, key=lambda p: p.fixed_concentration)
+            p1 = max(self.phases, key=lambda p: p.fixed_concentration)               
 
-                if not respect_add_entropy and end_phases_list[0].add_entropy:
-                    f0 += T * S(0)
-                if not respect_add_entropy and end_phases_list[1].add_entropy:
-                    f1 += T * S(1)
-                # FIXME: Problem, because the end points might have entropy or not.
+            f0=p0.free_energy(T,0)
+            f1=p1.free_energy(T,1)
 
-                free_energy = self.free_energy(T, x) - ((1-x)*f0 + x*f1)
+            free_energy = self.free_energy(T, x) - ((1-x)*f0 + x*f1)
 
-                if not respect_add_entropy and self.add_entropy:
-                    free_energy += T * S(x)
-                # FIXME: Problem, because the end points might have entropy or not.
+            plt.plot(x, free_energy, label=self.name)
 
-                plt.plot(x, free_energy)
+            for p in self.phases:
+                line_free_energy = p.line_free_energy(T)- (
+                    (1-p.line_concentration)*f0 + p.line_concentration*f1
+                )
 
-                # ASSUMPTION: We want the scatter plot to be true to the line phase
-                for p in self.phases:
-                    f0=end_phases_list[0].free_energy(T,0)
-                    f1=end_phases_list[1].free_energy(T,1)
-                    
-                    # Add back the entropy because we removed it in free_energy()
-                    if end_phases_list[0].add_entropy:
-                        f0 += T * S(0)
-                    if end_phases_list[0].add_entropy:
-                        f1 += T * S(1)
+                if self.add_entropy==True:
+                    line_free_energy -= T * S(p.line_concentration)
 
-                    line_free_energy = p.line_free_energy(T)- (
-                        (1-p.line_concentration)*f0 + p.line_concentration*f1
-                    )
-
-                    plt.scatter(p.line_concentration, line_free_energy, label=self.name)
-
-            else:
-                raise ValueError("end_phases_list has to be an iterable")
+                plt.scatter(p.line_concentration, line_free_energy)
+            
         else:
             free_energy = self.free_energy(T, x)
-            if respect_add_entropy==False and self.add_entropy==True:
-                free_energy += T * S(x)
-            plt.plot(x, free_energy)
+            plt.plot(x, free_energy, label=self.name)
             
             for p in self.phases:
-                plt.scatter(p.line_concentration, p.line_free_energy(T), label=self.name)
+                line_free_energy = p.line_free_energy(T) 
+
+                if self.add_entropy==True:
+                    line_free_energy -= T * S(p.line_concentration)
+                
+                plt.scatter(p.line_concentration, line_free_energy)
 
 
 class AbstractPointDefect(ABC):
