@@ -575,19 +575,19 @@ class SlowInterpolatingPhase(Phase):
         x = np.linspace(*self.concentration_range, samples)
 
         if plot_excess==True: 
-            p0 = min(self.phases, key=lambda p: p.fixed_concentration)
-            p1 = max(self.phases, key=lambda p: p.fixed_concentration)               
+            p_min = min(self.phases, key=lambda p: p.fixed_concentration)
+            p_max = max(self.phases, key=lambda p: p.fixed_concentration)               
 
-            f0=p0.free_energy(T,0)
-            f1=p1.free_energy(T,1)
+            f_min=p_min.line_free_energy(T)
+            f_max=p_max.line_free_energy(T)
 
-            free_energy = self.free_energy(T, x) - ((1-x)*f0 + x*f1)
+            free_energy = self.free_energy(T, x) - (((self.concentration_range[1]-self.concentration_range[0])-x)*f_min + x*f_max)
 
             plt.plot(x, free_energy, label=self.name)
 
             for p in self.phases:
                 line_free_energy = p.line_free_energy(T)- (
-                    (1-p.line_concentration)*f0 + p.line_concentration*f1
+                    ((self.concentration_range[1]-self.concentration_range[0])-p.line_concentration)*f_min + p.line_concentration*f_max
                 )
 
                 if self.add_entropy==True:
