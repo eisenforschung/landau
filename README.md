@@ -18,11 +18,18 @@ python -m build --sdist
 This code is part of a [publication](https://doi.org/10.21203/rs.3.rs-4732459/v1), please cite it accordingly if you use this package in your work
 
 ```
-@article{poul2024automated,
-  title={Automated Generation of Structure Datasets for Machine Learning Potentials and Alloys},
-  author={Poul, Marvin and Huber, Liam and Neugebauer, J{\"o}rg},
-  year={2024}
+@article{poul2025automated,
+    title = {Automated generation of structure datasets for machine learning potentials and alloys},
+    journal = {npj Computational Materials},
+    author={Poul, Marvin and Huber, Liam and Neugebauer, J{\"o}rg},
+    journal = {npj Computational Materials},
+    volume = {11},
+    number = {1},
+    pages = {174},
+    year={2025},
+    doi = {10.1038/s41524-025-01669-4},
 }
+
 ```
 
 # Examples
