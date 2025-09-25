@@ -572,40 +572,41 @@ class SlowInterpolatingPhase(Phase):
             samples=50, 
             plot_excess=False,
         ):
-        x = np.linspace(*self.concentration_range, samples)
 
-        if plot_excess==True: 
-            p_min = min(self.phases, key=lambda p: p.fixed_concentration)
-            p_max = max(self.phases, key=lambda p: p.fixed_concentration)               
+        cmin, cmax = self.concentration_range
+        x = np.linspace(cmin, cmax, samples)
 
-            f_min=p_min.line_free_energy(T)
-            f_max=p_max.line_free_energy(T)
+        free_energy = self.free_energy(T, x)
 
-            free_energy = self.free_energy(T, x) - (((self.concentration_range[1]-self.concentration_range[0])-x)*f_min + x*f_max)
-
-            plt.plot(x, free_energy, label=self.name)
-
-            for p in self.phases:
-                line_free_energy = p.line_free_energy(T)- (
-                    ((self.concentration_range[1]-self.concentration_range[0])-p.line_concentration)*f_min + p.line_concentration*f_max
-                )
-
-                if self.add_entropy==True:
-                    line_free_energy -= T * S(p.line_concentration)
-
-                plt.scatter(p.line_concentration, line_free_energy)
+        if plot_excess==True:
+            f_min = self.free_energy(T, cmin)
+            f_max = self.free_energy(T, cmax)
             
-        else:
-            free_energy = self.free_energy(T, x)
-            plt.plot(x, free_energy, label=self.name)
-            
-            for p in self.phases:
-                line_free_energy = p.line_free_energy(T) 
+            free_energy -= (((cmax-x)*f_min + (x-cmin)*f_max)/(cmax-cmin))
 
-                if self.add_entropy==True:
-                    line_free_energy -= T * S(p.line_concentration)
+        plt.plot(x, free_energy, label=self.name)
+
+        for p in self.phases:
+            line_free_energy = p.line_free_energy(T)
+            cline = p.line_concentration
+
+            # line_free_energy doesn't automatically respect add_entropy, unlike free_energy
+            if self.add_entropy == True:
+                line_free_energy -= T * S(cline)
+
+            if plot_excess==True:
+                p_min = min(self.phases, key=lambda p: p.fixed_concentration)
+                p_max = max(self.phases, key=lambda p: p.fixed_concentration)
+                f_min=p_min.line_free_energy(T)
+                f_max=p_max.line_free_energy(T)
+
+                if self.add_entropy == True:
+                    f_min -= T *S(cmin)
+                    f_max -= T *S(cmax)
                 
-                plt.scatter(p.line_concentration, line_free_energy)
+                line_free_energy -= (((cmax-cline)*f_min + (cline-cmin)*f_max)/(cmax-cmin))
+
+            plt.scatter(cline, line_free_energy)
 
 
 class AbstractPointDefect(ABC):
