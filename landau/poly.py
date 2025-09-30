@@ -71,3 +71,65 @@ class PythonTsp(AbstractPolyMethod):
                 dm, x0=np.argsort(np.arctan2(sc[:, 1], sc[:, 0])).tolist(),
                 max_iterations=self.max_iterations)[0]
         return Polygon(c[tour])
+
+
+@dataclass
+class Concave(AbstractPolyMethod):
+    """Find polygons by constructing a concave hull around given points.
+
+    Fast, but prone to unclean boundaries.
+    """
+    ratio: float = 0.1
+    """Degree of "concave-ness", see `https://shapely.readthedocs.io/en/latest/reference/shapely.concave_hull.html <shapely>`_"""
+    drop_interior: bool = True
+    """Find concave set only of phase boundary points; usually helps to get the shape right, but can create holes."""
+
+    def make(self, dd, variables=["c", "T"]):
+        if self.drop_interior and "border" in dd.columns:
+            dd = dd.query("border")
+
+        # concave hull algo seems more stable when both variables are of the same order
+        pp = dd.sort_values(variables[0])[variables].to_numpy()
+        pp = np.unique(pp[np.isfinite(pp).all(axis=-1)], axis=0)
+
+        refnorm = {}
+        for i, var in enumerate(variables):
+            refnorm[var] = pp[:, i].min(), (np.ptp(pp[:, i]) or 1)
+            pp[:, i] -= refnorm[var][0]
+            pp[:, i] /= refnorm[var][1]
+        points = shapely.MultiPoint(pp)
+        # check for c-degenerate line phase
+        shape = shapely.convex_hull(points)
+        if variables[0] == "c" and isinstance(shape, shapely.LineString):
+            coords = np.asarray(shape.coords)
+            if np.allclose(coords[:, 0], coords[0, 0]):
+                match refnorm["c"][0]:
+                    case 0.0:
+                        bias = +self.min_c_width / 2
+                    case 1.0:
+                        bias = -self.min_c_width / 2
+                    case _:
+                        bias = 0
+                # artificially widen the line phase in c, so that we can make a
+                # "normal" polygon for it.
+                coords = np.concatenate(
+                    [
+                        # inverting the order for the second half of the array, makes
+                        # it so that the points are in the correct order for the
+                        # polygon
+                        coords[::+1] - [self.min_c_width / 2, 0],
+                        coords[::-1] + [self.min_c_width / 2, 0],
+                    ],
+                    axis=0,
+                )
+                coords[:, 0] += bias
+        else:
+            shape = shapely.concave_hull(points, ratio=self.ratio)
+            if not isinstance(shape, shapely.Polygon):
+                warn(f"Failed to construct polygon, got {shape} instead, skipping.")
+                return None
+            coords = np.asarray(shape.exterior.coords)
+        for i, var in enumerate(variables):
+            coords[:, i] *= refnorm[var][1]
+            coords[:, i] += refnorm[var][0]
+        return Polygon(coords)

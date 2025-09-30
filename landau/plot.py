@@ -10,58 +10,7 @@ from sklearn.decomposition import PCA
 import numpy as np
 
 from .calculate import get_transitions, cluster
-from .poly import AbstractPolyMethod, PythonTsp
-
-def make_concave_poly(dd, alpha=0.1, min_c_width=1e-3, variables=["c", "T"]):
-    # concave hull algo seems more stable when both variables are of the same order
-
-    if "border" in dd.columns:
-        dd = dd.query("border")
-
-    pp = dd.sort_values(variables[0])[variables].to_numpy()
-    pp = np.unique(pp[np.isfinite(pp).all(axis=-1)], axis=0)
-
-    refnorm = {}
-    for i, var in enumerate(variables):
-        refnorm[var] = pp[:, i].min(), (np.ptp(pp[:, i]) or 1)
-        pp[:, i] -= refnorm[var][0]
-        pp[:, i] /= refnorm[var][1]
-    points = shapely.MultiPoint(pp)
-    # check for c-degenerate line phase
-    shape = shapely.convex_hull(points)
-    if variables[0] == "c" and isinstance(shape, shapely.LineString):
-        coords = np.asarray(shape.coords)
-        if np.allclose(coords[:, 0], coords[0, 0]):
-            match refnorm["c"][0]:
-                case 0.0:
-                    bias = +min_c_width / 2
-                case 1.0:
-                    bias = -min_c_width / 2
-                case _:
-                    bias = 0
-            # artificially widen the line phase in c, so that we can make a
-            # "normal" polygon for it.
-            coords = np.concatenate(
-                [
-                    # inverting the order for the second half of the array, makes
-                    # it so that the points are in the correct order for the
-                    # polygon
-                    coords[::+1] - [min_c_width / 2, 0],
-                    coords[::-1] + [min_c_width / 2, 0],
-                ],
-                axis=0,
-            )
-            coords[:, 0] += bias
-    else:
-        shape = shapely.concave_hull(points, ratio=alpha)
-        if not isinstance(shape, shapely.Polygon):
-            warn(f"Failed to construct polygon, got {shape} instead, skipping.")
-            return None
-        coords = np.asarray(shape.exterior.coords)
-    for i, var in enumerate(variables):
-        coords[:, i] *= refnorm[var][1]
-        coords[:, i] += refnorm[var][0]
-    return Polygon(coords)
+from .poly import AbstractPolyMethod, PythonTsp, Concave
 
 
 def sort_segments(df, x_col="c", y_col="T", segment_label="border_segment"):
@@ -222,9 +171,7 @@ def plot_phase_diagram(
         )
     elif poly_method == "concave":
         polys = df.groupby(["phase", "phase_unit"]).apply(
-            make_concave_poly,
-            alpha=alpha,
-            min_c_width=min_c_width,
+            Concave(min_c_width=min_c_width, ratio=alpha).make,
         ).dropna()
     elif isinstance(poly_method, AbstractPolyMethod):
         polys = poly_method.apply(df, variables=["c", "T"])
@@ -332,8 +279,7 @@ def plot_mu_phase_diagram(
         )
     elif poly_method == "concave":
         polys = df.groupby("phase").apply(
-            make_concave_poly,
-            alpha=alpha,
+            Concave(ratio=alpha).make,
             variables=["mu", "T"],
         ).dropna()
     elif isinstance(poly_method, AbstractPolyMethod):
