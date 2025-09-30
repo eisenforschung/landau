@@ -7,47 +7,10 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import pairwise_distances
-from python_tsp.heuristics import solve_tsp_record_to_record
 import numpy as np
 
 from .calculate import get_transitions, cluster
-
-
-def make_tsp_poly(dd, min_width=1e-2, variables=["c", "T"]):
-    """Find polygons by solving the Travelling Salesman Problem.
-
-    Slower than the other methods but much more stable. Technically only solves an approximation to the TSP, but our
-    phase boundaries should be well-behaved.
-    """
-    c = dd.query('border')[variables].to_numpy()
-    c = c[np.isfinite(c).all(axis=-1)]
-    shape = shapely.convex_hull(shapely.MultiPoint(c))
-    if isinstance(shape, shapely.LineString):
-        coords = np.array(shape.buffer(min_width/2).exterior.coords)
-        if "c" in variables:
-            match c[0, variables.index("c")]:
-                case 0.0:
-                    bias = +min_width / 2
-                case 1.0:
-                    bias = -min_width / 2
-                case _:
-                    bias = 0
-        coords[:, variables.index("c")] += bias
-        return Polygon(coords)
-    sc = StandardScaler().fit_transform(c)
-    dm = pairwise_distances(sc)
-    dm = (dm / dm[dm > 0].min()).round().astype(int)
-    # alternative implementation in C++
-    # seems more accurate than heuristics from python_tsp, but no conda package yet
-    # import fast_tsp
-    # tour = fast_tsp.find_tour(dm, .5)
-    tour = solve_tsp_record_to_record(
-            dm, x0=np.argsort(np.arctan2(sc[:, 1], sc[:, 0])).tolist(),
-            max_iterations=10)[0]
-    return Polygon(c[tour])
-
+from .poly import AbstractPolyMethod, PythonTsp
 
 def make_concave_poly(dd, alpha=0.1, min_c_width=1e-3, variables=["c", "T"]):
     # concave hull algo seems more stable when both variables are of the same order
@@ -255,15 +218,18 @@ def plot_phase_diagram(
         )
     elif poly_method == "tsp":
         polys = df.groupby(["phase", "phase_unit"]).apply(
-                make_tsp_poly,
-                min_width=min_c_width,
+                PythonTsp(min_c_width).make,
         )
-    else:
+    elif poly_method == "concave":
         polys = df.groupby(["phase", "phase_unit"]).apply(
             make_concave_poly,
             alpha=alpha,
             min_c_width=min_c_width,
         ).dropna()
+    elif isinstance(poly_method, AbstractPolyMethod):
+        polys = poly_method.apply(df, variables=["c", "T"])
+    else:
+        raise ValueError("poly_method must be recognized string or AbstractPolyMethod")
 
     ax = plt.gca()
     for i, (phase, p) in enumerate(polys.items()):
@@ -361,15 +327,19 @@ def plot_mu_phase_diagram(
         )
     elif poly_method == "tsp":
         polys = df.groupby(["phase", "phase_unit"]).apply(
-                make_tsp_poly,
+                PythonTsp().make,
                 variables=["mu", "T"],
         )
-    else:
+    elif poly_method == "concave":
         polys = df.groupby("phase").apply(
             make_concave_poly,
             alpha=alpha,
             variables=["mu", "T"],
         ).dropna()
+    elif isinstance(poly_method, AbstractPolyMethod):
+        polys = poly_method.apply(df, variables=["mu", "T"])
+    else:
+        raise ValueError("poly_method must be recognized string or AbstractPolyMethod")
 
     ax = plt.gca()
     for i, (phase, p) in enumerate(polys.items()):
