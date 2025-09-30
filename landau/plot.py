@@ -40,6 +40,17 @@ def _handle_poly_method(poly_method, **kwargs):
                 'concave': poly.Concave(**kwargs, ratio=ratio),
                 'segments': poly.Segments(**kwargs),
     }
+    if hasattr(poly, 'PythonTsp'):
+        allowed['tsp'] = poly.PythonTsp(**kwargs)
+    if hasattr(poly, 'FastTsp'):
+        allowed['fasttsp'] = poly.FastTsp(**kwargs)
+    if poly_method is None:
+        if 'fasttsp' in allowed:
+            poly_method = 'fasttsp'
+        elif 'tsp' in allowed:
+            poly_method = 'tsp'
+        else:
+            poly_method = 'concave'
     if isinstance(poly_method, str):
         try:
             return allowed[poly_method]
