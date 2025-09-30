@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import shapely
 from python_tsp.heuristics import solve_tsp_record_to_record
+import fast_tsp
 import numpy as np
 import pandas as pd
 from matplotlib.patches import Polygon
@@ -65,13 +66,41 @@ class PythonTsp(AbstractPolyMethod):
         sc = StandardScaler().fit_transform(c)
         dm = pairwise_distances(sc)
         dm = (dm / dm[dm > 0].min()).round().astype(int)
-        # alternative implementation in C++
-        # seems more accurate than heuristics from python_tsp, but no conda package yet
-        # import fast_tsp
-        # tour = fast_tsp.find_tour(dm, .5)
         tour = solve_tsp_record_to_record(
                 dm, x0=np.argsort(np.arctan2(sc[:, 1], sc[:, 0])).tolist(),
                 max_iterations=self.max_iterations)[0]
+        return Polygon(c[tour])
+
+
+@dataclass
+class FastTsp(AbstractPolyMethod):
+    """Find polygons by solving the Traveling Salesman Problem with the `fast_tsp` module.
+
+    Much faster and higher quality than PythonTsp, but not yet on conda.
+    """
+    duration_seconds: float = 0.5
+    """Maxixum time spent per search."""
+
+    def make(self, dd, variables=["c", "T"]):
+        c = dd.query('border')[variables].to_numpy()
+        c = c[np.isfinite(c).all(axis=-1)]
+        shape = shapely.convex_hull(shapely.MultiPoint(c))
+        if isinstance(shape, shapely.LineString):
+            coords = np.array(shape.buffer(self.min_c_width/2).exterior.coords)
+            if "c" in variables:
+                match c[0, variables.index("c")]:
+                    case 0.0:
+                        bias = +self.min_c_width / 2
+                    case 1.0:
+                        bias = -self.min_c_width / 2
+                    case _:
+                        bias = 0
+            coords[:, variables.index("c")] += bias
+            return Polygon(coords)
+        sc = StandardScaler().fit_transform(c)
+        dm = pairwise_distances(sc)
+        dm = (dm / dm[dm > 0].min()).round().astype(int)
+        tour = fast_tsp.find_tour(dm, self.duration_seconds)
         return Polygon(c[tour])
 
 

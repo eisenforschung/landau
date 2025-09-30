@@ -11,7 +11,7 @@ import pandas as pd
 import numpy as np
 
 from .calculate import get_transitions, cluster
-from .poly import AbstractPolyMethod, PythonTsp, Concave, Segments
+from .poly import AbstractPolyMethod, FastTsp, PythonTsp, Concave, Segments
 
 def cluster_phase(df):
     """Cluster the stable, single phase regions.
@@ -36,6 +36,7 @@ def _handle_poly_method(poly_method, **kwargs):
     ratio = kwargs.pop('alpha')
     allowed = {
                 'tsp': PythonTsp(**kwargs),
+                'fasttsp': FastTsp(**kwargs),
                 'concave': Concave(**kwargs, ratio=ratio),
                 'segments': Segments(**kwargs),
     }
