@@ -1,6 +1,8 @@
 from typing import Literal
 from warnings import warn
 
+from pyiron_snippets.deprecate import deprecate
+
 from matplotlib.patches import Polygon
 import shapely
 import matplotlib.pyplot as plt
@@ -28,9 +30,13 @@ def cluster_phase(df):
     )
     return df
 
+@deprecate(
+        alpha="Pass a poly method from landau.poly to poly_method",
+        min_c_width="Pass a poly method from landau.poly to poly_method",
+)
 def plot_phase_diagram(
     df, alpha=0.1, element=None, min_c_width=1e-2, color_override: dict[str, str] = {}, tielines=False,
-    poly_method: Literal["concave", "segments", "tsp"] = "tsp",
+    poly_method: Literal["concave", "segments", "tsp"] | AbstractPolyMethod = "tsp",
 ):
     df = df.query("stable").copy()
 
@@ -137,9 +143,10 @@ def get_phase_colors(phase_names, override: dict[str, str] | None = None):
     color_map.update(diff | override)
     return color_map
 
+@deprecate(alpha="Pass a poly method from landau.poly to poly_method")
 def plot_mu_phase_diagram(
     df, alpha=0.1, element=None, color_override: dict[str, str] = {},
-    poly_method: Literal["concave", "segments", "tsp"] = "tsp",
+    poly_method: Literal["concave", "segments", "tsp"] | AbstractPolyMethod = "tsp",
 ):
     df = df.query("stable").copy()
 
