@@ -11,7 +11,7 @@ import pandas as pd
 import numpy as np
 
 from .calculate import get_transitions, cluster
-from .poly import AbstractPolyMethod, FastTsp, PythonTsp, Concave, Segments
+import landau.poly as poly
 
 def cluster_phase(df):
     """Cluster the stable, single phase regions.
@@ -35,17 +35,17 @@ def _handle_poly_method(poly_method, **kwargs):
     Some **kwargs trickery required to handle now deprecated min_c_width and alpha arguments.'''
     ratio = kwargs.pop('alpha')
     allowed = {
-                'tsp': PythonTsp(**kwargs),
-                'fasttsp': FastTsp(**kwargs),
-                'concave': Concave(**kwargs, ratio=ratio),
-                'segments': Segments(**kwargs),
+                'tsp': poly.PythonTsp(**kwargs),
+                'fasttsp': poly.FastTsp(**kwargs),
+                'concave': poly.Concave(**kwargs, ratio=ratio),
+                'segments': poly.Segments(**kwargs),
     }
     if isinstance(poly_method, str):
         try:
             return allowed[poly_method]
         except KeyError:
             raise ValueError(f"poly_method must be one of: {list(allowed.keys())}!") from None
-    if not isinstance(poly_method, AbstractPolyMethod):
+    if not isinstance(poly_method, poly.AbstractPolyMethod):
         raise TypeError("poly_method must be recognized str or AbstractPolyMethod!")
     return poly_method
 
@@ -55,7 +55,7 @@ def _handle_poly_method(poly_method, **kwargs):
 )
 def plot_phase_diagram(
     df, alpha=0.1, element=None, min_c_width=1e-2, color_override: dict[str, str] = {}, tielines=False,
-    poly_method: Literal["concave", "segments", "tsp"] | AbstractPolyMethod = "tsp",
+    poly_method: Literal["concave", "segments", "tsp"] | poly.AbstractPolyMethod = "tsp",
 ):
     df = df.query("stable").copy()
 
