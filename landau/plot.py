@@ -30,6 +30,24 @@ def cluster_phase(df):
     )
     return df
 
+def _handle_poly_method(poly_method, **kwargs):
+    '''Uniform handling of poly_method between plot_phase_diagram and plot_mu_phase_diagram.
+    Some **kwargs trickery required to handle now deprecated min_c_width and alpha arguments.'''
+    ratio = kwargs.pop('alpha')
+    allowed = {
+                'tsp': PythonTsp(**kwargs),
+                'concave': Concave(**kwargs, ratio=ratio),
+                'segments': Segments(**kwargs),
+    }
+    if isinstance(poly_method, str):
+        try:
+            return allowed[poly_method]
+        except KeyError:
+            raise ValueError(f"poly_method must be one of: {list(allowed.keys())}!") from None
+    if not isinstance(poly_method, AbstractPolyMethod):
+        raise TypeError("poly_method must be recognized str or AbstractPolyMethod!")
+    return poly_method
+
 @deprecate(
         alpha="Pass a poly method from landau.poly to poly_method",
         min_c_width="Pass a poly method from landau.poly to poly_method",
@@ -56,16 +74,8 @@ def plot_phase_diagram(
     if (df.phase_unit==-1).any():
         warn("Clustering of phase points failed for some points, dropping them.")
         df = df.query('phase_unit>=0')
-    if isinstance(poly_method, str):
-        poly_method = {
-                'tsp': PythonTsp(min_c_width=min_c_width),
-                'concave': Concave(min_c_width=min_c_width, ratio=alpha),
-                'segments': Segments(min_c_width=min_c_width),
-        }.get(poly_method, poly_method)
-    if isinstance(poly_method, AbstractPolyMethod):
-        polys = poly_method.apply(df, variables=["c", "T"])
-    else:
-        raise ValueError("poly_method must be recognized string or AbstractPolyMethod")
+    poly_method = _handle_poly_method(poly_method, min_c_width=min_c_width, alpha=alpha)
+    polys = poly_method.apply(df, variables=["c", "T"])
 
     ax = plt.gca()
     for i, (phase, p) in enumerate(polys.items()):
@@ -153,16 +163,11 @@ def plot_mu_phase_diagram(
     color_map = get_phase_colors(df.phase.unique(), color_override)
 
     df = cluster_phase(df)
-    if isinstance(poly_method, str):
-        poly_method = {
-                'tsp': PythonTsp(),
-                'concave': Concave(ratio=alpha),
-                'segments': Segments(),
-        }.get(poly_method, poly_method)
-    if isinstance(poly_method, AbstractPolyMethod):
-        polys = poly_method.apply(df, variables=["mu", "T"])
-    else:
-        raise ValueError("poly_method must be recognized string or AbstractPolyMethod")
+    if (df.phase_unit==-1).any():
+        warn("Clustering of phase points failed for some points, dropping them.")
+        df = df.query('phase_unit>=0')
+    poly_method = _handle_poly_method(poly_method, alpha=alpha)
+    polys = poly_method.apply(df, variables=["mu", "T"])
 
     ax = plt.gca()
     for i, (phase, p) in enumerate(polys.items()):
