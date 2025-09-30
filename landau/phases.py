@@ -579,8 +579,15 @@ class SlowInterpolatingPhase(Phase):
         free_energy = self.free_energy(T, x)
 
         if plot_excess==True:
-            f_min = self.free_energy(T, cmin)
-            f_max = self.free_energy(T, cmax)
+            p_min = min(self.phases, key=lambda p: p.fixed_concentration)
+            p_max = max(self.phases, key=lambda p: p.fixed_concentration)
+            f_min=p_min.line_free_energy(T)
+            f_max=p_max.line_free_energy(T)
+
+            # line_free_energy doesn't automatically respect add_entropy, unlike free_energy
+            if self.add_entropy == True:
+                f_min -= T *S(cmin)
+                f_max -= T *S(cmax)
             
             free_energy -= (((cmax-x)*f_min + (x-cmin)*f_max)/(cmax-cmin))
 
@@ -594,16 +601,7 @@ class SlowInterpolatingPhase(Phase):
             if self.add_entropy == True:
                 line_free_energy -= T * S(cline)
 
-            if plot_excess==True:
-                p_min = min(self.phases, key=lambda p: p.fixed_concentration)
-                p_max = max(self.phases, key=lambda p: p.fixed_concentration)
-                f_min=p_min.line_free_energy(T)
-                f_max=p_max.line_free_energy(T)
-
-                if self.add_entropy == True:
-                    f_min -= T *S(cmin)
-                    f_max -= T *S(cmax)
-                
+            if plot_excess==True:               
                 line_free_energy -= (((cmax-cline)*f_min + (cline-cmin)*f_max)/(cmax-cmin))
 
             plt.scatter(cline, line_free_energy)
