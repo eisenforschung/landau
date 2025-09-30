@@ -10,7 +10,9 @@ import pandas as pd
 from matplotlib.patches import Polygon
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import pairwise_distances
+from sklearn.decomposition import PCA
 
+from .calculate import get_transitions
 
 @dataclass
 class AbstractPolyMethod(abc.ABC):
@@ -133,3 +135,125 @@ class Concave(AbstractPolyMethod):
             coords[:, i] *= refnorm[var][1]
             coords[:, i] += refnorm[var][0]
         return Polygon(coords)
+
+
+@dataclass
+class Segments(AbstractPolyMethod):
+    """Construct polygons by identifying phase boundaries and stitching them together in a poor man's TSP approach.
+
+    Requires that phase diagram data was generated with `refine=True`.
+
+    FIXME: sort_segment should just set up a distance matrix for the segments and use python_tsp on those."""
+
+    def prepare(self, df):
+        if "refined" not in df.columns:
+            raise ValueError("Segments methods requires refined phase boundaries!")
+        df.loc[:, "phase"] = df.phase_id
+        tdf = get_transitions(df)
+        tdf["phase_unit"] = tdf.phase.str.rsplit('_', n=1).map(lambda x: int(x[1]))
+        tdf["phase"] = tdf.phase.str.rsplit('_', n=1).map(lambda x: x[0])
+        return tdf
+
+    @staticmethod
+    def _sort_segments(df, x_col="c", y_col="T", segment_label="border_segment"):
+        """
+        Sorts the points in df such that they can be used as the bounding polygon of a phase in a binary diagram.
+
+        Assumptions:
+        1. df contains only data on a single, coherent phase, i.e. the c/T points are "connected"
+
+        Algorithm:
+        1. Subset the data according to the column given by `segment_label`.  These should label connected points on a single two-phase boundary. Such a subset is called a segment.
+        2. Sort points in each segment by a 1D PCA. (Sorting by c or T alone fails when the segment is either vertical or horizontal.)
+        3. Sort the segments so that they "easily" fit together:
+            a. Pick the segment with minimum `x` as the "head"
+            b. Go over all other segments, s, and:
+                b0. Get the distance from endpoint of "head" to either the starting point or the end point of s
+                b1. if the distance to the end point is shorter than to the starting point, invert order of s
+                b2. return the minimum of both distances
+            c. the segment with smallest distance to the current "head" is the next "head" and removed from the pool of segments
+            d. break if no segments left
+        4. return the segments in the order they were picked as "head"s.
+
+        a) is a heuristic for "normal" phase diagrams, starting from the left (or right) we can often make a full circle.
+        Picking a random segments breaks for phases that are stable at the lower or upper edge of the diagram, where we technically do not compute
+        a "segment".  A "proper" fix would be to modify b to allow joining also to the start of "head" rather than just the end.
+        """
+
+        com = df[[x_col, y_col]].mean()
+        norm = np.ptp(df[[x_col, y_col]], axis=0).values
+
+
+        # Step 1: PCA Projection
+        def pca_projection(group):
+            # avoid warnings when clustering only found one or two points
+            if len(group) < 2:
+                return group
+            pca = PCA(n_components=1)
+            projected = pca.fit_transform(group[[x_col, y_col]])
+            group["projected"] = projected
+            return group.sort_values("projected").copy().drop("projected", axis="columns").reset_index(drop=True)
+
+        segments = []
+        for label, dd in df.groupby(segment_label):
+            segments.append(pca_projection(dd))
+
+        # initial sorting by center of mass angle
+        segments = sorted(
+                segments,
+                key=lambda s: np.arctan2( (s[y_col].mean() - com[y_col]) / norm[1],
+                                        (s[x_col].mean() - com[x_col]) / norm[0])
+        )
+
+        def start(s):
+            return s.iloc[0][[x_col, y_col]]
+
+        def end(s):
+            return s.iloc[-1][[x_col, y_col]]
+
+        def dist(p1, p2):
+            return np.linalg.norm((p2 - p1) / norm)
+
+        def flip(s):
+            s.reset_index(drop=True, inplace=True)
+            s.loc[:] = s.loc[::-1].reset_index(drop=True)
+            return s
+
+        head, *remaining = sorted(segments, key=lambda s: s[x_col].min())
+
+        def find_distance(head, segment):
+            head2tail = dist(end(head), start(segment))
+            tail2tail = dist(end(head), end(segment))
+            if tail2tail < head2tail:
+                flip(segment)
+                return tail2tail
+            else:
+                return head2tail
+
+        segments = [head]
+        while len(remaining) > 0:
+            head, *remaining = sorted(remaining, key=lambda s: find_distance(head, s))
+            segments.append(head)
+
+        return pd.concat(segments, ignore_index=True)
+
+    def make(self, td, variables=["c", "T"]):
+        """
+        Requires a grouped dataframe from get_transitions (by phase).
+        """
+        if "c" in variables and np.ptp(td.c) < self.min_c_width:
+            meanc = td.c.mean()
+            Tmin = td["T"].min()
+            Tmax = td["T"].max()
+            return Polygon(
+                [
+                    [meanc - self.min_c_width / 2, Tmin],
+                    [meanc + self.min_c_width / 2, Tmin],
+                    [meanc + self.min_c_width / 2, Tmax],
+                    [meanc - self.min_c_width / 2, Tmax],
+                ]
+            )
+        td = td.loc[ np.isfinite(td[variables[0]]) & np.isfinite(td[variables[1]]) ]
+        sd = self._sort_segments(td, x_col=variables[0], y_col=variables[1])
+        # sd = sd.loc[ np.isfinite(sd[variables[0]]) & np.isfinite(sd[variables[1]]) ]
+        return Polygon(np.transpose([sd[v] for v in variables]))
