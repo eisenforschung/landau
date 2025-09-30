@@ -156,6 +156,11 @@ def plot_phase_diagram(
     if (df.phase_unit==-1).any():
         warn("Clustering of phase points failed for some points, dropping them.")
         df = df.query('phase_unit>=0')
+    if isinstance(poly_method, str):
+        poly_method = {
+                'tsp': PythonTsp(min_c_width=min_c_width),
+                'concave': Concave(min_c_width=min_c_width, ratio=alpha),
+        }.get(poly_method, poly_method)
     if "refined" in df.columns and poly_method == "segments":
         df.loc[:, "phase"] = df.phase_id
         tdf = get_transitions(df)
@@ -165,14 +170,6 @@ def plot_phase_diagram(
             make_poly,
             min_c_width=min_c_width,
         )
-    elif poly_method == "tsp":
-        polys = df.groupby(["phase", "phase_unit"]).apply(
-                PythonTsp(min_c_width).make,
-        )
-    elif poly_method == "concave":
-        polys = df.groupby(["phase", "phase_unit"]).apply(
-            Concave(min_c_width=min_c_width, ratio=alpha).make,
-        ).dropna()
     elif isinstance(poly_method, AbstractPolyMethod):
         polys = poly_method.apply(df, variables=["c", "T"])
     else:
@@ -263,6 +260,11 @@ def plot_mu_phase_diagram(
     color_map = get_phase_colors(df.phase.unique(), color_override)
 
     df = cluster_phase(df)
+    if isinstance(poly_method, str):
+        poly_method = {
+                'tsp': PythonTsp(),
+                'concave': Concave(ratio=alpha),
+        }.get(poly_method, poly_method)
     if "refined" in df.columns and poly_method == "segments":
         df.loc[:, "phase"] = df.phase_id
         tdf = get_transitions(df)
@@ -272,16 +274,6 @@ def plot_mu_phase_diagram(
             make_poly,
             variables=["mu", "T"],
         )
-    elif poly_method == "tsp":
-        polys = df.groupby(["phase", "phase_unit"]).apply(
-                PythonTsp().make,
-                variables=["mu", "T"],
-        )
-    elif poly_method == "concave":
-        polys = df.groupby("phase").apply(
-            Concave(ratio=alpha).make,
-            variables=["mu", "T"],
-        ).dropna()
     elif isinstance(poly_method, AbstractPolyMethod):
         polys = poly_method.apply(df, variables=["mu", "T"])
     else:
