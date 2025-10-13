@@ -377,11 +377,25 @@ class RegularSolution(Phase):
             return self.concentration(T, dmus)[2]
         return np.clip(-np.gradient(self.semigrand_potential(T, dmu), dmu, edge_order=2), 0, 1)
 
+    @deprecate('Use check_concentration_interpolation instead')
     def check_interpolation(self, T=1000, samples=50):
-        x = np.linspace(0, 1, samples)
-        plt.plot(x, self.free_energy(T, x), label=self.name)
-        for p in self.phases:
-            plt.scatter(p.line_concentration, p.line_free_energy(T))
+        self.check_concentration_interpolation(T=T, samples=samples)
+
+    def check_concentration_interpolation(
+            self,
+            T=1000,
+            samples=50,
+            plot_excess=False,
+    ):
+        """Plot free energies of an interpolating phase and its underlying line
+        phases to visually assess fit quality.
+
+        Args:
+            T (float): at which temperature to check interpolation
+            samples (int): number of sampling points for plot
+            plot_excess (bool): if True, subtract free energy at concentration range endpoints for legibility
+            """
+        check_concentration_interpolation(self, self.phases, T, samples, plot_excess, (0, 1))
 
 
 from numbers import Real
@@ -485,11 +499,30 @@ class InterpolatingPhase(Phase):
     def concentration(self, T, dmu):
         return self._find_phi_c(T, dmu)[1]
 
+    @deprecate('Use check_concentration_interpolation instead')
     def check_interpolation(self, T=1000, samples=50):
-        x = np.linspace(0, 1, samples)
-        plt.plot(x, self.free_energy(T, x))
-        for p in self.phases:
-            plt.scatter(p.line_concentration, p.line_free_energy(T), label=self.name)
+        self.check_concentration_interpolation(T=T, samples=samples)
+
+    def check_concentration_interpolation(
+            self,
+            T=1000,
+            samples=50,
+            plot_excess=False,
+    ):
+        """Plot free energies of an interpolating phase and its underlying line
+        phases to visually assess fit quality.
+
+        Args:
+            T (float): at which temperature to check interpolation
+            samples (int): number of sampling points for plot
+            plot_excess (bool): if True, subtract free energy at concentration range endpoints for legibility
+            """
+        cs = [p.line_concentration for p in self.phases]
+        concentration_range = (
+                max(0, min(cs) - self.maximum_extrapolation),
+                min(1, max(cs) + self.maximum_extrapolation)
+        )
+        check_concentration_interpolation(self, self.phases, T, samples, plot_excess, concentration_range)
 
 
 @dataclass(frozen=True, eq=True)
@@ -567,44 +600,73 @@ class SlowInterpolatingPhase(Phase):
         self.check_concentration_interpolation(T=T, samples=samples)
 
     def check_concentration_interpolation(
-            self, 
-            T=1000, 
-            samples=50, 
+            self,
+            T=1000,
+            samples=50,
             plot_excess=False,
-        ):
+    ):
+        """Plot free energies of an interpolating phase and its underlying line
+        phases to visually assess fit quality.
 
-        cmin, cmax = self.concentration_range
-        x = np.linspace(cmin, cmax, samples)
+        Args:
+            T (float): at which temperature to check interpolation
+            samples (int): number of sampling points for plot
+            plot_excess (bool): if True, subtract free energy at concentration range endpoints for legibility
+            concentration_range (tuple of float): min/max concentration range"""
+        check_concentration_interpolation(self, self.phases, T, samples, plot_excess, self.concentration_range)
 
-        free_energy = self.free_energy(T, x)
 
-        if plot_excess==True:
-            p_min = min(self.phases, key=lambda p: p.fixed_concentration)
-            p_max = max(self.phases, key=lambda p: p.fixed_concentration)
-            f_min=p_min.line_free_energy(T)
-            f_max=p_max.line_free_energy(T)
+def check_concentration_interpolation(
+        phase: SlowInterpolatingPhase | InterpolatingPhase | RegularSolution,
+        phases: list[AbstractLinePhase],
+        T: float,
+        samples: int,
+        plot_excess: bool,
+        concentration_range: tuple[float, float]
+):
+    """Plot free energies of an interpolating phase and its underlying line
+    phases to visually assess fit quality.
 
-            # line_free_energy doesn't automatically respect add_entropy, unlike free_energy
-            if self.add_entropy == True:
-                f_min -= T *S(cmin)
-                f_max -= T *S(cmax)
-            
-            free_energy -= (((cmax-x)*f_min + (x-cmin)*f_max)/(cmax-cmin))
+    Args:
+        phase (SlowInterpolatingPhase, InterpolatingPhase, RegularSolution):
+            a mixing phase to check
+        phases (AbstractLinePhase): list of phases that are interpolated
+        T (float): at which temperature to check interpolation
+        samples (int): number of sampling points for plot
+        plot_excess (bool): if True, subtract free energy at concentration range endpoints for legibility
+        concentration_range (tuple of float): min/max concentration range"""
 
-        plt.plot(x, free_energy, label=self.name)
+    cmin, cmax = concentration_range
+    x = np.linspace(cmin, cmax, samples)
 
-        for p in self.phases:
-            line_free_energy = p.line_free_energy(T)
-            cline = p.line_concentration
+    free_energy = phase.free_energy(T, x)
 
-            # line_free_energy doesn't automatically respect add_entropy, unlike free_energy
-            if self.add_entropy == True:
-                line_free_energy -= T * S(cline)
+    if plot_excess:
+        p_min = min(phases, key=lambda p: p.fixed_concentration)
+        p_max = max(phases, key=lambda p: p.fixed_concentration)
+        f_min = p_min.line_free_energy(T)
+        f_max = p_max.line_free_energy(T)
 
-            if plot_excess==True:               
-                line_free_energy -= (((cmax-cline)*f_min + (cline-cmin)*f_max)/(cmax-cmin))
+        # line_free_energy doesn't automatically respect add_entropy, unlike free_energy
+        if phase.add_entropy:
+            f_min -= T * S(cmin)
+            f_max -= T * S(cmax)
 
-            plt.scatter(cline, line_free_energy)
+        free_energy -= (((cmax-x)*f_min + (x-cmin)*f_max)/(cmax-cmin))
+
+    plt.plot(x, free_energy, label=phase.name)
+
+    for p in phases:
+        line_free_energy = p.line_free_energy(T)
+        cline = p.line_concentration
+
+        if phase.add_entropy:
+            line_free_energy -= T * S(cline)
+
+        if plot_excess:
+            line_free_energy -= (((cmax-cline)*f_min + (cline-cmin)*f_max)/(cmax-cmin))
+
+        plt.scatter(cline, line_free_energy)
 
 
 class AbstractPointDefect(ABC):
