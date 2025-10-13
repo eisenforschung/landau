@@ -168,7 +168,7 @@ def get_phase_colors(phase_names, override: dict[str, str] | None = None):
 @deprecate(alpha="Pass a poly method from landau.poly to poly_method")
 def plot_mu_phase_diagram(
     df, alpha=0.1, element=None, color_override: dict[str, str] = {},
-    poly_method: Literal["concave", "segments", "tsp"] | AbstractPolyMethod = "tsp",
+    poly_method: Literal["concave", "segments", "tsp"] | poly.AbstractPolyMethod = "tsp",
 ):
     df = df.query("stable").copy()
 

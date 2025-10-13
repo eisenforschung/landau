@@ -2,6 +2,7 @@
 
 import abc
 from dataclasses import dataclass
+from warnings import warn
 
 import shapely
 from python_tsp.heuristics import solve_tsp_record_to_record
@@ -14,6 +15,7 @@ from sklearn.metrics import pairwise_distances
 from sklearn.decomposition import PCA
 
 from .calculate import get_transitions
+
 
 @dataclass
 class AbstractPolyMethod(abc.ABC):
@@ -47,6 +49,12 @@ class PythonTsp(AbstractPolyMethod):
     """
     max_iterations: int = 10
 
+    def prepare(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.shape[0] > 50_000:
+            warn("Large number of sample points! PythonTsp may be very slow, "
+                 "try FastTsp or one of the other polygon methods.")
+        return df
+
     def make(self, dd, variables=["c", "T"]):
         c = dd.query('border')[variables].to_numpy()
         c = c[np.isfinite(c).all(axis=-1)]
@@ -78,7 +86,7 @@ class FastTsp(AbstractPolyMethod):
 
     Much faster and higher quality than PythonTsp, but not yet on conda.
     """
-    duration_seconds: float = 0.5
+    duration_seconds: float = 1.0
     """Maxixum time spent per search."""
 
     def make(self, dd, variables=["c", "T"]):
