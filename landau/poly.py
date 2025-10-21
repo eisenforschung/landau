@@ -4,9 +4,9 @@ import abc
 from dataclasses import dataclass
 from warnings import warn
 
+from pyiron_snippets.import_alarm import ImportAlarm
+
 import shapely
-from python_tsp.heuristics import solve_tsp_record_to_record
-import fast_tsp
 import numpy as np
 import pandas as pd
 from matplotlib.patches import Polygon
@@ -40,76 +40,82 @@ class AbstractPolyMethod(abc.ABC):
         ).dropna()
 
 
-@dataclass
-class PythonTsp(AbstractPolyMethod):
-    """Find polygons by solving the Traveling Salesman Problem with the `python_tsp` module.
+with ImportAlarm("'python_tsp' package required for PythonTsp.  Install from conda or pip.") as python_tsp_alarm:
+    from python_tsp.heuristics import solve_tsp_record_to_record
 
-    Slower than the other methods but much more stable. Technically only solves an approximation to the TSP, but our
-    phase boundaries should be well-behaved.
-    """
-    max_iterations: int = 10
+    @dataclass
+    class PythonTsp(AbstractPolyMethod):
+        """Find polygons by solving the Traveling Salesman Problem with the `python_tsp` module.
 
-    def prepare(self, df: pd.DataFrame) -> pd.DataFrame:
-        if df.shape[0] > 50_000:
-            warn("Large number of sample points! PythonTsp may be very slow, "
-                 "try FastTsp or one of the other polygon methods.")
-        return df
+        Slower than the other methods but much more stable. Technically only solves an approximation to the TSP, but our
+        phase boundaries should be well-behaved.
+        """
+        max_iterations: int = 10
 
-    def make(self, dd, variables=["c", "T"]):
-        c = dd.query('border')[variables].to_numpy()
-        c = c[np.isfinite(c).all(axis=-1)]
-        shape = shapely.convex_hull(shapely.MultiPoint(c))
-        if isinstance(shape, shapely.LineString):
-            coords = np.array(shape.buffer(self.min_c_width/2).exterior.coords)
-            if "c" in variables:
-                match c[0, variables.index("c")]:
-                    case 0.0:
-                        bias = +self.min_c_width / 2
-                    case 1.0:
-                        bias = -self.min_c_width / 2
-                    case _:
-                        bias = 0
-            coords[:, variables.index("c")] += bias
-            return Polygon(coords)
-        sc = StandardScaler().fit_transform(c)
-        dm = pairwise_distances(sc)
-        dm = (dm / dm[dm > 0].min()).round().astype(int)
-        tour = solve_tsp_record_to_record(
-                dm, x0=np.argsort(np.arctan2(sc[:, 1], sc[:, 0])).tolist(),
-                max_iterations=self.max_iterations)[0]
-        return Polygon(c[tour])
+        def prepare(self, df: pd.DataFrame) -> pd.DataFrame:
+            if df.shape[0] > 50_000:
+                warn("Large number of sample points! PythonTsp may be very slow, "
+                     "try FastTsp or one of the other polygon methods.")
+            return df
+
+        def make(self, dd, variables=["c", "T"]):
+            c = dd.query('border')[variables].to_numpy()
+            c = c[np.isfinite(c).all(axis=-1)]
+            shape = shapely.convex_hull(shapely.MultiPoint(c))
+            if isinstance(shape, shapely.LineString):
+                coords = np.array(shape.buffer(self.min_c_width/2).exterior.coords)
+                if "c" in variables:
+                    match c[0, variables.index("c")]:
+                        case 0.0:
+                            bias = +self.min_c_width / 2
+                        case 1.0:
+                            bias = -self.min_c_width / 2
+                        case _:
+                            bias = 0
+                coords[:, variables.index("c")] += bias
+                return Polygon(coords)
+            sc = StandardScaler().fit_transform(c)
+            dm = pairwise_distances(sc)
+            dm = (dm / dm[dm > 0].min()).round().astype(int)
+            tour = solve_tsp_record_to_record(
+                    dm, x0=np.argsort(np.arctan2(sc[:, 1], sc[:, 0])).tolist(),
+                    max_iterations=self.max_iterations)[0]
+            return Polygon(c[tour])
 
 
-@dataclass
-class FastTsp(AbstractPolyMethod):
-    """Find polygons by solving the Traveling Salesman Problem with the `fast_tsp` module.
+with ImportAlarm("'fast-tsp' package required for FastTsp.  Install from pip.") as fast_tsp_alarm:
+    import fast_tsp
 
-    Much faster and higher quality than PythonTsp, but not yet on conda.
-    """
-    duration_seconds: float = 1.0
-    """Maxixum time spent per search."""
+    @dataclass
+    class FastTsp(AbstractPolyMethod):
+        """Find polygons by solving the Traveling Salesman Problem with the `fast_tsp` module.
 
-    def make(self, dd, variables=["c", "T"]):
-        c = dd.query('border')[variables].to_numpy()
-        c = c[np.isfinite(c).all(axis=-1)]
-        shape = shapely.convex_hull(shapely.MultiPoint(c))
-        if isinstance(shape, shapely.LineString):
-            coords = np.array(shape.buffer(self.min_c_width/2).exterior.coords)
-            if "c" in variables:
-                match c[0, variables.index("c")]:
-                    case 0.0:
-                        bias = +self.min_c_width / 2
-                    case 1.0:
-                        bias = -self.min_c_width / 2
-                    case _:
-                        bias = 0
-            coords[:, variables.index("c")] += bias
-            return Polygon(coords)
-        sc = StandardScaler().fit_transform(c)
-        dm = pairwise_distances(sc)
-        dm = (dm / dm[dm > 0].min()).round().astype(int)
-        tour = fast_tsp.find_tour(dm, self.duration_seconds)
-        return Polygon(c[tour])
+        Much faster and higher quality than PythonTsp, but not yet on conda.
+        """
+        duration_seconds: float = 1.0
+        """Maxixum time spent per search."""
+
+        def make(self, dd, variables=["c", "T"]):
+            c = dd.query('border')[variables].to_numpy()
+            c = c[np.isfinite(c).all(axis=-1)]
+            shape = shapely.convex_hull(shapely.MultiPoint(c))
+            if isinstance(shape, shapely.LineString):
+                coords = np.array(shape.buffer(self.min_c_width/2).exterior.coords)
+                if "c" in variables:
+                    match c[0, variables.index("c")]:
+                        case 0.0:
+                            bias = +self.min_c_width / 2
+                        case 1.0:
+                            bias = -self.min_c_width / 2
+                        case _:
+                            bias = 0
+                coords[:, variables.index("c")] += bias
+                return Polygon(coords)
+            sc = StandardScaler().fit_transform(c)
+            dm = pairwise_distances(sc)
+            dm = (dm / dm[dm > 0].min()).round().astype(int)
+            tour = fast_tsp.find_tour(dm, self.duration_seconds)
+            return Polygon(c[tour])
 
 
 @dataclass

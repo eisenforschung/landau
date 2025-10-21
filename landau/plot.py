@@ -30,13 +30,13 @@ def cluster_phase(df):
     )
     return df
 
+@poly.fast_tsp_alarm
+@poly.python_tsp_alarm
 def _handle_poly_method(poly_method, **kwargs):
     '''Uniform handling of poly_method between plot_phase_diagram and plot_mu_phase_diagram.
     Some **kwargs trickery required to handle now deprecated min_c_width and alpha arguments.'''
     ratio = kwargs.pop('alpha')
     allowed = {
-                'tsp': poly.PythonTsp(**kwargs),
-                'fasttsp': poly.FastTsp(**kwargs),
                 'concave': poly.Concave(**kwargs, ratio=ratio),
                 'segments': poly.Segments(**kwargs),
     }
@@ -66,7 +66,7 @@ def _handle_poly_method(poly_method, **kwargs):
 )
 def plot_phase_diagram(
     df, alpha=0.1, element=None, min_c_width=1e-2, color_override: dict[str, str] = {}, tielines=False,
-    poly_method: Literal["concave", "segments", "tsp"] | poly.AbstractPolyMethod = "tsp",
+    poly_method: Literal["concave", "segments", "tsp"] | poly.AbstractPolyMethod | None = None
 ):
     df = df.query("stable").copy()
 
