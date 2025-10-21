@@ -148,7 +148,6 @@ class Segments(AbstractPolyMethod):
         com = df[[x_col, y_col]].mean()
         norm = np.ptp(df[[x_col, y_col]], axis=0).values
 
-
         # Step 1: PCA Projection
         def pca_projection(group):
             # avoid warnings when clustering only found one or two points
@@ -167,7 +166,7 @@ class Segments(AbstractPolyMethod):
         segments = sorted(
                 segments,
                 key=lambda s: np.arctan2( (s[y_col].mean() - com[y_col]) / norm[1],
-                                        (s[x_col].mean() - com[x_col]) / norm[0])
+                                          (s[x_col].mean() - com[x_col]) / norm[0])
         )
 
         def start(s):

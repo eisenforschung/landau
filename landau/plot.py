@@ -3,11 +3,8 @@ from warnings import warn
 
 from pyiron_snippets.deprecate import deprecate
 
-from matplotlib.patches import Polygon
-import shapely
 import matplotlib.pyplot as plt
 import seaborn as sns
-import pandas as pd
 import numpy as np
 
 from .calculate import get_transitions, cluster
