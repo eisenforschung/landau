@@ -40,84 +40,6 @@ class AbstractPolyMethod(abc.ABC):
         ).dropna()
 
 
-with ImportAlarm("'python_tsp' package required for PythonTsp.  Install from conda or pip.") as python_tsp_alarm:
-    from python_tsp.heuristics import solve_tsp_record_to_record
-
-    @dataclass
-    class PythonTsp(AbstractPolyMethod):
-        """Find polygons by solving the Traveling Salesman Problem with the `python_tsp` module.
-
-        Slower than the other methods but much more stable. Technically only solves an approximation to the TSP, but our
-        phase boundaries should be well-behaved.
-        """
-        max_iterations: int = 10
-
-        def prepare(self, df: pd.DataFrame) -> pd.DataFrame:
-            if df.shape[0] > 50_000:
-                warn("Large number of sample points! PythonTsp may be very slow, "
-                     "try FastTsp or one of the other polygon methods.")
-            return df
-
-        def make(self, dd, variables=["c", "T"]):
-            c = dd.query('border')[variables].to_numpy()
-            c = c[np.isfinite(c).all(axis=-1)]
-            shape = shapely.convex_hull(shapely.MultiPoint(c))
-            if isinstance(shape, shapely.LineString):
-                coords = np.array(shape.buffer(self.min_c_width/2).exterior.coords)
-                if "c" in variables:
-                    match c[0, variables.index("c")]:
-                        case 0.0:
-                            bias = +self.min_c_width / 2
-                        case 1.0:
-                            bias = -self.min_c_width / 2
-                        case _:
-                            bias = 0
-                coords[:, variables.index("c")] += bias
-                return Polygon(coords)
-            sc = StandardScaler().fit_transform(c)
-            dm = pairwise_distances(sc)
-            dm = (dm / dm[dm > 0].min()).round().astype(int)
-            tour = solve_tsp_record_to_record(
-                    dm, x0=np.argsort(np.arctan2(sc[:, 1], sc[:, 0])).tolist(),
-                    max_iterations=self.max_iterations)[0]
-            return Polygon(c[tour])
-
-
-with ImportAlarm("'fast-tsp' package required for FastTsp.  Install from pip.") as fast_tsp_alarm:
-    import fast_tsp
-
-    @dataclass
-    class FastTsp(AbstractPolyMethod):
-        """Find polygons by solving the Traveling Salesman Problem with the `fast_tsp` module.
-
-        Much faster and higher quality than PythonTsp, but not yet on conda.
-        """
-        duration_seconds: float = 1.0
-        """Maxixum time spent per search."""
-
-        def make(self, dd, variables=["c", "T"]):
-            c = dd.query('border')[variables].to_numpy()
-            c = c[np.isfinite(c).all(axis=-1)]
-            shape = shapely.convex_hull(shapely.MultiPoint(c))
-            if isinstance(shape, shapely.LineString):
-                coords = np.array(shape.buffer(self.min_c_width/2).exterior.coords)
-                if "c" in variables:
-                    match c[0, variables.index("c")]:
-                        case 0.0:
-                            bias = +self.min_c_width / 2
-                        case 1.0:
-                            bias = -self.min_c_width / 2
-                        case _:
-                            bias = 0
-                coords[:, variables.index("c")] += bias
-                return Polygon(coords)
-            sc = StandardScaler().fit_transform(c)
-            dm = pairwise_distances(sc)
-            dm = (dm / dm[dm > 0].min()).round().astype(int)
-            tour = fast_tsp.find_tour(dm, self.duration_seconds)
-            return Polygon(c[tour])
-
-
 @dataclass
 class Concave(AbstractPolyMethod):
     """Find polygons by constructing a concave hull around given points.
@@ -300,3 +222,121 @@ class Segments(AbstractPolyMethod):
         sd = self._sort_segments(td, x_col=variables[0], y_col=variables[1])
         # sd = sd.loc[ np.isfinite(sd[variables[0]]) & np.isfinite(sd[variables[1]]) ]
         return Polygon(np.transpose([sd[v] for v in variables]))
+
+
+__all__ = ["Concave", "Segments"]
+
+
+with ImportAlarm("'python_tsp' package required for PythonTsp.  Install from conda or pip.") as python_tsp_alarm:
+    from python_tsp.heuristics import solve_tsp_record_to_record
+
+    @dataclass
+    class PythonTsp(AbstractPolyMethod):
+        """Find polygons by solving the Traveling Salesman Problem with the `python_tsp` module.
+
+        Slower than the other methods but much more stable. Technically only solves an approximation to the TSP, but our
+        phase boundaries should be well-behaved.
+        """
+        max_iterations: int = 10
+
+        def prepare(self, df: pd.DataFrame) -> pd.DataFrame:
+            if df.shape[0] > 50_000:
+                warn("Large number of sample points! PythonTsp may be very slow, "
+                     "try FastTsp or one of the other polygon methods.")
+            return df
+
+        def make(self, dd, variables=["c", "T"]):
+            c = dd.query('border')[variables].to_numpy()
+            c = c[np.isfinite(c).all(axis=-1)]
+            shape = shapely.convex_hull(shapely.MultiPoint(c))
+            if isinstance(shape, shapely.LineString):
+                coords = np.array(shape.buffer(self.min_c_width/2).exterior.coords)
+                if "c" in variables:
+                    match c[0, variables.index("c")]:
+                        case 0.0:
+                            bias = +self.min_c_width / 2
+                        case 1.0:
+                            bias = -self.min_c_width / 2
+                        case _:
+                            bias = 0
+                coords[:, variables.index("c")] += bias
+                return Polygon(coords)
+            sc = StandardScaler().fit_transform(c)
+            dm = pairwise_distances(sc)
+            dm = (dm / dm[dm > 0].min()).round().astype(int)
+            tour = solve_tsp_record_to_record(
+                    dm, x0=np.argsort(np.arctan2(sc[:, 1], sc[:, 0])).tolist(),
+                    max_iterations=self.max_iterations)[0]
+            return Polygon(c[tour])
+    __all__ += ["PythonTsp"]
+
+
+with ImportAlarm("'fast-tsp' package required for FastTsp.  Install from pip.") as fast_tsp_alarm:
+    import fast_tsp
+
+    @dataclass
+    class FastTsp(AbstractPolyMethod):
+        """Find polygons by solving the Traveling Salesman Problem with the `fast_tsp` module.
+
+        Much faster and higher quality than PythonTsp, but not yet on conda.
+        """
+        duration_seconds: float = 1.0
+        """Maxixum time spent per search."""
+
+        def make(self, dd, variables=["c", "T"]):
+            c = dd.query('border')[variables].to_numpy()
+            c = c[np.isfinite(c).all(axis=-1)]
+            shape = shapely.convex_hull(shapely.MultiPoint(c))
+            if isinstance(shape, shapely.LineString):
+                coords = np.array(shape.buffer(self.min_c_width/2).exterior.coords)
+                if "c" in variables:
+                    match c[0, variables.index("c")]:
+                        case 0.0:
+                            bias = +self.min_c_width / 2
+                        case 1.0:
+                            bias = -self.min_c_width / 2
+                        case _:
+                            bias = 0
+                coords[:, variables.index("c")] += bias
+                return Polygon(coords)
+            sc = StandardScaler().fit_transform(c)
+            dm = pairwise_distances(sc)
+            dm = (dm / dm[dm > 0].min()).round().astype(int)
+            tour = fast_tsp.find_tour(dm, self.duration_seconds)
+            return Polygon(c[tour])
+
+    __all__ += ["FastTsp"]
+
+
+@fast_tsp_alarm
+@python_tsp_alarm
+def handle_poly_method(poly_method, **kwargs):
+    '''Uniform handling of poly_method between plot_phase_diagram and plot_mu_phase_diagram.
+    Some **kwargs trickery required to handle now deprecated min_c_width and alpha arguments.'''
+    ratio = kwargs.pop('alpha', Concave.ratio)
+    allowed = {
+                'concave': Concave(**kwargs, ratio=ratio),
+                'segments': Segments(**kwargs),
+    }
+    if 'PythonTsp' in __all__:
+        allowed['tsp'] = PythonTsp(**kwargs)
+    if 'FastTsp' in __all__:
+        allowed['fasttsp'] = FastTsp(**kwargs)
+    if poly_method is None:
+        if 'fasttsp' in allowed:
+            poly_method = 'fasttsp'
+        elif 'tsp' in allowed:
+            poly_method = 'tsp'
+        else:
+            poly_method = 'concave'
+    if isinstance(poly_method, str):
+        try:
+            return allowed[poly_method]
+        except KeyError:
+            raise ValueError(f"poly_method must be one of: {list(allowed.keys())}!") from None
+    if not isinstance(poly_method, AbstractPolyMethod):
+        raise TypeError("poly_method must be recognized str or AbstractPolyMethod!")
+    return poly_method
+
+
+__all__ += ["handle_poly_method"]

@@ -30,43 +30,13 @@ def cluster_phase(df):
     )
     return df
 
-@poly.fast_tsp_alarm
-@poly.python_tsp_alarm
-def _handle_poly_method(poly_method, **kwargs):
-    '''Uniform handling of poly_method between plot_phase_diagram and plot_mu_phase_diagram.
-    Some **kwargs trickery required to handle now deprecated min_c_width and alpha arguments.'''
-    ratio = kwargs.pop('alpha')
-    allowed = {
-                'concave': poly.Concave(**kwargs, ratio=ratio),
-                'segments': poly.Segments(**kwargs),
-    }
-    if hasattr(poly, 'PythonTsp'):
-        allowed['tsp'] = poly.PythonTsp(**kwargs)
-    if hasattr(poly, 'FastTsp'):
-        allowed['fasttsp'] = poly.FastTsp(**kwargs)
-    if poly_method is None:
-        if 'fasttsp' in allowed:
-            poly_method = 'fasttsp'
-        elif 'tsp' in allowed:
-            poly_method = 'tsp'
-        else:
-            poly_method = 'concave'
-    if isinstance(poly_method, str):
-        try:
-            return allowed[poly_method]
-        except KeyError:
-            raise ValueError(f"poly_method must be one of: {list(allowed.keys())}!") from None
-    if not isinstance(poly_method, poly.AbstractPolyMethod):
-        raise TypeError("poly_method must be recognized str or AbstractPolyMethod!")
-    return poly_method
-
 @deprecate(
         alpha="Pass a poly method from landau.poly to poly_method",
         min_c_width="Pass a poly method from landau.poly to poly_method",
 )
 def plot_phase_diagram(
     df, alpha=0.1, element=None, min_c_width=1e-2, color_override: dict[str, str] = {}, tielines=False,
-    poly_method: Literal["concave", "segments", "tsp"] | poly.AbstractPolyMethod | None = None
+    poly_method: Literal["concave", "segments", "fasttsp", "tsp"] | poly.AbstractPolyMethod | None = None
 ):
     df = df.query("stable").copy()
 
@@ -86,7 +56,7 @@ def plot_phase_diagram(
     if (df.phase_unit==-1).any():
         warn("Clustering of phase points failed for some points, dropping them.")
         df = df.query('phase_unit>=0')
-    poly_method = _handle_poly_method(poly_method, min_c_width=min_c_width, alpha=alpha)
+    poly_method = poly.handle_poly_method(poly_method, min_c_width=min_c_width, alpha=alpha)
     polys = poly_method.apply(df, variables=["c", "T"])
 
     ax = plt.gca()
@@ -168,7 +138,7 @@ def get_phase_colors(phase_names, override: dict[str, str] | None = None):
 @deprecate(alpha="Pass a poly method from landau.poly to poly_method")
 def plot_mu_phase_diagram(
     df, alpha=0.1, element=None, color_override: dict[str, str] = {},
-    poly_method: Literal["concave", "segments", "tsp"] | poly.AbstractPolyMethod = "tsp",
+    poly_method: Literal["concave", "segments", "fasttsp", "tsp"] | poly.AbstractPolyMethod | None = None,
 ):
     df = df.query("stable").copy()
 
@@ -178,7 +148,7 @@ def plot_mu_phase_diagram(
     if (df.phase_unit==-1).any():
         warn("Clustering of phase points failed for some points, dropping them.")
         df = df.query('phase_unit>=0')
-    poly_method = _handle_poly_method(poly_method, alpha=alpha)
+    poly_method = poly.handle_poly_method(poly_method, alpha=alpha)
     polys = poly_method.apply(df, variables=["mu", "T"])
 
     ax = plt.gca()
