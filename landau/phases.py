@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from functools import lru_cache, cache
-from typing import Iterable
+from typing import Iterable, Optional
 from pyiron_snippets.deprecate import deprecate
 
 import matplotlib.pyplot as plt
@@ -12,7 +12,7 @@ import scipy.special as se
 
 import numpy as np
 
-from .interpolate import TemperatureInterpolator, SGTE, PolyFit, RedlichKister
+from .interpolate import TemperatureInterpolator, SGTE, PolyFit, RedlichKister, SoftplusFit
 
 from scipy.constants import Boltzmann, eV
 
@@ -537,6 +537,8 @@ class SlowInterpolatingPhase(Phase):
     add_entropy: bool = False
     maximum_extrapolation: float = 0
     concentration_range: tuple[float, float] = (0., 1.)
+    fit_method: Optional[str] = None
+    n_softplus: int = 2
 
     def __post_init__(self, *args, **kwargs):
         object.__setattr__(self, "phases", tuple(self.phases))
@@ -560,8 +562,14 @@ class SlowInterpolatingPhase(Phase):
         # TODO: needs better naming: If the free energies of the phase objects
         # already contain the entropy of mixing, remove it here first, before
         # we try to fit the redlich kister coeffs
+
         if not self.add_entropy:
             ff += T * S(cc)
+
+        if getattr(self, "fit_method", None) == "softplus":
+            # Use user-supplied n_softplus, do NOT try to infer from num_coeffs
+            return SoftplusFit(self.n_softplus).fit(cc, ff)
+    
         if cc[0] == 0 and cc[-1] == 1:
             return RedlichKister(max(1, self.num_coeffs - 2)).fit(cc, ff)
         else:
