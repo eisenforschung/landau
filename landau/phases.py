@@ -12,7 +12,7 @@ import scipy.special as se
 
 import numpy as np
 
-from .interpolate import TemperatureInterpolator, SGTE, PolyFit, RedlichKister, SoftplusFit
+from .interpolate import ConcentrationInterpolator, TemperatureInterpolator, SGTE, PolyFit, RedlichKister, SoftplusFit
 
 from scipy.constants import Boltzmann, eV
 
@@ -524,7 +524,6 @@ class InterpolatingPhase(Phase):
         )
         check_concentration_interpolation(self, self.phases, T, samples, plot_excess, concentration_range)
 
-
 @dataclass(frozen=True, eq=True)
 class SlowInterpolatingPhase(Phase):
     """
@@ -533,16 +532,13 @@ class SlowInterpolatingPhase(Phase):
     """
 
     phases: Iterable[AbstractLinePhase]
-    num_coeffs: int = None
     add_entropy: bool = False
     maximum_extrapolation: float = 0
     concentration_range: tuple[float, float] = (0., 1.)
-    fit_method: Optional[str] = None
-    n_softplus: int = 2
+    interpolator: ConcentrationInterpolator = None
 
     def __post_init__(self, *args, **kwargs):
         object.__setattr__(self, "phases", tuple(self.phases))
-        object.__setattr__(self, "num_coeffs", min(len(self.phases), self.num_coeffs or np.inf))
 
         cs = [p.line_concentration for p in self.phases]
         concentration_range = (
@@ -551,6 +547,14 @@ class SlowInterpolatingPhase(Phase):
         )
 
         object.__setattr__(self, "concentration_range", concentration_range)
+
+        if not (self.concentration_range[0] == 0 and self.concentration_range[1] == 1) and (self.interpolator is RedlichKister):
+            raise ValueError("RedlichKister interpolation requires both the terminal phases at c=0 and c=1")
+        
+        if self.interpolator is None:
+            object.__setattr__(self, "interpolator", SoftplusFit())
+
+        # FIXME: Was earlier present- object.__setattr__(self, "num_coeffs", min(len(self.phases), self.num_coeffs or np.inf))
 
     @lru_cache(maxsize=250)
     def _get_interpolation(self, T):
@@ -566,14 +570,10 @@ class SlowInterpolatingPhase(Phase):
         if not self.add_entropy:
             ff += T * S(cc)
 
-        if getattr(self, "fit_method", None) == "softplus":
-            # Use user-supplied n_softplus, do NOT try to infer from num_coeffs
-            return SoftplusFit(self.n_softplus).fit(cc, ff)
-    
-        if cc[0] == 0 and cc[-1] == 1:
-            return RedlichKister(max(1, self.num_coeffs - 2)).fit(cc, ff)
-        else:
-            return PolyFit(self.num_coeffs).fit(cc, ff)
+        if self.interpolator is not None:
+            return self.interpolator.fit(cc, ff)
+        
+        # FIXME: Was earlier present- Need to add the max() function for RedlichKister - return RedlichKister(max(1, self.num_coeffs - 2)).fit(cc, ff)
 
     def free_energy(self, T, c):
         return np.vectorize(
@@ -622,7 +622,6 @@ class SlowInterpolatingPhase(Phase):
             plot_excess (bool): if True, subtract free energy at concentration range endpoints for legibility
             concentration_range (tuple of float): min/max concentration range"""
         check_concentration_interpolation(self, self.phases, T, samples, plot_excess, self.concentration_range)
-
 
 def check_concentration_interpolation(
         phase: SlowInterpolatingPhase | InterpolatingPhase | RegularSolution,
