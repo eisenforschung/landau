@@ -548,7 +548,7 @@ class SlowInterpolatingPhase(Phase):
 
         object.__setattr__(self, "concentration_range", concentration_range)
 
-        if not (self.concentration_range[0] == 0 and self.concentration_range[1] == 1) and (self.interpolator is RedlichKister):
+        if not (self.concentration_range[0] == 0 and self.concentration_range[1] == 1) and isinstance(self.interpolator, RedlichKister):
             raise ValueError("RedlichKister interpolation requires both the terminal phases at c=0 and c=1")
         
         if self.interpolator is None:
