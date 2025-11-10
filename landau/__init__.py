@@ -5,6 +5,16 @@ from .phases import (
     IdealSolution,
     RegularSolution,
     InterpolatingPhase,
+    SlowInterpolatingPhase
+)
+
+from .interpolate import (
+    ConcentrationInterpolator,
+    TemperatureInterpolator,
+    SGTE,
+    PolyFit,
+    RedlichKister,
+    SoftplusFit,
 )
 
 from .plot import plot_phase_diagram

@@ -123,6 +123,7 @@ class RedlichKister(ConcentrationInterpolator):
 
     def __post_init__(self):
         assert self.nparam > 0, "Must fit at least one parameter!"
+        # FIXME: Was earlier in phases.py- object.__setattr__(self, "nparam", max(1, self.nparam - 2))
 
     def fit(self, c, f):
         """
@@ -234,7 +235,7 @@ class StitchedFit(TemperatureInterpolator):
 class SoftplusFit(ConcentrationInterpolator, TemperatureInterpolator):
     n_softplus: int = 2
     """Number of softplus terms to fit."""
-    loss: str = "soft_l1"
+    loss: Literal["linear", "soft_l1", "huber", "cauchy", "arctan"] = "soft_l1"
     """Loss function for robust fitting."""
     max_nfev: int = 100000
     """Maximum number of function evaluations."""
