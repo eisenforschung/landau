@@ -552,7 +552,10 @@ class SlowInterpolatingPhase(Phase):
             raise ValueError("RedlichKister interpolation requires terminal phases at both c=0 and c=1")
 
         if self.interpolator is None:
-            object.__setattr__(self, "interpolator", SoftplusFit())
+            if (self.concentration_range[0] == 0 and self.concentration_range[1] == 1):
+                object.__setattr__(self, "interpolator", RedlichKister())
+            else:
+                object.__setattr__(self, "interpolator", SoftplusFit())
 
         # FIXME: Was earlier present- object.__setattr__(self, "num_coeffs", min(len(self.phases), self.num_coeffs or np.inf))
 
