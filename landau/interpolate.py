@@ -233,6 +233,14 @@ class StitchedFit(TemperatureInterpolator):
 
 @dataclass(frozen=True, eq=True)
 class SoftplusFit(ConcentrationInterpolator, TemperatureInterpolator):
+    """
+    Fits data using a sum of softplus functions for smooth, flexible interpolation.
+    
+    The softplus function provides numerically stable, smooth approximations suitable
+    for thermodynamic data. This interpolator uses multiple softplus terms to capture
+    complex behavior.
+    """
+
     n_softplus: int = 2
     """Number of softplus terms to fit."""
     loss: Literal["linear", "soft_l1", "huber", "cauchy", "arctan"] = "soft_l1"
@@ -290,7 +298,7 @@ class SoftplusFit(ConcentrationInterpolator, TemperatureInterpolator):
         ub += [ np.inf]
 
         # 5. Fit
-        def resid(p): 
+        def resid(p):
             return model(xn, *p) - y
 
         res = least_squares(
@@ -303,5 +311,5 @@ class SoftplusFit(ConcentrationInterpolator, TemperatureInterpolator):
             x_new = np.asarray(x_new, float)
             xn_new = (x_new - xm) / xs
             return model(xn_new, *popt)
-        
+
         return predictor

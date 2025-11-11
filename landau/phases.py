@@ -535,7 +535,7 @@ class SlowInterpolatingPhase(Phase):
     add_entropy: bool = False
     maximum_extrapolation: float = 0
     concentration_range: tuple[float, float] = (0., 1.)
-    interpolator: ConcentrationInterpolator = None
+    interpolator: Optional[ConcentrationInterpolator] = None
 
     def __post_init__(self, *args, **kwargs):
         object.__setattr__(self, "phases", tuple(self.phases))
@@ -549,8 +549,8 @@ class SlowInterpolatingPhase(Phase):
         object.__setattr__(self, "concentration_range", concentration_range)
 
         if not (self.concentration_range[0] == 0 and self.concentration_range[1] == 1) and isinstance(self.interpolator, RedlichKister):
-            raise ValueError("RedlichKister interpolation requires both the terminal phases at c=0 and c=1")
-        
+            raise ValueError("RedlichKister interpolation requires terminal phases at both c=0 and c=1")
+
         if self.interpolator is None:
             object.__setattr__(self, "interpolator", SoftplusFit())
 
@@ -570,9 +570,8 @@ class SlowInterpolatingPhase(Phase):
         if not self.add_entropy:
             ff += T * S(cc)
 
-        if self.interpolator is not None:
-            return self.interpolator.fit(cc, ff)
-        
+        return self.interpolator.fit(cc, ff)
+
         # FIXME: Was earlier present- Need to add the max() function for RedlichKister - return RedlichKister(max(1, self.num_coeffs - 2)).fit(cc, ff)
 
     def free_energy(self, T, c):
