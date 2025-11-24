@@ -123,7 +123,6 @@ class RedlichKister(ConcentrationInterpolator):
 
     def __post_init__(self):
         assert self.nparam > 0, "Must fit at least one parameter!"
-        # FIXME: Was earlier in phases.py- object.__setattr__(self, "nparam", max(1, self.nparam - 2))
 
     def fit(self, c, f):
         """

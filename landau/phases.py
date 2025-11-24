@@ -536,9 +536,15 @@ class SlowInterpolatingPhase(Phase):
     maximum_extrapolation: float = 0
     concentration_range: tuple[float, float] = (0., 1.)
     interpolator: Optional[ConcentrationInterpolator] = None
+    num_coeffs: int = None
 
     def __post_init__(self, *args, **kwargs):
         object.__setattr__(self, "phases", tuple(self.phases))
+
+        if self.interpolator is None and self.num_coeffs is None:
+            raise ValueError("Either num_coeffs or interpolator must be specified")
+        if self.interpolator is None and self.num_coeffs is not None:
+            object.__setattr__(self, "num_coeffs", min(len(self.phases), self.num_coeffs or np.inf))
 
         cs = [p.line_concentration for p in self.phases]
         concentration_range = (
@@ -553,11 +559,9 @@ class SlowInterpolatingPhase(Phase):
 
         if self.interpolator is None:
             if (self.concentration_range[0] == 0 and self.concentration_range[1] == 1):
-                object.__setattr__(self, "interpolator", RedlichKister())
+                object.__setattr__(self, "interpolator", RedlichKister(max(1, self.num_coeffs - 2)))
             else:
-                object.__setattr__(self, "interpolator", SoftplusFit())
-
-        # FIXME: Was earlier present- object.__setattr__(self, "num_coeffs", min(len(self.phases), self.num_coeffs or np.inf))
+                object.__setattr__(self, "interpolator", PolyFit(self.num_coeffs))
 
     @lru_cache(maxsize=250)
     def _get_interpolation(self, T):
@@ -574,8 +578,6 @@ class SlowInterpolatingPhase(Phase):
             ff += T * S(cc)
 
         return self.interpolator.fit(cc, ff)
-
-        # FIXME: Was earlier present- Need to add the max() function for RedlichKister - return RedlichKister(max(1, self.num_coeffs - 2)).fit(cc, ff)
 
     def free_energy(self, T, c):
         return np.vectorize(
