@@ -244,7 +244,7 @@ class SoftplusFit(ConcentrationInterpolator, TemperatureInterpolator):
     """Number of softplus terms to fit."""
     loss: Literal["linear", "soft_l1", "huber", "cauchy", "arctan"] = "soft_l1"
     """Loss function for robust fitting."""
-    max_nfev: int = 100000
+    max_nfev: int = 100
     """Maximum number of function evaluations."""
 
     def fit(self, x, y) -> Callable[[float], float]:
@@ -301,7 +301,7 @@ class SoftplusFit(ConcentrationInterpolator, TemperatureInterpolator):
             return model(xn, *p) - y
 
         res = least_squares(
-            resid, p0, bounds=(lb, ub), loss=self.loss, max_nfev=self.max_nfev
+            resid, p0, bounds=(lb, ub), loss=self.loss, max_nfev=self.max_nfev,
         )
         popt = res.x
 
