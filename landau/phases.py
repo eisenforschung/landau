@@ -536,15 +536,9 @@ class SlowInterpolatingPhase(Phase):
     maximum_extrapolation: float = 0
     concentration_range: tuple[float, float] = (0., 1.)
     interpolator: Optional[ConcentrationInterpolator] = None
-    num_coeffs: int = None
 
     def __post_init__(self, *args, **kwargs):
         object.__setattr__(self, "phases", tuple(self.phases))
-
-        if self.interpolator is None and self.num_coeffs is None:
-            raise ValueError("Either num_coeffs or interpolator must be specified")
-        if self.interpolator is None and self.num_coeffs is not None:
-            object.__setattr__(self, "num_coeffs", min(len(self.phases), self.num_coeffs or np.inf))
 
         cs = [p.line_concentration for p in self.phases]
         concentration_range = (
@@ -559,11 +553,11 @@ class SlowInterpolatingPhase(Phase):
 
         if self.interpolator is None:
             if (self.concentration_range[0] == 0 and self.concentration_range[1] == 1):
-                object.__setattr__(self, "interpolator", RedlichKister(max(1, self.num_coeffs - 2)))
+                object.__setattr__(self, "interpolator", RedlichKister(min(5, len(self.phases))))
             else:
-                object.__setattr__(self, "interpolator", PolyFit(self.num_coeffs))
+                object.__setattr__(self, "interpolator", PolyFit(min(4, len(self.phases))))
 
-    @lru_cache(maxsize=250)
+    @lru_cache(maxsize=2500)
     def _get_interpolation(self, T):
         if not isinstance(T, Real):
             raise TypeError(T)
