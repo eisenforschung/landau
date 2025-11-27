@@ -12,6 +12,7 @@ version_file = "landau/_version.py"
 line-length = 120
 
 [project]
+description = "A library to calculate alloy thermodynamic equilibria and plot phase diagrams in the (semi-)grand ensemble."
 name = "landau"
 dynamic = ["version"]
 authors = [
