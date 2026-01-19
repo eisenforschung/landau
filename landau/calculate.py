@@ -444,9 +444,17 @@ def get_transitions(df):
 
     # cluster points that are assigned as one transition, because the same transition can appear multiple times in "disconnected" manner in a phase
     # diagram, e.g. a solid solution in contact with the melt interrupted by a higher melting intermetallic
-    tdf["transition_unit"] = tdf.groupby("transition", group_keys=False).apply(cluster, include_groups=False)
-    tdf["border_segment"] = tdf[["transition", "transition_unit"]].apply(
-        lambda r: "_".join(map(str, r.tolist())), axis="columns"
-    )
+    if not tdf.empty:
+        res = tdf.groupby("transition", group_keys=False).apply(cluster, include_groups=False)
+        if isinstance(res, pd.DataFrame):
+             # sometimes pandas returns a DataFrame instead of a Series when only one group exists
+             res = res.stack().reset_index(level=0, drop=True)
+        tdf["transition_unit"] = res
+        tdf["border_segment"] = tdf[["transition", "transition_unit"]].apply(
+            lambda r: "_".join(map(str, r.tolist())), axis="columns"
+        )
+    else:
+        tdf["transition_unit"] = []
+        tdf["border_segment"] = []
 
     return tdf
