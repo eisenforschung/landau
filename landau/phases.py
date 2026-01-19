@@ -285,7 +285,7 @@ class RegularSolution(Phase):
     @lru_cache(maxsize=250)
     def _get_interpolation(self, T):
         cc = np.array([l.line_concentration for l in self.phases])
-        ff = np.array([l.line_free_energy(T) for l in self.phases])
+        ff = np.array([l.line_free_energy(T) for l in self.phases], dtype=float)
 
         # TODO: needs better naming: If the free energies of the phase objects
         # already contain the entropy of mixing, remove it here first, before
@@ -388,9 +388,10 @@ class RegularSolution(Phase):
         return pi
 
     def concentration(self, T, dmu):
-        if not isinstance(dmu, np.ndarray):
+        if not isinstance(dmu, np.ndarray) or dmu.size == 1:
             dmus = np.linspace(-1, 1, 5) * 1e-3 + dmu
-            return self.concentration(T, dmus)[2]
+            res = self.concentration(T, dmus)[2]
+            return np.array([res]) if isinstance(dmu, np.ndarray) else res
         return np.clip(-np.gradient(self.semigrand_potential(T, dmu), dmu, edge_order=2), 0, 1)
 
     @deprecate('Use check_concentration_interpolation instead')
