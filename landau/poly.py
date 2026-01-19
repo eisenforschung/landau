@@ -59,6 +59,9 @@ class Concave(AbstractPolyMethod):
         pp = dd.sort_values(variables[0])[variables].to_numpy()
         pp = np.unique(pp[np.isfinite(pp).all(axis=-1)], axis=0)
 
+        if len(pp) == 0:
+            return None
+
         refnorm = {}
         for i, var in enumerate(variables):
             refnorm[var] = pp[:, i].min(), (np.ptp(pp[:, i]) or 1)
@@ -144,6 +147,8 @@ class Segments(AbstractPolyMethod):
         Picking a random segments breaks for phases that are stable at the lower or upper edge of the diagram, where we technically do not compute
         a "segment".  A "proper" fix would be to modify b to allow joining also to the start of "head" rather than just the end.
         """
+        if df.empty:
+            return pd.DataFrame(columns=df.columns)
 
         com = df[[x_col, y_col]].mean()
         norm = np.ptp(df[[x_col, y_col]], axis=0).values
@@ -161,6 +166,9 @@ class Segments(AbstractPolyMethod):
         segments = []
         for label, dd in df.groupby(segment_label):
             segments.append(pca_projection(dd))
+
+        if not segments:
+            return pd.DataFrame(columns=df.columns)
 
         # initial sorting by center of mass angle
         segments = sorted(
@@ -247,6 +255,8 @@ with ImportAlarm("'python_tsp' package required for PythonTsp.  Install from con
         def make(self, dd, variables=["c", "T"]):
             c = dd.query('border')[variables].to_numpy()
             c = c[np.isfinite(c).all(axis=-1)]
+            if len(c) == 0:
+                return None
             shape = shapely.convex_hull(shapely.MultiPoint(c))
             if isinstance(shape, shapely.LineString):
                 coords = np.array(shape.buffer(self.min_c_width/2).exterior.coords)
@@ -262,6 +272,8 @@ with ImportAlarm("'python_tsp' package required for PythonTsp.  Install from con
                 return Polygon(coords)
             sc = StandardScaler().fit_transform(c)
             dm = pairwise_distances(sc)
+            if not (dm > 0).any():
+                return shapely.convex_hull(shapely.MultiPoint(c))
             dm = (dm / dm[dm > 0].min()).round().astype(int)
             tour = solve_tsp_record_to_record(
                     dm, x0=np.argsort(np.arctan2(sc[:, 1], sc[:, 0])).tolist(),
@@ -285,6 +297,8 @@ with ImportAlarm("'fast-tsp' package required for FastTsp.  Install from pip.") 
         def make(self, dd, variables=["c", "T"]):
             c = dd.query('border')[variables].to_numpy()
             c = c[np.isfinite(c).all(axis=-1)]
+            if len(c) == 0:
+                return None
             shape = shapely.convex_hull(shapely.MultiPoint(c))
             if isinstance(shape, shapely.LineString):
                 coords = np.array(shape.buffer(self.min_c_width/2).exterior.coords)
@@ -300,6 +314,8 @@ with ImportAlarm("'fast-tsp' package required for FastTsp.  Install from pip.") 
                 return Polygon(coords)
             sc = StandardScaler().fit_transform(c)
             dm = pairwise_distances(sc)
+            if not (dm > 0).any():
+                return shapely.convex_hull(shapely.MultiPoint(c))
             dm = (dm / dm[dm > 0].min()).round().astype(int)
             tour = fast_tsp.find_tour(dm, self.duration_seconds)
             return Polygon(c[tour])
