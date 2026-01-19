@@ -4,6 +4,7 @@ from hypothesis import given, strategies as st, settings
 from landau.poly import Concave, Segments, PythonTsp, FastTsp, handle_poly_method
 import pytest
 import shapely
+from matplotlib.patches import Polygon
 
 # Check if optional dependencies are available
 try:
@@ -47,39 +48,58 @@ def poly_dataframe(draw):
 def test_concave(df):
     method = Concave()
     # Test apply (which calls prepare and make)
-    method.apply(df)
+    res = method.apply(df)
+    assert isinstance(res, (pd.Series, pd.DataFrame))
+    if isinstance(res, pd.Series):
+        for p in res:
+            assert isinstance(p, Polygon)
 
 @settings(deadline=None)
 @given(df=poly_dataframe())
 def test_segments(df):
     method = Segments()
     # Segments.prepare requires 'refined' and 'phase_id'
-    method.apply(df)
+    res = method.apply(df)
+    assert isinstance(res, (pd.Series, pd.DataFrame))
+    if isinstance(res, pd.Series):
+        for p in res:
+            assert isinstance(p, Polygon)
 
 @pytest.mark.skipif(not HAS_PYTHON_TSP, reason="python-tsp not installed")
 @settings(deadline=None)
 @given(df=poly_dataframe())
 def test_python_tsp(df):
     method = PythonTsp()
-    method.apply(df)
+    res = method.apply(df)
+    assert isinstance(res, (pd.Series, pd.DataFrame))
+    if isinstance(res, pd.Series):
+        for p in res:
+            assert isinstance(p, Polygon)
 
 @pytest.mark.skipif(not HAS_FAST_TSP, reason="fast-tsp not installed")
 @settings(deadline=None)
 @given(df=poly_dataframe())
 def test_fast_tsp(df):
     method = FastTsp()
-    method.apply(df)
+    res = method.apply(df)
+    assert isinstance(res, (pd.Series, pd.DataFrame))
+    if isinstance(res, pd.Series):
+        for p in res:
+            assert isinstance(p, Polygon)
 
 def test_handle_poly_method():
-    handle_poly_method('concave')
-    handle_poly_method('segments')
+    assert isinstance(handle_poly_method('concave'), Concave)
+    assert isinstance(handle_poly_method('segments'), Segments)
     if HAS_PYTHON_TSP:
-        handle_poly_method('tsp')
+        assert isinstance(handle_poly_method('tsp'), PythonTsp)
     if HAS_FAST_TSP:
-        handle_poly_method('fasttsp')
+        assert isinstance(handle_poly_method('fasttsp'), FastTsp)
 
     # Test with custom arguments
-    handle_poly_method('concave', alpha=0.2, min_c_width=0.02)
+    res = handle_poly_method('concave', alpha=0.2, min_c_width=0.02)
+    assert isinstance(res, Concave)
+    assert res.ratio == 0.2
+    assert res.min_c_width == 0.02
 
     with pytest.raises(ValueError):
         handle_poly_method('invalid_method')

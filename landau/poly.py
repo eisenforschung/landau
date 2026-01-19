@@ -72,6 +72,8 @@ class Concave(AbstractPolyMethod):
         shape = shapely.convex_hull(points)
         if variables[0] == "c" and isinstance(shape, shapely.LineString):
             coords = np.asarray(shape.coords)
+            if len(coords) < 2:
+                return None
             if np.allclose(coords[:, 0], coords[0, 0]):
                 match refnorm["c"][0]:
                     case 0.0:
@@ -98,7 +100,12 @@ class Concave(AbstractPolyMethod):
             if not isinstance(shape, shapely.Polygon):
                 warn(f"Failed to construct polygon, got {shape} instead, skipping.")
                 return None
-            coords = np.asarray(shape.exterior.coords)
+            if not shape.is_empty:
+                coords = np.asarray(shape.exterior.coords)
+                if len(coords) < 3:
+                    return None
+            else:
+                return None
         for i, var in enumerate(variables):
             coords[:, i] *= refnorm[var][1]
             coords[:, i] += refnorm[var][0]
@@ -258,7 +265,11 @@ with ImportAlarm("'python_tsp' package required for PythonTsp.  Install from con
             if len(c) == 0:
                 return None
             shape = shapely.convex_hull(shapely.MultiPoint(c))
-            if isinstance(shape, shapely.LineString):
+            if not isinstance(shape, shapely.Polygon):
+                if not isinstance(shape, shapely.LineString):
+                    return None
+                if len(shape.coords) < 2:
+                    return None
                 coords = np.array(shape.buffer(self.min_c_width/2).exterior.coords)
                 if "c" in variables:
                     match c[0, variables.index("c")]:
@@ -278,7 +289,7 @@ with ImportAlarm("'python_tsp' package required for PythonTsp.  Install from con
             tour = solve_tsp_record_to_record(
                     dm, x0=np.argsort(np.arctan2(sc[:, 1], sc[:, 0])).tolist(),
                     max_iterations=self.max_iterations)[0]
-            return Polygon(c[tour])
+            return Polygon(c[tour]) if len(tour) > 2 else None
     __all__ += ["PythonTsp"]
 
 
@@ -300,7 +311,11 @@ with ImportAlarm("'fast-tsp' package required for FastTsp.  Install from pip.") 
             if len(c) == 0:
                 return None
             shape = shapely.convex_hull(shapely.MultiPoint(c))
-            if isinstance(shape, shapely.LineString):
+            if not isinstance(shape, shapely.Polygon):
+                if not isinstance(shape, shapely.LineString):
+                    return None
+                if len(shape.coords) < 2:
+                    return None
                 coords = np.array(shape.buffer(self.min_c_width/2).exterior.coords)
                 if "c" in variables:
                     match c[0, variables.index("c")]:
@@ -318,7 +333,7 @@ with ImportAlarm("'fast-tsp' package required for FastTsp.  Install from pip.") 
                 return shapely.convex_hull(shapely.MultiPoint(c))
             dm = (dm / dm[dm > 0].min()).round().astype(int)
             tour = fast_tsp.find_tour(dm, self.duration_seconds)
-            return Polygon(c[tour])
+            return Polygon(c[tour]) if len(tour) > 2 else None
 
     __all__ += ["FastTsp"]
 
