@@ -1,12 +1,13 @@
 import pandas as pd
 from hypothesis import given, strategies as st, settings
-from landau.poly import Concave, Segments, PythonTsp, FastTsp, handle_poly_method
+from landau.poly import Concave, Segments, handle_poly_method
 import pytest
 from matplotlib.patches import Polygon
 
 # Check if optional dependencies are available
 try:
     import python_tsp
+    from landau.poly import PythonTsp
 
     HAS_PYTHON_TSP = True
 except ImportError:
@@ -14,6 +15,7 @@ except ImportError:
 
 try:
     import fast_tsp
+    from landau.poly import FastTsp
 
     HAS_FAST_TSP = True
 except ImportError:
