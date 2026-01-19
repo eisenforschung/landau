@@ -19,6 +19,22 @@ from scipy.constants import Boltzmann, eV
 kB = Boltzmann / eV
 
 
+__all__ = [
+    "Phase",
+    "AbstractLinePhase",
+    "LinePhase",
+    "TemperatureDependentLinePhase",
+    "IdealSolution",
+    "RegularSolution",
+    "InterpolatingPhase",
+    "SlowInterpolatingPhase",
+    "AbstractPointDefect",
+    "ConstantPointDefect",
+    "PointDefectSublattice",
+    "PointDefectedPhase",
+]
+
+
 def S(c):
     return kB * (se.entr(c) + se.entr(1 - c))
 
