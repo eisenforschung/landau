@@ -10,6 +10,10 @@ import numpy as np
 from .calculate import get_transitions, cluster
 import landau.poly as poly
 
+
+__all__ = ["plot_phase_diagram", "plot_mu_phase_diagram", "plot_1d_mu_phase_diagram", "plot_1d_T_phase_diagram"]
+
+
 def cluster_phase(df):
     """Cluster the stable, single phase regions.
 

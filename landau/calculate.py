@@ -21,6 +21,9 @@ from .phases import Phase, AbstractLinePhase
 kB = Boltzmann / eV
 
 
+__all__ = ["calc_phase_diagram", "get_transitions"]
+
+
 def find_one_point(phase1, phase2, potential, var_range):
     """
     Find a exact phase transition between to phases.
