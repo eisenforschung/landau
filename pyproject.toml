@@ -39,6 +39,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+test = ["pytest"]
 constraints = ["polyfit"]
 python-tsp = ["python-tsp>=0.4.2,<0.6"]
 fast-tsp = ["fast-tsp==0.1.4"]
