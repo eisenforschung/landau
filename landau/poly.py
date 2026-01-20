@@ -23,7 +23,7 @@ class AbstractPolyMethod(abc.ABC):
     '''If line phases are detected, make them at least this thick in c space.'''
 
     def prepare(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Massage data set into format so that :meth:`.make` can by applied
+        """Massage data set into format so that :method:`.make` can by applied
         over groups of columns `phase` and `phase_unit`."""
         return df
 
@@ -342,7 +342,7 @@ with ImportAlarm("'fast-tsp' package required for FastTsp.  Install from pip.") 
 @python_tsp_alarm
 def handle_poly_method(poly_method, **kwargs):
     '''Uniform handling of poly_method between plot_phase_diagram and plot_mu_phase_diagram.
-    Some \*\*kwargs trickery required to handle now deprecated min_c_width and alpha arguments.'''
+    Some **kwargs trickery required to handle now deprecated min_c_width and alpha arguments.'''
     ratio = kwargs.pop('alpha', Concave.ratio)
     allowed = {
                 'concave': Concave(**kwargs, ratio=ratio),
