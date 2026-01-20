@@ -1,0 +1,12 @@
+sphinx
+sphinx-rtd-theme
+myst-nb
+sphinx-autodoc-typehints
+pandas
+numpy
+matplotlib
+scipy
+shapely
+seaborn
+scikit-learn
+pyiron_snippets
