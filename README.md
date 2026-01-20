@@ -1,4 +1,6 @@
-[![DOI](https://zenodo.org/badge/931240296.svg)](https://doi.org/10.5281/zenodo.15513439)[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/eisenforschung/landau)
+[![DOI](https://zenodo.org/badge/931240296.svg)](https://doi.org/10.5281/zenodo.15513439)
+[![Documentation Status](https://readthedocs.org/projects/landau/badge/?version=latest)](https://landau.readthedocs.io/en/latest/?badge=latest)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/eisenforschung/landau)
 
 # landau.py
 

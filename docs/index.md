@@ -7,15 +7,10 @@ A library to calculate thermodynamic equilibria and plot phase diagrams in the
 :maxdepth: 2
 :hidden:
 
+self
+installation
 api
 notebooks
-```
-
-## Building packages
-
-```bash
-pip install build
-python -m build --sdist
 ```
 
 ## Citation
