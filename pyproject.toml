@@ -43,6 +43,12 @@ test = [
     "pytest>=9,<10",
     "hypothesis>=6,<7",
 ]
+docs = [
+    "sphinx",
+    "sphinx-rtd-theme",
+    "myst-nb",
+    "sphinx-autodoc-typehints",
+]
 constraints = ["polyfit"]
 python-tsp = ["python-tsp>=0.4.2,<=0.5"]
 fast-tsp = ["fast-tsp>=0.1.4,<=0.1.5"]
