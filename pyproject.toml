@@ -44,8 +44,8 @@ test = [
     "hypothesis>=6,<7",
 ]
 constraints = ["polyfit"]
-python-tsp = ["python-tsp>=0.4.2,<0.6"]
-fast-tsp = ["fast-tsp==0.1.4"]
+python-tsp = ["python-tsp>=0.4.2,<=0.5"]
+fast-tsp = ["fast-tsp>=0.1.4,<=0.1.5"]
 
 [project.urls]
 Repository = "https://github.com/eisenforschung/landau"
