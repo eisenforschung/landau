@@ -11,7 +11,14 @@ from .calculate import get_transitions, cluster
 import landau.poly as poly
 
 
-__all__ = ["plot_phase_diagram", "plot_mu_phase_diagram", "plot_1d_mu_phase_diagram", "plot_1d_T_phase_diagram"]
+__all__ = [
+    "plot_phase_diagram",
+    "plot_mu_phase_diagram",
+    "plot_1d_mu_phase_diagram",
+    "plot_1d_T_phase_diagram",
+    "get_polygons",
+    "plot_polygons",
+]
 
 
 def cluster_phase(df):
@@ -31,100 +38,189 @@ def cluster_phase(df):
     )
     return df
 
-@deprecate(
-        alpha="Pass a poly method from landau.poly to poly_method",
-        min_c_width="Pass a poly method from landau.poly to poly_method",
-)
-def plot_phase_diagram(
-    df, alpha=0.1, element=None, min_c_width=1e-2, color_override: dict[str, str] = {}, tielines=False,
-    poly_method: Literal["concave", "segments", "fasttsp", "tsp"] | poly.AbstractPolyMethod | None = None
+def get_polygons(
+    df,
+    poly_method: Literal["concave", "segments", "fasttsp", "tsp"] | poly.AbstractPolyMethod | None = None,
+    variables: list[str] = ["c", "T"],
+    **kwargs,
 ):
+    """Turn the stable phase regions in df into polygons.
+
+    Args:
+        df (pandas.DataFrame):
+            Input data containing columns for the variables and 'phase', 'stable'.
+        poly_method (str or poly.AbstractPolyMethod, optional):
+            The method to use for polygon construction.
+        variables (list of str, optional):
+            The columns in df to use as coordinates for the polygons. Defaults to ["c", "T"].
+        **kwargs:
+            Passed to poly.handle_poly_method.
+
+    Returns:
+        pandas.Series:
+            The constructed polygons, indexed by phase and phase_unit.
+    """
     df = df.query("stable").copy()
-
-    # the default map
-    color_map = dict(zip(df.phase.unique(), sns.palettes.SEABORN_PALETTES["pastel"]))
-    # disregard overriden phases that are not present
-    color_override = {p: c for p, c in color_override.items() if p in color_map}
-    # if the override uses the same colors as the default map, multiple phases
-    # would be mapped to the same color; so instead let's update the color map of phases that would
-    # use the same color as a phase in the override to use the default colors of the overriden phases
-    # instead
-    duplicates_map = {c: color_map[o] for o, c in color_override.items()}
-    diff = {k: duplicates_map[c] for k, c in color_map.items() if c in duplicates_map}
-    color_map.update(diff | color_override)
-
     df = cluster_phase(df)
-    if (df.phase_unit==-1).any():
+    if (df.phase_unit == -1).any():
         warn("Clustering of phase points failed for some points, dropping them.")
-        df = df.query('phase_unit>=0')
-    poly_method = poly.handle_poly_method(poly_method, min_c_width=min_c_width, alpha=alpha)
-    polys = poly_method.apply(df, variables=["c", "T"])
+        df = df.query("phase_unit>=0")
+    poly_method = poly.handle_poly_method(poly_method, **kwargs)
+    return poly_method.apply(df, variables=variables)
 
-    ax = plt.gca()
+
+def plot_polygons(polys, color_map, ax=None):
+    """Plot the given polygons to a matplotlib axis.
+
+    Args:
+        polys (pandas.Series):
+            The polygons to plot, as returned by get_polygons.
+        color_map (dict):
+            Mapping from phase names to colors.
+        ax (matplotlib.axes.Axes, optional):
+            The axis to plot on. If None, plt.gca() is used.
+    """
+    if ax is None:
+        ax = plt.gca()
     for i, (phase, p) in enumerate(polys.items()):
-        p.zorder = 1/p.get_extents().size.prod()
+        with np.errstate(divide="ignore"):
+            p.zorder = 1 / p.get_extents().size.prod()
         if isinstance(phase, tuple):
             phase, rep = phase
         else:
             rep = 0
         p.set_color(color_map[phase])
         p.set_edgecolor("k")
-        p.set_label(phase + '\'' * rep)
-        # p.set_label(polys.index[i])
+        p.set_label(phase + "'" * rep)
         ax.add_patch(p)
 
-    if tielines:
-        # TODO: quite buggy and not nice; can benefit a lot from
-        # get_transitions
-        if "refined" in df.columns:
-            tdf = get_transitions(df)
-            def plot_tie(dd):
-                Tmin = dd["T"].min()
-                Tmax = dd["T"].max()
-                di = dd.query("T==@Tmin")
-                da = dd.query("T==@Tmax")
-                # "artificial" segment at the border of diagram
-                # we just want to plot triple lines? so #phases==3
-                if len(dd.phase.unique()) in [1, 2]:
-                    return
-                plt.hlines(Tmin, di.c.min(), di.c.max(), color="k", zorder=-2, alpha=0.5, lw=4)
-                # current marvin to past marvin: Why is that even necessary?
-                if Tmin != Tmax:
-                    plt.hlines(Tmax, da.c.min(), da.c.max(), color="k", zorder=-2, alpha=0.5, lw=4)
 
-            # FIXME: WARNING reuses local var define in if branch
-            tdf.groupby("border_segment").apply(plot_tie)
-        else:
-            # count the numbers of distinct phases per T, it changes there *must* be a triple
-            # point, draw tie lines only there
-            # TODO: figure out how to only draw them between the involved phases not over the whole conc range
-            # the refined data points mess this up, because the phases are no longer on
-            # the same grid
-            chg = df.groupby("T").size().diff()
-            T_tie = chg.loc[chg != 0].index[1:]  # skip first temp
+def _plot_tielines(df, ax=None):
+    """Plot tielines for a concentration-based phase diagram.
 
-            def plot_tie(dd):
-                if dd["T"].iloc[0].round(3) not in T_tie.round(3):
-                    return
-                if len(dd) != 2:
-                    return
-                cl, cr = sorted(dd.c)
-                plt.plot([cl, cr], dd["T"], color="k", zorder=-2, alpha=0.5, lw=4)
+    Args:
+        df (pandas.DataFrame):
+            Input data.
+        ax (matplotlib.axes.Axes, optional):
+            The axis to plot on.
+    """
+    if ax is None:
+        ax = plt.gca()
+    # TODO: quite buggy and not nice; can benefit a lot from
+    # get_transitions
+    if "refined" in df.columns:
+        tdf = get_transitions(df)
 
-            df.groupby(["T", "mu"]).apply(plot_tie)
+        def plot_tie(dd):
+            Tmin = dd["T"].min()
+            Tmax = dd["T"].max()
+            di = dd.query("T==@Tmin")
+            da = dd.query("T==@Tmax")
+            # "artificial" segment at the border of diagram
+            # we just want to plot triple lines? so #phases==3
+            if len(dd.phase.unique()) in [1, 2]:
+                return
+            ax.hlines(Tmin, di.c.min(), di.c.max(), color="k", zorder=-2, alpha=0.5, lw=4)
+            # current marvin to past marvin: Why is that even necessary?
+            if Tmin != Tmax:
+                ax.hlines(Tmax, da.c.min(), da.c.max(), color="k", zorder=-2, alpha=0.5, lw=4)
 
-    plt.xlim(0, 1)
-    plt.ylim(df["T"].min(), df["T"].max())
-    plt.legend(ncols=2)
-    if element is not None:
-        plt.xlabel(rf"$c_\mathrm{{{element}}}$")
+        # FIXME: WARNING reuses local var define in if branch
+        tdf.groupby("border_segment").apply(plot_tie)
     else:
-        plt.xlabel("$c$")
-    plt.ylabel("$T$ [K]")
+        # count the numbers of distinct phases per T, it changes there *must* be a triple
+        # point, draw tie lines only there
+        # TODO: figure out how to only draw them between the involved phases not over the whole conc range
+        # the refined data points mess this up, because the phases are no longer on
+        # the same grid
+        chg = df.groupby("T").size().diff()
+        T_tie = chg.loc[chg != 0].index[1:]  # skip first temp
+
+        def plot_tie(dd):
+            if dd["T"].iloc[0].round(3) not in T_tie.round(3):
+                return
+            if len(dd) != 2:
+                return
+            cl, cr = sorted(dd.c)
+            ax.plot([cl, cr], dd["T"], color="k", zorder=-2, alpha=0.5, lw=4)
+
+        df.groupby(["T", "mu"]).apply(plot_tie)
+
+
+def _plot_phase_diagram(
+    df,
+    alpha=0.1,
+    element=None,
+    min_c_width=1e-2,
+    color_override: dict[str, str] = {},
+    tielines=False,
+    poly_method: Literal["concave", "segments", "fasttsp", "tsp"] | poly.AbstractPolyMethod | None = None,
+    variables: list[str] = ["c", "T"],
+    ax=None,
+):
+    if ax is None:
+        ax = plt.gca()
+    df_stable = df.query("stable")
+    color_map = get_phase_colors(df_stable.phase.unique(), color_override)
+
+    polys = get_polygons(df, poly_method=poly_method, variables=variables, min_c_width=min_c_width, alpha=alpha)
+
+    plot_polygons(polys, color_map, ax=ax)
+
+    if tielines and variables[0] == "c":
+        _plot_tielines(df, ax=ax)
+
+    if variables[0] == "c":
+        ax.set_xlim(0, 1)
+        if element is not None:
+            ax.set_xlabel(rf"$c_\mathrm{{{element}}}$")
+        else:
+            ax.set_xlabel("$c$")
+    elif variables[0] == "mu":
+        mus = df_stable["mu"].unique()
+        mus = mus[np.isfinite(mus)]
+        if len(mus) > 0:
+            ax.set_xlim(mus.min(), mus.max())
+        ax.set_xlabel(r"$\Delta\mu$ [eV]")
+
+    ax.set_ylim(df_stable["T"].min(), df_stable["T"].max())
+    ax.legend(ncols=2)
+    ax.set_ylabel("$T$ [K]")
+
+
+@deprecate(
+    alpha="Pass a poly method from landau.poly to poly_method",
+    min_c_width="Pass a poly method from landau.poly to poly_method",
+)
+def plot_phase_diagram(
+    df,
+    alpha=0.1,
+    element=None,
+    min_c_width=1e-2,
+    color_override: dict[str, str] = {},
+    tielines=False,
+    poly_method: Literal["concave", "segments", "fasttsp", "tsp"] | poly.AbstractPolyMethod | None = None,
+    variables: list[str] = ["c", "T"],
+    ax=None,
+):
+    return _plot_phase_diagram(
+        df,
+        alpha=alpha,
+        element=element,
+        min_c_width=min_c_width,
+        color_override=color_override,
+        tielines=tielines,
+        poly_method=poly_method,
+        variables=variables,
+        ax=ax,
+    )
+
 
 def get_phase_colors(phase_names, override: dict[str, str] | None = None):
     # the default map
     color_map = dict(zip(phase_names, sns.palettes.SEABORN_PALETTES["pastel"]))
+    if override is None:
+        return color_map
     # disregard overriden phases that are not present
     override = {p: c for p, c in override.items() if p in color_map}
     # if the override uses the same colors as the default map, multiple phases
@@ -138,39 +234,22 @@ def get_phase_colors(phase_names, override: dict[str, str] | None = None):
 
 @deprecate(alpha="Pass a poly method from landau.poly to poly_method")
 def plot_mu_phase_diagram(
-    df, alpha=0.1, element=None, color_override: dict[str, str] = {},
+    df,
+    alpha=0.1,
+    element=None,
+    color_override: dict[str, str] = {},
     poly_method: Literal["concave", "segments", "fasttsp", "tsp"] | poly.AbstractPolyMethod | None = None,
+    ax=None,
 ):
-    df = df.query("stable").copy()
-
-    color_map = get_phase_colors(df.phase.unique(), color_override)
-
-    df = cluster_phase(df)
-    if (df.phase_unit==-1).any():
-        warn("Clustering of phase points failed for some points, dropping them.")
-        df = df.query('phase_unit>=0')
-    poly_method = poly.handle_poly_method(poly_method, alpha=alpha)
-    polys = poly_method.apply(df, variables=["mu", "T"])
-
-    ax = plt.gca()
-    for i, (phase, p) in enumerate(polys.items()):
-        p.zorder = 1/p.get_extents().size.prod()
-        if isinstance(phase, tuple):
-            phase, rep = phase
-        else:
-            rep = 0
-        p.set_color(color_map[phase])
-        p.set_edgecolor("k")
-        p.set_label(phase + '\'' * rep)
-        ax.add_patch(p)
-
-    mus = df["mu"].unique()
-    mus = mus[np.isfinite(mus)]
-    plt.xlim(mus.min(), mus.max())
-    plt.ylim(df["T"].min(), df["T"].max())
-    plt.legend(ncols=2)
-    plt.xlabel(r"$\Delta\mu$ [eV]")
-    plt.ylabel("$T$ [K]")
+    return _plot_phase_diagram(
+        df,
+        alpha=alpha,
+        element=element,
+        color_override=color_override,
+        poly_method=poly_method,
+        variables=["mu", "T"],
+        ax=ax,
+    )
 
 def plot_1d_mu_phase_diagram(
         df,
