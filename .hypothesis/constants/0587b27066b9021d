@@ -1,0 +1,4 @@
+# file: /app/landau/poly.py
+# hypothesis_version: 6.151.0
+
+[0.0, 0.01, 0.1, 1.0, 50000, 'Concave', 'FastTsp', 'PythonTsp', 'Segments', 'T', '_', 'alpha', 'border', 'border_segment', 'c', 'columns', 'concave', 'fasttsp', 'handle_poly_method', 'phase', 'phase_unit', 'projected', 'refined', 'segments', 'tsp']

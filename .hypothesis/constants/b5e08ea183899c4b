@@ -1,0 +1,4 @@
+# file: /app/landau/plot.py
+# hypothesis_version: 6.151.0
+
+[0.01, 0.05, 0.1, 0.5, '$T$ [K]', '$\\Delta\\mu$ [eV]', '$c$', "'", '@left < mu <= @right', 'T', 'T==@Tmax', 'T==@Tmin', 'Temperature [K]', '_', 'auto', 'border', 'border_segment', 'c', 'center', 'columns', 'concave', 'dotted', 'fasttsp', 'k', 'mu', 'o', 'pastel', 'phase', 'phase_id', 'phase_unit', 'phase_unit>=0', 'phi', 'plot_phase_diagram', 'refined', 'segments', 'stable', 'top', 'tsp', 'vertical']
