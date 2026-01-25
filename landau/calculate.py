@@ -21,7 +21,51 @@ from .phases import Phase, AbstractLinePhase
 kB = Boltzmann / eV
 
 
-__all__ = ["calc_phase_diagram", "get_transitions"]
+__all__ = ["calc_phase_diagram", "get_transitions", "refine_concentration_jumps"]
+
+
+def refine_concentration_jumps(df, phase, threshold=0.1, mu_tol=1e-8):
+    """
+    Refine concentration jumps in a phase diagram for a given phase.
+
+    Args:
+        df (pd.DataFrame): Phase diagram data.
+        phase (Phase): The phase object to check.
+        threshold (float): Minimum concentration jump to consider.
+        mu_tol (float): Tolerance for chemical potential refinement.
+
+    Returns:
+        list of dict: Refined jump points with keys 'c_left', 'c_right', 'mu', 'T'.
+    """
+    jumps = []
+    for T, group in df.groupby("T"):
+        group = group.sort_values("mu")
+        mus = group["mu"].to_numpy()
+        cs = group["c"].to_numpy()
+
+        for i in range(len(mus) - 1):
+            if abs(cs[i + 1] - cs[i]) > threshold:
+                # Refine
+                mu_low = mus[i]
+                mu_high = mus[i + 1]
+                c_low = cs[i]
+                c_high = cs[i + 1]
+
+                while mu_high - mu_low > mu_tol:
+                    mu_mid = (mu_high + mu_low) / 2
+                    c_mid = phase.concentration(T, mu_mid)
+                    if hasattr(c_mid, "item"):
+                        c_mid = c_mid.item()
+
+                    # Decide which side c_mid belongs to
+                    if abs(c_mid - c_low) <= abs(c_mid - c_high):
+                        mu_low = mu_mid
+                        c_low = c_mid
+                    else:
+                        mu_high = mu_mid
+                        c_high = c_mid
+                jumps.append({"c_left": c_low, "c_right": c_high, "mu": (mu_low + mu_high) / 2, "T": T})
+    return jumps
 
 
 def find_one_point(phase1, phase2, potential, var_range):
