@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from hypothesis import given, strategies as st, settings, HealthCheck
 from landau.phases import (
     LinePhase,
     TemperatureDependentLinePhase,
@@ -34,39 +35,59 @@ def get_phases():
 
     return [p0, tp, ideal, regular, interp, slow, point_defected]
 
+@st.composite
+def broadcastable_pair(draw):
+    base_shape = draw(st.lists(st.integers(1, 3), min_size=0, max_size=3).map(tuple))
+
+    def get_broadcastable(shape):
+        new_shape = list(shape)
+        # Randomly change some dimensions to 1
+        for i in range(len(new_shape)):
+            if draw(st.booleans()):
+                new_shape[i] = 1
+        # Randomly add leading 1s
+        while len(new_shape) < 3 and draw(st.booleans()):
+            new_shape.insert(0, 1)
+        return tuple(new_shape)
+
+    return get_broadcastable(base_shape), get_broadcastable(base_shape)
+
 @pytest.mark.parametrize("phase", get_phases(), ids=lambda p: p.name)
-@pytest.mark.parametrize("T_shape, dmu_shape", [
-    ((), ()),           # Scalar, Scalar
-    ((5,), ()),         # 1D Array, Scalar
-    ((), (5,)),         # Scalar, 1D Array
-    ((5,), (5,)),       # 1D Array, 1D Array
-    ((3, 1), (1, 4)),   # Broadcasting (3,1) and (1,4) -> (3,4)
-])
-def test_semigrand_potential_broadcasting(phase, T_shape, dmu_shape):
-    T_val = 1000
-    dmu_val = 0.1
+@settings(deadline=None, suppress_health_check=[HealthCheck.too_slow, HealthCheck.filter_too_much], max_examples=10)
+@given(st.data())
+def test_semigrand_potential_broadcasting(phase, data):
+    # Generate broadcastable shapes
+    shape_T, shape_dmu = data.draw(broadcastable_pair())
 
-    if T_shape == ():
-        T = float(T_val)
-    else:
-        T = np.full(T_shape, float(T_val))
+    # Generate random values for T and dmu
+    size_T = int(np.prod(shape_T, dtype=int))
+    T_vals = data.draw(st.lists(st.floats(min_value=100, max_value=2000, allow_nan=False, allow_infinity=False),
+                                min_size=size_T, max_size=size_T).map(sorted))
+    T = np.array(T_vals).reshape(shape_T)
 
-    if dmu_shape == ():
-        dmu = float(dmu_val)
-    else:
-        dmu = np.full(dmu_shape, float(dmu_val))
+    size_dmu = int(np.prod(shape_dmu, dtype=int))
+    dmu_vals = data.draw(st.lists(st.floats(min_value=-1, max_value=1, allow_nan=False, allow_infinity=False),
+                                  min_size=size_dmu, max_size=size_dmu).map(sorted))
+    dmu = np.array(dmu_vals).reshape(shape_dmu)
 
-    expected_shape = np.broadcast_shapes(T_shape, dmu_shape)
+    expected_shape = np.broadcast_shapes(T.shape, dmu.shape)
 
     res = phase.semigrand_potential(T, dmu)
 
     assert np.shape(res) == expected_shape
 
 @pytest.mark.parametrize("phase", get_phases(), ids=lambda p: p.name)
-def test_semigrand_potential_list_input(phase):
-    T = [500, 1000, 1500]
-    dmu = [0.1, 0.2, 0.3]
+@settings(deadline=None, max_examples=10)
+@given(
+    T=st.lists(st.floats(min_value=100, max_value=2000), min_size=1, max_size=5).map(sorted),
+    dmu=st.lists(st.floats(min_value=-1, max_value=1), min_size=1, max_size=5).map(sorted)
+)
+def test_semigrand_potential_list_input(phase, T, dmu):
+    # Ensure T and dmu have the same length for this specific test case
+    min_len = min(len(T), len(dmu))
+    T = T[:min_len]
+    dmu = dmu[:min_len]
 
     res = phase.semigrand_potential(T, dmu)
 
-    assert np.shape(res) == (3,)
+    assert np.shape(res) == (min_len,)
