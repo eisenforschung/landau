@@ -4,7 +4,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from landau.phases import LinePhase, IdealSolution
 from landau.calculate import calc_phase_diagram
-from landau.plot import plot_phase_diagram, plot_mu_phase_diagram
+from landau.plot import plot_phase_diagram, plot_mu_phase_diagram, get_polygons, plot_polygons, get_phase_colors
+import landau.poly as poly
 from hypothesis import given, strategies as st, settings, HealthCheck
 import pytest
 import matplotlib
@@ -32,39 +33,78 @@ def get_polygons_from_ax(ax):
             polys.append(patch.get_xy())
     return polys
 
-@settings(deadline=None, suppress_health_check=[HealthCheck.too_slow])
+def get_available_poly_methods():
+    methods = ['concave', 'segments']
+    if 'PythonTsp' in poly.__all__:
+        methods.append('tsp')
+    if 'FastTsp' in poly.__all__:
+        methods.append('fasttsp')
+    return methods
+
+@pytest.mark.parametrize("poly_method", get_available_poly_methods())
+@settings(deadline=None, suppress_health_check=[HealthCheck.too_slow], max_examples=5)
 @given(phases=eutectic_system())
-def test_consistent_polygons(phases):
-    from landau.plot import get_polygons, plot_polygons, get_phase_colors
+def test_plot_phase_diagram_consistency(phases, poly_method):
     Ts = np.linspace(300, 1500, 10)
     df = calc_phase_diagram(phases, Ts, mu=50, refine=True)
 
-    # Test plot_phase_diagram
+    # Get expected polygons directly
+    expected_polys = get_polygons(df, poly_method=poly_method, variables=["c", "T"])
+
     plt.figure()
-    plot_phase_diagram(df)
-    ax_c = plt.gca()
-    polys_c = get_polygons_from_ax(ax_c)
+    plot_phase_diagram(df, poly_method=poly_method)
+    ax = plt.gca()
+    plotted_polys = get_polygons_from_ax(ax)
     plt.close()
 
-    assert len(polys_c) > 0
+    # Filter out empty polygons if any (though get_polygons should have dropped them)
+    expected_coords = [p.get_xy() for p in expected_polys]
 
-    # Test plot_mu_phase_diagram
+    assert len(plotted_polys) == len(expected_coords)
+    # Sort to match order as plot_polygons uses polys.items()
+    for p, e in zip(plotted_polys, expected_coords):
+        np.testing.assert_allclose(p, e)
+
+@pytest.mark.parametrize("poly_method", get_available_poly_methods())
+@settings(deadline=None, suppress_health_check=[HealthCheck.too_slow], max_examples=5)
+@given(phases=eutectic_system())
+def test_plot_mu_phase_diagram_consistency(phases, poly_method):
+    Ts = np.linspace(300, 1500, 10)
+    df = calc_phase_diagram(phases, Ts, mu=50, refine=True)
+
+    # Get expected polygons directly
+    expected_polys = get_polygons(df, poly_method=poly_method, variables=["mu", "T"])
+
     plt.figure()
-    plot_mu_phase_diagram(df)
-    ax_mu = plt.gca()
-    polys_mu = get_polygons_from_ax(ax_mu)
+    plot_mu_phase_diagram(df, poly_method=poly_method)
+    ax = plt.gca()
+    plotted_polys = get_polygons_from_ax(ax)
     plt.close()
 
-    assert len(polys_mu) > 0
+    expected_coords = [p.get_xy() for p in expected_polys]
 
-    # Test get_polygons and plot_polygons directly
-    polys_direct = get_polygons(df, variables=["c", "T"])
-    assert len(polys_direct) > 0
+    assert len(plotted_polys) == len(expected_coords)
+    for p, e in zip(plotted_polys, expected_coords):
+        np.testing.assert_allclose(p, e)
 
+@pytest.mark.parametrize("poly_method", get_available_poly_methods())
+@settings(deadline=None, suppress_health_check=[HealthCheck.too_slow], max_examples=5)
+@given(phases=eutectic_system())
+def test_direct_plot_polygons_consistency(phases, poly_method):
+    Ts = np.linspace(300, 1500, 10)
+    df = calc_phase_diagram(phases, Ts, mu=50, refine=True)
+
+    polys = get_polygons(df, poly_method=poly_method, variables=["c", "T"])
     color_map = get_phase_colors(df.query("stable").phase.unique())
+
     plt.figure()
-    plot_polygons(polys_direct, color_map)
-    polys_plotted = get_polygons_from_ax(plt.gca())
+    plot_polygons(polys, color_map)
+    ax = plt.gca()
+    plotted_polys = get_polygons_from_ax(ax)
     plt.close()
 
-    assert len(polys_plotted) == len(polys_direct)
+    expected_coords = [p.get_xy() for p in polys]
+
+    assert len(plotted_polys) == len(expected_coords)
+    for p, e in zip(plotted_polys, expected_coords):
+        np.testing.assert_allclose(p, e)

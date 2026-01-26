@@ -325,7 +325,7 @@ with ImportAlarm("'fast-tsp' package required for FastTsp.  Install from pip.") 
                             bias = -self.min_c_width / 2
                         case _:
                             bias = 0
-                    coords[:, variables.index("c")] += bias
+                coords[:, variables.index("c")] += bias
                 return Polygon(coords)
             sc = StandardScaler().fit_transform(c)
             dm = pairwise_distances(sc)
