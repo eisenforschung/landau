@@ -22,7 +22,105 @@ from .phases import Phase, AbstractLinePhase
 kB = Boltzmann / eV
 
 
-__all__ = ["calc_phase_diagram", "get_transitions", "refine_concentration_jumps"]
+__all__ = [
+    "calc_phase_diagram",
+    "get_transitions",
+    "refine_concentration_jumps",
+    "find_concentration_jumps",
+    "refine_isothermal_jump",
+]
+
+
+def find_concentration_jumps(T, mus, cs, threshold=0.1):
+    """
+    Detect chemical potential intervals where concentration jumps occur.
+
+    Args:
+        T (float or array): Temperature(s).
+        mus (array): Chemical potentials.
+        cs (array): Concentrations.
+        threshold (float): Minimum concentration jump to consider.
+
+    Returns:
+        list of tuple: (T, (mu_low, mu_high), (c_low, c_high)) for each jump found.
+    """
+    T_in = np.asanyarray(T)
+    mus = np.asanyarray(mus)
+    cs = np.asanyarray(cs)
+
+    if T_in.ndim > 0 and len(T_in) == len(mus):
+        unique_Ts = np.unique(T_in)
+        all_jumps = []
+        for t in unique_Ts:
+            mask = T_in == t
+            t_scalar = t.item() if hasattr(t, "item") else t
+            all_jumps.extend(find_concentration_jumps(t_scalar, mus[mask], cs[mask], threshold))
+        return all_jumps
+
+    # Isothermal case
+    if len(mus) < 2:
+        return []
+
+    idx = np.argsort(mus)
+    mus = mus[idx]
+    cs = cs[idx]
+
+    grad = np.abs(np.gradient(cs, mus))
+    peaks, _ = find_peaks(grad, plateau_size=(1, None))
+
+    jumps = []
+    for p in peaks:
+        # Find the interval with the largest jump around the peak
+        jumps_around = []
+        if p > 0:
+            jumps_around.append((p - 1, p, abs(cs[p] - cs[p - 1])))
+        if p < len(cs) - 1:
+            jumps_around.append((p, p + 1, abs(cs[p + 1] - cs[p])))
+
+        if not jumps_around:
+            continue
+
+        i_low, i_high, jump_size = max(jumps_around, key=lambda x: x[2])
+
+        if jump_size > threshold:
+            jumps.append((T, (mus[i_low], mus[i_high]), (cs[i_low], cs[i_high])))
+    return jumps
+
+
+def refine_isothermal_jump(T, mu_range, phase, mu_tol=1e-8):
+    """
+    Refine a single concentration jump using bisection.
+
+    Args:
+        T (float): Temperature.
+        mu_range (tuple): (mu_low, mu_high) interval containing the jump.
+        phase (Phase): The phase object to check.
+        mu_tol (float): Tolerance for chemical potential refinement.
+
+    Returns:
+        tuple: (c_left, c_right, mu_refined)
+    """
+    mu_low, mu_high = mu_range
+    c_low = phase.concentration(T, mu_low)
+    c_high = phase.concentration(T, mu_high)
+    if hasattr(c_low, "item"):
+        c_low = c_low.item()
+    if hasattr(c_high, "item"):
+        c_high = c_high.item()
+
+    while mu_high - mu_low > mu_tol:
+        mu_mid = (mu_high + mu_low) / 2
+        c_mid = phase.concentration(T, mu_mid)
+        if hasattr(c_mid, "item"):
+            c_mid = c_mid.item()
+
+        # Decide which side c_mid belongs to
+        if abs(c_mid - c_low) <= abs(c_mid - c_high):
+            mu_low, c_low = mu_mid, c_mid
+        else:
+            mu_high, c_high = mu_mid, c_mid
+
+    return c_low, c_high, (mu_low + mu_high) / 2
 
 
 def refine_concentration_jumps(T, mus, cs, phase, threshold=0.1, mu_tol=1e-8):
@@ -40,78 +138,15 @@ def refine_concentration_jumps(T, mus, cs, phase, threshold=0.1, mu_tol=1e-8):
     Returns:
         tuple of arrays: (c_left, c_right, mu, T) for each refined jump.
     """
-    T_in = np.asanyarray(T)
-    mus = np.asanyarray(mus)
-    cs = np.asanyarray(cs)
-
-    if T_in.ndim > 0 and len(T_in) == len(mus):
-        unique_Ts = np.unique(T_in)
-        all_c_left, all_c_right, all_mu, all_T = [], [], [], []
-        for t in unique_Ts:
-            mask = T_in == t
-            # Ensure t is a scalar for the isothermal call
-            t_scalar = t.item() if hasattr(t, "item") else t
-            cl, cr, m, tt = refine_concentration_jumps(t_scalar, mus[mask], cs[mask], phase, threshold, mu_tol)
-            all_c_left.append(cl)
-            all_c_right.append(cr)
-            all_mu.append(m)
-            all_T.append(tt)
-        if not all_mu:
-            return np.array([]), np.array([]), np.array([]), np.array([])
-        return (
-            np.concatenate(all_c_left),
-            np.concatenate(all_c_right),
-            np.concatenate(all_mu),
-            np.concatenate(all_T),
-        )
-
-    # Isothermal case
-    if len(mus) < 2:
-        return np.array([]), np.array([]), np.array([]), np.array([])
-
-    idx = np.argsort(mus)
-    mus = mus[idx]
-    cs = cs[idx]
-
-    grad = np.abs(np.gradient(cs, mus))
-    peaks, _ = find_peaks(grad, plateau_size=(1, None))
-
-    c_left, c_right, mu_jumps = [], [], []
-
-    for p in peaks:
-        # Find the interval with the largest jump around the peak
-        jumps_around = []
-        if p > 0:
-            jumps_around.append((p - 1, p, abs(cs[p] - cs[p - 1])))
-        if p < len(cs) - 1:
-            jumps_around.append((p, p + 1, abs(cs[p + 1] - cs[p])))
-
-        if not jumps_around:
-            continue
-
-        i_low, i_high, jump_size = max(jumps_around, key=lambda x: x[2])
-
-        if jump_size > threshold:
-            mu_low, mu_high = mus[i_low], mus[i_high]
-            c_low, c_high = cs[i_low], cs[i_high]
-
-            while mu_high - mu_low > mu_tol:
-                mu_mid = (mu_high + mu_low) / 2
-                c_mid = phase.concentration(T, mu_mid)
-                if hasattr(c_mid, "item"):
-                    c_mid = c_mid.item()
-
-                if abs(c_mid - c_low) <= abs(c_mid - c_high):
-                    mu_low, c_low = mu_mid, c_mid
-                else:
-                    mu_high, c_high = mu_mid, c_mid
-
-            c_left.append(c_low)
-            c_right.append(c_high)
-            mu_jumps.append((mu_low + mu_high) / 2)
-
-    n = len(mu_jumps)
-    return np.array(c_left), np.array(c_right), np.array(mu_jumps), np.full(n, T)
+    jumps = find_concentration_jumps(T, mus, cs, threshold)
+    c_lefts, c_rights, mu_refined, Ts = [], [], [], []
+    for Tj, mu_range, _ in jumps:
+        cl, cr, mur = refine_isothermal_jump(Tj, mu_range, phase, mu_tol)
+        c_lefts.append(cl)
+        c_rights.append(cr)
+        mu_refined.append(mur)
+        Ts.append(Tj)
+    return np.array(c_lefts), np.array(c_rights), np.array(mu_refined), np.array(Ts)
 
 
 def find_one_point(phase1, phase2, potential, var_range):

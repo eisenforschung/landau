@@ -1,4 +1,0 @@
-# file: /app/landau/interpolate.py
-# hypothesis_version: 6.151.0
-
-[-20.0, -10.0, -3.0, 0.0, 1e-10, 1e-08, 0.5, 1.0, 3.0, 10.0, 20.0, 100, 'Interpolator', 'PolyFit', 'RedlichKister', 'SGTE', 'SoftplusFit', 'StitchedFit', 'arctan', 'auto', 'cauchy', 'concave', 'huber', 'ignore', 'ij,j->i', 'linear', 'soft_l1']

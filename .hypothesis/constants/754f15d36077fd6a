@@ -1,4 +1,0 @@
-# file: /app/landau/calculate.py
-# hypothesis_version: 6.151.0
-
-[1e-08, 1e-07, 1e-06, 0.01, 0.1, 0.5, '-', '-inf<mu<inf', 'BFGS', 'T', 'Wrong by value', '_', 'border', 'border_segment', 'c', 'c==@c0', 'c==@c1', 'calc_phase_diagram', 'columns', 'delaunay', 'delaunay-triple', 'f', 'f_excess', 'get_transitions', 'item', 'level_1', 'mu', 'no', 'not stable', 'phase', 'phi', 'refined', 'single', 'stable', 'transition', 'transition_unit']
