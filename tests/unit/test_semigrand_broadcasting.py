@@ -37,26 +37,26 @@ def get_phases():
 
 @st.composite
 def broadcastable_pair(draw):
-    base_shape = draw(st.lists(st.integers(1, 3), min_size=0, max_size=3).map(tuple))
+    # Output shape: up to five random integers
+    output_shape = draw(st.lists(st.integers(1, 5), min_size=0, max_size=5).map(tuple))
 
-    def get_broadcastable(shape):
-        new_shape = list(shape)
-        # Randomly change some dimensions to 1
-        for i in range(len(new_shape)):
+    def get_input_shape(base_shape):
+        shape = list(base_shape)
+        # Toggle random axes to 1
+        for i in range(len(shape)):
             if draw(st.booleans()):
-                new_shape[i] = 1
+                shape[i] = 1
         # Randomly add leading 1s
-        while len(new_shape) < 3 and draw(st.booleans()):
-            new_shape.insert(0, 1)
-        return tuple(new_shape)
+        while len(shape) < 5 and draw(st.booleans()):
+            shape.insert(0, 1)
+        return tuple(shape)
 
-    return get_broadcastable(base_shape), get_broadcastable(base_shape)
+    return get_input_shape(output_shape), get_input_shape(output_shape)
 
 @pytest.mark.parametrize("phase", get_phases(), ids=lambda p: p.name)
 @settings(deadline=None, suppress_health_check=[HealthCheck.too_slow, HealthCheck.filter_too_much], max_examples=10)
 @given(st.data())
 def test_semigrand_potential_broadcasting(phase, data):
-    # Generate broadcastable shapes
     shape_T, shape_dmu = data.draw(broadcastable_pair())
 
     # Generate random values for T and dmu
@@ -70,7 +70,13 @@ def test_semigrand_potential_broadcasting(phase, data):
                                   min_size=size_dmu, max_size=size_dmu).map(sorted))
     dmu = np.array(dmu_vals).reshape(shape_dmu)
 
-    expected_shape = np.broadcast_shapes(T.shape, dmu.shape)
+    # Randomly convert some 0-dim arrays to scalars
+    if T.shape == () and data.draw(st.booleans()):
+        T = T.item()
+    if dmu.shape == () and data.draw(st.booleans()):
+        dmu = dmu.item()
+
+    expected_shape = np.broadcast_shapes(np.shape(T), np.shape(dmu))
 
     res = phase.semigrand_potential(T, dmu)
 
@@ -78,16 +84,13 @@ def test_semigrand_potential_broadcasting(phase, data):
 
 @pytest.mark.parametrize("phase", get_phases(), ids=lambda p: p.name)
 @settings(deadline=None, max_examples=10)
-@given(
-    T=st.lists(st.floats(min_value=100, max_value=2000), min_size=1, max_size=5).map(sorted),
-    dmu=st.lists(st.floats(min_value=-1, max_value=1), min_size=1, max_size=5).map(sorted)
-)
-def test_semigrand_potential_list_input(phase, T, dmu):
-    # Ensure T and dmu have the same length for this specific test case
-    min_len = min(len(T), len(dmu))
-    T = T[:min_len]
-    dmu = dmu[:min_len]
+@given(st.data())
+def test_semigrand_potential_list_input(phase, data):
+    # Two random lists of the same length, in the range 10-100
+    length = data.draw(st.integers(10, 100))
+    T = data.draw(st.lists(st.floats(min_value=100, max_value=2000), min_size=length, max_size=length).map(sorted))
+    dmu = data.draw(st.lists(st.floats(min_value=-1, max_value=1), min_size=length, max_size=length).map(sorted))
 
     res = phase.semigrand_potential(T, dmu)
 
-    assert np.shape(res) == (min_len,)
+    assert np.shape(res) == (length,)
