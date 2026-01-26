@@ -142,10 +142,11 @@ def refine_concentration_jumps(T, mus, cs, phase, threshold=0.1, mu_tol=1e-8):
     c_lefts, c_rights, mu_refined, Ts = [], [], [], []
     for Tj, mu_range, _ in jumps:
         cl, cr, mur = refine_isothermal_jump(Tj, mu_range, phase, mu_tol)
-        c_lefts.append(cl)
-        c_rights.append(cr)
-        mu_refined.append(mur)
-        Ts.append(Tj)
+        if abs(cr - cl) > threshold:
+            c_lefts.append(cl)
+            c_rights.append(cr)
+            mu_refined.append(mur)
+            Ts.append(Tj)
     return np.array(c_lefts), np.array(c_rights), np.array(mu_refined), np.array(Ts)
 
 
