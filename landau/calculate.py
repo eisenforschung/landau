@@ -120,7 +120,7 @@ def refine_isothermal_jump(T, mu_range, phase, mu_tol=1e-8):
     return c_low, c_high, (mu_low + mu_high) / 2
 
 
-def refine_concentration_jumps(T, mus, cs, phase, threshold=0.1, mu_tol=1e-8):
+def refine_concentration_jumps(T, mus, cs, phase, threshold=0.1, mu_tol=1e-8, dT=1.0):
     """
     Refine concentration jumps in a phase diagram for a given phase using a tracing algorithm.
 
@@ -131,6 +131,7 @@ def refine_concentration_jumps(T, mus, cs, phase, threshold=0.1, mu_tol=1e-8):
         phase (Phase): The phase object to check.
         threshold (float): Minimum concentration jump to consider.
         mu_tol (float): Tolerance for chemical potential refinement.
+        dT (float): Initial temperature step for tracing.
 
     Returns:
         tuple of arrays: (c_left, c_right, mu, T) for each refined jump.
@@ -141,10 +142,53 @@ def refine_concentration_jumps(T, mus, cs, phase, threshold=0.1, mu_tol=1e-8):
 
     unique_Ts = np.unique(np.asanyarray(T))
     T_min, T_max = unique_Ts.min(), unique_Ts.max()
-    dT = np.median(np.diff(unique_Ts)) if len(unique_Ts) > 1 else 0
 
     c_lefts, c_rights, mus_refined, Ts_out = [], [], [], []
     covered = np.zeros(len(all_candidates), dtype=bool)
+
+    def trace_direction(Tc_start, mur_start, cl_start, cr_start, direction, dmu_win):
+        curr_T = Tc_start
+        curr_mu = mur_start
+        cl, cr = cl_start, cr_start
+        initial_delta_c = abs(cr - cl)
+        local_trace = []
+
+        while True:
+            delta_c = abs(cr - cl)
+            # Adaptive dT: Step decreases as jump size decreases
+            step_dT = dT * (delta_c / initial_delta_c)
+            step_dT = max(step_dT, 0.1)
+
+            next_T = curr_T + direction * step_dT
+            if (direction > 0 and next_T >= T_max) or (direction < 0 and next_T <= T_min):
+                break
+
+            window = (curr_mu - dmu_win, curr_mu + dmu_win)
+            cl_n, cr_n, mur_n = refine_isothermal_jump(next_T, window, phase, mu_tol)
+
+            if abs(cr_n - cl_n) > threshold:
+                curr_T, curr_mu, cl, cr = next_T, mur_n, cl_n, cr_n
+                local_trace.append((cl, cr, curr_mu, curr_T))
+                # Mark covered candidates
+                for j, (Tj, rj, _) in enumerate(all_candidates):
+                    if not covered[j] and abs(Tj - curr_T) < dT and rj[0] <= curr_mu <= rj[1]:
+                        covered[j] = True
+            else:
+                # Lookahead: Check for uncovered candidates ahead
+                candidates_ahead = [
+                    (j, Tj, rj) for j, (Tj, rj, _) in enumerate(all_candidates)
+                    if not covered[j] and (direction * (Tj - curr_T) > 0)
+                ]
+                if candidates_ahead:
+                    j_next, Tj_next, rj_next = min(candidates_ahead, key=lambda x: direction * (x[1] - curr_T))
+                    cl_n, cr_n, mur_n = refine_isothermal_jump(Tj_next, rj_next, phase, mu_tol)
+                    if abs(cr_n - cl_n) > threshold:
+                        curr_T, curr_mu, cl, cr = Tj_next, mur_n, cl_n, cr_n
+                        local_trace.append((cl, cr, curr_mu, curr_T))
+                        covered[j_next] = True
+                        continue
+                break
+        return local_trace
 
     for i, (Tc, mu_range, _) in enumerate(all_candidates):
         if covered[i]:
@@ -155,50 +199,22 @@ def refine_concentration_jumps(T, mus, cs, phase, threshold=0.1, mu_tol=1e-8):
         if abs(cr - cl) <= threshold:
             continue
 
-        trace = [(cl, cr, mur, Tc)]
+        c_lefts.append(cl)
+        c_rights.append(cr)
+        mus_refined.append(mur)
+        Ts_out.append(Tc)
         covered[i] = True
 
-        dmu = abs(mu_range[1] - mu_range[0]) * 2
+        dmu_win = abs(mu_range[1] - mu_range[0]) * 2
 
-        # 2. Trace Up
-        if dT > 0:
-            curr_T = Tc + dT
-            curr_mu = mur
-            while curr_T <= T_max + 1e-6:
-                cl_n, cr_n, mur_n = refine_isothermal_jump(curr_T, (curr_mu - dmu, curr_mu + dmu), phase, mu_tol)
-                if abs(cr_n - cl_n) > threshold:
-                    trace.append((cl_n, cr_n, mur_n, curr_T))
-                    curr_mu = mur_n
-                    # Mark covered candidates
-                    for j, (Tj, rj, _) in enumerate(all_candidates):
-                        if not covered[j] and abs(Tj - curr_T) < dT / 2 and rj[0] <= mur_n <= rj[1]:
-                            covered[j] = True
-                    curr_T += dT
-                else:
-                    break
-
-        # 3. Trace Down
-        if dT > 0:
-            curr_T = Tc - dT
-            curr_mu = mur
-            while curr_T >= T_min - 1e-6:
-                cl_n, cr_n, mur_n = refine_isothermal_jump(curr_T, (curr_mu - dmu, curr_mu + dmu), phase, mu_tol)
-                if abs(cr_n - cl_n) > threshold:
-                    trace.append((cl_n, cr_n, mur_n, curr_T))
-                    curr_mu = mur_n
-                    # Mark covered candidates
-                    for j, (Tj, rj, _) in enumerate(all_candidates):
-                        if not covered[j] and abs(Tj - curr_T) < dT / 2 and rj[0] <= mur_n <= rj[1]:
-                            covered[j] = True
-                    curr_T -= dT
-                else:
-                    break
-
-        for cl, cr, mur, tt in trace:
-            c_lefts.append(cl)
-            c_rights.append(cr)
-            mus_refined.append(mur)
-            Ts_out.append(tt)
+        # 2. Trace Up and Down
+        for direction in [1, -1]:
+            trace = trace_direction(Tc, mur, cl, cr, direction, dmu_win)
+            for cl_t, cr_t, mur_t, tt in trace:
+                c_lefts.append(cl_t)
+                c_rights.append(cr_t)
+                mus_refined.append(mur_t)
+                Ts_out.append(tt)
 
     return np.array(c_lefts), np.array(c_rights), np.array(mus_refined), np.array(Ts_out)
 
