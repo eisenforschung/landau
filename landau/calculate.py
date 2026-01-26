@@ -15,7 +15,7 @@ from scipy.constants import Boltzmann, eV
 from sklearn.cluster import AgglomerativeClustering
 
 
-from scipy.signal import find_peaks
+import scipy.signal as ss
 from .phases import Phase, AbstractLinePhase
 
 
@@ -44,47 +44,44 @@ def find_concentration_jumps(T, mus, cs, threshold=0.1):
     Returns:
         list of tuple: (T, (mu_low, mu_high), (c_low, c_high)) for each jump found.
     """
-    T_in = np.asanyarray(T)
-    mus = np.asanyarray(mus)
-    cs = np.asanyarray(cs)
+    T_in, mus, cs = np.broadcast_arrays(T, mus, cs)
+    T_in = T_in.flatten()
+    mus = mus.flatten()
+    cs = cs.flatten()
 
-    if T_in.ndim > 0 and len(T_in) == len(mus):
-        unique_Ts = np.unique(T_in)
-        all_jumps = []
-        for t in unique_Ts:
-            mask = T_in == t
-            t_scalar = t.item() if hasattr(t, "item") else t
-            all_jumps.extend(find_concentration_jumps(t_scalar, mus[mask], cs[mask], threshold))
-        return all_jumps
+    unique_Ts = np.unique(T_in)
+    all_jumps = []
+    for t in unique_Ts:
+        mask = T_in == t
+        t_mus = mus[mask]
+        t_cs = cs[mask]
 
-    # Isothermal case
-    if len(mus) < 2:
-        return []
-
-    idx = np.argsort(mus)
-    mus = mus[idx]
-    cs = cs[idx]
-
-    grad = np.abs(np.gradient(cs, mus))
-    peaks, _ = find_peaks(grad, plateau_size=(1, None))
-
-    jumps = []
-    for p in peaks:
-        # Find the interval with the largest jump around the peak
-        jumps_around = []
-        if p > 0:
-            jumps_around.append((p - 1, p, abs(cs[p] - cs[p - 1])))
-        if p < len(cs) - 1:
-            jumps_around.append((p, p + 1, abs(cs[p + 1] - cs[p])))
-
-        if not jumps_around:
+        if len(t_mus) < 2:
             continue
 
-        i_low, i_high, jump_size = max(jumps_around, key=lambda x: x[2])
+        idx = np.argsort(t_mus)
+        t_mus = t_mus[idx]
+        t_cs = t_cs[idx]
 
-        if jump_size > threshold:
-            jumps.append((T, (mus[i_low], mus[i_high]), (cs[i_low], cs[i_high])))
-    return jumps
+        grad = np.abs(np.gradient(t_cs, t_mus))
+        peaks, _ = ss.find_peaks(grad, plateau_size=(1, None))
+
+        for p in peaks:
+            # Find the interval with the largest jump around the peak
+            jumps_around = []
+            if p > 0:
+                jumps_around.append((p - 1, p, abs(t_cs[p] - t_cs[p - 1])))
+            if p < len(t_cs) - 1:
+                jumps_around.append((p, p + 1, abs(t_cs[p + 1] - t_cs[p])))
+
+            if not jumps_around:
+                continue
+
+            i_low, i_high, jump_size = max(jumps_around, key=lambda x: x[2])
+
+            if jump_size > threshold:
+                all_jumps.append((t, (t_mus[i_low], t_mus[i_high]), (t_cs[i_low], t_cs[i_high])))
+    return all_jumps
 
 
 def refine_isothermal_jump(T, mu_range, phase, mu_tol=1e-8):
@@ -125,7 +122,7 @@ def refine_isothermal_jump(T, mu_range, phase, mu_tol=1e-8):
 
 def refine_concentration_jumps(T, mus, cs, phase, threshold=0.1, mu_tol=1e-8):
     """
-    Refine concentration jumps in a phase diagram for a given phase.
+    Refine concentration jumps in a phase diagram for a given phase using a tracing algorithm.
 
     Args:
         T (float or array): Temperature(s).
@@ -138,16 +135,72 @@ def refine_concentration_jumps(T, mus, cs, phase, threshold=0.1, mu_tol=1e-8):
     Returns:
         tuple of arrays: (c_left, c_right, mu, T) for each refined jump.
     """
-    jumps = find_concentration_jumps(T, mus, cs, threshold)
-    c_lefts, c_rights, mu_refined, Ts = [], [], [], []
-    for Tj, mu_range, _ in jumps:
-        cl, cr, mur = refine_isothermal_jump(Tj, mu_range, phase, mu_tol)
-        if abs(cr - cl) > threshold:
+    all_candidates = find_concentration_jumps(T, mus, cs, threshold)
+    if not all_candidates:
+        return np.array([]), np.array([]), np.array([]), np.array([])
+
+    unique_Ts = np.unique(np.asanyarray(T))
+    T_min, T_max = unique_Ts.min(), unique_Ts.max()
+    dT = np.median(np.diff(unique_Ts)) if len(unique_Ts) > 1 else 0
+
+    c_lefts, c_rights, mus_refined, Ts_out = [], [], [], []
+    covered = np.zeros(len(all_candidates), dtype=bool)
+
+    for i, (Tc, mu_range, _) in enumerate(all_candidates):
+        if covered[i]:
+            continue
+
+        # 1. Initial refinement
+        cl, cr, mur = refine_isothermal_jump(Tc, mu_range, phase, mu_tol)
+        if abs(cr - cl) <= threshold:
+            continue
+
+        trace = [(cl, cr, mur, Tc)]
+        covered[i] = True
+
+        dmu = abs(mu_range[1] - mu_range[0]) * 2
+
+        # 2. Trace Up
+        if dT > 0:
+            curr_T = Tc + dT
+            curr_mu = mur
+            while curr_T <= T_max + 1e-6:
+                cl_n, cr_n, mur_n = refine_isothermal_jump(curr_T, (curr_mu - dmu, curr_mu + dmu), phase, mu_tol)
+                if abs(cr_n - cl_n) > threshold:
+                    trace.append((cl_n, cr_n, mur_n, curr_T))
+                    curr_mu = mur_n
+                    # Mark covered candidates
+                    for j, (Tj, rj, _) in enumerate(all_candidates):
+                        if not covered[j] and abs(Tj - curr_T) < dT / 2 and rj[0] <= mur_n <= rj[1]:
+                            covered[j] = True
+                    curr_T += dT
+                else:
+                    break
+
+        # 3. Trace Down
+        if dT > 0:
+            curr_T = Tc - dT
+            curr_mu = mur
+            while curr_T >= T_min - 1e-6:
+                cl_n, cr_n, mur_n = refine_isothermal_jump(curr_T, (curr_mu - dmu, curr_mu + dmu), phase, mu_tol)
+                if abs(cr_n - cl_n) > threshold:
+                    trace.append((cl_n, cr_n, mur_n, curr_T))
+                    curr_mu = mur_n
+                    # Mark covered candidates
+                    for j, (Tj, rj, _) in enumerate(all_candidates):
+                        if not covered[j] and abs(Tj - curr_T) < dT / 2 and rj[0] <= mur_n <= rj[1]:
+                            covered[j] = True
+                    curr_T -= dT
+                else:
+                    break
+
+        for cl, cr, mur, tt in trace:
             c_lefts.append(cl)
             c_rights.append(cr)
-            mu_refined.append(mur)
-            Ts.append(Tj)
-    return np.array(c_lefts), np.array(c_rights), np.array(mu_refined), np.array(Ts)
+            mus_refined.append(mur)
+            Ts_out.append(tt)
+
+    return np.array(c_lefts), np.array(c_rights), np.array(mus_refined), np.array(Ts_out)
 
 
 def find_one_point(phase1, phase2, potential, var_range):
