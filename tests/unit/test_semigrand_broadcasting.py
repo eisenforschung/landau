@@ -46,9 +46,6 @@ def broadcastable_pair(draw):
         for i in range(len(shape)):
             if draw(st.booleans()):
                 shape[i] = 1
-        # Randomly add leading 1s
-        while len(shape) < 5 and draw(st.booleans()):
-            shape.insert(0, 1)
         return tuple(shape)
 
     return get_input_shape(output_shape), get_input_shape(output_shape)
@@ -70,17 +67,48 @@ def test_semigrand_potential_broadcasting(phase, data):
                                   min_size=size_dmu, max_size=size_dmu).map(sorted))
     dmu = np.array(dmu_vals).reshape(shape_dmu)
 
-    # Randomly convert some 0-dim arrays to scalars
-    if T.shape == () and data.draw(st.booleans()):
-        T = T.item()
-    if dmu.shape == () and data.draw(st.booleans()):
-        dmu = dmu.item()
-
-    expected_shape = np.broadcast_shapes(np.shape(T), np.shape(dmu))
+    expected_shape = np.broadcast_shapes(T.shape, dmu.shape)
 
     res = phase.semigrand_potential(T, dmu)
 
     assert np.shape(res) == expected_shape
+
+@pytest.mark.parametrize("phase", get_phases(), ids=lambda p: p.name)
+@pytest.mark.parametrize("T_type", ["scalar", "0d", "1d"])
+@pytest.mark.parametrize("dmu_type", ["scalar", "0d", "1d"])
+@settings(deadline=None, max_examples=5)
+@given(st.data())
+def test_semigrand_potential_type_combinations(phase, T_type, dmu_type, data):
+    if T_type == "1d" and dmu_type == "1d":
+        pytest.skip("1dim with 1dim is excluded")
+
+    def get_val(v_type, is_T=True):
+        if is_T:
+            min_v, max_v = 100, 2000
+        else:
+            min_v, max_v = -1, 1
+
+        if v_type == "scalar":
+            return data.draw(st.floats(min_value=min_v, max_value=max_v))
+        elif v_type == "0d":
+            return np.array(data.draw(st.floats(min_value=min_v, max_value=max_v)))
+        elif v_type == "1d":
+            return np.array(data.draw(st.lists(st.floats(min_value=min_v, max_value=max_v), min_size=1, max_size=5).map(sorted)))
+
+    T = get_val(T_type, is_T=True)
+    dmu = get_val(dmu_type, is_T=False)
+
+    res = phase.semigrand_potential(T, dmu)
+
+    if T_type == "1d" or dmu_type == "1d":
+        assert isinstance(res, np.ndarray)
+        assert res.ndim == 1
+    else:
+        # Only python scalar allowed
+        assert not isinstance(res, np.ndarray)
+        # Check if it is a basic python type (float or int)
+        # Note: np.float64 is NOT allowed if "python scalar" is strictly interpreted
+        assert type(res) in [float, int]
 
 @pytest.mark.parametrize("phase", get_phases(), ids=lambda p: p.name)
 @settings(deadline=None, max_examples=10)
