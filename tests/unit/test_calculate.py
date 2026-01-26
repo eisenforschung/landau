@@ -1,7 +1,55 @@
 import numpy as np
 import pytest
-from landau.phases import LinePhase, SlowInterpolatingPhase
+from hypothesis import given, strategies as st, settings
+from landau.phases import LinePhase, SlowInterpolatingPhase, kB
 from landau.calculate import calc_phase_diagram, refine_concentration_jumps
+
+@st.composite
+def phases_with_demixing(draw):
+    # Select a temperature
+    T = draw(st.floats(min_value=100, max_value=1000))
+    # Select interaction parameter W > 2 * kB * T to ensure demixing
+    # We use a bit more margin to make it very likely
+    W = draw(st.floats(min_value=3.0 * kB * T, max_value=10 * kB * T))
+
+    # Select two intermediate concentrations
+    c1 = draw(st.floats(min_value=0.1, max_value=0.4))
+    c2 = draw(st.floats(min_value=0.6, max_value=0.9))
+
+    # Energies following W * c * (1-c)
+    def E(c):
+        return W * c * (1 - c)
+
+    p0 = LinePhase("A", 0.0, E(0.0), 0.0)
+    p1 = LinePhase("B", 1.0, E(1.0), 0.0)
+    p_int1 = LinePhase("Int1", c1, E(c1), 0.0)
+    p_int2 = LinePhase("Int2", c2, E(c2), 0.0)
+
+    return T, [p0, p_int1, p_int2, p1]
+
+@settings(deadline=None)
+@given(phases_with_demixing())
+def test_refine_concentration_jumps_hypothesis(data):
+    T, phases = data
+    phase = SlowInterpolatingPhase(
+        name="MiscibilityGapPhase",
+        phases=phases,
+        add_entropy=True,
+    )
+
+    # We use a wide enough mu range to capture the jump
+    # The jump should occur around mu = 0 since the model is symmetric
+    mus = np.linspace(-0.2, 0.2, 100)
+    df = calc_phase_diagram([phase], T, mus)
+
+    c_left, c_right, mu_j, T_j = refine_concentration_jumps(
+        df["T"].values, df["mu"].values, df["c"].values, phase
+    )
+
+    # With large W, we should have a jump
+    assert len(mu_j) >= 1
+    for cl, cr in zip(c_left, c_right):
+        assert abs(cr - cl) > 0.1
 
 def test_refine_concentration_jumps_demixing():
     # Define a model with demixing below Tc
