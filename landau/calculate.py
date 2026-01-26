@@ -15,13 +15,208 @@ from scipy.constants import Boltzmann, eV
 from sklearn.cluster import AgglomerativeClustering
 
 
+import scipy.signal as ss
 from .phases import Phase, AbstractLinePhase
 
 
 kB = Boltzmann / eV
 
 
-__all__ = ["calc_phase_diagram", "get_transitions"]
+__all__ = [
+    "calc_phase_diagram",
+    "get_transitions",
+    "refine_concentration_jumps",
+    "find_concentration_jumps",
+    "refine_isothermal_jump",
+]
+
+
+def find_concentration_jumps(T, mus, cs, threshold=0.1):
+    """
+    Detect chemical potential intervals where concentration jumps occur.
+
+    Args:
+        T (float or array): Temperature(s).
+        mus (array): Chemical potentials.
+        cs (array): Concentrations.
+        threshold (float): Minimum concentration jump to consider.
+
+    Returns:
+        list of tuple: (T, (mu_low, mu_high), (c_low, c_high)) for each jump found.
+    """
+    T_in, mus, cs = np.broadcast_arrays(T, mus, cs)
+    T_in = T_in.flatten()
+    mus = mus.flatten()
+    cs = cs.flatten()
+
+    unique_Ts = np.unique(T_in)
+    all_jumps = []
+    for t in unique_Ts:
+        mask = T_in == t
+        t_mus = mus[mask]
+        t_cs = cs[mask]
+
+        if len(t_mus) < 2:
+            continue
+
+        idx = np.argsort(t_mus)
+        t_mus = t_mus[idx]
+        t_cs = t_cs[idx]
+
+        grad = np.abs(np.gradient(t_cs, t_mus))
+        peaks, _ = ss.find_peaks(grad, plateau_size=(1, None))
+
+        for p in peaks:
+            # Find the interval with the largest jump around the peak
+            jumps_around = []
+            if p > 0:
+                jumps_around.append((p - 1, p, abs(t_cs[p] - t_cs[p - 1])))
+            if p < len(t_cs) - 1:
+                jumps_around.append((p, p + 1, abs(t_cs[p + 1] - t_cs[p])))
+
+            if not jumps_around:
+                continue
+
+            i_low, i_high, jump_size = max(jumps_around, key=lambda x: x[2])
+
+            if jump_size > threshold:
+                all_jumps.append((t, (t_mus[i_low], t_mus[i_high]), (t_cs[i_low], t_cs[i_high])))
+    return all_jumps
+
+
+def refine_isothermal_jump(T, mu_range, phase, mu_tol=1e-8):
+    """
+    Refine a single concentration jump using bisection.
+
+    Args:
+        T (float): Temperature.
+        mu_range (tuple): (mu_low, mu_high) interval containing the jump.
+        phase (Phase): The phase object to check.
+        mu_tol (float): Tolerance for chemical potential refinement.
+
+    Returns:
+        tuple: (c_left, c_right, mu_refined)
+    """
+    mu_low, mu_high = mu_range
+    c_low = phase.concentration(T, mu_low)
+    c_high = phase.concentration(T, mu_high)
+    if hasattr(c_low, "item"):
+        c_low = c_low.item()
+    if hasattr(c_high, "item"):
+        c_high = c_high.item()
+
+    while mu_high - mu_low > mu_tol:
+        mu_mid = (mu_high + mu_low) / 2
+        c_mid = phase.concentration(T, mu_mid)
+        if hasattr(c_mid, "item"):
+            c_mid = c_mid.item()
+
+        # Decide which side c_mid belongs to
+        if abs(c_mid - c_low) <= abs(c_mid - c_high):
+            mu_low, c_low = mu_mid, c_mid
+        else:
+            mu_high, c_high = mu_mid, c_mid
+
+    return c_low, c_high, (mu_low + mu_high) / 2
+
+
+def refine_concentration_jumps(T, mus, cs, phase, threshold=0.1, mu_tol=1e-8, dT=1.0):
+    """
+    Refine concentration jumps in a phase diagram for a given phase using a tracing algorithm.
+
+    Args:
+        T (float or array): Temperature(s).
+        mus (array): Chemical potentials.
+        cs (array): Concentrations.
+        phase (Phase): The phase object to check.
+        threshold (float): Minimum concentration jump to consider.
+        mu_tol (float): Tolerance for chemical potential refinement.
+        dT (float): Initial temperature step for tracing.
+
+    Returns:
+        tuple of arrays: (c_left, c_right, mu, T) for each refined jump.
+    """
+    all_candidates = find_concentration_jumps(T, mus, cs, threshold)
+    if not all_candidates:
+        return np.array([]), np.array([]), np.array([]), np.array([])
+
+    unique_Ts = np.unique(np.asanyarray(T))
+    T_min, T_max = unique_Ts.min(), unique_Ts.max()
+
+    c_lefts, c_rights, mus_refined, Ts_out = [], [], [], []
+    covered = np.zeros(len(all_candidates), dtype=bool)
+
+    def trace_direction(Tc_start, mur_start, cl_start, cr_start, direction, dmu_win):
+        curr_T = Tc_start
+        curr_mu = mur_start
+        cl, cr = cl_start, cr_start
+        initial_delta_c = abs(cr - cl)
+        local_trace = []
+
+        while True:
+            delta_c = abs(cr - cl)
+            # Adaptive dT: Step decreases as jump size decreases
+            step_dT = dT * (delta_c / initial_delta_c)
+            step_dT = max(step_dT, 0.1)
+
+            next_T = curr_T + direction * step_dT
+            if (direction > 0 and next_T >= T_max) or (direction < 0 and next_T <= T_min):
+                break
+
+            window = (curr_mu - dmu_win, curr_mu + dmu_win)
+            cl_n, cr_n, mur_n = refine_isothermal_jump(next_T, window, phase, mu_tol)
+
+            if abs(cr_n - cl_n) > threshold:
+                curr_T, curr_mu, cl, cr = next_T, mur_n, cl_n, cr_n
+                local_trace.append((cl, cr, curr_mu, curr_T))
+                # Mark covered candidates
+                for j, (Tj, rj, _) in enumerate(all_candidates):
+                    if not covered[j] and abs(Tj - curr_T) < dT and rj[0] <= curr_mu <= rj[1]:
+                        covered[j] = True
+            else:
+                # Lookahead: Check for uncovered candidates ahead
+                candidates_ahead = [
+                    (j, Tj, rj) for j, (Tj, rj, _) in enumerate(all_candidates)
+                    if not covered[j] and (direction * (Tj - curr_T) > 0)
+                ]
+                if candidates_ahead:
+                    j_next, Tj_next, rj_next = min(candidates_ahead, key=lambda x: direction * (x[1] - curr_T))
+                    cl_n, cr_n, mur_n = refine_isothermal_jump(Tj_next, rj_next, phase, mu_tol)
+                    if abs(cr_n - cl_n) > threshold:
+                        curr_T, curr_mu, cl, cr = Tj_next, mur_n, cl_n, cr_n
+                        local_trace.append((cl, cr, curr_mu, curr_T))
+                        covered[j_next] = True
+                        continue
+                break
+        return local_trace
+
+    for i, (Tc, mu_range, _) in enumerate(all_candidates):
+        if covered[i]:
+            continue
+
+        # 1. Initial refinement
+        cl, cr, mur = refine_isothermal_jump(Tc, mu_range, phase, mu_tol)
+        if abs(cr - cl) <= threshold:
+            continue
+
+        c_lefts.append(cl)
+        c_rights.append(cr)
+        mus_refined.append(mur)
+        Ts_out.append(Tc)
+        covered[i] = True
+
+        dmu_win = abs(mu_range[1] - mu_range[0]) * 2
+
+        # 2. Trace Up and Down
+        for direction in [1, -1]:
+            trace = trace_direction(Tc, mur, cl, cr, direction, dmu_win)
+            for cl_t, cr_t, mur_t, tt in trace:
+                c_lefts.append(cl_t)
+                c_rights.append(cr_t)
+                mus_refined.append(mur_t)
+                Ts_out.append(tt)
+
+    return np.array(c_lefts), np.array(c_rights), np.array(mus_refined), np.array(Ts_out)
 
 
 def find_one_point(phase1, phase2, potential, var_range):
