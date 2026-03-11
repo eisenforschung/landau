@@ -27,10 +27,25 @@ class AbstractPolyMethod(abc.ABC):
         over groups of columns `phase` and `phase_unit`."""
         return df
 
-    @abc.abstractmethod
-    def make(self, dd: pd.DataFrame, variables: list[str] = ["c", "T"]) -> Polygon:
+    def make(self, dd: pd.DataFrame, variables: list[str] = ["c", "T"]) -> Polygon | None:
         """Turn the subset of the full data belonging to one phase region into
         a polygon."""
+        # check for c-degenerate line phase
+        pp = dd.sort_values(variables[0])[variables].to_numpy()
+        pp = np.unique(pp[np.isfinite(pp).all(axis=-1)], axis=0)
+        points = shapely.MultiPoint(pp)
+        shape = shapely.convex_hull(points)
+        if not isinstance(shape, shapely.LineString):
+            shape = self._make(dd, variables)
+            if shape is None:
+                return None
+        shape = shape.buffer(self.min_c_width/2)
+        return Polygon(shape.exterior.coords)
+
+    @abc.abstractmethod
+    def _make(self, dd: pd.DataFrame, variables: list[str] = ["c", "T"]) -> shapely.Geometry:
+        """Turn the subset of the full data belonging to one phase region into
+        a shapely geometry"""
         pass
 
     def apply(self, df: pd.DataFrame, variables: list[str] = ["c", "T"]) -> pd.Series:
@@ -51,7 +66,7 @@ class Concave(AbstractPolyMethod):
     drop_interior: bool = True
     """Find concave set only of phase boundary points; usually helps to get the shape right, but can create holes."""
 
-    def make(self, dd, variables=["c", "T"]):
+    def _make(self, dd, variables=["c", "T"]):
         if self.drop_interior and "border" in dd.columns:
             dd = dd.query("border")
 
@@ -68,48 +83,20 @@ class Concave(AbstractPolyMethod):
             pp[:, i] -= refnorm[var][0]
             pp[:, i] /= refnorm[var][1]
         points = shapely.MultiPoint(pp)
-        # check for c-degenerate line phase
-        shape = shapely.convex_hull(points)
-        if variables[0] == "c" and isinstance(shape, shapely.LineString):
-            coords = np.asarray(shape.coords)
-            if len(coords) < 2:
+        shape = shapely.concave_hull(points, ratio=self.ratio)
+        if not isinstance(shape, shapely.Polygon):
+            warn(f"Failed to construct polygon, got {shape} instead, skipping.")
+            return None
+        if not shape.is_empty:
+            coords = np.asarray(shape.exterior.coords)
+            if len(coords) < 3:
                 return None
-            if np.allclose(coords[:, 0], coords[0, 0]):
-                match refnorm["c"][0]:
-                    case 0.0:
-                        bias = +self.min_c_width / 2
-                    case 1.0:
-                        bias = -self.min_c_width / 2
-                    case _:
-                        bias = 0
-                # artificially widen the line phase in c, so that we can make a
-                # "normal" polygon for it.
-                coords = np.concatenate(
-                    [
-                        # inverting the order for the second half of the array, makes
-                        # it so that the points are in the correct order for the
-                        # polygon
-                        coords[::+1] - [self.min_c_width / 2, 0],
-                        coords[::-1] + [self.min_c_width / 2, 0],
-                    ],
-                    axis=0,
-                )
-                coords[:, 0] += bias
         else:
-            shape = shapely.concave_hull(points, ratio=self.ratio)
-            if not isinstance(shape, shapely.Polygon):
-                warn(f"Failed to construct polygon, got {shape} instead, skipping.")
-                return None
-            if not shape.is_empty:
-                coords = np.asarray(shape.exterior.coords)
-                if len(coords) < 3:
-                    return None
-            else:
-                return None
+            return None
         for i, var in enumerate(variables):
             coords[:, i] *= refnorm[var][1]
             coords[:, i] += refnorm[var][0]
-        return Polygon(coords)
+        return shapely.Polygon(coords)
 
 
 @dataclass
@@ -216,7 +203,7 @@ class Segments(AbstractPolyMethod):
 
         return pd.concat(segments, ignore_index=True)
 
-    def make(self, td, variables=["c", "T"]):
+    def _make(self, td, variables=["c", "T"]):
         """
         Requires a grouped dataframe from get_transitions (by phase).
         """
@@ -224,7 +211,7 @@ class Segments(AbstractPolyMethod):
             meanc = td.c.mean()
             Tmin = td["T"].min()
             Tmax = td["T"].max()
-            return Polygon(
+            return shapely.Polygon(
                 [
                     [meanc - self.min_c_width / 2, Tmin],
                     [meanc + self.min_c_width / 2, Tmin],
@@ -235,7 +222,7 @@ class Segments(AbstractPolyMethod):
         td = td.loc[ np.isfinite(td[variables[0]]) & np.isfinite(td[variables[1]]) ]
         sd = self._sort_segments(td, x_col=variables[0], y_col=variables[1])
         # sd = sd.loc[ np.isfinite(sd[variables[0]]) & np.isfinite(sd[variables[1]]) ]
-        return Polygon(np.transpose([sd[v] for v in variables]))
+        return shapely.Polygon(np.transpose([sd[v] for v in variables]))
 
 
 __all__ = ["Concave", "Segments"]
@@ -259,28 +246,11 @@ with ImportAlarm("'python_tsp' package required for PythonTsp.  Install from con
                      "try FastTsp or one of the other polygon methods.")
             return df
 
-        def make(self, dd, variables=["c", "T"]):
+        def _make(self, dd, variables=["c", "T"]):
             c = dd.query('border')[variables].to_numpy()
             c = c[np.isfinite(c).all(axis=-1)]
             if len(c) == 0:
                 return None
-            shape = shapely.convex_hull(shapely.MultiPoint(c))
-            if not isinstance(shape, shapely.Polygon):
-                if not isinstance(shape, shapely.LineString):
-                    return None
-                if len(shape.coords) < 2:
-                    return None
-                coords = np.array(shape.buffer(self.min_c_width/2).exterior.coords)
-                if "c" in variables:
-                    match c[0, variables.index("c")]:
-                        case 0.0:
-                            bias = +self.min_c_width / 2
-                        case 1.0:
-                            bias = -self.min_c_width / 2
-                        case _:
-                            bias = 0
-                coords[:, variables.index("c")] += bias
-                return Polygon(coords)
             sc = StandardScaler().fit_transform(c)
             dm = pairwise_distances(sc)
             if not (dm > 0).any():
@@ -289,7 +259,7 @@ with ImportAlarm("'python_tsp' package required for PythonTsp.  Install from con
             tour = solve_tsp_record_to_record(
                     dm, x0=np.argsort(np.arctan2(sc[:, 1], sc[:, 0])).tolist(),
                     max_iterations=self.max_iterations)[0]
-            return Polygon(c[tour]) if len(tour) > 2 else None
+            return shapely.Polygon(c[tour]) if len(tour) > 2 else None
     __all__ += ["PythonTsp"]
 
 
@@ -305,35 +275,18 @@ with ImportAlarm("'fast-tsp' package required for FastTsp.  Install from pip.") 
         duration_seconds: float = 1.0
         """Maxixum time spent per search."""
 
-        def make(self, dd, variables=["c", "T"]):
+        def _make(self, dd, variables=["c", "T"]):
             c = dd.query('border')[variables].to_numpy()
             c = c[np.isfinite(c).all(axis=-1)]
             if len(c) == 0:
                 return None
-            shape = shapely.convex_hull(shapely.MultiPoint(c))
-            if not isinstance(shape, shapely.Polygon):
-                if not isinstance(shape, shapely.LineString):
-                    return None
-                if len(shape.coords) < 2:
-                    return None
-                coords = np.array(shape.buffer(self.min_c_width/2).exterior.coords)
-                if "c" in variables:
-                    match c[0, variables.index("c")]:
-                        case 0.0:
-                            bias = +self.min_c_width / 2
-                        case 1.0:
-                            bias = -self.min_c_width / 2
-                        case _:
-                            bias = 0
-                coords[:, variables.index("c")] += bias
-                return Polygon(coords)
             sc = StandardScaler().fit_transform(c)
             dm = pairwise_distances(sc)
             if not (dm > 0).any():
                 return shapely.convex_hull(shapely.MultiPoint(c))
             dm = (dm / dm[dm > 0].min()).round().astype(int)
             tour = fast_tsp.find_tour(dm, self.duration_seconds)
-            return Polygon(c[tour]) if len(tour) > 2 else None
+            return shapely.Polygon(c[tour]) if len(tour) > 2 else None
 
     __all__ += ["FastTsp"]
 
