@@ -5,7 +5,8 @@ from .phases import (
     IdealSolution,
     RegularSolution,
     InterpolatingPhase,
-    SlowInterpolatingPhase
+    SlowInterpolatingPhase,
+    AsePhase
 )
 
 from .interpolate import (

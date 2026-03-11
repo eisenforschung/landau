@@ -32,6 +32,7 @@ __all__ = [
     "ConstantPointDefect",
     "PointDefectSublattice",
     "PointDefectedPhase",
+    "AsePhase",
 ]
 
 
@@ -821,3 +822,5 @@ class PointDefectedPhase(Phase):
         for d in self.sublattices:
             c += d.concentration_contribution(T, dmu)
         return c
+
+from .ase_phases import AsePhase
