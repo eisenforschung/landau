@@ -1,11 +1,13 @@
 import pytest
 import numpy as np
-from landau.phases import HAS_ASE
+import importlib.util
+
+HAS_ASE = importlib.util.find_spec("ase") is not None
 
 if HAS_ASE:
     from ase.thermochemistry import IdealGasThermo, HarmonicThermo, CrystalThermo
     from ase.build import molecule
-    from landau.phases import ASEIdealGasPhase, ASEHarmonicPhase, ASECrystalPhase
+    from landau.ase_phases import ASEIdealGasPhase, ASEHarmonicPhase, ASECrystalPhase
 
 @pytest.mark.skipif(not HAS_ASE, reason="ASE is not installed")
 def test_ase_ideal_gas_phase():
