@@ -41,17 +41,7 @@ def plot_phase_diagram(
 ):
     df = df.query("stable").copy()
 
-    # the default map
-    color_map = dict(zip(df.phase.unique(), sns.palettes.SEABORN_PALETTES["pastel"]))
-    # disregard overriden phases that are not present
-    color_override = {p: c for p, c in color_override.items() if p in color_map}
-    # if the override uses the same colors as the default map, multiple phases
-    # would be mapped to the same color; so instead let's update the color map of phases that would
-    # use the same color as a phase in the override to use the default colors of the overriden phases
-    # instead
-    duplicates_map = {c: color_map[o] for o, c in color_override.items()}
-    diff = {k: duplicates_map[c] for k, c in color_map.items() if c in duplicates_map}
-    color_map.update(diff | color_override)
+    color_map = get_phase_colors(df.phase.unique(), color_override)
 
     df = cluster_phase(df)
     if (df.phase_unit==-1).any():
@@ -123,6 +113,8 @@ def plot_phase_diagram(
     plt.ylabel("$T$ [K]")
 
 def get_phase_colors(phase_names, override: dict[str, str] | None = None):
+    if override is None:
+        override = {}
     # the default map
     color_map = dict(zip(phase_names, sns.palettes.SEABORN_PALETTES["pastel"]))
     # disregard overriden phases that are not present
