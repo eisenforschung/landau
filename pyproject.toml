@@ -36,6 +36,7 @@ dependencies = [
     "seaborn>=0.12,<=0.13.2",
     "scikit-learn>=1.2,<2",
     "pyiron_snippets>=1,<2",
+    "ase>=3.20.0",
 ]
 
 [project.optional-dependencies]

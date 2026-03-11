@@ -16,6 +16,12 @@ from .interpolate import ConcentrationInterpolator, TemperatureInterpolator, SGT
 
 from scipy.constants import Boltzmann, eV
 
+try:
+    from ase.thermochemistry import IdealGasThermo, HarmonicThermo, CrystalThermo
+    HAS_ASE = True
+except ImportError:
+    HAS_ASE = False
+
 kB = Boltzmann / eV
 
 
@@ -32,6 +38,9 @@ __all__ = [
     "ConstantPointDefect",
     "PointDefectSublattice",
     "PointDefectedPhase",
+    "ASEIdealGasPhase",
+    "ASEHarmonicPhase",
+    "ASECrystalPhase",
 ]
 
 
@@ -637,6 +646,72 @@ class SlowInterpolatingPhase(Phase):
             plot_excess (bool): if True, subtract free energy at concentration range endpoints for legibility
             concentration_range (tuple of float): min/max concentration range"""
         check_concentration_interpolation(self, self.phases, T, samples, plot_excess, self.concentration_range)
+
+@dataclass(frozen=True)
+class ASEIdealGasPhase(AbstractLinePhase):
+    """
+    Phase wrapper for ASE's IdealGasThermo class.
+    """
+    fixed_concentration: float
+    thermochem: 'IdealGasThermo'
+    pressure: float = 1e5
+
+    @property
+    def line_concentration(self):
+        return self.fixed_concentration
+
+    def line_free_energy(self, T):
+        if not HAS_ASE:
+            raise ImportError("ase is required to use ASEIdealGasPhase")
+        func = np.vectorize(
+            lambda t: self.thermochem.get_gibbs_energy(t, pressure=self.pressure, verbose=False),
+            otypes=[float]
+        )
+        return func(T)
+
+
+@dataclass(frozen=True)
+class ASEHarmonicPhase(AbstractLinePhase):
+    """
+    Phase wrapper for ASE's HarmonicThermo class.
+    """
+    fixed_concentration: float
+    thermochem: 'HarmonicThermo'
+
+    @property
+    def line_concentration(self):
+        return self.fixed_concentration
+
+    def line_free_energy(self, T):
+        if not HAS_ASE:
+            raise ImportError("ase is required to use ASEHarmonicPhase")
+        func = np.vectorize(
+            lambda t: self.thermochem.get_helmholtz_energy(t, verbose=False),
+            otypes=[float]
+        )
+        return func(T)
+
+
+@dataclass(frozen=True)
+class ASECrystalPhase(AbstractLinePhase):
+    """
+    Phase wrapper for ASE's CrystalThermo class.
+    """
+    fixed_concentration: float
+    thermochem: 'CrystalThermo'
+
+    @property
+    def line_concentration(self):
+        return self.fixed_concentration
+
+    def line_free_energy(self, T):
+        if not HAS_ASE:
+            raise ImportError("ase is required to use ASECrystalPhase")
+        func = np.vectorize(
+            lambda t: self.thermochem.get_helmholtz_energy(t, verbose=False),
+            otypes=[float]
+        )
+        return func(T)
 
 def check_concentration_interpolation(
         phase: SlowInterpolatingPhase | InterpolatingPhase | RegularSolution,
