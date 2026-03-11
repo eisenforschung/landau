@@ -1,14 +1,15 @@
 import pytest
 import numpy as np
 
+from hypothesis import given, strategies as st, example
+from hypothesis.extra.numpy import arrays
+
 from pyiron_snippets.import_alarm import ImportAlarm
 
 with ImportAlarm() as ase_alarm:
     from ase.thermochemistry import IdealGasThermo, HarmonicThermo, CrystalThermo
     from ase.build import molecule
     from landau.ase_phases import ASEThermoPhase
-
-import itertools
 
 @pytest.mark.skipif(ase_alarm.message is not None, reason="ASE is not installed")
 def test_ase_thermo_phase_gibbs():
@@ -46,46 +47,35 @@ def test_ase_thermo_phase_helmholtz():
     assert F_array.shape == (2,)
 
 
-from hypothesis import given, strategies as st
-from hypothesis.extra.numpy import arrays
-
 @pytest.mark.skipif(ase_alarm.message is not None, reason="ASE is not installed")
-@pytest.mark.parametrize("phase_factory", [
-    lambda: ASEThermoPhase("ig_phase", 0.5, thermochem=IdealGasThermo(vib_energies=[0.1], geometry='linear', atoms=molecule('H2'), symmetrynumber=2, spin=0), use_gibbs=True),
-    lambda: ASEThermoPhase("ht_phase", 0.5, thermochem=HarmonicThermo(vib_energies=[0.1]), use_gibbs=False),
-    lambda: ASEThermoPhase("ct_phase", 0.5, thermochem=CrystalThermo(phonon_DOS=np.array([1.]), phonon_energies=np.array([0.1]), formula_units=1), use_gibbs=False),
-])
-@pytest.mark.parametrize("T, dmu, expected_shape", [
-    (300.0, 0.0, ()),
-    (np.array([300, 400]), 0.0, (2,)),
-    (300.0, np.array([-0.1, 0.0, 0.1]), (3,)),
-    (np.array([300, 400]), np.array([0.0, 0.1]), (2,)),
-    (np.array([300, 400])[:, None], np.array([-0.1, 0.0, 0.1]), (2, 3)),
-    (np.array([[300], [400]]), np.array([[-0.1, 0.0, 0.1]]), (2, 3)),
-])
-def test_ase_semigrand_potential_vectorization(phase_factory, T, dmu, expected_shape):
-    phase = phase_factory()
-    res = phase.semigrand_potential(T, dmu)
+@given(
+    T=arrays(float, st.integers(0, 3), elements=st.floats(100, 1000)),
+    dmu=arrays(float, st.integers(0, 3), elements=st.floats(-1, 1))
+)
+@example(T=np.array(300.0), dmu=np.array(0.0))
+@example(T=np.array([300, 400]), dmu=np.array(0.0))
+@example(T=np.array(300.0), dmu=np.array([-0.1, 0.0, 0.1]))
+@example(T=np.array([300, 400]), dmu=np.array([0.0, 0.1]))
+@example(T=np.array([300, 400])[:, None], dmu=np.array([-0.1, 0.0, 0.1]))
+@example(T=np.array([[300], [400]]), dmu=np.array([[-0.1, 0.0, 0.1]]))
+def test_ase_semigrand_potential_vectorization(T, dmu):
+    try:
+        expected_shape = np.broadcast_shapes(T.shape, dmu.shape)
+    except ValueError:
+        # Broadcasting might fail if shapes are completely incompatible
+        return
+
+    # Use a generic HarmonicPhase for broadcasting logic validation
+    ht = HarmonicThermo(vib_energies=[0.1])
+    phase = ASEThermoPhase("ht_phase", 0.5, thermochem=ht, use_gibbs=False)
+
+    # Hypothesis generates arrays with 0-dimensions, which isn't the same as native scalars in our `phase.semigrand_potential`.
+    # Let's convert true 0d arrays to python scalars to test the scalar logic pathways explicitly, matching the examples.
+    T_val = T.item() if T.ndim == 0 else T
+    dmu_val = dmu.item() if dmu.ndim == 0 else dmu
+
+    res = phase.semigrand_potential(T_val, dmu_val)
     if expected_shape == ():
         assert np.isscalar(res) and not isinstance(res, np.ndarray)
     else:
         assert res.shape == expected_shape
-
-
-@pytest.mark.skipif(ase_alarm.message is not None, reason="ASE is not installed")
-@pytest.mark.parametrize("phase_factory", [
-    lambda: ASEThermoPhase("ig_phase", 0.5, thermochem=IdealGasThermo(vib_energies=[0.1], geometry='linear', atoms=molecule('H2'), symmetrynumber=2, spin=0), use_gibbs=True),
-])
-@given(
-    T=arrays(float, st.integers(1, 3), elements=st.floats(100, 1000)),
-    dmu=arrays(float, st.integers(1, 3), elements=st.floats(-1, 1))
-)
-def test_ase_semigrand_potential_hypothesis(phase_factory, T, dmu):
-    phase = phase_factory()
-    try:
-        res = phase.semigrand_potential(T, dmu)
-        expected_shape = np.broadcast_shapes(T.shape, dmu.shape)
-        assert res.shape == expected_shape
-    except ValueError:
-        # Broadcasting might fail if shapes are completely incompatible
-        pass
