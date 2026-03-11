@@ -40,10 +40,13 @@ def S(c):
 
 
 def Sprime(c):
-    with np.errstate(divide="ignore"):
-        s = -kB * (np.log(c / (1 - c)))
-    s[np.isclose(c, 0)] = +np.inf
-    s[np.isclose(c, 1)] = -np.inf
+    c_arr = np.atleast_1d(c)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        s = -kB * (np.log(c_arr / (1 - c_arr)))
+    s[np.isclose(c_arr, 0)] = +np.inf
+    s[np.isclose(c_arr, 1)] = -np.inf
+    if np.isscalar(c):
+        return s.item()
     return s
 
 
