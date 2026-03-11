@@ -14,8 +14,7 @@ class ASEThermoPhase(AbstractLinePhase):
     """
     fixed_concentration: float
     thermochem: 'ThermoChem'
-    use_gibbs: bool = False
-    pressure: float = 0.0
+    pressure: float | None = None
 
     @ase_alarm
     def __post_init__(self, *args, **kwargs):
@@ -26,7 +25,7 @@ class ASEThermoPhase(AbstractLinePhase):
         return self.fixed_concentration
 
     def line_free_energy(self, T):
-        if self.use_gibbs:
+        if self.pressure is not None:
             func = np.vectorize(
                 lambda t: self.thermochem.get_gibbs_energy(t, pressure=self.pressure, verbose=False),
                 otypes=[float]
