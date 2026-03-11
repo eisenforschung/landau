@@ -5,7 +5,8 @@ from .phases import (
     IdealSolution,
     RegularSolution,
     InterpolatingPhase,
-    SlowInterpolatingPhase
+    SlowInterpolatingPhase,
+    AsePhase
 )
 
 from .interpolate import (
@@ -18,8 +19,6 @@ from .interpolate import (
 )
 
 from .plot import plot_phase_diagram
-
-from .ase_phases import ASEThermoPhase
 
 try:
     from ._version import __version__

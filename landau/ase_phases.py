@@ -1,14 +1,15 @@
 import numpy as np
 from dataclasses import dataclass
-from .phases import AbstractLinePhase
 
 from pyiron_snippets.import_alarm import ImportAlarm
 
 with ImportAlarm("ASE is required to use ASE phase wrappers. Install with pip install 'landau[ase]'") as ase_alarm:
     from ase.thermochemistry import ThermoChem
 
+from .phases import AbstractLinePhase
+
 @dataclass(frozen=True)
-class ASEThermoPhase(AbstractLinePhase):
+class AsePhase(AbstractLinePhase):
     """
     Phase wrapper for ASE's ThermoChem classes.
     """
