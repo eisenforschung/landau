@@ -36,4 +36,8 @@ class ASEThermoPhase(AbstractLinePhase):
                 lambda t: self.thermochem.get_helmholtz_energy(t, verbose=False),
                 otypes=[float]
             )
-        return func(T)
+
+        res = func(T)
+        if res.ndim == 0:
+            return res.item()
+        return res
