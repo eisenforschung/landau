@@ -1,15 +1,14 @@
 import pytest
 import numpy as np
-import importlib.util
 
-HAS_ASE = importlib.util.find_spec("ase") is not None
+from pyiron_snippets.import_alarm import ImportAlarm
 
-if HAS_ASE:
+with ImportAlarm() as ase_alarm:
     from ase.thermochemistry import IdealGasThermo, HarmonicThermo, CrystalThermo
     from ase.build import molecule
     from landau.ase_phases import ASEIdealGasPhase, ASEHarmonicPhase, ASECrystalPhase
 
-@pytest.mark.skipif(not HAS_ASE, reason="ASE is not installed")
+@pytest.mark.skipif(ase_alarm.message is not None, reason="ASE is not installed")
 def test_ase_ideal_gas_phase():
     atoms = molecule('H2')
     ig = IdealGasThermo(vib_energies=[0.1], geometry='linear', atoms=atoms, symmetrynumber=2, spin=0)
@@ -26,7 +25,7 @@ def test_ase_ideal_gas_phase():
     G_array = phase.line_free_energy(T_array)
     assert G_array.shape == (2,)
 
-@pytest.mark.skipif(not HAS_ASE, reason="ASE is not installed")
+@pytest.mark.skipif(ase_alarm.message is not None, reason="ASE is not installed")
 def test_ase_harmonic_phase():
     ht = HarmonicThermo(vib_energies=[0.1])
     phase = ASEHarmonicPhase("ht_phase", 0.3, thermochem=ht)
@@ -41,7 +40,7 @@ def test_ase_harmonic_phase():
     F_array = phase.line_free_energy(T_array)
     assert F_array.shape == (2,)
 
-@pytest.mark.skipif(not HAS_ASE, reason="ASE is not installed")
+@pytest.mark.skipif(ase_alarm.message is not None, reason="ASE is not installed")
 def test_ase_crystal_phase():
     ct = CrystalThermo(phonon_DOS=np.array([1.]), phonon_energies=np.array([0.1]), formula_units=1)
     phase = ASECrystalPhase("ct_phase", 0.8, thermochem=ct)

@@ -13,7 +13,7 @@ with ImportAlarm("ASE is required to use ASE phase wrappers. Install with pip in
         Phase wrapper for ASE's IdealGasThermo class.
         """
         fixed_concentration: float
-        thermochem: 'IdealGasThermo'
+        thermochem: IdealGasThermo
         pressure: float = 1e5
 
         @property
@@ -34,7 +34,7 @@ with ImportAlarm("ASE is required to use ASE phase wrappers. Install with pip in
         Phase wrapper for ASE's HarmonicThermo class.
         """
         fixed_concentration: float
-        thermochem: 'HarmonicThermo'
+        thermochem: HarmonicThermo
 
         @property
         def line_concentration(self):
@@ -54,7 +54,7 @@ with ImportAlarm("ASE is required to use ASE phase wrappers. Install with pip in
         Phase wrapper for ASE's CrystalThermo class.
         """
         fixed_concentration: float
-        thermochem: 'CrystalThermo'
+        thermochem: CrystalThermo
 
         @property
         def line_concentration(self):
