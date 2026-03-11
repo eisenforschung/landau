@@ -19,7 +19,7 @@ from .interpolate import (
 
 from .plot import plot_phase_diagram
 
-from .ase_phases import ASEIdealGasPhase, ASEHarmonicPhase, ASECrystalPhase
+from .ase_phases import ASEThermoPhase
 
 try:
     from ._version import __version__
