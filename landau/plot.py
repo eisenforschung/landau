@@ -179,7 +179,10 @@ def _plot_phase_diagram(
         mus = mus[np.isfinite(mus)]
         if len(mus) > 0:
             ax.set_xlim(mus.min(), mus.max())
-        ax.set_xlabel(r"$\Delta\mu$ [eV]")
+        if element is not None:
+            ax.set_xlabel(rf"$\Delta\mu_\mathrm{{{element}}}$ [eV]")
+        else:
+            ax.set_xlabel(r"$\Delta\mu$ [eV]")
 
     ax.set_ylim(df_stable["T"].min(), df_stable["T"].max())
     ax.legend(ncols=2)
