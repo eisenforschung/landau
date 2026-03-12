@@ -40,6 +40,9 @@ class AbstractPolyMethod(abc.ABC):
             if shape is None:
                 return None
         shape = shape.buffer(self.min_c_width/2)
+        if isinstance(shape, shapely.MultiPolygon):
+            shape = max(shape.geoms, key=shapely.area)
+            print("Warning: polymethod returned disjoined polygons, returning largest.")
         return Polygon(shape.exterior.coords)
 
     @abc.abstractmethod
