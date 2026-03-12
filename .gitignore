@@ -1,5 +1,10 @@
 .gitignore
 __pycache__
-dist/
+*egg-info*
+_version.py
+.flake8
+.hypothesis/
 build/
-*.egg-info
+docs/_build/
+.ipynb_checkpoints
+*.pyc
