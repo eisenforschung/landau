@@ -245,7 +245,7 @@ def refine_phase_diagram(df, phases, min_c=0, max_c=1):
         if multiple_mus:
             mdf = (
                 df.groupby("T", group_keys=True)
-                .apply(find_all_points, phases=phases, by="mu", include_groups=True)
+                .apply(lambda g: find_all_points(g.assign(T=g.name), phases=phases, by="mu"), include_groups=False)
                 .reset_index()
             )
             mdf["stable"] = True
@@ -255,7 +255,7 @@ def refine_phase_diagram(df, phases, min_c=0, max_c=1):
         if multiple_ts:
             Tdf = (
                 df.groupby("mu", group_keys=True)
-                .apply(find_all_points, phases=phases, by="T", include_groups=True)
+                .apply(lambda g: find_all_points(g.assign(mu=g.name), phases=phases, by="T"), include_groups=False)
                 .reset_index()
             )
             Tdf["stable"] = True
