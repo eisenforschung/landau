@@ -10,12 +10,16 @@ Generalizes to N dimensions throughout.
 See design and discussion here: https://claude.ai/share/c9d9ca3a-9a9f-48b3-8f2a-886b11951490
 """
 
+from dataclasses import dataclass
+
 import numpy as np
 from scipy.interpolate import RBFInterpolator
 from scipy.optimize import minimize
 from scipy.spatial import ConvexHull
 from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.utils.validation import check_is_fitted
+
+from .basic import TemperatureInterpolator
 
 
 def _in_hull(points, hull):
@@ -269,3 +273,56 @@ class WhitneyRBFInterpolator(BaseEstimator, RegressorMixin):
         """R² score."""
         from sklearn.metrics import r2_score
         return r2_score(y, self.predict(X))
+
+
+@dataclass(frozen=True, eq=True)
+class WhitneyTemperatureInterpolator(TemperatureInterpolator):
+    """
+    A :class:`TemperatureInterpolator` backed by :class:`WhitneyRBFInterpolator`.
+
+    Fits a 1-D Whitney RBF on temperature data and returns a callable that
+    extrapolates smoothly outside the training range.
+
+    Parameters
+    ----------
+    kernel : str, default='thin_plate_spline'
+    smoothing : float, default=0.0
+    degree : int, default=2
+    epsilon : float, default=1.0
+    grad_eps : float, default=1e-4
+    """
+
+    kernel: str = "thin_plate_spline"
+    smoothing: float = 0.0
+    degree: int = 2
+    epsilon: float = 1.0
+    grad_eps: float = 1e-4
+
+    def fit(self, T, y):
+        """
+        Fit the interpolator.
+
+        Parameters
+        ----------
+        T : (N,) array-like — temperature values
+        y : (N,) array-like — target values
+
+        Returns
+        -------
+        callable : (M,) ndarray -> (M,) ndarray
+        """
+        T = np.asarray(T, dtype=float).reshape(-1, 1)
+        y = np.asarray(y, dtype=float)
+        interp = WhitneyRBFInterpolator(
+            kernel=self.kernel,
+            smoothing=self.smoothing,
+            degree=self.degree,
+            epsilon=self.epsilon,
+            grad_eps=self.grad_eps,
+        ).fit(T, y)
+
+        def predict(t):
+            t = np.atleast_1d(np.asarray(t, dtype=float)).reshape(-1, 1)
+            return interp.predict(t)
+
+        return predict
