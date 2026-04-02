@@ -49,6 +49,31 @@ class TestWhitneyRBFInterpolator:
         x_out = np.array([[1.0 + eps]])
         assert abs(model.predict(x_in)[0] - model.predict(x_out)[0]) < 1e-3
 
+    @pytest.mark.parametrize("kernel", ["quintic", "gaussian", "multiquadric"])
+    def test_1d_c1_continuity(self, kernel):
+        """C1: derivative should be continuous at the 1D boundary for smooth kernels."""
+        X = np.linspace(0, 1, 30).reshape(-1, 1)
+        y = X[:, 0] ** 2
+        model = WhitneyRBFInterpolator(smoothing=0.0, kernel=kernel).fit(X, y)
+        eps = 1e-5
+        # One-sided derivatives at x=1 (right boundary)
+        d_in = (model.predict([[1.0]]) - model.predict([[1.0 - eps]]))[0] / eps
+        d_out = (model.predict([[1.0 + eps]]) - model.predict([[1.0]]))[0] / eps
+        np.testing.assert_allclose(d_in, d_out, atol=0.01)
+
+    @pytest.mark.parametrize("kernel", ["quintic", "gaussian", "multiquadric"])
+    def test_2d_c1_continuity(self, kernel):
+        """C1: gradient should be continuous at the hull boundary for smooth kernels."""
+        xs = np.linspace(-1, 1, 7)
+        X = np.array([[x, z] for x in xs for z in xs])
+        y = np.sin(X[:, 0]) * np.cos(X[:, 1])
+        model = WhitneyRBFInterpolator(smoothing=0.0, kernel=kernel).fit(X, y)
+        eps = 1e-4
+        # At (1.0, 0.0): x=1 is the right edge of the hull; outward normal is (1, 0)
+        d_in = (model.predict([[1.0, 0.0]]) - model.predict([[1.0 - eps, 0.0]]))[0] / eps
+        d_out = (model.predict([[1.0 + eps, 0.0]]) - model.predict([[1.0, 0.0]]))[0] / eps
+        np.testing.assert_allclose(d_in, d_out, atol=0.1)
+
     def test_feature_mismatch_raises(self):
         """predict() should raise when feature count doesn't match fit."""
         X = np.linspace(0, 1, 10).reshape(-1, 1)
@@ -118,5 +143,7 @@ class TestWhitneyTemperatureInterpolator:
         assert isinstance(WhitneyTemperatureInterpolator(), TemperatureInterpolator)
 
     def test_exported_from_package(self):
-        """Both classes should be importable from landau.interpolate."""
-        from landau.interpolate import WhitneyRBFInterpolator, WhitneyTemperatureInterpolator  # noqa: F401
+        """WhitneyTemperatureInterpolator is importable from landau.interpolate; WhitneyRBFInterpolator is not part of the public API."""
+        from landau.interpolate import WhitneyTemperatureInterpolator  # noqa: F401
+        import landau.interpolate as pkg
+        assert "WhitneyRBFInterpolator" not in pkg.__all__
