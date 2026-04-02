@@ -9,7 +9,7 @@ from .basic import (
 )
 
 from .softplus import SoftplusFit
-from .whitney import WhitneyRBFInterpolator, WhitneyTemperatureInterpolator
+from .whitney import WhitneyTemperatureInterpolator
 
 __all__ = [
     "Interpolator",
@@ -20,6 +20,5 @@ __all__ = [
     "RedlichKister",
     "StitchedFit",
     "SoftplusFit",
-    "WhitneyRBFInterpolator",
     "WhitneyTemperatureInterpolator",
 ]
