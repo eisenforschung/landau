@@ -283,6 +283,12 @@ class WhitneyTemperatureInterpolator(TemperatureInterpolator):
     Fits a 1-D Whitney RBF on temperature data and returns a callable that
     extrapolates smoothly outside the training range.
 
+    .. warning::
+
+        Fitting this interpolator can be very slow, especially when taking data e.g. from calphy as is.
+        It's better to pre-smooth raw free energies with a plain interpolator or sub set data and then feeding it to
+        this class.
+
     Parameters
     ----------
     kernel : str, default='thin_plate_spline'
