@@ -117,7 +117,8 @@ class SGTE(TemperatureInterpolator):
     nparam: int
 
     def __post_init__(self):
-        assert self.nparam > 1, "Must fit at least two parameters!"
+        if self.nparam <= 1:
+            raise ValueError("Must fit at least two parameters!")
 
     def fit(self, x, y):
         parameters, *_ = so.curve_fit(G_calphad, x, y, p0=[0] * self.nparam)
@@ -134,7 +135,8 @@ class RedlichKister(ConcentrationInterpolator):
     nparam: int
 
     def __post_init__(self):
-        assert self.nparam > 0, "Must fit at least one parameter!"
+        if self.nparam <= 0:
+            raise ValueError("Must fit at least one parameter!")
 
     def fit(self, c, f):
         """
@@ -144,7 +146,8 @@ class RedlichKister(ConcentrationInterpolator):
         I = c.argsort()
         f = f[I]
         c = c[I]
-        assert np.isclose(c[0], 0) and np.isclose(c[-1], 1), "Must include terminals when fitting Redlich-Kister!"
+        if not (np.isclose(c[0], 0) and np.isclose(c[-1], 1)):
+            raise ValueError("Must include terminals when fitting Redlich-Kister!")
         f0 = f[0]
         df = f[-1] - f[0]
         f -= f0 + df * c
@@ -275,7 +278,8 @@ class SoftplusFit(ConcentrationInterpolator, TemperatureInterpolator):
 
         # 3. Build model with n softplus terms
         def model(xn, *params):
-            assert len(params) == 3 * self.n_softplus + 1
+            if len(params) != 3 * self.n_softplus + 1:
+                raise ValueError(f"Expected {3 * self.n_softplus + 1} parameters, but got {len(params)}.")
             out = 0
             for i in range(self.n_softplus):
                 a = params[3*i]

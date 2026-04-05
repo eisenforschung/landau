@@ -64,7 +64,8 @@ def find_all_points(stable_df, phases, by="mu"):
     """
     Map find_one_point over all estimated equilibria at a given T or mu.
     """
-    assert by in ["T", "mu"], "Wrong by value"
+    if by not in ["T", "mu"]:
+        raise ValueError("Invalid value for 'by'. Expected 'T' or 'mu'.")
     stable_df = stable_df.sort_values(by).reset_index(drop=True)
     boundary_guesses = stable_df.index[(stable_df.phase != stable_df.phase.shift(-1).ffill())]
     if by == "mu":

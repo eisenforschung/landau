@@ -222,7 +222,8 @@ class IdealSolution(Phase):
 
     def __post_init__(self, *args, **kwargs):
         phase1, phase2 = sorted((self.phase1, self.phase2), key=lambda p: p.line_concentration)
-        assert phase1.line_concentration == 0 and phase2.line_concentration == 1, "Must give terminal phases!"
+        if not (phase1.line_concentration == 0 and phase2.line_concentration == 1):
+            raise ValueError("Must give terminal phases!")
         # bypass frozen=True for the sake of init only
         object.__setattr__(self, "phase1", phase1)
         object.__setattr__(self, "phase2", phase2)
@@ -278,12 +279,12 @@ class RegularSolution(Phase):
         object.__setattr__(self, "phases", tuple(self.phases))
         object.__setattr__(self, "num_coeffs", min(len(self.phases) - 2, self.num_coeffs))
         concs = tuple(p.line_concentration for p in self.phases)
-        assert 0 in concs and 1 in concs, "Must give the terminal phases!"
+        if 0 not in concs or 1 not in concs:
+            raise ValueError("Must give the terminal phases!")
         left_terminals = sum(c == 0 for c in concs)
         right_terminals = sum(c == 1 for c in concs)
-        assert left_terminals == 1 and right_terminals == 1, (
-            "Cannot pass multiple terminal phases of the same concentration!"
-        )
+        if not (left_terminals == 1 and right_terminals == 1):
+            raise ValueError("Cannot pass multiple terminal phases of the same concentration!")
 
     @lru_cache(maxsize=250)
     def _get_interpolation(self, T):
@@ -360,7 +361,8 @@ class RegularSolution(Phase):
         if raw:
             return f, c, M, p
 
-        assert np.median(abs(np.diff(M))) <= limit, "Weird"
+        if np.median(abs(np.diff(M))) > limit:
+            raise RuntimeError("Sampling of chemical potential did not converge to required precision.")
 
         # schon etwas dreist, aber naja
         pi = si.interp1d(
