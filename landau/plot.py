@@ -222,8 +222,6 @@ def get_phase_colors(phase_names, override: dict[str, str] | None = None):
         override = {}
     # the default map
     color_map = dict(zip(phase_names, sns.palettes.SEABORN_PALETTES["pastel"]))
-    if override is None:
-        return color_map
     # disregard overriden phases that are not present
     override = {p: c for p, c in override.items() if p in color_map}
     # if the override uses the same colors as the default map, multiple phases
