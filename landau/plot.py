@@ -124,7 +124,7 @@ def _plot_tielines(df, ax=None):
                 ax.hlines(Tmax, da.c.min(), da.c.max(), color="k", zorder=-2, alpha=0.5, lw=4)
 
         # FIXME: WARNING reuses local var define in if branch
-        tdf.groupby("border_segment").apply(plot_tie)
+        tdf.groupby("border_segment").apply(plot_tie, include_groups=False)
     else:
         # count the numbers of distinct phases per T, it changes there *must* be a triple
         # point, draw tie lines only there
@@ -142,7 +142,7 @@ def _plot_tielines(df, ax=None):
             cl, cr = sorted(dd.c)
             ax.plot([cl, cr], dd["T"], color="k", zorder=-2, alpha=0.5, lw=4)
 
-        df.groupby(["T", "mu"]).apply(plot_tie)
+        df.groupby(["T", "mu"]).apply(plot_tie, include_groups=False)
 
 
 def _plot_phase_diagram(

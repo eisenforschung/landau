@@ -53,7 +53,7 @@ class AbstractPolyMethod(abc.ABC):
 
     def apply(self, df: pd.DataFrame, variables: list[str] = ["c", "T"]) -> pd.Series:
         return self.prepare(df).groupby(['phase', 'phase_unit']).apply(
-                self.make, variables=variables
+                self.make, variables=variables, include_groups=False
 
         ).dropna()
 
