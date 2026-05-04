@@ -6,9 +6,8 @@ from .phases import (
     RegularSolution,
     InterpolatingPhase,
     SlowInterpolatingPhase,
+    AsePhase,
 )
-
-from .ase_phases import AsePhase
 
 from .interpolate import (
     ConcentrationInterpolator,

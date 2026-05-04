@@ -8,7 +8,7 @@ from pyiron_snippets.import_alarm import ImportAlarm
 
 with ImportAlarm() as ase_alarm:
     from ase.thermochemistry import HarmonicThermo
-    from landau.ase_phases import AsePhase
+    from landau.phases.asewrapper import AsePhase
 
 def get_ase_phase():
     if ase_alarm.message is None:

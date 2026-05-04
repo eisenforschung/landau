@@ -6,7 +6,7 @@ from pyiron_snippets.import_alarm import ImportAlarm
 with ImportAlarm("ASE is required to use ASE phase wrappers. Install with pip install 'landau[ase]'") as ase_alarm:
     from ase.thermochemistry import ThermoChem
 
-from .phases import AbstractLinePhase
+from . import AbstractLinePhase
 
 @dataclass(frozen=True)
 class AsePhase(AbstractLinePhase):

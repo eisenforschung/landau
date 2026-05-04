@@ -9,7 +9,7 @@ from pyiron_snippets.import_alarm import ImportAlarm
 with ImportAlarm() as ase_alarm:
     from ase.thermochemistry import IdealGasThermo, HarmonicThermo
     from ase.build import molecule
-    from landau.ase_phases import AsePhase
+    from landau.phases.asewrapper import AsePhase
 
 @pytest.mark.skipif(ase_alarm.message is not None, reason="ASE is not installed")
 def test_ase_thermo_phase_gibbs():
