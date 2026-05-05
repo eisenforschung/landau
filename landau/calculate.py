@@ -438,7 +438,7 @@ def get_transitions(df):
     bdf = df.query("border")
     # go from a table of mu/c/T points that are on the phase boundaries to a table where the two points that are at the same mu/T are grouped together
     # use this information to add 'transition' column; handles also the case where border points are at mu=+-inf, there we have only one point
-    tdf = bdf.groupby(["mu", "T"])[["c", "phase"]].apply(reduce, include_groups=False)
+    tdf = bdf.groupby(["mu", "T"])[["c", "phase"]].apply(reduce)
     # immediately explode again to go back to our familiar representation, but now with the added 'transition' column
     tdf = tdf.reset_index().explode(["c", "phase"]).infer_objects().reset_index(drop=True)
 

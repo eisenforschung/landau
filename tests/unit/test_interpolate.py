@@ -1,5 +1,6 @@
 import pytest
 import numpy as np
+from unittest.mock import MagicMock
 from landau.interpolate import (
     G_calphad,
     PolyFit,
@@ -14,38 +15,44 @@ def test_g_calphad():
     # Test T=0 cases (should return p[0])
     assert G_calphad(0.0, 1.0, 2.0, 3.0) == 2.0
 
-    T_arr = np.array([0.0, 1.0])
+    T_arr = np.array([0.0, 1.0, 2.0])
     G_arr = G_calphad(T_arr, 1.0, 2.0, 3.0)
     assert G_arr[0] == 2.0
-    # G_calphad(1.0, 1.0, 2.0, 3.0) = 1.0*ln(1.0)*1.0 + 2.0*1.0^0 + 3.0*1.0^1 = 0 + 2 + 3 = 5
-    assert G_arr[1] == 5.0
+    # G_calphad(1.0, 1.0, 2.0, 3.0) = 1.0*ln(1.0)*1.0 + 2.0 + 3.0 = 5.0
+    assert np.isclose(G_arr[1], 5.0)
+    # G_calphad(2.0, 1.0, 2.0, 3.0) = 2.0*ln(2.0)*1.0 + 2.0 + 3.0*2.0 = 2*ln(2) + 8
+    assert np.isclose(G_arr[2], 2*np.log(2) + 8)
 
 def test_polyfit_basic():
-    # Fit y = x^2 with 3 params (a + bx + cx^2)
+    # Fit y = 1 + 2x + 3x^2
     x = np.linspace(0, 1, 10)
-    y = x**2
+    y = 1 + 2*x + 3*x**2
 
     pf = PolyFit(nparam=3)
     fit_func = pf.fit(x, y)
 
     assert isinstance(fit_func, np.poly1d)
-    # Check if fit is accurate
-    assert np.isclose(fit_func(0.5), 0.25, atol=1e-5)
+    # Verify coefficients (stored in descending order in np.poly1d: c, b, a)
+    assert np.allclose(fit_func.coeffs, [3, 2, 1], atol=1e-5)
+    # Check multiple points
+    test_x = np.array([0.1, 0.5, 0.9])
+    assert np.allclose(fit_func(test_x), 1 + 2*test_x + 3*test_x**2)
 
 def test_polyfit_auto():
-    # Fit y = 2x with nparam="auto"
+    # Fit a constant y = 5. L1 should ideally pick only the first param.
     x = np.linspace(0, 1, 20)
-    y = 2 * x
+    y = np.full_like(x, 5.0)
 
     pf = PolyFit(nparam="auto")
     fit_func = pf.fit(x, y)
 
     assert isinstance(fit_func, np.poly1d)
-    assert np.isclose(fit_func(0.7), 1.4, atol=1e-5)
+    assert np.isclose(fit_func(0.5), 5.0, atol=1e-5)
+    # Should have few non-zero coefficients
+    assert len(np.where(abs(fit_func.coeffs) > 1e-5)[0]) <= 2
 
 def test_polyfit_curvature_warning():
     # Fit with enforce_curvature=True when polyfit package is missing
-    # If polyfit is installed, this test should be skipped or handle it
     from landau.interpolate import polyfit
     if polyfit is not None:
         pytest.skip("polyfit is installed, skipping warning test")
@@ -60,71 +67,105 @@ def test_polyfit_curvature_warning():
 def test_sgte_basic():
     # Fit y = G_calphad(T, ...)
     T = np.linspace(0.1, 10, 20)
-    pl_true = -0.5
-    p0_true = 1.2
-    p1_true = 0.8
+    pl_true, p0_true, p1_true = -0.5, 1.2, 0.8
     y = G_calphad(T, pl_true, p0_true, p1_true)
 
     sgte = SGTE(nparam=3)
     fit_func = sgte.fit(T, y)
 
-    assert np.isclose(fit_func(5.0), G_calphad(5.0, pl_true, p0_true, p1_true), atol=1e-5)
+    # Check recovery of values over a range
+    test_T = np.array([1.0, 5.0, 9.0])
+    assert np.allclose(fit_func(test_T), G_calphad(test_T, pl_true, p0_true, p1_true), atol=1e-5)
 
 def test_redlich_kister_basic():
-    # Fit y = 0.5 * c * (1-c) + 2.0 * c + 1.0
-    # RedlichKisterInterpolation: f(c) = pre * sum(L_i * (2x-1)^i) + f0 + df * c
-    # Let L = [0.5], f0 = 1.0, df = 2.0
-    # f(c) = c(1-c)*0.5 + 1.0 + 2.0*c
-    c = np.linspace(0, 1, 10)
-    y = c * (1 - c) * 0.5 + 1.0 + 2.0 * c
+    # f(c) = pre * sum(Li * (2x-1)^i) + f0 + df * c
+    # Let L = [10.0], f0 = 1.0, df = 2.0
+    # f(c) = c(1-c)*10.0 + 1.0 + 2.0*c
+    c = np.linspace(0, 1, 11)
+    y = c * (1 - c) * 10.0 + 1.0 + 2.0 * c
 
     rk = RedlichKister(nparam=1)
     fit_func = rk.fit(c, y)
 
     assert isinstance(fit_func, RedlichKisterInterpolation)
-    assert np.isclose(fit_func(0.3), 0.3 * (1 - 0.3) * 0.5 + 1.0 + 2.0 * 0.3, atol=1e-5)
+    assert np.isclose(fit_func.f0, 1.0, atol=1e-5)
+    assert np.isclose(fit_func.df, 2.0, atol=1e-5)
+    assert np.allclose(fit_func.rk_parameters, [10.0], atol=1e-5)
+
+    # Test call
+    assert np.allclose(fit_func(c), y, atol=1e-5)
 
     # Test terminal checks
     with pytest.raises(AssertionError, match="Must include terminals"):
         rk.fit(c[1:-1], y[1:-1])
 
-def test_stitched_fit_basic():
-    # SGTE for middle, PolyFit for boundaries
-    T = np.linspace(100, 1000, 50)
-    # y = T*ln(T)
-    y = T * np.log(T)
+def test_stitched_fit_advanced():
+    # Define three very distinct regions
+    # low: y = -100
+    # mid: y = 0
+    # upp: y = 100
+    T = np.linspace(10, 20, 50)
+    y = np.zeros_like(T)
 
-    # We want to check if the boundaries are correctly used.
-    # StitchedFit.fit(t, f) uses self.low for t < tmin and self.upp for t > tmax.
-    # The internal `mid` is fit on all (t, f).
+    # We use PolyFit(1) for low/upp which will return constant functions if fitted on constant data
+    mock_low = PolyFit(nparam=1)
+    mock_upp = PolyFit(nparam=1)
+    mock_mid = PolyFit(nparam=1)
 
-    # Let's use a PolyFit(2) (linear) for 'upp' fit on the last 'edge' points.
-    # If we extrapolate beyond T=1000, it should be linear.
     sf = StitchedFit(
-        interpolating=SGTE(2), # p0 + p1*T (not a great fit for TlnT, but it works for testing stitching)
-        upp=PolyFit(2),        # linear fit for T > 1000
+        interpolating=mock_mid,
+        low=mock_low,
+        upp=mock_upp,
         edge=5
     )
 
+    # Construct data such that edge regions are distinct
+    y[:5] = -100
+    y[5:-5] = 0
+    y[-5:] = 100
+
     fit_res = sf.fit(T, y)
 
-    # T=1000 is the max. T=1100 should use the PolyFit(2) extrapolated from last 5 points.
-    # T=500 should use SGTE(2) fit on all T.
+    # Test regions
+    assert np.isclose(fit_res(5), -100)   # T < Tmin=10
+    assert np.isclose(fit_res(15), 0)    # Tmin < T < Tmax
+    assert np.isclose(fit_res(25), 100)   # T > Tmax=20
 
-    # Verify it doesn't crash
-    val_mid = fit_res(500)
-    val_upp = fit_res(1100)
+    # Test array input
+    test_T = np.array([5, 15, 25])
+    assert np.allclose(fit_res(test_T), [-100, 0, 100])
 
-    assert isinstance(val_mid, (float, np.floating))
-    assert isinstance(val_upp, (float, np.floating))
+def test_softplus_fit_robustness():
+    # Fit a more complex shape: a step-like function
+    x = np.linspace(-5, 5, 100)
+    y = np.where(x < 0, 0, 1) # Heaviside-like
 
-def test_softplus_fit_basic():
-    # Fit y = x
-    x = np.linspace(0, 1, 20)
-    y = x
-
-    spf = SoftplusFit(n_softplus=1)
+    # Softplus can approximate this with enough terms
+    spf = SoftplusFit(n_softplus=2, max_nfev=500)
     fit_func = spf.fit(x, y)
 
-    # Check if fit is reasonable
-    assert np.isclose(fit_func(0.5), 0.5, atol=0.05)
+    # Check if it captures the trend
+    assert fit_func(-4) < 0.2
+    assert fit_func(4) > 0.8
+    assert fit_func(-10) < fit_func(10) # monotonically increasing trend captured
+
+def test_redlich_kister_static_methods():
+    # _eval_mix: pre * sum(Li * (2x-1)^i)
+    L = np.array([1.0, 2.0])
+    x = 0.7
+    # pre = 0.7 * 0.3 = 0.21
+    # xi = 2*0.7 - 1 = 0.4
+    # sum = 1.0 * 0.4^0 + 2.0 * 0.4^1 = 1.0 + 0.8 = 1.8
+    # result = 0.21 * 1.8 = 0.378
+    val = RedlichKisterInterpolation._eval_mix(x, *L)
+    assert np.isclose(val, 0.378)
+
+    # _eval_mix_derivative
+    # f(x) = x(1-x) * (L0 + L1(2x-1)) = (x-x^2) * (L0 + 2*L1*x - L1)
+    # f'(x) = (1-2x)*(L0 + 2*L1*x - L1) + (x-x^2)*(2*L1)
+    # For x=0.7, L=[1.0, 2.0]:
+    # f'(0.7) = (1-1.4)*(1.0 + 2*2*0.7 - 2.0) + (0.7-0.49)*(2*2)
+    # f'(0.7) = (-0.4)*(1.0 + 2.8 - 2.0) + (0.21)*(4)
+    # f'(0.7) = (-0.4)*(1.8) + 0.84 = -0.72 + 0.84 = 0.12
+    deriv = RedlichKisterInterpolation._eval_mix_derivative(x, *L)
+    assert np.isclose(deriv, 0.12)
