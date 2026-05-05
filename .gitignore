@@ -9,3 +9,5 @@ docs/_build/
 tests/integration/_plots/
 .ipynb_checkpoints
 *.pyc
+notebooks/ASE/fe-bcc-phonon/
+notebooks/ASE/fe-fcc-phonon/
