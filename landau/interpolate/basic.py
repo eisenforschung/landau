@@ -21,7 +21,7 @@ kB = Boltzmann / eV
 
 
 def G_calphad(T, pl, *p):
-    with np.errstate(divide="ignore"):
+    with np.errstate(divide="ignore", invalid="ignore"):
         g = T * np.log(T) * pl + sum(pi * T**i for i, pi in enumerate(p))
     if isinstance(T, np.ndarray) and T.ndim > 0:
         g[np.isclose(T, 0)] = p[0]
@@ -164,7 +164,9 @@ class RedlichKisterInterpolation:
         pre = x * (1 - x)
         xi = 2 * x - 1
         x2 = xi**2
-        ds = np.stack([(2 * k * pre - x2) * xi ** (k - 1) for k in range(len(L))])
+        # k=0: algebraically simplifies (0 - xi^2)*xi^(-1) = -xi, avoids 0^(-1) at x=0.5
+        terms = [-xi] + [(2 * k * pre - x2) * xi ** (k - 1) for k in range(1, len(L))]
+        ds = np.stack(terms)
         if len(ds.shape) == 1:
             return (L * ds).sum()
         else:
