@@ -1,3 +1,5 @@
+import pickle
+
 import numpy as np
 from dataclasses import dataclass
 
@@ -12,6 +14,10 @@ from . import AbstractLinePhase
 class AsePhase(AbstractLinePhase):
     """
     Phase wrapper for ASE's ThermoChem classes.
+
+    Equality and hashing compare ``thermochem`` by its pickled bytes so two
+    ``AsePhase`` instances built from equivalent inputs compare equal even
+    though ASE's ``ThermoChem`` defaults to identity-based equality.
     """
     fixed_concentration: float
     thermochem: 'ThermoChem'
@@ -41,3 +47,19 @@ class AsePhase(AbstractLinePhase):
         if res.ndim == 0:
             return res.item()
         return res
+
+    def _key(self):
+        return (
+            self.name,
+            self.fixed_concentration,
+            self.pressure,
+            pickle.dumps(self.thermochem),
+        )
+
+    def __eq__(self, other):
+        if other.__class__ is not self.__class__:
+            return NotImplemented
+        return self._key() == other._key()
+
+    def __hash__(self):
+        return hash(self._key())
