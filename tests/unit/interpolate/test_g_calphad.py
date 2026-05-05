@@ -1,3 +1,4 @@
+import warnings
 import numpy as np
 from landau.interpolate import G_calphad
 from hypothesis import given, strategies as st
@@ -29,3 +30,11 @@ def test_G_calphad_at_zero(pl, p):
     # T=0 edge case should return p[0]
     assert np.isclose(G_calphad(0.0, pl, *p), p[0])
     assert np.allclose(G_calphad(np.array([0.0, 1.0]), pl, *p), [p[0], G_calphad(1.0, pl, *p)])
+
+
+def test_G_calphad_no_warnings_at_zero():
+    """T=0 in an array should not produce RuntimeWarnings even with non-zero pl."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        G_calphad(np.array([0.0, 1.0, 2.0]), 3.5, 1.0, -0.5)
+        G_calphad(0.0, -2.0, 1.0)
