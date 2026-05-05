@@ -239,7 +239,9 @@ class IdealSolution(Phase):
             I = ~np.isfinite(phi)
             if I.any():
                 if phi.shape == ():
-                    phi = f2 - dmu[I]
+                    # numpy 2.x: boolean indexing of 0-d arrays returns a 1-element array,
+                    # so use float() to stay scalar.
+                    phi = np.asarray(f2 - float(dmu))
                 else:
                     phi[I] = f2 - dmu[I]
         if phi.shape == ():
