@@ -30,30 +30,66 @@ class AbstractPolyMethod(abc.ABC):
     def make(self, dd: pd.DataFrame, variables: list[str] = ["c", "T"]) -> Polygon | None:
         """Turn the subset of the full data belonging to one phase region into
         a polygon."""
+        border = dd["border"].to_numpy() if "border" in dd.columns else np.zeros(len(dd), dtype=bool)
+        segment_label = dd["border_segment"].to_numpy() if "border_segment" in dd.columns else np.ones(len(dd), dtype=int)
+
+        # To keep it simple, let's sort everything together
+        idx = np.argsort(dd[variables[0]].to_numpy())
+        pp = dd[variables].to_numpy()[idx]
+        border = border[idx]
+        segment_label = segment_label[idx]
+
+        mask = np.isfinite(pp).all(axis=-1)
+        pp = pp[mask]
+        border = border[mask]
+        segment_label = segment_label[mask]
+
+        # np.unique is tricky with 3 parallel arrays. We can use np.unique on pp, returning indices
+        _, unique_idx = np.unique(pp, axis=0, return_index=True)
+        unique_idx.sort() # Keep original order somewhat
+        pp = pp[unique_idx]
+        border = border[unique_idx]
+        segment_label = segment_label[unique_idx]
+
+        if len(pp) == 0:
+            return None
+
+        scaler = StandardScaler()
+        pp_scaled = scaler.fit_transform(pp)
+
         # check for c-degenerate line phase
-        pp = dd.sort_values(variables[0])[variables].to_numpy()
-        pp = np.unique(pp[np.isfinite(pp).all(axis=-1)], axis=0)
-        points = shapely.MultiPoint(pp)
+        points = shapely.MultiPoint(pp_scaled)
         shape = shapely.convex_hull(points)
         if not isinstance(shape, shapely.LineString):
-            shape = self._make(dd, variables)
+            shape = self._make(pp_scaled, border, segment_label)
             if shape is None:
                 return None
+
+        if shape.is_empty:
+            return None
+
+        if isinstance(shape, shapely.Polygon):
+            coords = np.asarray(shape.exterior.coords)
+            if len(coords) < 3:
+                return None
+            shape = shapely.Polygon(scaler.inverse_transform(coords))
+        elif isinstance(shape, shapely.LineString):
+            shape = shapely.LineString(scaler.inverse_transform(np.asarray(shape.coords)))
+        else:
+            return None
+
         shape = shape.buffer(self.min_c_width/2)
-        if isinstance(shape, shapely.MultiPolygon):
-            shape = max(shape.geoms, key=shapely.area)
-            print("Warning: polymethod returned disjoined polygons, returning largest.")
         return Polygon(shape.exterior.coords)
 
     @abc.abstractmethod
-    def _make(self, dd: pd.DataFrame, variables: list[str] = ["c", "T"]) -> shapely.Geometry:
+    def _make(self, pp: np.ndarray, border: np.ndarray, segment_label: np.ndarray) -> shapely.Geometry | None:
         """Turn the subset of the full data belonging to one phase region into
-        a shapely geometry"""
+        a shapely geometry.  Expects a scaled array of coordinates."""
         pass
 
     def apply(self, df: pd.DataFrame, variables: list[str] = ["c", "T"]) -> pd.Series:
         return self.prepare(df).groupby(['phase', 'phase_unit']).apply(
-                self.make, variables=variables, include_groups=False
+                self.make, variables=variables
 
         ).dropna()
 
@@ -69,37 +105,17 @@ class Concave(AbstractPolyMethod):
     drop_interior: bool = True
     """Find concave set only of phase boundary points; usually helps to get the shape right, but can create holes."""
 
-    def _make(self, dd, variables=["c", "T"]):
-        if self.drop_interior and "border" in dd.columns:
-            dd = dd.query("border")
-
-        # concave hull algo seems more stable when both variables are of the same order
-        pp = dd.sort_values(variables[0])[variables].to_numpy()
-        pp = np.unique(pp[np.isfinite(pp).all(axis=-1)], axis=0)
-
+    def _make(self, pp: np.ndarray, border: np.ndarray, segment_label: np.ndarray) -> shapely.Geometry | None:
+        if self.drop_interior:
+            pp = pp[border]
         if len(pp) == 0:
             return None
-
-        refnorm = {}
-        for i, var in enumerate(variables):
-            refnorm[var] = pp[:, i].min(), (np.ptp(pp[:, i]) or 1)
-            pp[:, i] -= refnorm[var][0]
-            pp[:, i] /= refnorm[var][1]
         points = shapely.MultiPoint(pp)
         shape = shapely.concave_hull(points, ratio=self.ratio)
         if not isinstance(shape, shapely.Polygon):
             warn(f"Failed to construct polygon, got {shape} instead, skipping.")
             return None
-        if not shape.is_empty:
-            coords = np.asarray(shape.exterior.coords)
-            if len(coords) < 3:
-                return None
-        else:
-            return None
-        for i, var in enumerate(variables):
-            coords[:, i] *= refnorm[var][1]
-            coords[:, i] += refnorm[var][0]
-        return shapely.Polygon(coords)
+        return shape
 
 
 @dataclass
@@ -206,14 +222,26 @@ class Segments(AbstractPolyMethod):
 
         return pd.concat(segments, ignore_index=True)
 
-    def _make(self, td, variables=["c", "T"]):
+    def _make(self, pp: np.ndarray, border: np.ndarray, segment_label: np.ndarray) -> shapely.Geometry | None:
         """
         Requires a grouped dataframe from get_transitions (by phase).
         """
-        if "c" in variables and np.ptp(td.c) < self.min_c_width:
-            meanc = td.c.mean()
-            Tmin = td["T"].min()
-            Tmax = td["T"].max()
+        if np.all(segment_label == 1):
+            raise ValueError("Segments methods requires refined phase boundaries (segment_label must be provided)!")
+
+        # Segments currently assumes variable names "c" and "T" for _sort_segments
+        # but the actual values can just be named "x" and "y" for sorting.
+        # Create a temporary DataFrame to reuse _sort_segments
+        td = pd.DataFrame({
+            "x": pp[:, 0],
+            "y": pp[:, 1] if pp.shape[1] > 1 else np.zeros(len(pp)),
+            "border_segment": segment_label
+        })
+
+        if pp.shape[1] > 0 and np.ptp(pp[:, 0]) < self.min_c_width:
+            meanc = pp[:, 0].mean()
+            Tmin = pp[:, 1].min() if pp.shape[1] > 1 else 0
+            Tmax = pp[:, 1].max() if pp.shape[1] > 1 else 0
             return shapely.Polygon(
                 [
                     [meanc - self.min_c_width / 2, Tmin],
@@ -222,10 +250,16 @@ class Segments(AbstractPolyMethod):
                     [meanc - self.min_c_width / 2, Tmax],
                 ]
             )
-        td = td.loc[ np.isfinite(td[variables[0]]) & np.isfinite(td[variables[1]]) ]
-        sd = self._sort_segments(td, x_col=variables[0], y_col=variables[1])
-        # sd = sd.loc[ np.isfinite(sd[variables[0]]) & np.isfinite(sd[variables[1]]) ]
-        return shapely.Polygon(np.transpose([sd[v] for v in variables]))
+
+        sd = self._sort_segments(td, x_col="x", y_col="y", segment_label="border_segment")
+        if sd.empty:
+            return None
+
+        coords = sd[["x", "y"]].to_numpy()
+        if len(coords) < 3:
+            return None
+
+        return shapely.Polygon(coords)
 
 
 __all__ = ["Concave", "Segments"]
@@ -249,20 +283,18 @@ with ImportAlarm("'python_tsp' package required for PythonTsp.  Install from con
                      "try FastTsp or one of the other polygon methods.")
             return df
 
-        def _make(self, dd, variables=["c", "T"]):
-            c = dd.query('border')[variables].to_numpy()
-            c = c[np.isfinite(c).all(axis=-1)]
-            if len(c) == 0:
+        def _make(self, pp: np.ndarray, border: np.ndarray, segment_label: np.ndarray) -> shapely.Geometry | None:
+            pp = pp[border]
+            if len(pp) == 0:
                 return None
-            sc = StandardScaler().fit_transform(c)
-            dm = pairwise_distances(sc)
+            dm = pairwise_distances(pp)
             if not (dm > 0).any():
-                return shapely.convex_hull(shapely.MultiPoint(c))
+                return shapely.convex_hull(shapely.MultiPoint(pp))
             dm = (dm / dm[dm > 0].min()).round().astype(int)
             tour = solve_tsp_record_to_record(
-                    dm, x0=np.argsort(np.arctan2(sc[:, 1], sc[:, 0])).tolist(),
+                    dm, x0=np.argsort(np.arctan2(pp[:, 1], pp[:, 0])).tolist(),
                     max_iterations=self.max_iterations)[0]
-            return shapely.Polygon(c[tour]) if len(tour) > 2 else None
+            return shapely.Polygon(pp[tour]) if len(tour) > 2 else None
     __all__ += ["PythonTsp"]
 
 
@@ -278,18 +310,16 @@ with ImportAlarm("'fast-tsp' package required for FastTsp.  Install from pip.") 
         duration_seconds: float = 1.0
         """Maxixum time spent per search."""
 
-        def _make(self, dd, variables=["c", "T"]):
-            c = dd.query('border')[variables].to_numpy()
-            c = c[np.isfinite(c).all(axis=-1)]
-            if len(c) == 0:
+        def _make(self, pp: np.ndarray, border: np.ndarray, segment_label: np.ndarray) -> shapely.Geometry | None:
+            pp = pp[border]
+            if len(pp) == 0:
                 return None
-            sc = StandardScaler().fit_transform(c)
-            dm = pairwise_distances(sc)
+            dm = pairwise_distances(pp)
             if not (dm > 0).any():
-                return shapely.convex_hull(shapely.MultiPoint(c))
+                return shapely.convex_hull(shapely.MultiPoint(pp))
             dm = (dm / dm[dm > 0].min()).round().astype(int)
             tour = fast_tsp.find_tour(dm, self.duration_seconds)
-            return shapely.Polygon(c[tour]) if len(tour) > 2 else None
+            return shapely.Polygon(pp[tour]) if len(tour) > 2 else None
 
     __all__ += ["FastTsp"]
 
