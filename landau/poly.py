@@ -79,6 +79,9 @@ class AbstractPolyMethod(abc.ABC):
             return None
 
         shape = shape.buffer(self.min_c_width/2)
+        if isinstance(shape, shapely.MultiPolygon):
+            shape = max(shape.geoms, key=shapely.area)
+            warn("polymethod returned disjoined polygons, returning largest.")
         return Polygon(shape.exterior.coords)
 
     @abc.abstractmethod
@@ -89,7 +92,7 @@ class AbstractPolyMethod(abc.ABC):
 
     def apply(self, df: pd.DataFrame, variables: list[str] = ["c", "T"]) -> pd.Series:
         return self.prepare(df).groupby(['phase', 'phase_unit']).apply(
-                self.make, variables=variables
+                self.make, variables=variables, include_groups=False
 
         ).dropna()
 
@@ -237,19 +240,6 @@ class Segments(AbstractPolyMethod):
             "y": pp[:, 1] if pp.shape[1] > 1 else np.zeros(len(pp)),
             "border_segment": segment_label
         })
-
-        if pp.shape[1] > 0 and np.ptp(pp[:, 0]) < self.min_c_width:
-            meanc = pp[:, 0].mean()
-            Tmin = pp[:, 1].min() if pp.shape[1] > 1 else 0
-            Tmax = pp[:, 1].max() if pp.shape[1] > 1 else 0
-            return shapely.Polygon(
-                [
-                    [meanc - self.min_c_width / 2, Tmin],
-                    [meanc + self.min_c_width / 2, Tmin],
-                    [meanc + self.min_c_width / 2, Tmax],
-                    [meanc - self.min_c_width / 2, Tmax],
-                ]
-            )
 
         sd = self._sort_segments(td, x_col="x", y_col="y", segment_label="border_segment")
         if sd.empty:
