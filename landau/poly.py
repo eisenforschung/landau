@@ -168,6 +168,7 @@ class Segments(AbstractPolyMethod):
 
         com = df[[x_col, y_col]].mean()
         norm = np.ptp(df[[x_col, y_col]], axis=0).values
+        norm = np.where(norm == 0, 1, norm)
 
         # Step 1: PCA Projection
         def pca_projection(group):
