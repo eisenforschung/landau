@@ -36,6 +36,7 @@ from scipy.constants import Boltzmann, eV
 import scipy.optimize as so
 
 from landau.phases import Phase
+from landau.calculate import find_one_point
 
 kB = Boltzmann / eV   # eV / K
 
@@ -169,13 +170,11 @@ def refine_isothermal_jump(phase_left, phase_right, T, mu_lo, mu_hi,
             phases where both c_left and c_right may be > 0.5 near T_c.
     """
     if phase_left is not phase_right:
-        lo, hi = mu_lo, mu_hi
-        while hi - lo > tol:
-            mid   = (lo + hi) / 2.0
-            delta = (phase_left.semigrand_potential(T, mid)
-                     - phase_right.semigrand_potential(T, mid))
-            lo, hi = (mid, hi) if delta < 0 else (lo, mid)
-        mu_star = (lo + hi) / 2.0
+        mu_star = find_one_point(
+            phase_left, phase_right,
+            lambda p, mu: p.semigrand_potential(T, mu),
+            (mu_lo, mu_hi),
+        )
         return (mu_star,
                 phase_left.concentration(T, mu_star),
                 phase_right.concentration(T, mu_star))
