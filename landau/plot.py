@@ -38,7 +38,7 @@ def cluster_phase(df):
 
 def get_polygons(
     df,
-    poly_method: Literal["concave", "segments", "fasttsp", "tsp"] | poly.AbstractPolyMethod | None = None,
+    poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
     variables: list[str] | None = None,
     **kwargs,
 ):
@@ -154,7 +154,7 @@ def _plot_phase_diagram(
     min_c_width=1e-2,
     color_override: dict[str, str] = {},
     tielines=False,
-    poly_method: Literal["concave", "segments", "fasttsp", "tsp"] | poly.AbstractPolyMethod | None = None,
+    poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
     variables: list[str] | None = None,
     ax=None,
 ):
@@ -208,7 +208,7 @@ def plot_phase_diagram(
     min_c_width=1e-2,
     color_override: dict[str, str] = {},
     tielines=False,
-    poly_method: Literal["concave", "segments", "fasttsp", "tsp"] | poly.AbstractPolyMethod | None = None,
+    poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
     variables: list[str] | None = None,
     ax=None,
 ):
@@ -247,7 +247,7 @@ def plot_mu_phase_diagram(
     alpha=0.1,
     element=None,
     color_override: dict[str, str] = {},
-    poly_method: Literal["concave", "segments", "fasttsp", "tsp"] | poly.AbstractPolyMethod | None = None,
+    poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
     ax=None,
 ):
     return _plot_phase_diagram(
