@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
-from scipy.optimize import differential_evolution, least_squares
+from scipy.optimize import least_squares
 
 from .basic import ConcentrationInterpolator, TemperatureInterpolator
 
@@ -34,12 +34,8 @@ class SoftplusFit(ConcentrationInterpolator, TemperatureInterpolator):
     for thermodynamic data. This interpolator uses multiple softplus terms to capture
     complex behavior.
 
-    The default :meth:`.fit` runs a local Levenberg–Marquardt / trust-region fit
-    with analytical Jacobian.  For data where the local fit gets stuck in a
-    near-constant local minimum (which can happen with the default ``soft_l1``
-    loss when residuals at the initial guess are large), call :meth:`.global_fit`
-    instead — it uses scipy's :func:`~scipy.optimize.differential_evolution`
-    to find a basin and polishes with the local fit.
+    :meth:`.fit` runs a local Levenberg–Marquardt / trust-region fit with
+    analytical Jacobian.
     """
 
     n_softplus: int = 2
@@ -153,81 +149,3 @@ class SoftplusFit(ConcentrationInterpolator, TemperatureInterpolator):
         xn, y, model, jac, p0, lb, ub, xm, xs = self._prepare(x, y)
         res = self._least_squares(xn, y, model, jac, p0, lb, ub)
         return self._make_predictor(model, res.x, xm, xs)
-
-    def global_fit(
-        self,
-        x,
-        y,
-        seed: int | None = 0,
-        de_maxiter: int = 200,
-        de_popsize: int = 20,
-        de_tol: float = 1e-8,
-    ) -> Callable[[float], float]:
-        """Globally explore the parameter space with differential evolution,
-        then polish the best candidate with the local fit.
-
-        Slower than :meth:`.fit` (typically by 1–2 orders of magnitude) but
-        much more reliable on multimodal residual landscapes.
-
-        Parameters
-        ----------
-        x, y :
-            Data to fit.
-        seed :
-            Seed for the random state of differential evolution; pass ``None``
-            for nondeterministic behaviour.
-        de_maxiter :
-            Maximum number of DE generations.
-        de_popsize :
-            DE population size multiplier (population = ``de_popsize * n_params``).
-        de_tol :
-            Convergence tolerance for DE.
-        """
-        xn, y, model, jac, p0, lb, ub, xm, xs = self._prepare(x, y)
-        n = self.n_softplus
-
-        # Differential evolution requires finite bounds.  ``a`` and the
-        # vertical offset are unbounded in the local fit; tighten them here to
-        # the smallest box that comfortably contains a reasonable fit.
-        ptp = float(np.ptp(y)) or 1.0
-        de_bounds = []
-        for _ in range(n):
-            de_bounds += [
-                (0.0, 5.0 * ptp),  # a
-                (-20.0, 20.0),     # b
-                (-10.0, 10.0),     # c
-            ]
-        de_bounds += [(float(np.min(y)) - ptp, float(np.max(y)) + ptp)]  # offset
-
-        def cost(p):
-            r = model(xn, p) - y
-            # Use the same robust loss as the local fit.
-            if self.loss == "linear":
-                return 0.5 * float(np.sum(r * r))
-            z = (r / self.f_scale) ** 2
-            scale = self.f_scale ** 2
-            if self.loss == "soft_l1":
-                rho = 2.0 * (np.sqrt(1.0 + z) - 1.0)
-            elif self.loss == "huber":
-                rho = np.where(z <= 1.0, z, 2.0 * np.sqrt(z) - 1.0)
-            elif self.loss == "cauchy":
-                rho = np.log1p(z)
-            elif self.loss == "arctan":
-                rho = np.arctan(z)
-            else:
-                raise ValueError(f"unknown loss {self.loss!r}")
-            return 0.5 * scale * float(np.sum(rho))
-
-        de_res = differential_evolution(
-            cost,
-            bounds=de_bounds,
-            seed=seed,
-            maxiter=de_maxiter,
-            popsize=de_popsize,
-            tol=de_tol,
-            polish=False,
-        )
-        # Polish with the local fit so we still get the analytical-Jacobian
-        # refinement and a result that's bit-for-bit comparable to ``fit``.
-        polish = self._least_squares(xn, y, model, jac, de_res.x, lb, ub)
-        return self._make_predictor(model, polish.x, xm, xs)

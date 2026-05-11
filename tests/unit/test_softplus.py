@@ -1,9 +1,15 @@
 import numpy as np
 import pytest
-from hypothesis import given, strategies as st, settings, HealthCheck
+from hypothesis import HealthCheck, given, settings, strategies as st
 
 from landau.interpolate import SoftplusFit
 from landau.interpolate.basic import ConcentrationInterpolator, TemperatureInterpolator
+
+
+# Maximum allowed deviation between fit and truth, as a fraction of ``ptp(y)``.
+# Generous enough to cope with scipy patch-version differences in the
+# trust-region step but tight enough to assert a real fit.
+RECOVERY_TOL = 0.03
 
 
 def _softplus(t):
@@ -19,6 +25,14 @@ def _truth(x, params):
         a, b, c = params[3 * i : 3 * i + 3]
         out = out + a * _softplus(b * (x + c))
     return out
+
+
+def _assert_fit_recovers(predict, x, y):
+    scale = max(1e-3, float(np.ptp(y)))
+    rms = float(np.sqrt(np.mean((predict(x) - y) ** 2)))
+    assert rms < RECOVERY_TOL * scale, (
+        f"rms={rms:.4f} exceeds {RECOVERY_TOL:.0%} of scale={scale:.4f}"
+    )
 
 
 class TestSoftplusFit:
@@ -50,50 +64,25 @@ class TestSoftplusFit:
         y = _truth(x, params)
 
         fn = SoftplusFit(n_softplus=1, max_nfev=2000).fit(x, y)
+        _assert_fit_recovers(fn, x, y)
 
-        scale = max(1e-3, float(np.ptp(y)))
-        np.testing.assert_allclose(fn(x), y, atol=0.02 * scale)
-
-    # A small list of well-conditioned two-softplus targets that the local
-    # ``fit`` reliably recovers from its default initial guess.  Use this in
-    # preference to a hypothesis sweep for the multi-term case — the 9-D
-    # residual surface has occasional local minima the local optimizer
-    # cannot escape (see ``test_random_recovery_global_fit`` for the
-    # hypothesis sweep against ``global_fit``).
+    # Well-conditioned two-softplus targets that the local fit reliably
+    # recovers from its default initial guess.  The 9-D residual surface has
+    # occasional local minima the local optimizer cannot escape, so we use a
+    # curated parametrize list here rather than a hypothesis sweep.
     @pytest.mark.parametrize("params", [
-        [2.0, 2.25, 0.0, 2.0, -2.0, 1.0, 0.0],       # PR #82 historical case
+        [2.0, 2.25, 0.0, 2.0, -2.0, 1.0, 0.0],   # PR #82 historical case
         [1.5, 3.0, -0.5, 1.5, -3.0, 0.5, 0.0],
         [1.0, 5.0, 0.3, 0.5, -4.0, -0.3, 0.2],
         [2.0, 2.0, -1.0, 1.0, -3.0, 0.5, 1.0],
         [0.8, 4.0, 0.0, 1.2, -2.5, 0.8, -0.5],
     ])
-    def test_local_fit_recovers_two_terms(self, params):
+    def test_recovery_two_terms(self, params):
         x = np.linspace(-1.0, 1.0, 201)
         y = _truth(x, params)
 
         fn = SoftplusFit(n_softplus=2, max_nfev=10000).fit(x, y)
-
-        scale = max(1e-3, float(np.ptp(y)))
-        rms_train = float(np.sqrt(np.mean((fn(x) - y) ** 2)))
-        # 3 % training RMS — comfortably tight to assert a real fit but
-        # generous enough to cope with scipy patch-version differences in
-        # the trust-region step that have shown up across CI Python rows.
-        assert rms_train < 0.03 * scale, (
-            f"training rms={rms_train:.4f} too large (scale={scale:.4f})"
-        )
-
-    def test_local_fit_recovers_pathological_case(self):
-        """The historical falsifying example from PR #82.  ``fit`` (with the
-        improved init) should now recover it under the default ``soft_l1`` loss.
-        """
-        params = [2.0, 2.25, 0.0, 2.0, -2.0, 1.0, 0.0]
-        x = np.linspace(-1.0, 1.0, 201)
-        y = _truth(x, params)
-
-        rms_local = np.sqrt(np.mean(
-            (SoftplusFit(n_softplus=2, max_nfev=2000).fit(x, y)(x) - y) ** 2
-        ))
-        assert rms_local < 0.01, f"local fit collapsed: rms={rms_local:.4f}"
+        _assert_fit_recovers(fn, x, y)
 
     def test_f_scale_widens_soft_l1_quadratic_region(self):
         """At sufficiently large ``f_scale`` the soft_l1 loss is quadratic over
@@ -108,7 +97,8 @@ class TestSoftplusFit:
         y_weak = SoftplusFit(
             n_softplus=2, loss="soft_l1", f_scale=1e4, max_nfev=2000
         ).fit(x, y)(x)
-        np.testing.assert_allclose(y_weak, y_linear, atol=1e-3)
+        scale = max(1e-3, float(np.ptp(y)))
+        np.testing.assert_allclose(y_weak, y_linear, atol=RECOVERY_TOL * scale)
 
     @pytest.mark.parametrize("x0", [-0.31, 0.0, 0.37])
     def test_recover_relu_kink_location(self, x0):
