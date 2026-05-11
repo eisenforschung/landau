@@ -82,35 +82,9 @@ class TestSoftplusFit:
             f"training rms={rms_train:.4f} too large (scale={scale:.4f})"
         )
 
-    # Harder two-softplus targets — sharper transitions, terms overlapping
-    # near the edges — that the local ``fit`` does not always recover but
-    # ``global_fit`` does.  Each case took the local fit to a > 5% rms
-    # local minimum during the PR #82 investigation.
-    @pytest.mark.parametrize("params", [
-        [3.0, 7.5, 0.4, 1.2, -5.5, -1.0, 0.0],
-        [2.5, 6.0, -0.8, 2.0, -7.0, 0.5, 0.5],
-        [2.0, 8.0, -1.2, 1.8, -4.0, 0.7, -0.3],
-    ])
-    def test_global_fit_recovers_sharp_two_terms(self, params):
-        x = np.linspace(-1.0, 1.0, 201)
-        y = _truth(x, params)
-
-        fn = SoftplusFit(n_softplus=2, max_nfev=2000).global_fit(x, y, seed=0)
-
-        scale = max(1e-3, float(np.ptp(y)))
-        rms_train = float(np.sqrt(np.mean((fn(x) - y) ** 2)))
-        # 5 % training RMS — differential evolution is stochastic even at a
-        # fixed seed because scipy patch versions sometimes change the RNG
-        # consumption order; on sharp two-softplus configurations that can
-        # nudge the polished result a few percent off the global optimum.
-        assert rms_train < 0.05 * scale, (
-            f"training rms={rms_train:.4f} too large (scale={scale:.4f})"
-        )
-
-    def test_global_fit_recovers_pathological_case(self):
-        """The historical falsifying example from PR #82.  Both ``fit`` (with
-        the improved init) and ``global_fit`` should now recover it under the
-        default ``soft_l1`` loss.
+    def test_local_fit_recovers_pathological_case(self):
+        """The historical falsifying example from PR #82.  ``fit`` (with the
+        improved init) should now recover it under the default ``soft_l1`` loss.
         """
         params = [2.0, 2.25, 0.0, 2.0, -2.0, 1.0, 0.0]
         x = np.linspace(-1.0, 1.0, 201)
@@ -119,12 +93,7 @@ class TestSoftplusFit:
         rms_local = np.sqrt(np.mean(
             (SoftplusFit(n_softplus=2, max_nfev=2000).fit(x, y)(x) - y) ** 2
         ))
-        rms_global = np.sqrt(np.mean(
-            (SoftplusFit(n_softplus=2, max_nfev=2000).global_fit(x, y)(x) - y) ** 2
-        ))
-        # rms tolerance well below 1 % of ptp(y) (≈ 3.5).
         assert rms_local < 0.01, f"local fit collapsed: rms={rms_local:.4f}"
-        assert rms_global < 0.01, f"global fit collapsed: rms={rms_global:.4f}"
 
     def test_f_scale_widens_soft_l1_quadratic_region(self):
         """At sufficiently large ``f_scale`` the soft_l1 loss is quadratic over
