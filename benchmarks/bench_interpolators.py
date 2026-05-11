@@ -99,7 +99,6 @@ def run() -> list[Result]:
             ("RedlichKister(3)",            lambda x=x, y=y: RedlichKister(3).fit(x, y)),
             ("SoftplusFit(n=2).fit",        lambda x=x, y=y: SoftplusFit(n_softplus=2, max_nfev=200).fit(x, y)),
             ("SoftplusFit(n=2,linear).fit", lambda x=x, y=y: SoftplusFit(n_softplus=2, loss="linear", max_nfev=200).fit(x, y)),
-            ("SoftplusFit(n=2).global_fit", lambda x=x, y=y: SoftplusFit(n_softplus=2, max_nfev=200).global_fit(x, y)),
         ]
         for label, fn in methods:
             try:
