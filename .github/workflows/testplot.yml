@@ -83,7 +83,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "all plots already published; nothing to commit"
           else
-            git commit -m "testplots for PR #${PR} @ ${GITHUB_SHA}"
+            git commit -m "testplots @ ${GITHUB_SHA}"
             git push origin "$GALLERY_BRANCH"
           fi
 
