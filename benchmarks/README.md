@@ -13,7 +13,8 @@ python benchmarks/bench_interpolators.py
 
 The script prints a Markdown-friendly table of median wall-times (3
 reps after a warm-up) and the training RMS for each `(case, method)`
-pair.  Methods that aren't available in the installed version (e.g.
-`SoftplusFit.global_fit`, introduced in #82) are reported as skipped
-rather than aborting the run.  Add cases by editing `case_*`
-factories in `bench_interpolators.py`.
+pair.  All cases share `N_POINTS` (top of `bench_interpolators.py`)
+so timings are directly comparable across datasets.  Methods that
+aren't available in the installed version (e.g. `SoftplusFit.global_fit`,
+introduced in #82) are reported as skipped rather than aborting the
+run.  Add cases by editing `case_*` factories.

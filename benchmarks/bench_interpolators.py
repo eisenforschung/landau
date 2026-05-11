@@ -20,9 +20,14 @@ def _softplus(t):
     return np.log1p(np.exp(-np.abs(t))) + np.maximum(t, 0.0)
 
 
+# All cases sample the input at the same number of points so the timings
+# are directly comparable.
+N_POINTS = 121
+
+
 # ---------- datasets ----------
 
-def case_smooth_alloy_mixing(n: int = 121):
+def case_smooth_alloy_mixing(n: int = N_POINTS):
     """RK-shaped mixing free energy plus a small linear term."""
     c = np.concatenate([[0.0], np.linspace(1e-3, 1 - 1e-3, n - 2), [1.0]])
     L = [-2.5, 0.6, -0.3]
@@ -31,7 +36,7 @@ def case_smooth_alloy_mixing(n: int = 121):
     return c, f
 
 
-def case_two_softpluses(n: int = 201):
+def case_two_softpluses(n: int = N_POINTS):
     """The PR #82 historical pathological case for SoftplusFit."""
     x = np.linspace(-1.0, 1.0, n)
     p = [2.0, 2.25, 0.0, 2.0, -2.0, 1.0, 0.0]
@@ -43,7 +48,7 @@ def case_two_softpluses(n: int = 201):
     return x, y
 
 
-def case_sgte_like(n: int = 80):
+def case_sgte_like(n: int = N_POINTS):
     """Calphad-flavoured Gibbs energy on temperature."""
     T = np.linspace(300.0, 2000.0, n)
     G = -25.0 - 0.012 * T + 1e-5 * T ** 2 - T * np.log(T) * 1e-4
@@ -81,9 +86,9 @@ def rms(predict: Callable, x, y) -> float:
 
 def run() -> list[Result]:
     cases = {
-        "smooth_alloy_mixing (121 pts)": case_smooth_alloy_mixing(),
-        "two_softpluses     (201 pts)": case_two_softpluses(),
-        "sgte_like          (80 pts) ": case_sgte_like(),
+        f"smooth_alloy_mixing ({N_POINTS} pts)": case_smooth_alloy_mixing(),
+        f"two_softpluses      ({N_POINTS} pts)": case_two_softpluses(),
+        f"sgte_like           ({N_POINTS} pts)": case_sgte_like(),
     }
     results: list[Result] = []
     for name, (x, y) in cases.items():
