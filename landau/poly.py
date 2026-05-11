@@ -423,7 +423,7 @@ with ImportAlarm("'fast-tsp' package required for FastTsp.  Install from pip.") 
         endpoint-to-endpoint distances; this is achieved by a 2N-node TSP
         formulation with zero-cost intra-segment edges.
         """
-        duration_seconds: float = 1.0
+        duration_seconds: float = 0.01
 
         def _make(self, pp, border, segment_label):
             if np.all(segment_label == 1):
