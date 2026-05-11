@@ -6,5 +6,6 @@ _version.py
 .hypothesis/
 build/
 docs/_build/
+tests/integration/_plots/
 .ipynb_checkpoints
 *.pyc
