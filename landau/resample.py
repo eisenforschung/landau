@@ -5,7 +5,11 @@ Error propagation for pedestrians.
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 
+import numpy as np
+import pandas as pd
+
 from .phases import Phase
+from .calculate import calc_phase_diagram
 
 
 @dataclass(frozen=True)
