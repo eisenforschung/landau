@@ -14,7 +14,7 @@ swap or extend the default behavior.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import ClassVar, Iterator, Mapping, Sequence
+from typing import ClassVar, Iterable, Iterator, Mapping, Sequence
 
 import warnings
 
@@ -89,20 +89,25 @@ class Refiner(ABC):
         """Yield candidate objects to be handed to :meth:`solve`."""
 
     @abstractmethod
-    def solve(self, cand, phases: Mapping[str, Phase]) -> RefinedPoint | None:
-        """Locate an exact transition for one candidate; return None to skip."""
+    def solve(
+        self, cand, phases: Mapping[str, Phase]
+    ) -> Iterable[RefinedPoint]:
+        """Locate exact transitions for one candidate.
+
+        Return an iterable of :class:`RefinedPoint` (empty to skip). A single
+        candidate may yield more than one point — e.g. a bisection scheme that
+        finds two crossings inside one Delaunay simplex.
+        """
 
     def run(self, df: pd.DataFrame, phases: Mapping[str, Phase]) -> pd.DataFrame:
         rows: list[dict] = []
         for cand in self.propose(df):
-            pt = self.solve(cand, phases)
-            if pt is None:
-                continue
-            if pt.T < 0:
-                continue
-            if _dominated(pt, phases):
-                continue
-            rows.extend(_expand_rows(pt, phases))
+            for pt in self.solve(cand, phases):
+                if pt.T < 0:
+                    continue
+                if _dominated(pt, phases):
+                    continue
+                rows.extend(_expand_rows(pt, phases))
         out = pd.DataFrame(rows)
         if out.empty:
             return out
@@ -151,7 +156,7 @@ class ScanRefiner(Refiner):
                     T=r1["T"], mu=r1["mu"], bracket=bracket,
                 )
 
-    def solve(self, cand: _ScanCandidate, phases) -> RefinedPoint | None:
+    def solve(self, cand: _ScanCandidate, phases) -> list[RefinedPoint]:
         p1, p2 = phases[cand.phase1], phases[cand.phase2]
         if self.by == "mu":
             mu = _find_one_point(
@@ -159,14 +164,14 @@ class ScanRefiner(Refiner):
                 lambda p, x: p.semigrand_potential(cand.T, x),
                 cand.bracket,
             )
-            return RefinedPoint(T=cand.T, mu=mu, phases=(cand.phase1, cand.phase2))
+            return [RefinedPoint(T=cand.T, mu=mu, phases=(cand.phase1, cand.phase2))]
         else:
             T = _find_one_point(
                 p1, p2,
                 lambda p, x: p.semigrand_potential(x, cand.mu),
                 cand.bracket,
             )
-            return RefinedPoint(T=T, mu=cand.mu, phases=(cand.phase1, cand.phase2))
+            return [RefinedPoint(T=T, mu=cand.mu, phases=(cand.phase1, cand.phase2))]
 
 
 # -- Delaunay-based refiners --------------------------------------------------
@@ -204,7 +209,7 @@ class DelaunayLineRefiner(Refiner):
             if n == 2:
                 yield _SimplexCandidate(simplex=simplex)
 
-    def solve(self, cand: _SimplexCandidate, phases) -> RefinedPoint | None:
+    def solve(self, cand: _SimplexCandidate, phases) -> list[RefinedPoint]:
         cand_df = cand.simplex
         p1_xy, p2_xy = cand_df.groupby("phase")[["T", "mu"]].mean().to_numpy()
         name1, name2 = cand_df.phase.unique()
@@ -226,9 +231,9 @@ class DelaunayLineRefiner(Refiner):
                 f"of phases {cand_df.phase.unique()}!",
                 stacklevel=2,
             )
-            return None
+            return []
         T, mu = project(t)
-        return RefinedPoint(T=T, mu=mu, phases=(name1, name2))
+        return [RefinedPoint(T=T, mu=mu, phases=(name1, name2))]
 
 
 class DelaunayTripleRefiner(Refiner):
@@ -245,7 +250,7 @@ class DelaunayTripleRefiner(Refiner):
             if n == 3:
                 yield _SimplexCandidate(simplex=simplex)
 
-    def solve(self, cand: _SimplexCandidate, phases) -> RefinedPoint | None:
+    def solve(self, cand: _SimplexCandidate, phases) -> list[RefinedPoint]:
         tr = cand.simplex
         T0, mu0 = tr[["T", "mu"]].mean()
         names = tuple(tr.phase.unique())
@@ -259,7 +264,7 @@ class DelaunayTripleRefiner(Refiner):
             return abs(phi1 - phi2) + abs(phi2 - phi3) + abs(phi3 - phi1)
 
         T, mu = so.fmin(triplemin, (T0, mu0), disp=False)
-        return RefinedPoint(T=T, mu=mu, phases=names)
+        return [RefinedPoint(T=T, mu=mu, phases=names)]
 
 
 # -- Defaults -----------------------------------------------------------------
