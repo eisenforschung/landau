@@ -50,29 +50,6 @@ jobs:
           path: _testplots/*.png
           if-no-files-found: error
 
-      - name: Checkout testplots branch
-        uses: actions/checkout@v5
-        with:
-          ref: testplots
-          path: gallery
-        continue-on-error: true
-
-      - name: Initialise testplots branch if missing
-        run: |
-          if [ ! -d gallery/.git ]; then
-            rm -rf gallery
-            git clone --depth=1 "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gallery
-            cd gallery
-            git checkout --orphan testplots
-            git rm -rf . >/dev/null 2>&1 || true
-            echo "# Test plot gallery" > README.md
-            git add README.md
-            git -c user.email="actions@github.com" -c user.name="github-actions[bot]" commit -m "init testplots branch"
-            git push origin testplots
-          fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Commit plots to testplots branch
         id: commit
         env:
@@ -80,15 +57,28 @@ jobs:
           SHA: ${{ github.event.pull_request.head.sha }}
           PR: ${{ github.event.pull_request.number }}
         run: |
+          set -euxo pipefail
+          REPO_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git clone --depth=1 "$REPO_URL" gallery
           cd gallery
           git config user.email "actions@github.com"
           git config user.name "github-actions[bot]"
+          if git ls-remote --exit-code --heads origin testplots >/dev/null; then
+            git fetch --depth=1 origin testplots:testplots
+            git checkout testplots
+          else
+            git checkout --orphan testplots
+            git rm -rf . >/dev/null 2>&1 || true
+            echo "# Test plot gallery" > README.md
+            git add README.md
+            git commit -m "init testplots branch"
+          fi
           DEST="pr-${PR}/${SHA}"
           mkdir -p "$DEST"
           cp "${GITHUB_WORKSPACE}"/_testplots/*.png "$DEST"/
           git add "$DEST"
           git commit -m "testplots for PR #${PR} @ ${SHA}"
-          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" testplots
+          git push origin testplots
           echo "dest=$DEST" >> "$GITHUB_OUTPUT"
 
       - name: Post comment with images
