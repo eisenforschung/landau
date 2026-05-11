@@ -289,7 +289,7 @@ def _segment_tsp_polygon(
     segment end-to-end; inter-segment distances are the actual Euclidean
     distance between endpoints.  Hence the per-pair segment-to-segment cost
     incurred by the tour is the minimum over the four endpoint pairings, which
-    is what the user asks of a "segment distance".
+    is the desired notion of "segment distance".
 
     `solve_tour` is a callable taking an integer distance matrix and returning a
     list of node indices forming the tour.
