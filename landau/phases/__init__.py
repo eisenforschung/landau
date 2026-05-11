@@ -101,11 +101,8 @@ class AbstractLinePhase(Phase):
         return self.line_free_energy(T)
 
     def concentration(self, T, dmu):
-        ones = np.ones(np.broadcast(T, dmu).shape)
-        if ones.shape != ():
-            return self.line_concentration * ones
-        else:
-            return self.line_concentration
+        result = np.full(np.broadcast(T, dmu).shape, self.line_concentration)
+        return result.item() if result.ndim == 0 else result
 
     def semigrand_potential(self, T, dmu):
         f = self.line_free_energy(T)
@@ -127,11 +124,7 @@ class LinePhase(AbstractLinePhase):
         return self.fixed_concentration
 
     def line_free_energy(self, T):
-        if isinstance(T, np.ndarray):
-            U = self.line_energy * np.ones_like(T)
-        else:
-            U = self.line_energy
-        return U - T * self.line_entropy
+        return self.line_energy - T * self.line_entropy
 
 
 @dataclass(frozen=True)

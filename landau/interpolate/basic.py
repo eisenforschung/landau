@@ -21,12 +21,12 @@ kB = Boltzmann / eV
 
 
 def G_calphad(T, pl, *p):
+    T_arr = np.asarray(T)
     with np.errstate(divide="ignore", invalid="ignore"):
-        g = T * np.log(T) * pl + sum(pi * T**i for i, pi in enumerate(p))
-    if isinstance(T, np.ndarray) and T.ndim > 0:
-        g[np.isclose(T, 0)] = p[0]
-    elif np.isclose(T, 0.0):
-        g = p[0]
+        g = T_arr * np.log(T_arr) * pl + sum(pi * T_arr**i for i, pi in enumerate(p))
+    g = np.where(np.isclose(T_arr, 0), p[0], g)
+    if T_arr.ndim == 0:
+        return g.item()
     return g
 
 
