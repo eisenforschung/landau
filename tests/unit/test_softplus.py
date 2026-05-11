@@ -33,6 +33,28 @@ class TestSoftplusFit:
         assert "SoftplusFit" in pkg.__all__
 
     @settings(
+        max_examples=30,
+        deadline=None,
+        suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
+    )
+    @given(
+        a=st.floats(min_value=0.5, max_value=5.0),
+        b=st.floats(min_value=1.0, max_value=10.0),
+        c=st.floats(min_value=-1.5, max_value=1.5),
+        offset=st.floats(min_value=-3.0, max_value=3.0),
+    )
+    def test_recovery_single_term(self, a, b, c, offset):
+        """n_softplus=1 should reproduce data generated from a single softplus term."""
+        x = np.linspace(-1.0, 1.0, 201)
+        params = [a, b, c, offset]
+        y = _truth(x, params)
+
+        fn = SoftplusFit(n_softplus=1, max_nfev=2000).fit(x, y)
+
+        scale = max(1e-3, float(np.ptp(y)))
+        np.testing.assert_allclose(fn(x), y, atol=0.02 * scale)
+
+    @settings(
         max_examples=15,
         deadline=None,
         suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
