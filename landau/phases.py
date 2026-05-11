@@ -210,8 +210,8 @@ class TemperatureDependentLinePhase(AbstractLinePhase):
         plt.scatter(self.temperatures[::n], self.free_energies[::n], c=l.get_color())
 
 
+@deprecate("use TemperatureDependentLinePhase instead", version="2.0")
 def TemperatureDepandantLinePhase(*args, **kwargs):
-    print("TYPO ALERT!")
     return TemperatureDependentLinePhase(*args, **kwargs)
 
 
