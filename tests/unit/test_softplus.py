@@ -73,21 +73,55 @@ class TestSoftplusFit:
         function-value sense, i.e. modulo permutation of the terms) given
         dense, noise-free samples and matching ``n_softplus``.
 
-        Uses ``loss="linear"`` — the default ``soft_l1`` reduces residual
-        weight on the steep parts of the curve and frequently gets stuck in
-        a near-constant local minimum on noise-free data (see PR #82).
+        Uses default ``loss="soft_l1"``: with the amplitude-aware initial
+        guess introduced in PR #82, the local fit no longer falls into the
+        near-constant basin that soft_l1's IRLS reweighting opens up around
+        small ``a``.
         """
         params = [a1, b1, c1, a2, b2, c2, offset]
         x = np.linspace(-1.0, 1.0, 201)
         y = _truth(x, params)
 
-        fn = SoftplusFit(n_softplus=2, loss="linear", max_nfev=2000).fit(x, y)
+        fn = SoftplusFit(n_softplus=2, max_nfev=2000).fit(x, y)
 
         x_dense = np.linspace(-1.0, 1.0, 401)
         y_pred = fn(x_dense)
         y_true_dense = _truth(x_dense, params)
         scale = max(1e-3, float(np.ptp(y_true_dense)))
         np.testing.assert_allclose(y_pred, y_true_dense, atol=0.02 * scale)
+
+    def test_global_fit_recovers_pathological_case(self):
+        """The historical falsifying example from PR #82.  Both ``fit`` (with
+        the improved init) and ``global_fit`` should now recover it under the
+        default ``soft_l1`` loss.
+        """
+        params = [2.0, 2.25, 0.0, 2.0, -2.0, 1.0, 0.0]
+        x = np.linspace(-1.0, 1.0, 201)
+        y = _truth(x, params)
+
+        rms_local = np.sqrt(np.mean(
+            (SoftplusFit(n_softplus=2, max_nfev=2000).fit(x, y)(x) - y) ** 2
+        ))
+        rms_global = np.sqrt(np.mean(
+            (SoftplusFit(n_softplus=2, max_nfev=2000).global_fit(x, y)(x) - y) ** 2
+        ))
+        assert rms_local < 1e-3, f"local fit collapsed: rms={rms_local:.4f}"
+        assert rms_global < 1e-3, f"global fit collapsed: rms={rms_global:.4f}"
+
+    def test_f_scale_widens_soft_l1_quadratic_region(self):
+        """At sufficiently large ``f_scale`` the soft_l1 loss is quadratic over
+        the full residual range, so the resulting fit must coincide with the
+        linear-loss fit on the same data.
+        """
+        params = [1.5, 4.0, -0.3, 1.0, -3.0, 0.5, 0.2]
+        x = np.linspace(-1.0, 1.0, 121)
+        y = _truth(x, params)
+
+        y_linear = SoftplusFit(n_softplus=2, loss="linear", max_nfev=2000).fit(x, y)(x)
+        y_weak = SoftplusFit(
+            n_softplus=2, loss="soft_l1", f_scale=1e4, max_nfev=2000
+        ).fit(x, y)(x)
+        np.testing.assert_allclose(y_weak, y_linear, atol=1e-3)
 
     @pytest.mark.parametrize("x0", [-0.31, 0.0, 0.37])
     def test_recover_relu_kink_location(self, x0):
