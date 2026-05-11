@@ -64,6 +64,10 @@ class AbstractPolyMethod(abc.ABC):
             shape = self._make(pp_scaled, border, segment_label)
             if shape is None:
                 return None
+            if isinstance(shape, shapely.Polygon) and not shape.is_valid:
+                warn(f"{type(self).__name__}._make produced an invalid polygon "
+                     f"({shapely.is_valid_reason(shape)}); plotting will buffer it but "
+                     f"the result may be inaccurate.")
 
         if shape.is_empty:
             return None
