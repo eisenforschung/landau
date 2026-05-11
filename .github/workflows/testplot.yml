@@ -5,8 +5,12 @@ name: testplot
 # formalise in a unit test, so we trigger this on demand by adding the
 # `testplot` label to a PR.
 #
-# The rendered PNGs are inlined into the PR comment as base64 data URIs
-# so we don't need to commit them anywhere or keep them as artifacts.
+# The rendered PNGs are committed back to the PR's head branch under
+# .github/testplots/ and then referenced from a PR comment via
+# raw.githubusercontent.com so images render inline.
+#
+# A guard on github.actor prevents the autocommit from re-triggering
+# the workflow.
 
 on:
   pull_request:
@@ -15,16 +19,19 @@ on:
 jobs:
   render:
     if: >-
-      (github.event.action == 'labeled' && github.event.label.name == 'testplot') ||
-      (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'testplot'))
+      github.actor != 'github-actions[bot]' &&
+      ((github.event.action == 'labeled' && github.event.label.name == 'testplot') ||
+       (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'testplot')))
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       pull-requests: write
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/setup-python@v6
         with:
@@ -35,19 +42,44 @@ jobs:
         run: pip install -e .[fast-tsp]
 
       - name: Render phase diagrams
-        run: python tests/integration/testplots.py --out _testplots
+        env:
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          DEST=".github/testplots/${SHA}"
+          mkdir -p "$DEST"
+          python tests/integration/testplots.py --out "$DEST"
+          echo "DEST=$DEST" >> "$GITHUB_ENV"
+
+      - name: Commit and push plots
+        env:
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euxo pipefail
+          git config user.email "actions@github.com"
+          git config user.name "github-actions[bot]"
+          git add "$DEST"
+          if git diff --cached --quiet; then
+            echo "no new plots to commit"
+            exit 0
+          fi
+          git commit -m "testplots for ${SHA}"
+          git push origin HEAD:"${{ github.event.pull_request.head.ref }}"
 
       - name: Post comment with images
         uses: actions/github-script@v7
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          DEST: ${{ env.DEST }}
         with:
           script: |
             const fs = require('fs');
             const path = require('path');
-            const dir = '_testplots';
-            const files = fs.readdirSync(dir).filter(f => f.endsWith('.png')).sort();
+            const dest = process.env.DEST;
             const short = process.env.HEAD_SHA.slice(0, 7);
+            const files = fs.readdirSync(dest).filter(f => f.endsWith('.png')).sort();
+            const base = `https://raw.githubusercontent.com/${process.env.HEAD_REPO}/${process.env.HEAD_REF}/${dest}`;
             const lines = [
               `### Test plots for \`${short}\``,
               '',
@@ -55,11 +87,10 @@ jobs:
               '',
             ];
             for (const f of files) {
-              const data = fs.readFileSync(path.join(dir, f)).toString('base64');
               const name = f.replace(/\.png$/, '');
               lines.push(`#### ${name}`);
               lines.push('');
-              lines.push(`<img alt="${name}" src="data:image/png;base64,${data}" width="600">`);
+              lines.push(`<img alt="${name}" src="${base}/${f}" width="600">`);
               lines.push('');
             }
             await github.rest.issues.createComment({
