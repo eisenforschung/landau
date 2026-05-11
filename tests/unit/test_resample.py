@@ -20,9 +20,10 @@ def test_zero_noise_produces_zero_shift(base_phase):
 
 def test_semigrand_potential_adds_shift(base_phase):
     """semigrand_potential should equal the underlying potential plus the stored shift."""
-    r = RandomlyShiftedPhase("a", base_phase, noise=0.0)
-    # noise=0 makes the assertion exact and independent of RNG state
-    assert r.semigrand_potential(300.0, 0.05) == base_phase.semigrand_potential(300.0, 0.05)
+    np.random.seed(0)
+    r = RandomlyShiftedPhase("a", base_phase, noise=0.1)
+    assert r.shift != 0.0  # guard against an accidentally zero draw obscuring the test
+    assert r.semigrand_potential(300.0, 0.05) == base_phase.semigrand_potential(300.0, 0.05) + r.shift
 
 
 def test_semigrand_potential_shift_is_constant_across_states(base_phase):
