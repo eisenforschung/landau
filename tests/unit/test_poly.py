@@ -7,7 +7,7 @@ from matplotlib.patches import Polygon
 # Check if optional dependencies are available
 try:
     import python_tsp
-    from landau.poly import PythonTsp
+    from landau.poly import PythonTsp, SegmentPythonTsp
 
     HAS_PYTHON_TSP = True
 except ImportError:
@@ -15,7 +15,7 @@ except ImportError:
 
 try:
     import fast_tsp
-    from landau.poly import FastTsp
+    from landau.poly import FastTsp, SegmentFastTsp
 
     HAS_FAST_TSP = True
 except ImportError:
@@ -133,13 +133,39 @@ def test_fast_tsp(df):
             assert isinstance(p, Polygon)
 
 
+@pytest.mark.skipif(not HAS_PYTHON_TSP, reason="python-tsp not installed")
+@settings(deadline=None)
+@given(df=poly_dataframe())
+def test_segment_python_tsp(df):
+    method = SegmentPythonTsp()
+    res = method.apply(df)
+    assert isinstance(res, (pd.Series, pd.DataFrame))
+    if isinstance(res, pd.Series):
+        for p in res:
+            assert isinstance(p, Polygon)
+
+
+@pytest.mark.skipif(not HAS_FAST_TSP, reason="fast-tsp not installed")
+@settings(deadline=None)
+@given(df=poly_dataframe())
+def test_segment_fast_tsp(df):
+    method = SegmentFastTsp()
+    res = method.apply(df)
+    assert isinstance(res, (pd.Series, pd.DataFrame))
+    if isinstance(res, pd.Series):
+        for p in res:
+            assert isinstance(p, Polygon)
+
+
 def test_handle_poly_method():
     assert isinstance(handle_poly_method("concave"), Concave)
     assert isinstance(handle_poly_method("segments"), Segments)
     if HAS_PYTHON_TSP:
         assert isinstance(handle_poly_method("tsp"), PythonTsp)
+        assert isinstance(handle_poly_method("segment-tsp"), SegmentPythonTsp)
     if HAS_FAST_TSP:
         assert isinstance(handle_poly_method("fasttsp"), FastTsp)
+        assert isinstance(handle_poly_method("segment-fasttsp"), SegmentFastTsp)
 
     # Test with custom arguments
     res = handle_poly_method("concave", alpha=0.2, min_c_width=0.02)

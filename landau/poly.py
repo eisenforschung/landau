@@ -257,6 +257,82 @@ class Segments(AbstractPolyMethod):
         return shapely.Polygon(coords)
 
 
+def _pca_sort_segment(pts: np.ndarray) -> np.ndarray:
+    """Sort the points of a single border segment along its principal axis."""
+    if len(pts) < 2:
+        return pts
+    pca = PCA(n_components=1)
+    proj = pca.fit_transform(pts).ravel()
+    return pts[np.argsort(proj)]
+
+
+def _segments_from_labels(pp: np.ndarray, segment_label: np.ndarray) -> list[np.ndarray]:
+    """Group `pp` by `segment_label` and PCA-sort each group."""
+    segments = []
+    for lab in np.unique(segment_label):
+        pts = pp[segment_label == lab]
+        if len(pts) == 0:
+            continue
+        segments.append(_pca_sort_segment(pts))
+    return segments
+
+
+def _segment_tsp_polygon(
+        segments: list[np.ndarray],
+        solve_tour,
+) -> shapely.Geometry | None:
+    """Stitch already-sorted border segments into a polygon by solving a TSP on
+    segment endpoints.
+
+    Each segment contributes two nodes (its two endpoints) to a 2N-node TSP.
+    The intra-segment edge is given distance 0 so the optimum tour walks each
+    segment end-to-end; inter-segment distances are the actual Euclidean
+    distance between endpoints.  Hence the per-pair segment-to-segment cost
+    incurred by the tour is the minimum over the four endpoint pairings, which
+    is what the user asks of a "segment distance".
+
+    `solve_tour` is a callable taking an integer distance matrix and returning a
+    list of node indices forming the tour.
+    """
+    if len(segments) == 0:
+        return None
+    if len(segments) == 1:
+        coords = segments[0]
+        if len(coords) < 3:
+            return None
+        return shapely.Polygon(coords)
+
+    n = len(segments)
+    endpoints = np.array([[s[0], s[-1]] for s in segments]).reshape(2 * n, -1)
+    dm = pairwise_distances(endpoints)
+    for i in range(n):
+        dm[2 * i, 2 * i + 1] = 0
+        dm[2 * i + 1, 2 * i] = 0
+
+    pos = dm[dm > 0]
+    if len(pos) == 0:
+        return shapely.convex_hull(shapely.MultiPoint(np.vstack(segments)))
+    dm_int = (dm / pos.min()).round().astype(int)
+
+    tour = solve_tour(dm_int)
+
+    seen = set()
+    chunks = []
+    for node in tour:
+        seg = node // 2
+        if seg in seen:
+            continue
+        seen.add(seg)
+        # node is even -> entered segment at its start, walk forward
+        # node is odd  -> entered segment at its end, walk backward
+        chunks.append(segments[seg] if node % 2 == 0 else segments[seg][::-1])
+
+    coords = np.vstack(chunks)
+    if len(coords) < 3:
+        return None
+    return shapely.Polygon(coords)
+
+
 __all__ = ["Concave", "Segments"]
 
 
@@ -290,7 +366,29 @@ with ImportAlarm("'python_tsp' package required for PythonTsp.  Install from con
                     dm, x0=np.argsort(np.arctan2(pp[:, 1], pp[:, 0])).tolist(),
                     max_iterations=self.max_iterations)[0]
             return shapely.Polygon(pp[tour]) if len(tour) > 2 else None
-    __all__ += ["PythonTsp"]
+
+    @dataclass
+    class SegmentPythonTsp(Segments):
+        """Like :class:`Segments`, but stitch the (PCA-sorted) border segments
+        together by solving a TSP on segment endpoints with `python_tsp`.
+
+        The distance between two segments is the minimum of the four
+        endpoint-to-endpoint distances; this is achieved by a 2N-node TSP
+        formulation with zero-cost intra-segment edges.
+        """
+        max_iterations: int = 10
+
+        def _make(self, pp, border, segment_label):
+            if np.all(segment_label == 1):
+                raise ValueError("SegmentPythonTsp requires refined phase boundaries (segment_label must be provided)!")
+            segments = _segments_from_labels(pp, segment_label)
+
+            def solve(dm_int):
+                return solve_tsp_record_to_record(dm_int, max_iterations=self.max_iterations)[0]
+
+            return _segment_tsp_polygon(segments, solve)
+
+    __all__ += ["PythonTsp", "SegmentPythonTsp"]
 
 
 with ImportAlarm("'fast-tsp' package required for FastTsp.  Install from pip.") as fast_tsp_alarm:
@@ -316,7 +414,28 @@ with ImportAlarm("'fast-tsp' package required for FastTsp.  Install from pip.") 
             tour = fast_tsp.find_tour(dm, self.duration_seconds)
             return shapely.Polygon(pp[tour]) if len(tour) > 2 else None
 
-    __all__ += ["FastTsp"]
+    @dataclass
+    class SegmentFastTsp(Segments):
+        """Like :class:`Segments`, but stitch the (PCA-sorted) border segments
+        together by solving a TSP on segment endpoints with `fast_tsp`.
+
+        The distance between two segments is the minimum of the four
+        endpoint-to-endpoint distances; this is achieved by a 2N-node TSP
+        formulation with zero-cost intra-segment edges.
+        """
+        duration_seconds: float = 1.0
+
+        def _make(self, pp, border, segment_label):
+            if np.all(segment_label == 1):
+                raise ValueError("SegmentFastTsp requires refined phase boundaries (segment_label must be provided)!")
+            segments = _segments_from_labels(pp, segment_label)
+
+            def solve(dm_int):
+                return fast_tsp.find_tour(dm_int, self.duration_seconds)
+
+            return _segment_tsp_polygon(segments, solve)
+
+    __all__ += ["FastTsp", "SegmentFastTsp"]
 
 
 @fast_tsp_alarm
@@ -331,8 +450,10 @@ def handle_poly_method(poly_method, **kwargs):
     }
     if 'PythonTsp' in __all__:
         allowed['tsp'] = PythonTsp(**kwargs)
+        allowed['segment-tsp'] = SegmentPythonTsp(**kwargs)
     if 'FastTsp' in __all__:
         allowed['fasttsp'] = FastTsp(**kwargs)
+        allowed['segment-fasttsp'] = SegmentFastTsp(**kwargs)
     if poly_method is None:
         if 'fasttsp' in allowed:
             poly_method = 'fasttsp'
