@@ -266,11 +266,9 @@ def plot_1d_mu_phase_diagram(
             Input data containing columns for chemical potential difference ('mu'),
             semi-grandcanonical potential ('phi'), phase name ('phase'), stability
             ('stable'), and optionally a 'border' column indicating phase transition.
-        ax (matplotlib.axes.Axes, optional): 
+        ax (matplotlib.axes.Axes, optional):
             Existing matplotlib Axes to plot on. If None, a new figure and axes are created.
-        show (bool, optional): 
-            If True, the plot is displayed immediately. Defaults to True.
-        mark_transitions (bool, optional): 
+        mark_transitions (bool, optional):
             If True, all transition temperatures are marked on the plot. Defaults to True.
 
     Returns:
@@ -283,14 +281,15 @@ def plot_1d_mu_phase_diagram(
     if ax is None:
         fig, ax = plt.subplots()
 
-    if 'border' not in df.columns: 
+    if 'border' not in df.columns:
         sns.lineplot(
-        data=df,
-        x='mu', y='phi',
-        hue='phase',
-        style='stable', style_order=[True, False],
+            data=df,
+            x='mu', y='phi',
+            hue='phase',
+            style='stable', style_order=[True, False],
+            ax=ax,
         )
-        return
+        return ax
 
     df_sorted = df.sort_values("mu").reset_index(drop=True)
     border_rows = df_sorted.query("border")
@@ -309,7 +308,8 @@ def plot_1d_mu_phase_diagram(
                 x='mu', y='phi',
                 hue='phase', hue_order=sorted(df.phase.unique()),
                 style='stable', style_order=[True, False],
-                legend='auto' if i == 0 else False
+                legend='auto' if i == 0 else False,
+                ax=ax,
             )
 
     dfa = np.ptp(df['phi'].dropna())
@@ -318,16 +318,13 @@ def plot_1d_mu_phase_diagram(
     if mark_transitions and 'border' in df.columns:
         for mt, dd in df.query("mu.min()<mu<mu.max() and border").groupby("mu"):
             ft = dd['phi'].iloc[0]
-            plt.axvline(mt, color='k', linestyle='dotted', alpha=.5)
-            plt.scatter(mt, ft, marker='o', c='k', zorder=10)
+            ax.axvline(mt, color='k', linestyle='dotted', alpha=.5)
+            ax.scatter(mt, ft, marker='o', c='k', zorder=10)
 
-            plt.text(mt - .05 * dfm, ft - dfa * .1, rf"$\Delta\mu = {mt:.03f}\,\mathrm{{eV}}$",
+            ax.text(mt - .05 * dfm, ft - dfa * .1, rf"$\Delta\mu = {mt:.03f}\,\mathrm{{eV}}$",
                     rotation='vertical', ha='center', va='top')
-    plt.xlabel("Chemical Potential Difference [eV]")
-    plt.ylabel("Semi-grandcanonical Potential [eV/atom]")
-
-    if show==True:
-        plt.show()
+    ax.set_xlabel("Chemical Potential Difference [eV]")
+    ax.set_ylabel("Semi-grandcanonical Potential [eV/atom]")
 
     return ax
 
@@ -345,12 +342,10 @@ def plot_1d_T_phase_diagram(
             Input data containing columns for temperature ('T'), semi-grandcanonical
             potential ('phi'), phase name ('phase'), and optionally a 'border' column
             indicating phase transition.
-        ax (matplotlib.axes.Axes, optional): 
+        ax (matplotlib.axes.Axes, optional):
             Existing matplotlib Axes to plot on. If None, a new figure and axes are created.
-        mark_transitions (bool, optional): 
+        mark_transitions (bool, optional):
             If True, all transition temperatures are marked on the plot. Defaults to True.
-        show (bool, optional): 
-            If True, the plot is displayed immediately. Defaults to True.
 
     Returns:
         matplotlib.axes.Axes: 
@@ -367,9 +362,11 @@ def plot_1d_T_phase_diagram(
         x='T', y='phi',
         hue='phase', hue_order=sorted(df.phase.unique()),
         style='stable', style_order=[True, False],
+        ax=ax,
     )
 
-    if 'border' not in df.columns: return
+    if 'border' not in df.columns:
+        return ax
 
     dfa = np.ptp(df['phi'].dropna())
     dft = np.ptp(df['T'].dropna())
@@ -377,15 +374,12 @@ def plot_1d_T_phase_diagram(
     if mark_transitions and 'border' in df.columns:
         for Tt, dd in df.query("T.min()<T<T.max() and border").groupby("T"):
             ft = dd['phi'].iloc[0]
-            plt.axvline(Tt, color='k', linestyle='dotted', alpha=.5)
-            plt.scatter(Tt, ft, marker='o', c='k', zorder=10)
+            ax.axvline(Tt, color='k', linestyle='dotted', alpha=.5)
+            ax.scatter(Tt, ft, marker='o', c='k', zorder=10)
 
-            plt.text(Tt + .05 * dft, ft + dfa * .1, rf"$T = {Tt:.0f}\,\mathrm{{K}}$", rotation='vertical', ha='center')
+            ax.text(Tt + .05 * dft, ft + dfa * .1, rf"$T = {Tt:.0f}\,\mathrm{{K}}$", rotation='vertical', ha='center')
 
-    plt.xlabel("Temperature [K]")
-    plt.ylabel("Semi-grandcanonical potential [eV/atom]")
-
-    if show==True:
-        plt.show()
+    ax.set_xlabel("Temperature [K]")
+    ax.set_ylabel("Semi-grandcanonical potential [eV/atom]")
 
     return ax
