@@ -392,7 +392,7 @@ class RegularSolution(Phase):
 
     def concentration(self, T, dmu):
         if not isinstance(dmu, np.ndarray) or dmu.size == 1:
-            dmus = np.linspace(-1, 1, 5) * 1e-3 + dmu
+            dmus = np.linspace(-1, 1, 5) * 1e-4 + dmu
             res = self.concentration(T, dmus)[2]
             return np.array([res]) if isinstance(dmu, np.ndarray) else res
         return np.clip(-np.gradient(self.semigrand_potential(T, dmu), dmu, edge_order=2), 0, 1)
