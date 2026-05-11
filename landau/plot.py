@@ -39,7 +39,7 @@ def cluster_phase(df):
 def get_polygons(
     df,
     poly_method: Literal["concave", "segments", "fasttsp", "tsp"] | poly.AbstractPolyMethod | None = None,
-    variables: list[str] = ["c", "T"],
+    variables: list[str] | None = None,
     **kwargs,
 ):
     """Turn the stable phase regions in df into polygons.
@@ -58,6 +58,8 @@ def get_polygons(
         pandas.Series:
             The constructed polygons, indexed by phase and phase_unit.
     """
+    if variables is None:
+        variables = ["c", "T"]
     df = df.query("stable").copy()
     df = cluster_phase(df)
     if (df.phase_unit == -1).any():
@@ -153,9 +155,11 @@ def _plot_phase_diagram(
     color_override: dict[str, str] = {},
     tielines=False,
     poly_method: Literal["concave", "segments", "fasttsp", "tsp"] | poly.AbstractPolyMethod | None = None,
-    variables: list[str] = ["c", "T"],
+    variables: list[str] | None = None,
     ax=None,
 ):
+    if variables is None:
+        variables = ["c", "T"]
     if ax is None:
         ax = plt.gca()
     df_stable = df.query("stable")
@@ -183,6 +187,10 @@ def _plot_phase_diagram(
             ax.set_xlabel(rf"$\Delta\mu_\mathrm{{{element}}}$ [eV]")
         else:
             ax.set_xlabel(r"$\Delta\mu$ [eV]")
+    else:
+        raise ValueError(
+            f"Unknown coordinate system: variables[0]={variables[0]!r}. Expected 'c' or 'mu'."
+        )
 
     ax.set_ylim(df_stable["T"].min(), df_stable["T"].max())
     ax.legend(ncols=2)
@@ -201,7 +209,7 @@ def plot_phase_diagram(
     color_override: dict[str, str] = {},
     tielines=False,
     poly_method: Literal["concave", "segments", "fasttsp", "tsp"] | poly.AbstractPolyMethod | None = None,
-    variables: list[str] = ["c", "T"],
+    variables: list[str] | None = None,
     ax=None,
 ):
     return _plot_phase_diagram(
