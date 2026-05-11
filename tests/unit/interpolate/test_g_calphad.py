@@ -38,3 +38,17 @@ def test_G_calphad_no_warnings_at_zero():
         warnings.simplefilter("error")
         G_calphad(np.array([0.0, 1.0, 2.0]), 3.5, 1.0, -0.5)
         G_calphad(0.0, -2.0, 1.0)
+
+
+def test_G_calphad_0d_array_parity():
+    """0-d numpy arrays should give the same result as Python scalars."""
+    pl, p = 2.0, [1.0, -0.5, 0.1]
+    T_scalar = 1.5
+    T_0d = np.array(1.5)
+    assert np.isclose(G_calphad(T_scalar, pl, *p), G_calphad(T_0d, pl, *p))
+
+
+def test_G_calphad_0d_array_at_zero():
+    """0-d numpy array at T=0 must clamp to p[0], not return NaN."""
+    result = G_calphad(np.array(0.0), 3.5, 2.0, -0.5)
+    assert np.isclose(result, 2.0)
