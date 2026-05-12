@@ -25,6 +25,7 @@ __all__ = [
     "LinePhase",
     "TemperatureDependentLinePhase",
     "IdealSolution",
+    "QuasiChemicalPhase",
     "RegularSolution",
     "InterpolatingPhase",
     "SlowInterpolatingPhase",
@@ -247,6 +248,131 @@ class IdealSolution(Phase):
         df = f2 - f1
         with np.errstate(divide='ignore', over='ignore'):
             return 1 / (1 + np.exp(+(df - dmu) / kB / T))
+
+
+@dataclass(frozen=True, eq=True)
+class QuasiChemicalPhase(Phase):
+    """
+    Binary alloy phase using the quasi-chemical (pair) approximation.
+
+    Accounts for nearest-neighbour short-range order (SRO) beyond the Bragg-Williams
+    mean field.  The equilibrium AB pair fraction is obtained analytically from the
+    quasi-chemical condition (Guggenheim 1952), which yields a quadratic equation.
+
+    Parameters map directly to the pair-interaction Hamiltonian:
+
+        V = V_AA + V_BB - 2*V_AB   (eV / bond)
+        z  ... coordination number  (12 = FCC, 8 = BCC)
+
+    V > 0  →  ordering tendency (AB bonds preferred)
+    V < 0  →  phase-separation tendency (like bonds preferred)
+
+    Reference: Rao & Curtin, Acta Materialia 228 (2022) 117621.
+    """
+
+    phase_A: AbstractLinePhase
+    """Terminal phase at c = 0."""
+    phase_B: AbstractLinePhase
+    """Terminal phase at c = 1."""
+    V: float
+    """Pair-interaction ordering energy V = V_AA + V_BB − 2·V_AB (eV/bond)."""
+    z: int = 12
+    """Coordination number: 12 for FCC, 8 for BCC."""
+    num_samples: int = 100
+    """Grid resolution used in the semigrand-potential minimisation."""
+
+    def __post_init__(self):
+        phase_A, phase_B = sorted(
+            (self.phase_A, self.phase_B), key=lambda p: p.line_concentration
+        )
+        if phase_A.line_concentration != 0 or phase_B.line_concentration != 1:
+            raise ValueError("phase_A must have c=0 and phase_B must have c=1")
+        object.__setattr__(self, "phase_A", phase_A)
+        object.__setattr__(self, "phase_B", phase_B)
+
+    def _y_AB(self, c, T):
+        """Equilibrium AB pair fraction at composition c and temperature T."""
+        c = np.asarray(c, dtype=float)
+        T = np.asarray(T, dtype=float)
+        beta = np.exp(np.clip(self.V / (kB * T), -500, 500))
+        a = 1.0 - beta / 4.0
+        b = beta / 2.0
+        d = -beta * c * (1.0 - c)
+        disc = np.maximum(b * b - 4.0 * a * d, 0.0)
+        sqrt_disc = np.sqrt(disc)
+        # For |a| → 0 (β → 4), fall back to the linear solution
+        small_a = np.abs(a) < 1e-10
+        y_linear = np.where(np.abs(b) > 0, -d / b, 2.0 * c * (1.0 - c))
+        # For a > 0 (β < 4) take the +√ root; for a < 0 (β > 4) the −√ root
+        # both cases simplify to (-b + sign(a)*sqrt_disc) / (2*a) when a ≠ 0
+        y_quad = (-b + np.where(a >= 0, sqrt_disc, -sqrt_disc)) / (2.0 * a)
+        y = np.where(small_a, y_linear, y_quad)
+        y_max = 2.0 * np.minimum(c, 1.0 - c)
+        return np.clip(y, 0.0, y_max)
+
+    def free_energy(self, T, c):
+        """Free energy per atom in the quasi-chemical pair approximation."""
+        c = np.asarray(c, dtype=float)
+        T = np.asarray(T, dtype=float)
+
+        F_A = self.phase_A.line_free_energy(T)
+        F_B = self.phase_B.line_free_energy(T)
+
+        y_AB = self._y_AB(c, T)
+        y_AA = np.maximum((1.0 - c) - y_AB / 2.0, 0.0)
+        y_BB = np.maximum(c - y_AB / 2.0, 0.0)
+        y_AB_s = y_AB
+        c_s = c
+
+        # se.entr(x) = -x*log(x), so x*log(x) = -se.entr(x); se.entr(0) = 0 (no NaN at boundaries)
+        pair_log_sum = -(se.entr(y_AA) + se.entr(y_AB_s) + se.entr(y_BB))
+        site_log_sum = -(se.entr(c_s) + se.entr(1.0 - c_s))
+
+        return (
+            (1.0 - c) * F_A
+            + c * F_B
+            - (self.z / 4.0) * self.V * y_AB
+            + T * (self.z / 2.0) * kB * pair_log_sum
+            + T * (self.z / 2.0 - 1.0) * kB * site_log_sum
+        )
+
+    def _find_phi_c(self, T, dmu):
+        output_shape = np.broadcast_shapes(np.shape(T), np.shape(dmu))
+        T_arr = np.atleast_1d(np.asarray(T, dtype=float))[..., np.newaxis]
+        dmu_arr = np.atleast_1d(np.asarray(dmu, dtype=float))[..., np.newaxis]
+
+        conc = np.linspace(0.0, 1.0, self.num_samples)
+        ff = self.free_energy(T_arr, conc)
+        phi = ff - conc * dmu_arr
+
+        I = phi.argmin(axis=-1, keepdims=True)
+        phi_min = np.take_along_axis(phi, I, axis=-1)[..., 0]
+        c_min = conc[I[..., 0]]
+
+        df = np.take_along_axis(np.gradient(ff, conc, axis=-1, edge_order=2), I, axis=-1)
+        d2f = np.take_along_axis(
+            np.gradient(np.gradient(ff, conc, axis=-1, edge_order=2), conc, axis=-1, edge_order=2),
+            I, axis=-1,
+        )
+        dc = (dmu_arr - df) / d2f
+        c_new = np.clip(c_min + dc[..., 0], 0.0, 1.0)
+        phi_min -= (c_new - c_min) * (dmu_arr[..., 0] - df[..., 0])
+        c_min = c_new
+
+        c_min = c_min.reshape(output_shape)
+        phi_min = phi_min.reshape(output_shape)
+
+        if c_min.ndim == 0:
+            c_min = c_min.item()
+        if phi_min.ndim == 0:
+            phi_min = phi_min.item()
+        return phi_min, c_min
+
+    def semigrand_potential(self, T, dmu):
+        return self._find_phi_c(T, dmu)[0]
+
+    def concentration(self, T, dmu):
+        return self._find_phi_c(T, dmu)[1]
 
 
 @dataclass(frozen=True, eq=True)

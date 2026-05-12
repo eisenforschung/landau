@@ -3,6 +3,7 @@ from .phases import (
     TemperatureDepandantLinePhase,
     TemperatureDependentLinePhase,
     IdealSolution,
+    QuasiChemicalPhase,
     RegularSolution,
     InterpolatingPhase,
     SlowInterpolatingPhase,
