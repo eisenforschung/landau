@@ -12,7 +12,7 @@ import scipy.special as se
 
 import numpy as np
 
-from ..interpolate import ConcentrationInterpolator, TemperatureInterpolator, SGTE, PolyFit, RedlichKister, SoftplusFit
+from .interpolate import ConcentrationInterpolator, TemperatureInterpolator, SGTE, PolyFit, RedlichKister, SoftplusFit
 
 from scipy.constants import Boltzmann, eV
 
@@ -820,5 +820,4 @@ class PointDefectedPhase(Phase):
             c += d.concentration_contribution(T, dmu)
         return c
 
-
-from .asewrapper import AsePhase
+from .ase_phases import AsePhase

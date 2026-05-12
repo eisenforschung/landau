@@ -6,7 +6,7 @@ from .phases import (
     RegularSolution,
     InterpolatingPhase,
     SlowInterpolatingPhase,
-    AsePhase,
+    AsePhase
 )
 
 from .interpolate import (
