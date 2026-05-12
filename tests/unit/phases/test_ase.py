@@ -1,9 +1,6 @@
 import pytest
 import numpy as np
 
-from hypothesis import given, strategies as st, example
-from hypothesis.extra.numpy import arrays, mutually_broadcastable_shapes
-
 from pyiron_snippets.import_alarm import ImportAlarm
 
 with ImportAlarm() as ase_alarm:
@@ -11,7 +8,9 @@ with ImportAlarm() as ase_alarm:
     from ase.build import molecule
     from landau.phases.asewrapper import AsePhase
 
-@pytest.mark.skipif(ase_alarm.message is not None, reason="ASE is not installed")
+pytestmark = pytest.mark.skipif(ase_alarm.message is not None, reason="ASE is not installed")
+
+
 def test_ase_thermo_phase_gibbs():
     atoms = molecule('H2')
     ig = IdealGasThermo(vib_energies=[0.1], geometry='linear', atoms=atoms, symmetrynumber=2, spin=0)
@@ -29,7 +28,6 @@ def test_ase_thermo_phase_gibbs():
     assert G_array.shape == (2,)
 
 
-@pytest.mark.skipif(ase_alarm.message is not None, reason="ASE is not installed")
 def test_ase_thermo_phase_helmholtz():
     ht = HarmonicThermo(vib_energies=[0.1])
     phase = AsePhase("ht_phase", 0.3, thermochem=ht, pressure=None)
@@ -46,7 +44,6 @@ def test_ase_thermo_phase_helmholtz():
     assert F_array.shape == (2,)
 
 
-@pytest.mark.skipif(ase_alarm.message is not None, reason="ASE is not installed")
 def test_ase_phase_equality_harmonic():
     # ASE's HarmonicThermo defaults to identity equality, so identically
     # constructed instances are not ==.  AsePhase must look past that.
@@ -61,7 +58,6 @@ def test_ase_phase_equality_harmonic():
     assert hash(p1) == hash(p2)
 
 
-@pytest.mark.skipif(ase_alarm.message is not None, reason="ASE is not installed")
 def test_ase_phase_equality_idealgas():
     ig1 = IdealGasThermo(vib_energies=[0.1], geometry='linear', atoms=molecule('H2'), symmetrynumber=2, spin=0)
     ig2 = IdealGasThermo(vib_energies=[0.1], geometry='linear', atoms=molecule('H2'), symmetrynumber=2, spin=0)
@@ -72,7 +68,6 @@ def test_ase_phase_equality_idealgas():
     assert hash(p1) == hash(p2)
 
 
-@pytest.mark.skipif(ase_alarm.message is not None, reason="ASE is not installed")
 def test_ase_phase_inequality():
     ht = HarmonicThermo(vib_energies=[0.1])
     base = AsePhase("ht", 0.3, thermochem=ht)
@@ -82,7 +77,6 @@ def test_ase_phase_inequality():
     assert base != AsePhase("ht", 0.3, thermochem=HarmonicThermo(vib_energies=[0.2]))
 
 
-@pytest.mark.skipif(ase_alarm.message is not None, reason="ASE is not installed")
 def test_ase_phase_set_dedup():
     p1 = AsePhase("ht", 0.3, thermochem=HarmonicThermo(vib_energies=[0.1]))
     p2 = AsePhase("ht", 0.3, thermochem=HarmonicThermo(vib_energies=[0.1]))
