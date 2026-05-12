@@ -7,5 +7,6 @@ _version.py
 build/
 docs/_build/
 tests/integration/_plots/
+result_images/
 .ipynb_checkpoints
 *.pyc
