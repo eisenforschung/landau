@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 
-from .calculate import get_transitions, cluster
+from .calculate import get_transitions, cluster, cluster_T_c
 import landau.poly as poly
 
 
@@ -35,7 +35,7 @@ def cluster_phase(df):
     # the callable instead is the documented path that combines consistently across
     # pandas 2 and 3 (see "Flexible apply" in the pandas user guide).
     df["phase_unit"] = df.groupby("phase", group_keys=False).apply(
-        lambda g: cluster(g, use_mu=False).to_frame("phase_unit"),
+        lambda g: cluster_T_c(g).to_frame("phase_unit"),
         include_groups=False,
     )["phase_unit"]
     df["phase_id"] = df[["phase", "phase_unit"]].apply(
