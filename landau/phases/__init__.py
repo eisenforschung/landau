@@ -12,7 +12,7 @@ import scipy.special as se
 
 import numpy as np
 
-from .interpolate import ConcentrationInterpolator, TemperatureInterpolator, SGTE, PolyFit, RedlichKister, SoftplusFit
+from ..interpolate import ConcentrationInterpolator, TemperatureInterpolator, SGTE, PolyFit, RedlichKister, SoftplusFit
 
 from scipy.constants import Boltzmann, eV
 
@@ -32,6 +32,7 @@ __all__ = [
     "ConstantPointDefect",
     "PointDefectSublattice",
     "PointDefectedPhase",
+    "AsePhase",
 ]
 
 
@@ -40,13 +41,10 @@ def S(c):
 
 
 def Sprime(c):
-    c_arr = np.atleast_1d(c)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        s = -kB * (np.log(c_arr / (1 - c_arr)))
-    s[np.isclose(c_arr, 0)] = +np.inf
-    s[np.isclose(c_arr, 1)] = -np.inf
-    if np.isscalar(c):
-        return s.item()
+    with np.errstate(divide="ignore"):
+        s = -kB * (np.log(c / (1 - c)))
+    s[np.isclose(c, 0)] = +np.inf
+    s[np.isclose(c, 1)] = -np.inf
     return s
 
 
@@ -821,3 +819,6 @@ class PointDefectedPhase(Phase):
         for d in self.sublattices:
             c += d.concentration_contribution(T, dmu)
         return c
+
+
+from .asewrapper import AsePhase
