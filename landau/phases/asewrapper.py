@@ -32,15 +32,26 @@ class AsePhase(AbstractLinePhase):
         return self.fixed_concentration
 
     def line_free_energy(self, T):
-        if self.pressure is not None:
-            func = np.vectorize(
-                lambda t: self.thermochem.get_gibbs_energy(t, pressure=self.pressure, verbose=False),
-                otypes=[float]
-            )
-        else:
+        # ASE ThermoChem subclasses do not uniformly expose both energy methods:
+        # HarmonicThermo/CrystalThermo only define get_helmholtz_energy, while
+        # IdealGasThermo only defines get_gibbs_energy. Prefer Helmholtz when
+        # available (landau has no pressure concept yet); fall back to Gibbs at
+        # self.pressure, defaulting to 1 atm.
+        if hasattr(self.thermochem, "get_helmholtz_energy"):
             func = np.vectorize(
                 lambda t: self.thermochem.get_helmholtz_energy(t, verbose=False),
-                otypes=[float]
+                otypes=[float],
+            )
+        elif hasattr(self.thermochem, "get_gibbs_energy"):
+            pressure = self.pressure if self.pressure is not None else 101325.0
+            func = np.vectorize(
+                lambda t: self.thermochem.get_gibbs_energy(t, pressure=pressure, verbose=False),
+                otypes=[float],
+            )
+        else:
+            raise TypeError(
+                f"{type(self.thermochem).__name__} exposes neither get_helmholtz_energy "
+                "nor get_gibbs_energy; cannot compute a free energy."
             )
 
         res = func(T)
