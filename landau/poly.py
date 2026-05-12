@@ -455,7 +455,11 @@ def handle_poly_method(poly_method, **kwargs):
         allowed['fasttsp'] = FastTsp(**kwargs)
         allowed['segment-fasttsp'] = SegmentFastTsp(**kwargs)
     if poly_method is None:
-        if 'fasttsp' in allowed:
+        if 'segment-fasttsp' in allowed:
+            poly_method = 'segment-fasttsp'
+        elif 'segment-tsp' in allowed:
+            poly_method = 'segment-tsp'
+        elif 'fasttsp' in allowed:
             poly_method = 'fasttsp'
         elif 'tsp' in allowed:
             poly_method = 'tsp'
