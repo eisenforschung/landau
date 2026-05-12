@@ -154,6 +154,41 @@ def _plot_tielines(df, ax=None):
         df.groupby(["T", "mu"]).apply(plot_tie, include_groups=False)
 
 
+def _set_axis_for(axis_var: str, df_stable, element: str | None, ax) -> None:
+    """Configure the x-axis of a phase diagram based on the axis variable.
+
+    Args:
+        axis_var: The x-axis variable name, either ``"c"`` (concentration) or ``"mu"``
+            (chemical potential).
+        df_stable: Stable-phase rows of the diagram DataFrame (used only for ``"mu"``
+            to determine finite x-limits).
+        element: Optional element symbol used to build the axis label.
+        ax: The :class:`matplotlib.axes.Axes` to configure.
+
+    Raises:
+        ValueError: If ``axis_var`` is not ``"c"`` or ``"mu"``.
+    """
+    if axis_var == "c":
+        ax.set_xlim(0, 1)
+        if element is not None:
+            ax.set_xlabel(rf"$c_\mathrm{{{element}}}$")
+        else:
+            ax.set_xlabel("$c$")
+    elif axis_var == "mu":
+        mus = df_stable["mu"].unique()
+        mus = mus[np.isfinite(mus)]
+        if len(mus) > 0:
+            ax.set_xlim(mus.min(), mus.max())
+        if element is not None:
+            ax.set_xlabel(rf"$\Delta\mu_\mathrm{{{element}}}$ [eV]")
+        else:
+            ax.set_xlabel(r"$\Delta\mu$ [eV]")
+    else:
+        raise ValueError(
+            f"Unknown coordinate system: variables[0]={axis_var!r}. Expected 'c' or 'mu'."
+        )
+
+
 def _plot_phase_diagram(
     df,
     alpha=0.1,
@@ -179,25 +214,7 @@ def _plot_phase_diagram(
     if tielines and variables[0] == "c":
         _plot_tielines(df, ax=ax)
 
-    if variables[0] == "c":
-        ax.set_xlim(0, 1)
-        if element is not None:
-            ax.set_xlabel(rf"$c_\mathrm{{{element}}}$")
-        else:
-            ax.set_xlabel("$c$")
-    elif variables[0] == "mu":
-        mus = df_stable["mu"].unique()
-        mus = mus[np.isfinite(mus)]
-        if len(mus) > 0:
-            ax.set_xlim(mus.min(), mus.max())
-        if element is not None:
-            ax.set_xlabel(rf"$\Delta\mu_\mathrm{{{element}}}$ [eV]")
-        else:
-            ax.set_xlabel(r"$\Delta\mu$ [eV]")
-    else:
-        raise ValueError(
-            f"Unknown coordinate system: variables[0]={variables[0]!r}. Expected 'c' or 'mu'."
-        )
+    _set_axis_for(variables[0], df_stable, element, ax)
 
     ax.set_ylim(df_stable["T"].min(), df_stable["T"].max())
     ax.legend(ncols=2)
