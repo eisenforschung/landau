@@ -1,9 +1,12 @@
 import numpy as np
 from numpy.testing import assert_allclose
+from scipy.constants import Boltzmann, eV
 
 from landau.interpolate import SGTE
 from landau.interpolate.basic import G_calphad
-from landau.phases import LinePhase, TemperatureDependentLinePhase
+from landau.phases import LinePhase, TemperatureDependentLinePhase, IdealSolution
+
+kB = Boltzmann / eV
 
 
 def _make_line_phase(c=0.25, energy=-1.0, entropy=0.01):
@@ -79,3 +82,43 @@ def test_temperature_dependent_line_phase_hash_equal_instances():
     phase1 = _make_tdlp(T=T, f=f)
     phase2 = _make_tdlp(T=T, f=f)
     assert hash(phase1) == hash(phase2)
+
+
+def _make_ideal_solution(f1=-1.0, f2=-2.0):
+    p1 = LinePhase(name="A", fixed_concentration=0, line_energy=f1)
+    p2 = LinePhase(name="B", fixed_concentration=1, line_energy=f2)
+    return IdealSolution(name="AB", phase1=p1, phase2=p2), f1, f2
+
+
+def test_ideal_solution_semigrand_at_dmu_eq_df():
+    sol, f1, f2 = _make_ideal_solution()
+    T = 500.0
+    df = f2 - f1
+    phi = sol.semigrand_potential(T, df)
+    assert_allclose(phi, f1 - kB * T * np.log(2), rtol=1e-10)
+
+
+def test_ideal_solution_semigrand_large_positive_dmu():
+    # dmu >> df triggers the non-finite overflow branch; phi -> f2 - dmu
+    sol, f1, f2 = _make_ideal_solution()
+    T = 500.0
+    dmu = 100.0
+    phi = sol.semigrand_potential(T, dmu)
+    assert_allclose(phi, f2 - dmu, rtol=1e-6)
+
+
+def test_ideal_solution_semigrand_large_negative_dmu():
+    # dmu << 0: exp term vanishes; phi -> f1
+    sol, f1, f2 = _make_ideal_solution()
+    T = 500.0
+    dmu = -100.0
+    phi = sol.semigrand_potential(T, dmu)
+    assert_allclose(phi, f1, rtol=1e-6)
+
+
+def test_ideal_solution_concentration_at_dmu_eq_df():
+    sol, f1, f2 = _make_ideal_solution()
+    T = 500.0
+    df = f2 - f1
+    c = sol.concentration(T, df)
+    assert_allclose(c, 0.5, rtol=1e-10)
