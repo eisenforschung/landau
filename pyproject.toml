@@ -39,9 +39,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+ase = ["ase>=3.20.0"]
 test = [
     "pytest>=9,<10",
     "hypothesis>=6,<7",
+    "ase>=3.20.0",
 ]
 docs = [
     "sphinx",
