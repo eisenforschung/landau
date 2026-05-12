@@ -16,8 +16,9 @@ import pytest
 from matplotlib.patches import Polygon
 
 from landau import plot as plot_mod
-from landau.plot import get_polygons, plot_polygons
+from landau.plot import get_phase_colors, get_polygons, plot_phase_diagram, plot_polygons
 from landau.poly import AbstractPolyMethod, Concave
+from matplotlib.testing.decorators import check_figures_equal
 
 
 # --- shared fixtures ---------------------------------------------------------
@@ -242,3 +243,81 @@ def test_plot_polygons_zorder_is_inverse_to_bbox_area():
     z_big, z_small = (p.zorder for p in ax.patches)
     assert z_big < z_small
     plt.close(fig)
+
+
+# --- rendered-image equivalence tests ----------------------------------------
+#
+# `matplotlib.testing.decorators.check_figures_equal` renders both figures and
+# compares the resulting images.  Used here to express visual properties that
+# would otherwise need ad-hoc patch-attribute assertions and to validate the
+# decomposition `plot_phase_diagram = get_polygons + plot_polygons + axis-setup`.
+
+
+@check_figures_equal(extensions=["png"])
+def test_plot_polygons_renders_independent_of_input_order(fig_test, fig_ref):
+    """Because zorder is assigned from bbox area, presenting the polygons in
+    different index orders should render to the same image."""
+
+    def _build(ax):
+        big = Polygon([(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)])
+        small = Polygon([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+        return big, small
+
+    color_map = {"A": "red", "B": "blue"}
+
+    ax_test = fig_test.subplots()
+    big_t, small_t = _build(ax_test)
+    plot_polygons(
+        pd.Series(
+            [big_t, small_t],
+            index=pd.MultiIndex.from_tuples(
+                [("A", 0), ("B", 0)], names=["phase", "phase_unit"]
+            ),
+        ),
+        color_map,
+        ax=ax_test,
+    )
+    ax_test.set_xlim(0, 10)
+    ax_test.set_ylim(0, 10)
+
+    ax_ref = fig_ref.subplots()
+    big_r, small_r = _build(ax_ref)
+    plot_polygons(
+        pd.Series(
+            [small_r, big_r],
+            index=pd.MultiIndex.from_tuples(
+                [("B", 0), ("A", 0)], names=["phase", "phase_unit"]
+            ),
+        ),
+        color_map,
+        ax=ax_ref,
+    )
+    ax_ref.set_xlim(0, 10)
+    ax_ref.set_ylim(0, 10)
+
+
+@check_figures_equal(extensions=["png"])
+def test_plot_phase_diagram_matches_explicit_pipeline(fig_test, fig_ref):
+    """`plot_phase_diagram(df, ax=ax)` should produce the same image as the
+    explicit decomposition `get_polygons -> plot_polygons -> axis setup`.
+
+    This guards against future refactors of either side drifting apart and
+    documents what the public helper does in terms of the smaller helpers.
+    """
+    df = _stable_df()
+    method = Concave(drop_interior=False)
+
+    ax_test = fig_test.subplots()
+    plot_phase_diagram(df, ax=ax_test, poly_method=method)
+
+    df_stable = df.query("stable")
+    color_map = get_phase_colors(df_stable.phase.unique())
+    polys = get_polygons(df, poly_method=method)
+
+    ax_ref = fig_ref.subplots()
+    plot_polygons(polys, color_map, ax=ax_ref)
+    ax_ref.set_xlim(0, 1)
+    ax_ref.set_xlabel("$c$")
+    ax_ref.set_ylim(df_stable["T"].min(), df_stable["T"].max())
+    ax_ref.legend(ncols=2)
+    ax_ref.set_ylabel("$T$ [K]")
