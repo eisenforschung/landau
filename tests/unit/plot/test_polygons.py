@@ -14,11 +14,11 @@ import numpy as np
 import pandas as pd
 import pytest
 from matplotlib.patches import Polygon
+from matplotlib.testing.decorators import check_figures_equal, remove_ticks_and_titles
 
 from landau import plot as plot_mod
 from landau.plot import get_phase_colors, get_polygons, plot_phase_diagram, plot_polygons
 from landau.poly import AbstractPolyMethod, Concave
-from matplotlib.testing.decorators import check_figures_equal
 
 
 # --- shared fixtures ---------------------------------------------------------
@@ -321,3 +321,66 @@ def test_plot_phase_diagram_matches_explicit_pipeline(fig_test, fig_ref):
     ax_ref.set_ylim(df_stable["T"].min(), df_stable["T"].max())
     ax_ref.legend(ncols=2)
     ax_ref.set_ylabel("$T$ [K]")
+
+
+@check_figures_equal(extensions=["png"])
+def test_plot_polygons_ax_none_renders_identically_to_explicit_gca(fig_test, fig_ref):
+    """ax=None (plt.gca() fallback) is pixel-identical to passing the same Axes explicitly.
+
+    The existing functional test only checks patch count; this verifies the
+    full rendered output is the same regardless of which code path resolves the
+    target Axes.
+    """
+    color_map = {"A": "red", "B": "blue"}
+
+    ax_ref = fig_ref.subplots()
+    plot_polygons(_polys_series([("A", 0), ("B", 0)]), color_map, ax=ax_ref)
+    remove_ticks_and_titles(fig_ref)
+
+    ax_test = fig_test.subplots()
+    plt.sca(ax_test)  # make ax_test the current axes so plt.gca() returns it
+    plot_polygons(_polys_series([("A", 0), ("B", 0)]), color_map)  # ax=None
+    remove_ticks_and_titles(fig_test)
+
+
+@check_figures_equal(extensions=["png"])
+def test_plot_polygons_scalar_key_identical_to_zero_rep_tuple(fig_test, fig_ref):
+    """A Series keyed by plain string and one keyed by (phase, 0) render identically.
+
+    Both index types resolve to rep=0 inside plot_polygons, so the label,
+    facecolor, and edgecolor should produce the same pixels.
+    """
+    color_map = {"A": "red"}
+
+    ax_ref = fig_ref.subplots()
+    plot_polygons(_polys_series(["A"]), color_map, ax=ax_ref)
+    remove_ticks_and_titles(fig_ref)
+
+    ax_test = fig_test.subplots()
+    plot_polygons(_polys_series([("A", 0)]), color_map, ax=ax_test)
+    remove_ticks_and_titles(fig_test)
+
+
+@check_figures_equal(extensions=["png"])
+def test_get_and_plot_polygons_pipeline_deterministic(fig_test, fig_ref):
+    """Two independent runs of get_polygons → plot_polygons on the same data
+    produce pixel-identical figures (full pipeline determinism).
+    """
+    df = _stable_df()
+    color_map = {"A": "red", "B": "blue"}
+
+    ax_ref = fig_ref.subplots()
+    plot_polygons(
+        get_polygons(df.copy(), poly_method=Concave(drop_interior=False)),
+        color_map,
+        ax=ax_ref,
+    )
+    remove_ticks_and_titles(fig_ref)
+
+    ax_test = fig_test.subplots()
+    plot_polygons(
+        get_polygons(df.copy(), poly_method=Concave(drop_interior=False)),
+        color_map,
+        ax=ax_test,
+    )
+    remove_ticks_and_titles(fig_test)
