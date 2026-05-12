@@ -6,7 +6,6 @@ from pyiron_snippets.deprecate import deprecate
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
-import pandas as pd
 
 from .calculate import get_transitions, cluster
 import landau.poly as poly
@@ -28,12 +27,17 @@ def cluster_phase(df):
     Instead this function adds two new columns `phase_unit` and `phase_id` and the latter will always refer to only a
     single connected stability region.  `phase_unit` enumerates disconnected regions of one phase.
     """
-    # Avoid groupby().apply() here: in pandas 3 a per-group Series whose index
-    # is the original row indices gets wrapped into a single-row DataFrame
-    # whose columns are the original indices, which can't be assigned back to
-    # a single column.  Build the row-aligned Series explicitly instead.
-    parts = [cluster(g, use_mu=False) for _, g in df.groupby("phase", sort=False)]
-    df["phase_unit"] = pd.concat(parts).reindex(df.index) if parts else pd.Series(dtype=float, index=df.index)
+    # In pandas 3, ``groupby.apply`` collapses inconsistently when the callable returns a
+    # ``Series``: with multiple groups the per-group Series get concatenated into one long
+    # row-aligned Series, but with a *single* group the same Series becomes a one-row
+    # DataFrame indexed by the group key (columns = original row indices), and the
+    # downstream ``df['phase_unit'] = ...`` assignment fails.  Returning a DataFrame from
+    # the callable instead is the documented path that combines consistently across
+    # pandas 2 and 3 (see "Flexible apply" in the pandas user guide).
+    df["phase_unit"] = df.groupby("phase", group_keys=False).apply(
+        lambda g: cluster(g, use_mu=False).to_frame("phase_unit"),
+        include_groups=False,
+    )["phase_unit"]
     df["phase_id"] = df[["phase", "phase_unit"]].apply(
         lambda r: "_".join(map(str, r.tolist())), axis="columns"
     )
