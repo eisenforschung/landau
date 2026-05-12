@@ -18,7 +18,7 @@ from .refine import Refiner, default_refiners, _find_one_point as find_one_point
 kB = Boltzmann / eV
 
 
-__all__ = ["calc_phase_diagram", "get_transitions"]
+__all__ = ["calc_phase_diagram", "get_transitions", "cluster_T_c", "cluster_T_c_mu"]
 
 
 def _split_stable(df):
@@ -213,32 +213,59 @@ def reduce(dd):
     )
 
 
-def cluster(dd, eps=0.01, use_mu=True):
-    t = dd["T"]
-    # Guard against isothermal segments
-    if t.min() != t.max():
-        t = (t - t.min()) / (t.max() - t.min())
-    ids = pd.Series(np.zeros_like(dd.index), index=dd.index)
-    cluster = AgglomerativeClustering(
+def _rescale_T(t):
+    tmin, tmax = t.min(), t.max()
+    if tmin != tmax:
+        return (t - tmin) / (tmax - tmin)
+    return t
+
+
+def _agglomerative_clusterer():
+    return AgglomerativeClustering(
         n_clusters=None,
-        # FIXME: hand optimized value; smaller values tend to partition the
+        # FIXME: hand-optimized value; smaller values tend to partition the
         # same transition too often
         distance_threshold=0.5,
         linkage="single",
     )
-    if use_mu:
-        # on the left and right side of the phase diagram refining adds points with
-        # mu +- inf, which chokes the cluster methods, but we know they should be
-        # their own segments, so special case them below
-        F = np.isfinite(dd.mu)
-        if F.any() and sum(F) >= 2:
-            ids.loc[F] = cluster.fit_predict(np.transpose([t.loc[F], dd.c.loc[F], dd.mu.loc[F]]))
-        m = ids.max()
-        ids.loc[dd.mu == +np.inf] = m + 1
-        ids.loc[dd.mu == -np.inf] = m + 2
-    else:
-        ids.loc[:] = cluster.fit_predict(np.transpose([t, dd.c]))
+
+
+def cluster_T_c(dd, eps=0.01) -> pd.Series:
+    """Cluster points by (T, c) coordinates; used by cluster_phase."""
+    if dd.empty:
+        return pd.Series(dtype=np.intp)
+    t = _rescale_T(dd["T"])
+    ids = _agglomerative_clusterer().fit_predict(np.transpose([t, dd["c"]]))
+    return pd.Series(ids, index=dd.index)
+
+
+def cluster_T_c_mu(dd, eps=0.01) -> pd.Series:
+    """Cluster points by (T, c, mu); rows with mu=±inf get their own distinct labels.
+
+    Used by get_transitions. The mu=±inf rows are border edges from _border_edges
+    and must not be fed to AgglomerativeClustering.
+    """
+    if dd.empty:
+        return pd.Series(dtype=np.intp)
+    t = _rescale_T(dd["T"])
+    ids = pd.Series(np.zeros(len(dd), dtype=np.intp), index=dd.index)
+    F = np.isfinite(dd["mu"])
+    if F.any() and F.sum() >= 2:
+        ids.loc[F] = _agglomerative_clusterer().fit_predict(
+            np.transpose([t.loc[F], dd["c"].loc[F], dd["mu"].loc[F]])
+        )
+    m = ids.max()
+    ids.loc[dd["mu"] == +np.inf] = m + 1
+    ids.loc[dd["mu"] == -np.inf] = m + 2
     return ids
+
+
+def cluster(dd, eps=0.01, use_mu=True):
+    """Thin dispatch to cluster_T_c or cluster_T_c_mu; prefer calling those directly."""
+    if use_mu:
+        return cluster_T_c_mu(dd, eps=eps)
+    else:
+        return cluster_T_c(dd, eps=eps)
 
 
 def get_transitions(df):
@@ -258,7 +285,7 @@ def get_transitions(df):
     # cluster points that are assigned as one transition, because the same transition can appear multiple times in "disconnected" manner in a phase
     # diagram, e.g. a solid solution in contact with the melt interrupted by a higher melting intermetallic
     if not tdf.empty:
-        res = tdf.groupby("transition", group_keys=False).apply(cluster, include_groups=False)
+        res = tdf.groupby("transition", group_keys=False).apply(cluster_T_c_mu, include_groups=False)
         if isinstance(res, pd.DataFrame):
              # sometimes pandas returns a DataFrame instead of a Series when only one group exists
              res = res.stack().reset_index(level=0, drop=True)
