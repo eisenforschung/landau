@@ -232,7 +232,7 @@ class IdealSolution(Phase):
             I = ~np.isfinite(phi)
             if I.any():
                 if phi.shape == ():
-                    phi = f2 - dmu[I]
+                    phi = f2 - dmu
                 else:
                     phi[I] = f2 - dmu[I]
         if phi.shape == ():
