@@ -71,7 +71,16 @@ def buffer_all(polys, r_x, r_y):
 
 
 def option1(buffered, originals):
-    """Subtract each neighbour's *un-buffered* original from every polygon."""
+    """Subtract each neighbour's un-buffered original from every polygon,
+    then resolve any residual pairwise overlap by assigning each piece to
+    the polygon whose *original* is closer.
+
+    The first step alone leaves slivers where the buffer rounds off a
+    point-tangent corner (the buffered apex extends into a region that's
+    not inside any neighbour's un-buffered shape).  The second step
+    fixes those slivers: residual a' ∩ b' is split into two pieces by
+    closer-original, and the foreign half is removed from each side.
+    """
     out = {}
     for k, a in buffered.items():
         trimmed = a
@@ -80,6 +89,52 @@ def option1(buffered, originals):
                 continue
             trimmed = trimmed.difference(b_orig)
         out[k] = trimmed
+
+    # post-process: any residual mutual overlap is split with a mini
+    # rasterized Voronoi diagram on just the (tiny) intersection bbox.
+    # The "foreign" half (pixels closer to the other original) is then
+    # subtracted from each side.
+    keys = list(out.keys())
+    for i, ki in enumerate(keys):
+        for kj in keys[i + 1:]:
+            inter = out[ki].intersection(out[kj])
+            if inter.is_empty or inter.area == 0:
+                continue
+            minx, miny, maxx, maxy = inter.bounds
+            width = maxx - minx
+            height = maxy - miny
+            if width == 0 or height == 0:
+                continue
+            n = 80
+            if width >= height:
+                nx, ny = n, max(8, int(n * height / width))
+            else:
+                ny, nx = n, max(8, int(n * width / height))
+            xs = np.linspace(minx, maxx, nx)
+            ys = np.linspace(miny, maxy, ny)
+            X, Y = np.meshgrid(xs, ys)
+            sx = 1.0 / width
+            sy = 1.0 / height
+            pts = shapely.points(X.ravel() * sx, Y.ravel() * sy)
+            oa = shapely.affinity.scale(originals[ki], xfact=sx, yfact=sy, origin=(0, 0))
+            ob = shapely.affinity.scale(originals[kj], xfact=sx, yfact=sy, origin=(0, 0))
+            da = shapely.distance(oa, pts)
+            db = shapely.distance(ob, pts)
+            b_closer = (db < da).astype(np.uint8).reshape(ny, nx)
+
+            for level, owner in [(1, ki), (0, kj)]:
+                fig = plt.figure()
+                cs = plt.contourf(xs, ys, b_closer, levels=[level - 0.5, level + 0.5])
+                plt.close(fig)
+                polys = []
+                for path in cs.get_paths():
+                    for poly_verts in path.to_polygons():
+                        if len(poly_verts) >= 3:
+                            polys.append(shapely.Polygon(poly_verts))
+                if not polys:
+                    continue
+                cut = unary_union(polys).intersection(inter)
+                out[owner] = out[owner].difference(cut)
     return out
 
 
