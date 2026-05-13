@@ -86,6 +86,28 @@ def plot_2d_basics(out_dir: Path) -> Path:
     return _save(fig, out_dir, "2d_basics_phase_diagram")
 
 
+def plot_2d_basics_mu(out_dir: Path) -> Path:
+    """2D T-mu phase diagram (hcp / fcc / liquid ideal solutions) from Basics.ipynb."""
+    fcca = ldp.LinePhase("fccA", fixed_concentration=0, line_energy=-3.00, line_entropy=1.0 * ldp.kB)
+    fccb = ldp.LinePhase("fccB", fixed_concentration=1, line_energy=-2.00, line_entropy=1.1 * ldp.kB)
+    hcpa = ldp.LinePhase("hcpA", fixed_concentration=0, line_energy=-2.975, line_entropy=1.8 * ldp.kB)
+    hcpb = ldp.LinePhase("hcpB", fixed_concentration=1, line_energy=-1.95, line_entropy=1.1 * ldp.kB)
+    lqda = ldp.LinePhase("liquidA", fixed_concentration=0, line_energy=-2.75, line_entropy=5.0 * ldp.kB)
+    lqdb = ldp.LinePhase("liquidB", fixed_concentration=1, line_energy=-1.75, line_entropy=4.4 * ldp.kB)
+    fcc = ldp.IdealSolution("fcc", fcca, fccb)
+    hcp = ldp.IdealSolution("hcp", hcpa, hcpb)
+    lqd = ldp.IdealSolution("liquid", lqda, lqdb)
+
+    Ts = np.linspace(200, 1000, 100)
+    mus = np.linspace(0.5, 1.5, 100)
+    df = ldc.calc_phase_diagram([hcp, fcc, lqd], Ts, mu=mus)
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    lpl.plot_mu_phase_diagram(df, ax=ax)
+    ax.set_title(r"2D T-$\mu$ diagram (hcp / fcc / liquid ideal solutions)")
+    return _save(fig, out_dir, "2d_basics_mu_phase_diagram")
+
+
 def plot_2d_toy(out_dir: Path) -> Path:
     """2D c-T diagram with a regular-solution liquid + intermediate solid, from Toy.ipynb."""
     l1 = ldp.TemperatureDependentLinePhase(
@@ -129,6 +151,7 @@ PLOTS = {
     "1d_T": plot_1d_T,
     "1d_mu": plot_1d_mu,
     "2d_basics": plot_2d_basics,
+    "2d_basics_mu": plot_2d_basics_mu,
     "2d_toy": plot_2d_toy,
 }
 
