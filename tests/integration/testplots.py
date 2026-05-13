@@ -147,12 +147,52 @@ def plot_2d_toy(out_dir: Path) -> Path:
     return _save(fig, out_dir, "2d_toy_phase_diagram")
 
 
+def plot_2d_toy_mu(out_dir: Path) -> Path:
+    """2D T-mu diagram with a regular-solution liquid + intermediate solid, from Toy.ipynb."""
+    l1 = ldp.TemperatureDependentLinePhase(
+        "l0", fixed_concentration=0, temperatures=[1, 750, 1000],
+        free_energies=[2.00, 1.80, 1.00], interpolator=ldi.PolyFit(3),
+    )
+    l2 = ldp.TemperatureDependentLinePhase(
+        "l1", fixed_concentration=1, temperatures=[1, 750, 1000],
+        free_energies=[3.00, 2.80, 2.00], interpolator=ldi.PolyFit(3),
+    )
+    l3 = ldp.TemperatureDependentLinePhase(
+        "l2", fixed_concentration=0.5, temperatures=[1, 750, 1000],
+        free_energies=[2.45, 2.00, 1.42], interpolator=ldi.PolyFit(3),
+    )
+    s1 = ldp.TemperatureDependentLinePhase(
+        "s0", fixed_concentration=0, temperatures=[1, 750, 1000],
+        free_energies=[1.9, 1.6, 1.2], interpolator=ldi.SGTE(2),
+    )
+    s2 = ldp.TemperatureDependentLinePhase(
+        "s1", fixed_concentration=1, temperatures=[1, 750, 1000],
+        free_energies=[2.9, 2.6, 2.2], interpolator=ldi.SGTE(2),
+    )
+    s3 = ldp.TemperatureDependentLinePhase(
+        "s3", fixed_concentration=0.4, temperatures=[1, 750, 1000],
+        free_energies=np.array([2.4, 1.85, 1.45]) - 0.05, interpolator=ldi.SGTE(3),
+    )
+    rliq = ldp.RegularSolution("liquid", [l1, l3, l2])
+    sol = ldp.IdealSolution("solid", s1, s2)
+
+    c = np.linspace(0, 1, 75)[1:-1]
+    mu = 1 + ldp.kB * 4000 * np.log(c / (1 - c))
+    df = ldc.calc_phase_diagram([rliq, sol, s3], np.linspace(500, 1000, 40), mu, refine=True)
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    lpl.plot_mu_phase_diagram(df, ax=ax)
+    ax.set_title(r"2D T-$\mu$ diagram (regular-solution liquid + intermediate solid)")
+    return _save(fig, out_dir, "2d_toy_mu_phase_diagram")
+
+
 PLOTS = {
     "1d_T": plot_1d_T,
     "1d_mu": plot_1d_mu,
     "2d_basics": plot_2d_basics,
     "2d_basics_mu": plot_2d_basics_mu,
     "2d_toy": plot_2d_toy,
+    "2d_toy_mu": plot_2d_toy_mu,
 }
 
 
