@@ -100,6 +100,7 @@ class AbstractPolyMethod(abc.ABC):
                 self.make, variables=variables, include_groups=False
 
         ).dropna()
+        shapes = shapes[~shapes.map(lambda s: s.is_empty)]
         trimmed = self._trim_overlaps(shapes)
         return trimmed.map(self._to_mpl_polygon).dropna()
 
@@ -117,12 +118,9 @@ class AbstractPolyMethod(abc.ABC):
         r = self.min_c_width / 2
         out: dict = {}
         for k, a in shapes.items():
-            if a.is_empty:
-                out[k] = a
-                continue
             trimmed = a
             for k2, b in shapes.items():
-                if k2 == k or b.is_empty:
+                if k2 == k:
                     continue
                 if not trimmed.intersects(b):
                     continue
