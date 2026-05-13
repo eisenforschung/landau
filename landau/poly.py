@@ -95,10 +95,62 @@ class AbstractPolyMethod(abc.ABC):
         pass
 
     def apply(self, df: pd.DataFrame, variables: list[str] = ["c", "T"]) -> pd.Series:
-        return self.prepare(df).groupby(['phase', 'phase_unit']).apply(
+        polys = self.prepare(df).groupby(['phase', 'phase_unit']).apply(
                 self.make, variables=variables, include_groups=False
 
         ).dropna()
+        return self._trim_overlaps(polys)
+
+    def _trim_overlaps(self, polys: pd.Series) -> pd.Series:
+        """Symmetrically subtract pairwise overlap between buffered polygons.
+
+        Each polygon was inflated by ``min_c_width/2`` so small-solubility
+        phases stay visible.  Where adjacent buffered phases touch this
+        creates an overlap strip; here we subtract from every polygon its
+        neighbours' un-buffered shapes so the seam lands on the original
+        shared boundary.
+        """
+        if len(polys) < 2:
+            return polys
+        r = self.min_c_width / 2
+        shapes: dict = {}
+        for k, p in polys.items():
+            try:
+                s = shapely.Polygon(np.asarray(p.get_xy()))
+                if not s.is_valid:
+                    s = s.buffer(0)
+            except Exception:
+                s = None
+            shapes[k] = s
+        out: dict = {}
+        for k, p in polys.items():
+            a = shapes[k]
+            if a is None or a.is_empty:
+                out[k] = p
+                continue
+            trimmed = a
+            for k2, b in shapes.items():
+                if k2 == k or b is None or b.is_empty:
+                    continue
+                if not trimmed.intersects(b):
+                    continue
+                b_orig = b.buffer(-r)
+                if b_orig.is_empty:
+                    continue
+                new = trimmed.difference(b_orig)
+                if not new.is_empty:
+                    trimmed = new
+            if isinstance(trimmed, shapely.MultiPolygon):
+                trimmed = max(trimmed.geoms, key=shapely.area)
+            if not isinstance(trimmed, shapely.Polygon) or trimmed.is_empty:
+                out[k] = p
+                continue
+            coords = np.asarray(trimmed.exterior.coords)
+            if len(coords) < 3:
+                out[k] = p
+                continue
+            out[k] = Polygon(coords)
+        return pd.Series(out, name=polys.name).reindex(polys.index)
 
 
 @dataclass
