@@ -84,13 +84,11 @@ def option1(buffered, originals):
 
 
 def option2(buffered, originals, grid_res=400):
-    """Generalized-Voronoi clip via rasterized distance fields.
+    """Generalized-Voronoi clip via global rasterized distance fields.
 
-    For every pixel in a fine grid over the bounding box, label it with
-    the phase whose original is closest.  Then for each phase build the
-    polygon of pixels labelled with that phase and intersect with the
-    buffered polygon.  This is the "honest" generalized Voronoi diagram
-    of the original polygons (not just of sampled boundary points).
+    Sample a fine grid over the *full* bounding box, label each pixel
+    with the phase whose original is closest, build per-phase region
+    polygons via contour extraction, intersect with the buffered shape.
     """
     union_buf = unary_union(list(buffered.values()))
     minx, miny, maxx, maxy = union_buf.buffer(1e-3).bounds
@@ -100,38 +98,26 @@ def option2(buffered, originals, grid_res=400):
     xs = np.linspace(minx, maxx, grid_res)
     ys = np.linspace(miny, maxy, grid_res)
     X, Y = np.meshgrid(xs, ys)
-    coords = np.column_stack([X.ravel(), Y.ravel()])
 
-    # scale into a frame where x and y span the same range so the
-    # "closest original" makes geometric sense across mixed units
+    # scaled frame so x and y span comparable ranges
     sx = 1.0 / (maxx - minx)
     sy = 1.0 / (maxy - miny)
-    scaled_coords = coords * np.array([sx, sy])
+    scaled_pts = shapely.points(X.ravel() * sx, Y.ravel() * sy)
 
     keys = list(originals.keys())
-    # signed distance: <0 inside, >0 outside; we want unsigned-from-boundary
-    # but for "closest original" we want shapely.distance which returns 0
-    # for points inside any original, and positive distance otherwise.
-    # rescale the originals into the same frame.
-    scaled_orig = {
-        k: shapely.affinity.scale(p, xfact=sx, yfact=sy, origin=(0, 0))
-        for k, p in originals.items()
-    }
-    dists = np.empty((len(keys), len(coords)))
-    for i, k in enumerate(keys):
-        op = scaled_orig[k]
-        dists[i] = [op.distance(shapely.Point(x, y)) for x, y in scaled_coords]
+    scaled_orig = [
+        shapely.affinity.scale(originals[k], xfact=sx, yfact=sy, origin=(0, 0))
+        for k in keys
+    ]
+    dists = np.stack([shapely.distance(op, scaled_pts) for op in scaled_orig])
     label = np.argmin(dists, axis=0).reshape(grid_res, grid_res)
 
     out = {}
     for i, k in enumerate(keys):
         mask = (label == i).astype(np.uint8)
-        # convert mask to polygon via marching-squares-ish trick using
-        # matplotlib contour
-        import matplotlib.pyplot as _plt
-        fig = _plt.figure()
-        cs = _plt.contourf(xs, ys, mask, levels=[0.5, 1.5])
-        _plt.close(fig)
+        fig = plt.figure()
+        cs = plt.contourf(xs, ys, mask, levels=[0.5, 1.5])
+        plt.close(fig)
         polys = []
         for path in cs.get_paths():
             for poly_verts in path.to_polygons():
@@ -142,6 +128,69 @@ def option2(buffered, originals, grid_res=400):
             continue
         region = unary_union(polys)
         out[k] = buffered[k].intersection(region)
+    return out
+
+
+def option2_local(buffered, originals, grid_res=200):
+    """Generalized-Voronoi clip, rasterized only on pairwise overlap regions.
+
+    For each pair (a, b) whose buffered shapes overlap, rasterize *only*
+    the intersection bbox, classify pixels by closer-original-of-the-pair,
+    extract the "b-side" sub-polygon of the overlap, and subtract it from
+    a.  Pixels outside any overlap require no work.  ``grid_res`` is the
+    number of samples along the longer axis of each pairwise overlap.
+    """
+    out = dict(buffered)
+    keys = list(buffered.keys())
+    for ki in keys:
+        for kj in keys:
+            if ki >= kj:
+                continue
+            a, b = out[ki], out[kj]
+            inter = a.intersection(b)
+            if inter.is_empty or inter.area == 0:
+                continue
+            minx, miny, maxx, maxy = inter.bounds
+            width = maxx - minx
+            height = maxy - miny
+            if width == 0 or height == 0:
+                continue
+            # adapt grid so the longer axis has grid_res samples
+            if width >= height:
+                nx = grid_res
+                ny = max(8, int(grid_res * height / width))
+            else:
+                ny = grid_res
+                nx = max(8, int(grid_res * width / height))
+            xs = np.linspace(minx, maxx, nx)
+            ys = np.linspace(miny, maxy, ny)
+            X, Y = np.meshgrid(xs, ys)
+
+            sx = 1.0 / width
+            sy = 1.0 / height
+            pts = shapely.points(X.ravel() * sx, Y.ravel() * sy)
+            oa = shapely.affinity.scale(originals[ki], xfact=sx, yfact=sy, origin=(0, 0))
+            ob = shapely.affinity.scale(originals[kj], xfact=sx, yfact=sy, origin=(0, 0))
+            da = shapely.distance(oa, pts)
+            db = shapely.distance(ob, pts)
+            # pixel belongs to "b-side" of the overlap if it's closer to
+            # original b; this is the piece we must subtract from a
+            b_side = (db < da).astype(np.uint8).reshape(ny, nx)
+
+            for label_val, owner, other in [(1, ki, kj), (0, kj, ki)]:
+                fig = plt.figure()
+                cs = plt.contourf(xs, ys, b_side, levels=[label_val - 0.5, label_val + 0.5])
+                plt.close(fig)
+                polys = []
+                for path in cs.get_paths():
+                    for poly_verts in path.to_polygons():
+                        if len(poly_verts) >= 3:
+                            polys.append(shapely.Polygon(poly_verts))
+                if not polys:
+                    continue
+                cut = unary_union(polys).intersection(inter)
+                # subtract the foreign-owned half of the overlap from `owner`
+                out[owner] = out[owner].difference(cut)
     return out
 
 
@@ -161,17 +210,17 @@ def add_shape(ax, geom, color, alpha=1.0):
                                     linewidth=0.8, alpha=alpha))
 
 
-def render(scene_name, originals, buffered, opt1, opt2, axis_labels, fname):
+def render(scene_name, originals, buffered, opt1, opt2, opt2_local, axis_labels, fname):
     xs = [p.bounds for p in buffered.values()]
     xmin = min(b[0] for b in xs) - 0.02
     xmax = max(b[2] for b in xs) + 0.02
     ymin = min(b[1] for b in xs) - 20
     ymax = max(b[3] for b in xs) + 20
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    fig, axes = plt.subplots(1, 4, figsize=(20, 5))
     titles = ["buffered (overlap)", "option 1: subtract neighbour original",
-              "option 2: Voronoi clip"]
-    sets = [buffered, opt1, opt2]
+              "option 2: global Voronoi", "option 2 (local): pairwise overlap"]
+    sets = [buffered, opt1, opt2, opt2_local]
     for ax, title, s in zip(axes, titles, sets):
         for k, geom in s.items():
             add_shape(ax, geom, COLORS[k], alpha=0.85)
@@ -196,25 +245,39 @@ def render(scene_name, originals, buffered, opt1, opt2, axis_labels, fname):
 # ---------------------------------------------------------------------------
 
 
+def time_it(fn, *args, n_runs=5, **kw):
+    import time
+    # warm up
+    result = fn(*args, **kw)
+    t0 = time.perf_counter()
+    for _ in range(n_runs):
+        fn(*args, **kw)
+    elapsed = (time.perf_counter() - t0) / n_runs
+    return result, elapsed
+
+
 def run():
+    timings = {}
     for name, (scene, axes) in [("c-T (eutectic-like: triangles approaching a terminal)", scene_cT()),
                                 ("T-mu (dense: phases tile the plane)", scene_Tmu())]:
         originals, axis_labels = scene, axes
-        # buffer amounts representative of landau defaults (min_c_width=0.01)
-        # buffer in scaled space using the data range as the scale
         x_range = max(p.bounds[2] for p in originals.values()) - min(p.bounds[0] for p in originals.values())
         y_range = max(p.bounds[3] for p in originals.values()) - min(p.bounds[1] for p in originals.values())
-        # the buffer in scaled units of 0.5 corresponds to half the data
-        # range; pick a smaller fraction so the effect is visible without
-        # being absurd
         r_x = x_range * 0.04
         r_y = y_range * 0.04
         buffered = buffer_all(originals, r_x, r_y)
-        opt1 = option1(buffered, originals)
-        opt2 = option2(buffered, originals)
+        opt1, t1 = time_it(option1, buffered, originals)
+        opt2, t2 = time_it(option2, buffered, originals)
+        opt2l, t2l = time_it(option2_local, buffered, originals)
+        timings[name] = (t1, t2, t2l)
         slug = "cT" if "c-T" in name else "Tmu"
-        render(name, originals, buffered, opt1, opt2, axis_labels,
+        render(name, originals, buffered, opt1, opt2, opt2l, axis_labels,
                f"docs/issue_125/{slug}.png")
+
+    print("\nTimings (mean over 5 runs, seconds):")
+    print(f"{'scene':<55} {'opt1':>10} {'opt2':>10} {'opt2_local':>12}")
+    for name, (t1, t2, t2l) in timings.items():
+        print(f"{name:<55} {t1*1000:>8.2f}ms {t2*1000:>8.2f}ms {t2l*1000:>10.2f}ms")
 
 
 if __name__ == "__main__":
