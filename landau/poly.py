@@ -153,9 +153,11 @@ class AbstractPolyMethod(abc.ABC):
                     continue
                 out[ki], out[kj] = _voronoi_split(a, b, oa, ob, inter, r)
 
+        # difference / split can return MultiPolygon (overlap split the
+        # shape in two) or a GeometryCollection mixing tiny LineString
+        # slivers with the main Polygon; keep the largest Polygon.
         for k, v in out.items():
-            if isinstance(v, shapely.MultiPolygon):
-                out[k] = max(v.geoms, key=shapely.area)
+            out[k] = _largest_polygon(v)
         return pd.Series(out, name=shapes.name).reindex(shapes.index)
 
     @staticmethod
@@ -324,6 +326,22 @@ class Segments(AbstractPolyMethod):
         return shapely.Polygon(coords)
 
 
+def _largest_polygon(g: shapely.Geometry) -> shapely.Polygon:
+    """The largest :class:`shapely.Polygon` component of ``g``.
+
+    :meth:`shapely.Polygon.difference` and :func:`shapely.ops.split` can
+    return a :class:`MultiPolygon` (the difference split the shape in
+    two) or a :class:`GeometryCollection` that mixes tiny line/point
+    slivers with the Polygon we care about; downstream rendering only
+    handles single Polygons, so we discard the noise here.
+    """
+    if isinstance(g, shapely.Polygon):
+        return g
+    polys = [x for x in getattr(g, "geoms", ())
+             if isinstance(x, shapely.Polygon) and not x.is_empty]
+    return max(polys, key=shapely.area) if polys else shapely.Polygon()
+
+
 def _nudge_outward(
         p: tuple[float, float], neighbour: tuple[float, float], step: float,
 ) -> tuple[float, float]:
@@ -449,19 +467,20 @@ def _voronoi_split(
 ) -> tuple[shapely.Polygon, shapely.Polygon]:
     """Trim ``(a, b)`` so each keeps only its half of every overlap.
 
-    For each connected component of the buffered union, build a bisector
-    cut polyline (:func:`_bisector_cut`) and remove the foreign-side
-    piece from the wrong polygon.  Falls back to subtracting the other's
-    un-buffered original when the cut can't be constructed.  ``r`` is
-    the buffer radius used to derive ``oa, ob``; it sets the tolerance
-    for treating closest-approach as a true tangent point.
+    Operates on the connected components of the actual *overlap*
+    ``inter = a ∩ b`` rather than the buffered union: the bisector cut
+    splits each overlap lens into a half closer to ``oa`` and a half
+    closer to ``ob``, and only those halves are subtracted from the
+    *other* polygon.  Anything outside the overlap is left untouched,
+    which keeps pairwise processing well-behaved at three-way phase
+    junctions.  Falls back to subtracting the other's un-buffered
+    original when the bisector cut can't be constructed.
     """
     a_out, b_out = a, b
     shared = _shared_anchors(oa, ob, tol=r)
-    union = shapely.union(a, b)
-    comps = list(union.geoms) if hasattr(union, "geoms") else [union]
+    comps = list(inter.geoms) if hasattr(inter, "geoms") else [inter]
     for comp in comps:
-        if not comp.intersects(inter):
+        if not isinstance(comp, shapely.Polygon) or comp.is_empty or comp.area == 0:
             continue
         cut = _bisector_cut(comp, oa, ob, shared)
         if cut is None:
