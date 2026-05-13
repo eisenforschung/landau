@@ -1,8 +1,16 @@
 import pandas as pd
+import shapely
 from hypothesis import given, strategies as st, settings
-from landau.poly import Concave, Segments, handle_poly_method
+from landau.poly import AbstractPolyMethod, Concave, Segments, handle_poly_method
 import pytest
 from matplotlib.patches import Polygon
+
+
+class _StubPoly(AbstractPolyMethod):
+    """Minimal subclass for exercising :meth:`_trim_overlaps` directly."""
+
+    def _make(self, pp, border, segment_label):
+        return None
 
 # Check if optional dependencies are available
 try:
@@ -155,6 +163,27 @@ def test_segment_fast_tsp(df):
     if isinstance(res, pd.Series):
         for p in res:
             assert isinstance(p, Polygon)
+
+
+def test_trim_overlaps_apex_residual_split():
+    """Two solid-solution phases tangent at a eutectic apex: after the
+    plain subtract leaves a small lens residual at the tip, the apex
+    cleanup should split it symmetrically and remove the residual
+    overlap from both polygons."""
+    r = 0.02
+    eutectic = (0.5, 800.0)
+    alpha = shapely.Polygon([(0.0, 200), eutectic, (0.0, 900)]).buffer(r)
+    beta = shapely.Polygon([(1.0, 200), (1.0, 900), eutectic]).buffer(r)
+    shapes = pd.Series({"alpha": alpha, "beta": beta})
+
+    trimmed = _StubPoly(min_c_width=2 * r)._trim_overlaps(shapes)
+
+    overlap = trimmed["alpha"].intersection(trimmed["beta"]).area
+    assert overlap < 1e-9, f"overlap area {overlap} should be ~0"
+    assert abs(trimmed["alpha"].area - trimmed["beta"].area) < 1e-3
+    apex = shapely.Point(eutectic)
+    assert trimmed["alpha"].distance(apex) < 1e-3
+    assert trimmed["beta"].distance(apex) < 1e-3
 
 
 def test_handle_poly_method():

@@ -7,6 +7,7 @@ from warnings import warn
 from pyiron_snippets.import_alarm import ImportAlarm
 
 import shapely
+import shapely.ops
 import numpy as np
 import pandas as pd
 from matplotlib.patches import Polygon
@@ -112,6 +113,11 @@ class AbstractPolyMethod(abc.ABC):
         creates an overlap strip; here we subtract from every polygon its
         neighbours' un-buffered shapes so the seam lands on the original
         shared boundary.
+
+        Where two phases touch at a single point (e.g. a eutectic apex)
+        the rounded buffer cap extends past the apex into the gap and
+        leaves a small residual overlap that the plain subtract can't
+        reach; :func:`_split_apex_residual` finishes those off.
         """
         if len(shapes) < 2:
             return shapes
@@ -133,6 +139,29 @@ class AbstractPolyMethod(abc.ABC):
             if isinstance(trimmed, shapely.MultiPolygon):
                 trimmed = max(trimmed.geoms, key=shapely.area)
             out[k] = trimmed
+
+        keys = list(out.keys())
+        for i, ki in enumerate(keys):
+            for kj in keys[i + 1:]:
+                residual = out[ki].intersection(out[kj])
+                if residual.is_empty or residual.area == 0:
+                    continue
+                if not isinstance(residual, (shapely.Polygon, shapely.MultiPolygon)):
+                    # numerical-noise residual (line / point / mixed
+                    # collection from a buffer round-trip): not worth
+                    # trying to split, and shapely.ops.split chokes on it
+                    continue
+                out[ki], out[kj] = _split_apex_residual(out[ki], out[kj], residual, r)
+
+        # split / difference can leave a GeometryCollection mixing the
+        # main Polygon with tiny line/point slivers; downstream rendering
+        # only takes a single Polygon so we reduce to the largest one.
+        for k, v in out.items():
+            if isinstance(v, shapely.Polygon):
+                continue
+            polys = [g for g in getattr(v, "geoms", ())
+                     if isinstance(g, shapely.Polygon) and not g.is_empty]
+            out[k] = max(polys, key=shapely.area) if polys else shapely.Polygon()
         return pd.Series(out, name=shapes.name).reindex(shapes.index)
 
     @staticmethod
@@ -299,6 +328,58 @@ class Segments(AbstractPolyMethod):
             return None
 
         return shapely.Polygon(coords)
+
+
+def _split_apex_residual(
+        a: shapely.Polygon, b: shapely.Polygon,
+        residual: shapely.Geometry, r: float,
+) -> tuple[shapely.Polygon, shapely.Polygon]:
+    """Split ``residual = a ∩ b`` through the point-tangent apex of
+    the two un-buffered originals and remove each half from the wrong
+    polygon.
+
+    Used to finish the trim after :meth:`AbstractPolyMethod._trim_overlaps`
+    has subtracted neighbours' un-buffered shapes: a tiny lens-shaped
+    residual is left when the originals touch at a single point and the
+    rounded buffer cap peeks past it.  The cut is a long line through
+    the apex perpendicular to the line connecting the originals'
+    centroids -- which bisects the lens symmetrically for the common
+    case of two convex phases meeting head-on.  No-op if the cut can't
+    be constructed.
+    """
+    oa, ob = a.buffer(-r), b.buffer(-r)
+    if oa.is_empty or ob.is_empty:
+        return a, b
+    # Apex = midpoint of the closest-approach pair on the un-buffered
+    # originals (exactly on both if they truly touch, very close otherwise).
+    p, q = shapely.ops.nearest_points(oa, ob)
+    apex = (0.5 * (p.x + q.x), 0.5 * (p.y + q.y))
+    ca, cb = oa.centroid, ob.centroid
+    dx, dy = cb.x - ca.x, cb.y - ca.y
+    n = (dx * dx + dy * dy) ** 0.5
+    if n == 0:
+        return a, b
+    minx, miny, maxx, maxy = residual.bounds
+    reach = (((maxx - minx) ** 2 + (maxy - miny) ** 2) ** 0.5 + r) * 4
+    perp = (-dy / n * reach, dx / n * reach)
+    cut = shapely.LineString([
+        (apex[0] - perp[0], apex[1] - perp[1]),
+        (apex[0] + perp[0], apex[1] + perp[1]),
+    ])
+    try:
+        pieces = shapely.ops.split(residual, cut).geoms
+    except Exception:
+        return a, b
+    a_out, b_out = a, b
+    for piece in pieces:
+        if piece.is_empty or piece.area == 0:
+            continue
+        rp = piece.representative_point()
+        if oa.distance(rp) < ob.distance(rp):
+            b_out = b_out.difference(piece)
+        else:
+            a_out = a_out.difference(piece)
+    return a_out, b_out
 
 
 def _pca_sort_segment(pts: np.ndarray) -> np.ndarray:
