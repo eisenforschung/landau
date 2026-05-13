@@ -3,12 +3,12 @@
 
 We make two scenes:
 
-    c-T scene -- like a real T-vs-concentration diagram: there is *empty
-                 space* between phases along the c axis (line phases at
-                 fixed compositions); the buffer is what makes them
-                 visible at all.  Originals do not touch -- they have
-                 gaps -- so option 1's "subtract neighbour's un-buffered
-                 shape" leaves a thin overlap strip.
+    c-T scene -- two solid-solution phases shaped like Ag-Cu's alpha/beta:
+                 each is widest along its pure-element axis and tapers
+                 to (nearly) zero solubility at a common eutectic point.
+                 Buffered, the tips overlap right where the buffer was
+                 doing the most work (visibility), which is exactly the
+                 ugly case the trimming has to solve.
 
     T-mu scene -- like a T-vs-chemical-potential diagram: the phase
                  regions tile the whole plane with no gaps.  Originals
@@ -28,12 +28,18 @@ from matplotlib.patches import Polygon as MplPolygon
 
 
 def scene_cT():
-    """Three near-line phases at fixed c, separated by empty space."""
-    # narrow vertical strips with small width; gaps between them in c
-    a = shapely.Polygon([(0.05, 200), (0.07, 200), (0.07, 900), (0.05, 900)])
-    b = shapely.Polygon([(0.30, 250), (0.32, 250), (0.32, 850), (0.30, 850)])
-    c = shapely.Polygon([(0.55, 200), (0.57, 200), (0.57, 900), (0.55, 900)])
-    return {"alpha": a, "beta": b, "gamma": c}, ("c", "T")
+    """Two solid-solution phases approaching a common eutectic terminal.
+
+    Loosely modelled on Ag-Cu: two triangular regions widest along their
+    respective pure-element axes and narrowing to (nearly) zero
+    solubility at a shared eutectic point in the middle.  After buffering
+    the tips overlap right where the buffer matters most for visibility
+    -- exactly the messy case the trim has to handle.
+    """
+    eutectic = (0.5, 800)
+    alpha = shapely.Polygon([(0.0, 200), eutectic, (0.0, 900)])
+    beta = shapely.Polygon([(1.0, 200), (1.0, 900), eutectic])
+    return {"alpha": alpha, "beta": beta}, ("c", "T")
 
 
 def scene_Tmu():
@@ -191,7 +197,7 @@ def render(scene_name, originals, buffered, opt1, opt2, axis_labels, fname):
 
 
 def run():
-    for name, (scene, axes) in [("c-T (sparse: gaps between phases)", scene_cT()),
+    for name, (scene, axes) in [("c-T (eutectic-like: triangles approaching a terminal)", scene_cT()),
                                 ("T-mu (dense: phases tile the plane)", scene_Tmu())]:
         originals, axis_labels = scene, axes
         # buffer amounts representative of landau defaults (min_c_width=0.01)
@@ -208,7 +214,7 @@ def run():
         opt2 = option2(buffered, originals)
         slug = "cT" if "c-T" in name else "Tmu"
         render(name, originals, buffered, opt1, opt2, axis_labels,
-               f"/tmp/voronoi_demo/{slug}.png")
+               f"docs/issue_125/{slug}.png")
 
 
 if __name__ == "__main__":
