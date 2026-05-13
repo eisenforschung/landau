@@ -27,9 +27,10 @@ class AbstractPolyMethod(abc.ABC):
         over groups of columns `phase` and `phase_unit`."""
         return df
 
-    def make(self, dd: pd.DataFrame, variables: list[str] = ["c", "T"]) -> Polygon | None:
+    def make(self, dd: pd.DataFrame, variables: list[str] = ["c", "T"]) -> shapely.Polygon | None:
         """Turn the subset of the full data belonging to one phase region into
-        a polygon."""
+        a buffered shapely polygon.  Conversion to matplotlib happens in
+        :meth:`apply`."""
         border = dd["border"].to_numpy() if "border" in dd.columns else np.zeros(len(dd), dtype=bool)
         segment_label = dd["border_segment"].to_numpy() if "border_segment" in dd.columns else np.ones(len(dd), dtype=int)
 
@@ -86,7 +87,7 @@ class AbstractPolyMethod(abc.ABC):
         if isinstance(shape, shapely.MultiPolygon):
             shape = max(shape.geoms, key=shapely.area)
             warn("polymethod returned disjoined polygons, returning largest.")
-        return Polygon(shape.exterior.coords)
+        return shape
 
     @abc.abstractmethod
     def _make(self, pp: np.ndarray, border: np.ndarray, segment_label: np.ndarray) -> shapely.Geometry | None:
@@ -95,13 +96,14 @@ class AbstractPolyMethod(abc.ABC):
         pass
 
     def apply(self, df: pd.DataFrame, variables: list[str] = ["c", "T"]) -> pd.Series:
-        polys = self.prepare(df).groupby(['phase', 'phase_unit']).apply(
+        shapes = self.prepare(df).groupby(['phase', 'phase_unit']).apply(
                 self.make, variables=variables, include_groups=False
 
         ).dropna()
-        return self._trim_overlaps(polys)
+        trimmed = self._trim_overlaps(shapes)
+        return trimmed.map(self._to_mpl_polygon).dropna()
 
-    def _trim_overlaps(self, polys: pd.Series) -> pd.Series:
+    def _trim_overlaps(self, shapes: pd.Series) -> pd.Series:
         """Symmetrically subtract pairwise overlap between buffered polygons.
 
         Each polygon was inflated by ``min_c_width/2`` so small-solubility
@@ -110,27 +112,17 @@ class AbstractPolyMethod(abc.ABC):
         neighbours' un-buffered shapes so the seam lands on the original
         shared boundary.
         """
-        if len(polys) < 2:
-            return polys
+        if len(shapes) < 2:
+            return shapes
         r = self.min_c_width / 2
-        shapes: dict = {}
-        for k, p in polys.items():
-            try:
-                s = shapely.Polygon(np.asarray(p.get_xy()))
-                if not s.is_valid:
-                    s = s.buffer(0)
-            except Exception:
-                s = None
-            shapes[k] = s
         out: dict = {}
-        for k, p in polys.items():
-            a = shapes[k]
-            if a is None or a.is_empty:
-                out[k] = p
+        for k, a in shapes.items():
+            if a.is_empty:
+                out[k] = a
                 continue
             trimmed = a
             for k2, b in shapes.items():
-                if k2 == k or b is None or b.is_empty:
+                if k2 == k or b.is_empty:
                     continue
                 if not trimmed.intersects(b):
                     continue
@@ -142,15 +134,17 @@ class AbstractPolyMethod(abc.ABC):
                     trimmed = new
             if isinstance(trimmed, shapely.MultiPolygon):
                 trimmed = max(trimmed.geoms, key=shapely.area)
-            if not isinstance(trimmed, shapely.Polygon) or trimmed.is_empty:
-                out[k] = p
-                continue
-            coords = np.asarray(trimmed.exterior.coords)
-            if len(coords) < 3:
-                out[k] = p
-                continue
-            out[k] = Polygon(coords)
-        return pd.Series(out, name=polys.name).reindex(polys.index)
+            out[k] = trimmed
+        return pd.Series(out, name=shapes.name).reindex(shapes.index)
+
+    @staticmethod
+    def _to_mpl_polygon(shape: shapely.Geometry) -> Polygon | None:
+        if not isinstance(shape, shapely.Polygon) or shape.is_empty:
+            return None
+        coords = np.asarray(shape.exterior.coords)
+        if len(coords) < 3:
+            return None
+        return Polygon(coords)
 
 
 @dataclass
