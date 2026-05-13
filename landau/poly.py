@@ -7,6 +7,8 @@ from warnings import warn
 from pyiron_snippets.import_alarm import ImportAlarm
 
 import shapely
+import shapely.affinity
+import shapely.ops
 import numpy as np
 import pandas as pd
 from matplotlib.patches import Polygon
@@ -105,34 +107,55 @@ class AbstractPolyMethod(abc.ABC):
         return trimmed.map(self._to_mpl_polygon).dropna()
 
     def _trim_overlaps(self, shapes: pd.Series) -> pd.Series:
-        """Symmetrically subtract pairwise overlap between buffered polygons.
+        """Symmetrically resolve overlap between buffered phase polygons.
 
-        Each polygon was inflated by ``min_c_width/2`` so small-solubility
-        phases stay visible.  Where adjacent buffered phases touch this
-        creates an overlap strip; here we subtract from every polygon its
-        neighbours' un-buffered shapes so the seam lands on the original
-        shared boundary.
+        Each shape was inflated by ``min_c_width/2`` so small-solubility
+        phases stay visible.  Where neighbours touch this creates an
+        overlap strip; the visible seam should fall at the locus
+        equidistant from the *un-buffered* originals (their generalised
+        Voronoi bisector).
+
+        For every overlapping pair (a, b) we walk each connected
+        component of their buffered union, sample its exterior boundary
+        uniformly, label each sample by the closer un-buffered original,
+        binary-search each label transition for the exact seam endpoint,
+        route the cut polyline through any shared geometry of the two
+        originals (a tangent corner, a coincident edge -- the apex of a
+        eutectic is at distance 0 from both, so the seam must pass
+        through it), then split the component and hand each piece to its
+        closer original.
+
+        Falls back to a plain difference where the bisector cut cannot
+        be constructed (one phase fully covers the component, the split
+        is geometrically degenerate, or a phase is too thin for erosion).
         """
         if len(shapes) < 2:
             return shapes
         r = self.min_c_width / 2
-        out: dict = {}
-        for k, a in shapes.items():
-            trimmed = a
-            for k2, b in shapes.items():
-                if k2 == k:
+        out = dict(shapes.items())
+        originals = {k: s.buffer(-r) for k, s in out.items()}
+
+        keys = list(out.keys())
+        for i, ki in enumerate(keys):
+            for kj in keys[i + 1:]:
+                a, b = out[ki], out[kj]
+                if not a.intersects(b):
                     continue
-                if not trimmed.intersects(b):
+                inter = a.intersection(b)
+                if inter.is_empty or inter.area == 0:
                     continue
-                b_orig = b.buffer(-r)
-                if b_orig.is_empty:
+                oa, ob = originals[ki], originals[kj]
+                if oa.is_empty or ob.is_empty:
+                    if not oa.is_empty:
+                        out[kj] = b.difference(oa)
+                    if not ob.is_empty:
+                        out[ki] = a.difference(ob)
                     continue
-                new = trimmed.difference(b_orig)
-                if not new.is_empty:
-                    trimmed = new
-            if isinstance(trimmed, shapely.MultiPolygon):
-                trimmed = max(trimmed.geoms, key=shapely.area)
-            out[k] = trimmed
+                out[ki], out[kj] = _voronoi_split(a, b, oa, ob, inter, r)
+
+        for k, v in out.items():
+            if isinstance(v, shapely.MultiPolygon):
+                out[k] = max(v.geoms, key=shapely.area)
         return pd.Series(out, name=shapes.name).reindex(shapes.index)
 
     @staticmethod
@@ -299,6 +322,167 @@ class Segments(AbstractPolyMethod):
             return None
 
         return shapely.Polygon(coords)
+
+
+def _nudge_outward(
+        p: tuple[float, float], neighbour: tuple[float, float], step: float,
+) -> tuple[float, float]:
+    """Push ``p`` by ``step`` along the unit vector from ``neighbour`` to ``p``.
+
+    Used to extend the bisector-cut endpoints just past the polygon
+    boundary so :func:`shapely.ops.split` actually divides the polygon
+    rather than silently returning it intact.
+    """
+    dx, dy = p[0] - neighbour[0], p[1] - neighbour[1]
+    n = (dx * dx + dy * dy) ** 0.5
+    if n == 0:
+        return p
+    return (p[0] + dx / n * step, p[1] + dy / n * step)
+
+
+def _ordered_shared_coords(geom: shapely.Geometry) -> list[tuple[float, float]]:
+    """Flatten an intersection geometry to ``(x, y)`` tuples in geometric
+    order along the shared feature (point, linestring, ...)."""
+    if geom.is_empty:
+        return []
+    if geom.geom_type == "Point":
+        return [(geom.x, geom.y)]
+    if geom.geom_type == "MultiPoint":
+        return [(g.x, g.y) for g in geom.geoms]
+    if geom.geom_type == "LineString":
+        return list(geom.coords)
+    if geom.geom_type == "MultiLineString":
+        return [c for g in geom.geoms for c in g.coords]
+    if geom.geom_type == "GeometryCollection":
+        return [c for g in geom.geoms for c in _ordered_shared_coords(g)]
+    return []
+
+
+def _shared_anchors(
+        oa: shapely.Polygon, ob: shapely.Polygon, tol: float,
+) -> list[tuple[float, float]]:
+    """Pin points the bisector cut should pass through.
+
+    Uses ``oa.intersection(ob)`` directly when the two originals truly
+    share geometry (a coincident edge or vertex).  If that intersection
+    is empty but the two are within ``tol`` of each other -- as happens
+    at point-tangent apices when ``oa`` and ``ob`` were recovered via
+    ``buffered.buffer(-r)`` and the corner rounded slightly off -- falls
+    back to the midpoint of the closest-approach pair.
+    """
+    coords = _ordered_shared_coords(oa.intersection(ob))
+    if coords:
+        return coords
+    p, q = shapely.ops.nearest_points(oa, ob)
+    if p.distance(q) < tol:
+        return [(0.5 * (p.x + q.x), 0.5 * (p.y + q.y))]
+    return []
+
+
+def _bisector_cut(
+        comp: shapely.Polygon, oa: shapely.Polygon, ob: shapely.Polygon,
+        shared_pts: list[tuple[float, float]], n_samples: int = 200,
+) -> shapely.LineString | None:
+    """Polyline that splits ``comp`` along the bisector of ``oa`` / ``ob``.
+
+    Samples ``comp`` exterior, labels each point by the closer original,
+    binary-searches each label transition to pin it exactly where
+    ``d(oa) == d(ob)`` on the boundary, then routes the cut through
+    ``shared_pts`` so the seam reaches the equidistance locus interior
+    to ``comp``.  Returns ``None`` when no usable two-endpoint seam is
+    found (one phase dominates the whole component, or there are more
+    than two transitions which we don't try to resolve here).
+    """
+    ext = comp.exterior
+    L = ext.length
+    ts = np.linspace(0, L, n_samples, endpoint=False)
+
+    # scale-normalise so x and y contribute comparably to the distance
+    minx, miny, maxx, maxy = comp.bounds
+    sx = 1.0 / max(maxx - minx, 1e-12)
+    sy = 1.0 / max(maxy - miny, 1e-12)
+    oa_s = shapely.affinity.scale(oa, xfact=sx, yfact=sy, origin=(0, 0))
+    ob_s = shapely.affinity.scale(ob, xfact=sx, yfact=sy, origin=(0, 0))
+    pts = np.array([(p.x, p.y) for p in (ext.interpolate(t) for t in ts)])
+    pts_s = shapely.points(pts[:, 0] * sx, pts[:, 1] * sy)
+    label = (shapely.distance(ob_s, pts_s) < shapely.distance(oa_s, pts_s)).astype(int)
+
+    trans_idx = np.where(label != np.roll(label, -1))[0]
+    if len(trans_idx) != 2:
+        return None
+
+    seam_pts = []
+    for t in trans_idx:
+        lo, hi = ts[t], ts[(t + 1) % len(ts)]
+        if hi < lo:
+            hi += L
+        lbl_lo = label[t]
+        for _ in range(20):
+            mid = 0.5 * (lo + hi)
+            p = ext.interpolate(mid % L)
+            ps = shapely.Point(p.x * sx, p.y * sy)
+            lbl_mid = int(ob_s.distance(ps) < oa_s.distance(ps))
+            if lbl_mid == lbl_lo:
+                lo = mid
+            else:
+                hi = mid
+        p = ext.interpolate(0.5 * (lo + hi) % L)
+        seam_pts.append((p.x, p.y))
+
+    if shared_pts:
+        s0 = shapely.Point(seam_pts[0])
+        ordered = sorted(shared_pts, key=lambda c: s0.distance(shapely.Point(c)))
+        path = [seam_pts[0], *ordered, seam_pts[1]]
+    else:
+        path = list(seam_pts)
+
+    overshoot = max(maxx - minx, maxy - miny) * 1e-6
+    path[0] = _nudge_outward(path[0], path[1], overshoot)
+    path[-1] = _nudge_outward(path[-1], path[-2], overshoot)
+    return shapely.LineString(path)
+
+
+def _voronoi_split(
+        a: shapely.Polygon, b: shapely.Polygon,
+        oa: shapely.Polygon, ob: shapely.Polygon,
+        inter: shapely.Geometry, r: float,
+) -> tuple[shapely.Polygon, shapely.Polygon]:
+    """Trim ``(a, b)`` so each keeps only its half of every overlap.
+
+    For each connected component of the buffered union, build a bisector
+    cut polyline (:func:`_bisector_cut`) and remove the foreign-side
+    piece from the wrong polygon.  Falls back to subtracting the other's
+    un-buffered original when the cut can't be constructed.  ``r`` is
+    the buffer radius used to derive ``oa, ob``; it sets the tolerance
+    for treating closest-approach as a true tangent point.
+    """
+    a_out, b_out = a, b
+    shared = _shared_anchors(oa, ob, tol=r)
+    union = shapely.union(a, b)
+    comps = list(union.geoms) if hasattr(union, "geoms") else [union]
+    for comp in comps:
+        if not comp.intersects(inter):
+            continue
+        cut = _bisector_cut(comp, oa, ob, shared)
+        if cut is None:
+            a_out = a_out.difference(ob)
+            b_out = b_out.difference(oa)
+            continue
+        try:
+            pieces = shapely.ops.split(comp, cut).geoms
+        except Exception:
+            a_out = a_out.difference(ob)
+            b_out = b_out.difference(oa)
+            continue
+        for piece in pieces:
+            if piece.is_empty or not piece.is_valid or piece.area == 0:
+                continue
+            rp = piece.representative_point()
+            if oa.distance(rp) < ob.distance(rp):
+                b_out = b_out.difference(piece)
+            else:
+                a_out = a_out.difference(piece)
+    return a_out, b_out
 
 
 def _pca_sort_segment(pts: np.ndarray) -> np.ndarray:

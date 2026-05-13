@@ -1,8 +1,17 @@
 import pandas as pd
+import shapely
 from hypothesis import given, strategies as st, settings
-from landau.poly import Concave, Segments, handle_poly_method
+from landau.poly import Concave, Segments, AbstractPolyMethod, handle_poly_method
 import pytest
 from matplotlib.patches import Polygon
+
+
+class _StubPoly(AbstractPolyMethod):
+    """Minimal :class:`AbstractPolyMethod` subclass for exercising
+    :meth:`_trim_overlaps` directly."""
+
+    def _make(self, pp, border, segment_label):
+        return None
 
 # Check if optional dependencies are available
 try:
@@ -155,6 +164,48 @@ def test_segment_fast_tsp(df):
     if isinstance(res, pd.Series):
         for p in res:
             assert isinstance(p, Polygon)
+
+
+def test_trim_overlaps_point_tangent_apex():
+    """Two solid-solution phases tangent at a eutectic apex: the
+    buffered shapes overlap right at the tip, and trimming should land
+    the seam through the apex with both phases ending up equal in area.
+    """
+    r = 0.02
+    eutectic = (0.5, 800.0)
+    alpha = shapely.Polygon([(0.0, 200), eutectic, (0.0, 900)]).buffer(r)
+    beta = shapely.Polygon([(1.0, 200), (1.0, 900), eutectic]).buffer(r)
+    shapes = pd.Series({"alpha": alpha, "beta": beta})
+
+    trimmed = _StubPoly(min_c_width=2 * r)._trim_overlaps(shapes)
+
+    overlap = trimmed["alpha"].intersection(trimmed["beta"]).area
+    assert overlap < 1e-9, f"overlap area {overlap} should be ~0"
+    # symmetric scene -> symmetric trimmed areas
+    assert abs(trimmed["alpha"].area - trimmed["beta"].area) < 1e-3
+    # the apex point should sit on the seam (distance ~0 to both)
+    apex = shapely.Point(eutectic)
+    assert trimmed["alpha"].distance(apex) < 1e-3
+    assert trimmed["beta"].distance(apex) < 1e-3
+
+
+def test_trim_overlaps_shared_edge():
+    """Three rectangles tiling a T-mu plane with no gaps: after buffer
+    each pair overlaps along the shared edge; trimming should remove
+    every pairwise overlap without losing meaningful area."""
+    r = 0.02
+    a = shapely.Polygon([(-0.5, 200), (-0.1, 200), (-0.1, 900), (-0.5, 900)]).buffer(r)
+    b = shapely.Polygon([(-0.1, 200), (0.2, 200), (0.2, 900), (-0.1, 900)]).buffer(r)
+    c = shapely.Polygon([(0.2, 200), (0.6, 200), (0.6, 900), (0.2, 900)]).buffer(r)
+    shapes = pd.Series({"a": a, "b": b, "c": c})
+
+    trimmed = _StubPoly(min_c_width=2 * r)._trim_overlaps(shapes)
+
+    for ki, kj in [("a", "b"), ("a", "c"), ("b", "c")]:
+        ov = trimmed[ki].intersection(trimmed[kj]).area
+        assert ov < 1e-9, f"{ki} ∩ {kj} overlap {ov} should be ~0"
+    for k in ("a", "b", "c"):
+        assert trimmed[k].area > 0
 
 
 def test_handle_poly_method():
