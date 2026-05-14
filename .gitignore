@@ -10,3 +10,6 @@ tests/integration/_plots/
 result_images/
 .ipynb_checkpoints
 *.pyc
+notebooks/ASE/fe-bcc-phonon/
+notebooks/ASE/fe-fcc-phonon/
+notebooks/ASE/cuag-*-phonon/
