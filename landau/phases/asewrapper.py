@@ -6,7 +6,11 @@ from dataclasses import dataclass
 from pyiron_snippets.import_alarm import ImportAlarm
 
 with ImportAlarm("ASE is required to use ASE phase wrappers. Install with pip install 'landau[ase]'") as ase_alarm:
-    from ase.thermochemistry import ThermoChem
+    try:
+        from ase.thermochemistry import ThermoChem
+    except ImportError:
+        # ASE >=3.28 renamed the base class.
+        from ase.thermochemistry import BaseThermoChem as ThermoChem
 
 from . import AbstractLinePhase
 
@@ -18,10 +22,17 @@ class AsePhase(AbstractLinePhase):
     Equality and hashing compare ``thermochem`` by its pickled bytes so two
     ``AsePhase`` instances built from equivalent inputs compare equal even
     though ASE's ``ThermoChem`` defaults to identity-based equality.
+
+    ``atoms_per_formula`` divides the energy returned by ``thermochem`` so the
+    result is per atom (landau's convention).  Use 2 for an ASE ``IdealGasThermo``
+    built around H₂ or O₂, 3 for CO₂, etc.; the default of 1 is correct
+    when the ASE object already represents one atom or one per-atom formula unit
+    (most ``HarmonicThermo`` setups, monatomic ``IdealGasThermo``).
     """
     fixed_concentration: float
     thermochem: 'ThermoChem'
     pressure: float | None = None
+    atoms_per_formula: int = 1
 
     @ase_alarm
     def __post_init__(self, *args, **kwargs):
@@ -54,7 +65,7 @@ class AsePhase(AbstractLinePhase):
                 "nor get_gibbs_energy; cannot compute a free energy."
             )
 
-        res = func(T)
+        res = func(T) / self.atoms_per_formula
         if res.ndim == 0:
             return res.item()
         return res
@@ -64,6 +75,7 @@ class AsePhase(AbstractLinePhase):
             self.name,
             self.fixed_concentration,
             self.pressure,
+            self.atoms_per_formula,
             pickle.dumps(self.thermochem),
         )
 
