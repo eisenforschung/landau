@@ -1,0 +1,426 @@
+"""Unit tests for refiners in landau.refine."""
+import numpy as np
+import pandas as pd
+import pytest
+
+from landau.phases import LinePhase, TemperatureDependentLinePhase
+from landau.interpolate import SGTE
+from landau.interpolate.basic import G_calphad
+from landau.refine import (
+    ClausiusClapeyronRefiner,
+    MiscibilityGapRefiner,
+    DelaunayLineRefiner,
+    RefinedPoint,
+    RefinedMiscibilityGap,
+)
+from landau.refine import (
+    _point_on_line,
+    _simplex_straddles,
+    _InterCandidate,
+)
+
+
+def _two_phase_diagram_df(phases):
+    """Coarse sampled (T, mu) grid with each point tagged by its stable phase."""
+    Ts = np.linspace(400.0, 1200.0, 9)
+    mus = np.linspace(-0.05, 0.05, 11)
+    rows = []
+    for T in Ts:
+        for mu in mus:
+            phis = [(p.name, float(p.semigrand_potential(T, mu))) for p in phases]
+            name, phi = min(phis, key=lambda kv: kv[1])
+            rows.append({"T": T, "mu": mu, "phi": phi,
+                         "c": float({p.name: p for p in phases}[name].concentration(T, mu)),
+                         "phase": name, "stable": True})
+    return pd.DataFrame(rows)
+
+
+@pytest.fixture
+def two_phase_system():
+    T_grid = np.linspace(300.0, 1300.0, 25)
+    a = TemperatureDependentLinePhase(
+        name="A", fixed_concentration=0.2,
+        temperatures=T_grid, free_energies=G_calphad(T_grid, 1e-4, -2.0, 5e-4),
+        interpolator=SGTE(3),
+    )
+    b = TemperatureDependentLinePhase(
+        name="B", fixed_concentration=0.8,
+        temperatures=T_grid, free_energies=G_calphad(T_grid, 1e-4, -1.9, 4e-4),
+        interpolator=SGTE(3),
+    )
+    phases = [a, b]
+    return phases, {p.name: p for p in phases}
+
+
+def test_clausius_clapeyron_refiner_traces_coexistence(two_phase_system):
+    phases, mapping = two_phase_system
+    df = _two_phase_diagram_df(phases)
+    # Sanity: both phases should appear stable somewhere
+    assert set(df.phase.unique()) == {"A", "B"}
+
+    refiner = ClausiusClapeyronRefiner(dT_max=100.0)
+    out = refiner.run(df, mapping)
+
+    # Each RefinedPoint is expanded to one row per phase, so coexistence
+    # points come in pairs.
+    assert not out.empty
+    assert (out["refined"] == "clausius-clapeyron").all()
+    assert out["stable"].all() and out["border"].all()
+
+    # Pair up coexistence rows by (T, mu); each unique location should carry
+    # both phase names.
+    grouped = out.groupby(["T", "mu"])["phase"].agg(lambda s: tuple(sorted(set(s))))
+    assert (grouped == ("A", "B")).all()
+
+    # The refiner should span much of the input T range with many more points
+    # than DelaunayLineRefiner would produce on the same df.
+    Ts = grouped.index.get_level_values("T").to_numpy()
+    assert Ts.min() < 500.0 and Ts.max() > 1100.0
+    assert len(Ts) > 5
+
+    # Cross-check accuracy against direct root-finding at a few Ts.
+    a_phase, b_phase = mapping["A"], mapping["B"]
+    import scipy.optimize as so
+    for T_check in [600.0, 900.0, 1100.0]:
+        mu_true = so.brentq(
+            lambda mu: (a_phase.semigrand_potential(T_check, mu)
+                        - b_phase.semigrand_potential(T_check, mu)),
+            -0.1, 0.1, xtol=1e-12,
+        )
+        nearest = Ts[np.argmin(np.abs(Ts - T_check))]
+        mu_refined = grouped.index.get_level_values("mu")[
+            np.argmin(np.abs(Ts - T_check))
+        ]
+        # The tracer hits its own T grid, not these specific Ts, but at any
+        # converged point the residual should be near bisection tolerance.
+        rows = out[(out["T"] == nearest)]
+        assert len(rows) == 2
+        phi_a = a_phase.semigrand_potential(nearest, rows["mu"].iloc[0])
+        phi_b = b_phase.semigrand_potential(nearest, rows["mu"].iloc[0])
+        assert abs(phi_a - phi_b) < 1e-7
+
+
+def test_clausius_clapeyron_refiner_skips_straddling_simplices(two_phase_system):
+    """Many Delaunay simplices straddle the same coexistence line; the
+    refiner should trace it once and skip the rest."""
+    phases, mapping = two_phase_system
+    df = _two_phase_diagram_df(phases)
+    refiner = ClausiusClapeyronRefiner()
+    cands = list(refiner.propose(df))
+    # The grid does have many two-phase simplices for the same pair...
+    pairs = [frozenset((c.phase1, c.phase2)) for c in cands]
+    assert pairs.count(frozenset(("A", "B"))) > 1
+    # ...but run() should skip retraces and emit roughly one line's worth.
+    out = refiner.run(df, mapping)
+    n_points = out.groupby(["T", "mu"]).ngroups
+    assert n_points < 4 * len(cands)
+
+
+def test_clausius_clapeyron_refiner_respects_dT_min(two_phase_system):
+    phases, mapping = two_phase_system
+    df = _two_phase_diagram_df(phases)
+    refiner = ClausiusClapeyronRefiner(dT_min=20.0, dT_max=50.0)
+    out = refiner.run(df, mapping)
+    Ts = np.sort(out["T"].unique())
+    dTs = np.diff(Ts)
+    # Median step honors dT_min; the only exceptions are the truncation
+    # at each trace's boundary toward T_min / T_max.
+    assert np.median(dTs) >= 20.0
+    assert np.median(dTs) <= 50.0
+
+
+def test_clausius_clapeyron_refiner_label():
+    assert ClausiusClapeyronRefiner.label == "clausius-clapeyron"
+
+
+def test_simplex_straddles_segment_crossing():
+    """A simplex with no traced vertex inside still gets skipped if a
+    segment of the traced line crosses its bounding box."""
+    # Trace: two points T=100→500, mu sweeping -1 → +1.
+    cand = _InterCandidate(
+        phase1="A", phase2="B",
+        T_seed=300.0,
+        mu_bracket=(-0.1, 0.1),
+        T_bracket=(250.0, 350.0),  # neither traced T is inside
+        T_min=0.0, T_max=1000.0,
+        proj_p1=(250.0, -0.1), proj_p2=(350.0, 0.1),
+    )
+    traces = (((100.0, -1.0), (500.0, 1.0)),)
+    assert _simplex_straddles(cand, traces)
+    # Shift the bbox below the line; no longer crosses.
+    cand2 = replace_candidate(cand, mu_bracket=(-2.0, -1.5))
+    assert not _simplex_straddles(cand2, traces)
+
+
+def _make_inter_cand(*, mu_bracket, T_bracket=(250.0, 350.0)):
+    """Helper: minimal _InterCandidate for straddle-only tests."""
+    return _InterCandidate(
+        phase1="A", phase2="B", T_seed=sum(T_bracket) / 2,
+        mu_bracket=mu_bracket, T_bracket=T_bracket,
+        T_min=0.0, T_max=1000.0,
+        proj_p1=(T_bracket[0], mu_bracket[0]),
+        proj_p2=(T_bracket[1], mu_bracket[1]),
+    )
+
+
+def test_simplex_straddles_single_point_trace_inside_bbox():
+    """A previous trace that emitted only its seed point should still
+    block any later simplex whose inflated bbox contains it."""
+    cand = _make_inter_cand(mu_bracket=(0.10, 0.15))
+    seed_inside = (((300.0, 0.12),),)
+    assert _simplex_straddles(cand, seed_inside)
+
+
+def test_simplex_straddles_single_point_trace_outside_bbox():
+    """A single-point trace far away in mu must not block a candidate
+    in an unrelated region of mu."""
+    cand = _make_inter_cand(mu_bracket=(0.10, 0.15))  # inflated to [0.05, 0.20]
+    seed_far = (((300.0, 2.0),),)
+    assert not _simplex_straddles(cand, seed_far)
+
+
+def test_simplex_straddles_disjoint_seed_traces_do_not_fake_a_line():
+    """Two single-point traces at widely separated mus must NOT be
+    treated as a connected line — otherwise a simplex sitting between
+    them would get spuriously blocked.
+
+    Regression test for the kink near the s3 wedge in the toy 2d_toy_mu
+    plot: separate seed-only traces at T~906 K were being concatenated
+    into a fake polyline that swept the whole mu range at that T,
+    blocking the real left-side liquid/solid trace.
+    """
+    cand = _make_inter_cand(mu_bracket=(0.45, 0.55))  # mid-range
+    # Two disjoint seeds at the same T, far from the bbox:
+    traces = (
+        ((300.0, -0.30),),  # to the left of cand
+        ((300.0, +2.10),),  # to the right of cand
+    )
+    assert not _simplex_straddles(cand, traces)
+
+
+def replace_candidate(cand, **kw):
+    from dataclasses import replace
+    return replace(cand, **kw)
+
+
+def test_point_on_line_helper():
+    traces = (((100.0, 0.0), (200.0, 1.0), (300.0, 2.0)),)
+    assert _point_on_line(150.0, 0.5, traces, tol_mu=0.01)
+    assert _point_on_line(250.0, 1.5, traces, tol_mu=0.01)
+    # Outside the trace's T range -- distance to nearest endpoint
+    # dominates and exceeds tol.
+    assert not _point_on_line(50.0, 0.0, traces, tol_mu=0.1)
+    assert not _point_on_line(400.0, 2.0, traces, tol_mu=0.1)
+    # Too far in mu
+    assert not _point_on_line(150.0, 5.0, traces, tol_mu=0.1)
+    # Two disjoint traces: hit on the second one only.
+    traces2 = (((0.0, 0.0),), ((100.0, 10.0), (200.0, 10.0)))
+    assert _point_on_line(150.0, 10.0, traces2, tol_mu=0.01)
+    assert not _point_on_line(150.0, 0.0, traces2, tol_mu=0.01)
+
+
+def test_clausius_clapeyron_refiner_interphase_idealsolution():
+    """Inter-phase (solid/liquid) boundary in an ideal-solution binary,
+    lifted from notebooks/IdealSolution.ipynb. Refiner should trace
+    the coexistence line with both phase names present at every point."""
+    from scipy.constants import Boltzmann, eV
+    from landau.phases import LinePhase, IdealSolution
+    from landau.calculate import calc_phase_diagram, refine_phase_diagram
+
+    kB = Boltzmann / eV
+    solid_a = LinePhase('A',    fixed_concentration=0, line_energy=-2.0, line_entropy=1.0 * kB)
+    solid_b = LinePhase('B',    fixed_concentration=1, line_energy=-3.0, line_entropy=1.5 * kB)
+    liquid_a = LinePhase('A(l)', fixed_concentration=0, line_energy=-1.9, line_entropy=2.5 * kB)
+    liquid_b = LinePhase('B(l)', fixed_concentration=1, line_energy=-2.9, line_entropy=2.2 * kB)
+    solid  = IdealSolution('solid',  solid_a,  solid_b)
+    liquid = IdealSolution('liquid', liquid_a, liquid_b)
+
+    Ts = np.linspace(200, 1800, 25)
+    mus = np.linspace(-0.3, 0.3, 21)
+    coarse = calc_phase_diagram(
+        [solid, liquid], Ts=Ts, mu=mus, refine=False, keep_unstable=False)
+    out = refine_phase_diagram(
+        coarse, {'solid': solid, 'liquid': liquid},
+        refiners=[ClausiusClapeyronRefiner()])
+    cc = out[out['refined'] == 'clausius-clapeyron']
+
+    assert len(cc) > 0
+    pairs = cc.groupby(['T', 'mu'])['phase'].apply(
+        lambda s: tuple(sorted(s.unique())))
+    # Every refined coexistence point carries one row per phase.
+    assert (pairs == ('liquid', 'solid')).all()
+    assert (cc['refined'] == 'clausius-clapeyron').all()
+    # Trace should span a substantial part of the supplied T range.
+    assert cc['T'].max() - cc['T'].min() > 500
+
+
+def test_miscibility_gap_refiner_regular_solution():
+    """Intra-phase gap of a regular solution with repulsive
+    interaction: refiner should trace mu*(T) ≈ 0 across the gap."""
+    from scipy.constants import Boltzmann, eV
+    from landau.phases import RegularSolution
+    from landau.calculate import calc_phase_diagram, refine_phase_diagram
+
+    kB = Boltzmann / eV
+    L0 = 0.1
+    T_c = L0 / (2 * kB)
+    left  = LinePhase(name='left',  fixed_concentration=0.0,
+                      line_energy=0.0, line_entropy=0.0)
+    mid   = LinePhase(name='mid',   fixed_concentration=0.5,
+                      line_energy=L0 / 4, line_entropy=0.0)
+    right = LinePhase(name='right', fixed_concentration=1.0,
+                      line_energy=0.0, line_entropy=0.0)
+    sol = RegularSolution(name='sol', phases=[left, mid, right],
+                          num_coeffs=1, add_entropy=True)
+    Ts = np.linspace(150.0, T_c - 20.0, 15)
+    mus = np.linspace(-0.05, 0.05, 13)
+    coarse = calc_phase_diagram([sol], Ts=Ts, mu=mus,
+                                refine=False, keep_unstable=True)
+    out = refine_phase_diagram(coarse, {'sol': sol},
+                               refiners=[MiscibilityGapRefiner()])
+    cc = out[out['refined'] == 'miscibility-gap']
+    assert len(cc) >= 5
+    # Symmetric regular solution: mu* = 0 exactly. The argmax-of-dcs
+    # localizer is data-driven (no midpoint assumption), so we allow a
+    # few-meV slack across the trace.
+    assert np.median(np.abs(cc['mu'])) < 5e-3
+    # All emitted rows are tagged with the single phase name.
+    assert (cc['phase'] == 'sol').all()
+
+
+def test_miscibility_gap_refiner_asymmetric_subregular():
+    """Sub-regular solution f_mix = c(1-c)(L0 + L1(2c-1)) with L1 != 0
+    breaks c <-> 1-c symmetry, so mu*(T) != 0 and c_left + c_right != 1.
+    Builds the phase as a SlowInterpolatingPhase fitted to control
+    points whose line energies sample the analytical f_mix; the
+    refiner should trace the asymmetric binodal without complaint."""
+    from scipy.constants import Boltzmann, eV
+    from landau.phases import SlowInterpolatingPhase
+    from landau.interpolate import RedlichKister
+    from landau.calculate import calc_phase_diagram, refine_phase_diagram
+
+    kB = Boltzmann / eV
+    L0, L1 = 0.10, 0.04  # cc_demo.py parameters
+
+    def f_mix(c):
+        return c * (1 - c) * (L0 + L1 * (2 * c - 1))
+
+    control_cs = (0.0, 0.25, 0.5, 0.75, 1.0)
+    line_phases = [
+        LinePhase(name=f'p{i}', fixed_concentration=c,
+                  line_energy=f_mix(c), line_entropy=0.0)
+        for i, c in enumerate(control_cs)
+    ]
+    sub = SlowInterpolatingPhase(
+        name='sub', phases=line_phases,
+        add_entropy=True, interpolator=RedlichKister(2),
+    )
+
+    # Analytical T_c ~ 723 K, c_c ~ 0.68 for this L0/L1 combination
+    # (cc_demo.py); sample below that.
+    Ts = np.linspace(150, 700, 18)
+    mus = np.linspace(-0.05, 0.05, 21)
+    coarse = calc_phase_diagram([sub], Ts=Ts, mu=mus,
+                                refine=False, keep_unstable=True)
+    out = refine_phase_diagram(
+        coarse, {'sub': sub}, refiners=[MiscibilityGapRefiner()])
+    cc = out[out['refined'] == 'miscibility-gap']
+    assert len(cc) >= 10
+
+    # The trace should be visibly asymmetric in mu and in c.
+    assert np.median(np.abs(cc['mu'])) > 1e-3, \
+        "mu*(T) should be nonzero for an asymmetric gap"
+
+    pairs = cc.groupby(['T', 'mu'])['c'].agg(
+        lambda s: (float(min(s)), float(max(s))))
+    sums = np.array([cl + cr for cl, cr in pairs])
+    # Symmetric would give sums == 1; asymmetric drifts away from it.
+    assert (sums > 1.05).any(), \
+        "c_left + c_right should depart from 1 for an asymmetric gap"
+    # All pairs are physically ordered.
+    for cl, cr in pairs:
+        assert 0.0 <= cl < cr <= 1.0
+
+
+def test_miscibility_gap_refiner_auto_stops_above_T_c():
+    """When the supplied Ts range crosses T_c the trace must stop on its
+    own (gap_close / gap_share_min) instead of running to T_max.
+
+    Regression test for the earlier overshoot, where the trace kept
+    walking 100+ K past the critical point and the only thing stopping
+    it was the data boundary.
+    """
+    from scipy.constants import Boltzmann, eV
+    from landau.phases import RegularSolution
+    from landau.calculate import calc_phase_diagram, refine_phase_diagram
+
+    kB = Boltzmann / eV
+    L0 = 0.1
+    T_c = L0 / (2 * kB)  # ~580 K
+    left  = LinePhase(name='left',  fixed_concentration=0.0,
+                      line_energy=0.0, line_entropy=0.0)
+    mid   = LinePhase(name='mid',   fixed_concentration=0.5,
+                      line_energy=L0 / 4, line_entropy=0.0)
+    right = LinePhase(name='right', fixed_concentration=1.0,
+                      line_energy=0.0, line_entropy=0.0)
+    sol = RegularSolution(name='sol', phases=[left, mid, right],
+                          num_coeffs=1, add_entropy=True)
+    Ts_max = T_c + 250.0  # well above T_c
+    Ts = np.linspace(150.0, Ts_max, 25)
+    mus = np.linspace(-0.05, 0.05, 21)
+    coarse = calc_phase_diagram([sol], Ts=Ts, mu=mus,
+                                refine=False, keep_unstable=True)
+    out = refine_phase_diagram(coarse, {'sol': sol},
+                               refiners=[MiscibilityGapRefiner()])
+    cc = out[out['refined'] == 'miscibility-gap']
+    assert not cc.empty
+    # Trace must stop well before T_max.
+    assert cc['T'].max() < Ts_max - 50.0
+
+
+def test_refined_miscibility_gap_emits_two_rows_with_equal_mu():
+    """RefinedMiscibilityGap expands to two rows that share an exact mu
+    value and carry the c_left / c_right values straight from the
+    scan, without re-querying the phase (whose concentration() may
+    quantise or collapse to one branch for sharp gaps)."""
+
+    class StickyPhase:
+        """Always returns the same c regardless of mu — would yield a
+        single-branch result if to_rows re-queried instead of using
+        the stored scan values."""
+        name = "p"
+
+        def semigrand_potential(self, T, mu):
+            return 0.0
+
+        def concentration(self, T, mu):
+            return 0.5
+
+    pt = RefinedMiscibilityGap(
+        T=400.0, mu=0.0, phase="p", c_left=0.1, c_right=0.9)
+    rows = pt.to_rows({"p": StickyPhase()})
+    assert len(rows) == 2
+    assert rows[0]["mu"] == rows[1]["mu"] == 0.0
+    # Even though the phase's concentration() collapses to 0.5, the
+    # row's c column reflects the c_left / c_right stored on the dataclass.
+    assert {round(rows[0]["c"], 3), round(rows[1]["c"], 3)} == {0.1, 0.9}
+
+
+def test_clausius_clapeyron_refiner_no_two_phase_simplex():
+    """Empty result when the input has no two-phase coexistence."""
+    p = LinePhase(name="solo", fixed_concentration=0.5,
+                  line_energy=-1.0, line_entropy=0.0)
+    rows = []
+    for T in np.linspace(300, 1000, 5):
+        for mu in np.linspace(-0.1, 0.1, 5):
+            rows.append({"T": T, "mu": mu,
+                         "phi": float(p.semigrand_potential(T, mu)),
+                         "c": 0.5, "phase": "solo", "stable": True})
+    df = pd.DataFrame(rows)
+    refiner = ClausiusClapeyronRefiner()
+    out = refiner.run(df, {"solo": p})
+    assert out.empty
+    # MiscibilityGapRefiner is the right tool here but the simplices
+    # have no c-spread (all c=0.5), so it also yields nothing.
+    gap_out = MiscibilityGapRefiner().run(df, {"solo": p})
+    assert gap_out.empty
