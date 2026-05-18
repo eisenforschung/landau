@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 
-from .calculate import get_transitions, cluster, cluster_T_c
+from .calculate import get_transitions, cluster, cluster_T_c, _join_phase_unit
 import landau.poly as poly
 
 
@@ -38,9 +38,7 @@ def cluster_phase(df):
         lambda g: cluster_T_c(g).to_frame("phase_unit"),
         include_groups=False,
     )["phase_unit"]
-    df["phase_id"] = df[["phase", "phase_unit"]].apply(
-        lambda r: "_".join(map(str, r.tolist())), axis="columns"
-    )
+    df["phase_id"] = _join_phase_unit(df["phase"], df["phase_unit"])
     return df
 
 def get_polygons(
