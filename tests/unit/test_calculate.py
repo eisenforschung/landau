@@ -1,7 +1,14 @@
 import pytest
 import numpy as np
 import pandas as pd
-from landau.calculate import find_one_point, cluster_T_c, cluster_T_c_mu
+from hypothesis import given, strategies as st
+from landau.calculate import (
+    find_one_point,
+    cluster_T_c,
+    cluster_T_c_mu,
+    _join_phase_unit,
+    _split_phase_unit,
+)
 from unittest.mock import MagicMock
 
 def test_find_one_point_success():
@@ -107,3 +114,53 @@ def test_cluster_T_c_mu_empty():
     labels = cluster_T_c_mu(dd)
     assert len(labels) == 0
     assert labels.dtype.kind == "i"
+
+
+# --- _join_phase_unit / _split_phase_unit tests ---
+
+
+def test_join_phase_unit_basic():
+    phase = pd.Series(["alpha", "beta", "gamma"])
+    unit = pd.Series([0, 1, 2])
+    out = _join_phase_unit(phase, unit)
+    assert out.tolist() == ["alpha_0", "beta_1", "gamma_2"]
+
+
+def test_split_phase_unit_basic():
+    combined = pd.Series(["alpha_0", "beta_1", "gamma_2"])
+    phase, unit = _split_phase_unit(combined)
+    assert phase.tolist() == ["alpha", "beta", "gamma"]
+    assert unit.tolist() == [0, 1, 2]
+    assert unit.map(type).eq(int).all()
+
+
+@given(
+    phase=st.lists(
+        st.text(alphabet=st.characters(blacklist_characters="_"), min_size=1, max_size=8),
+        min_size=1,
+        max_size=10,
+    ),
+    unit=st.lists(st.integers(min_value=0, max_value=99), min_size=1, max_size=10),
+)
+def test_phase_unit_round_trip(phase, unit):
+    n = min(len(phase), len(unit))
+    p = pd.Series(phase[:n])
+    u = pd.Series(unit[:n])
+    p_out, u_out = _split_phase_unit(_join_phase_unit(p, u))
+    pd.testing.assert_series_equal(p_out, p, check_names=False)
+    pd.testing.assert_series_equal(u_out, u, check_names=False)
+
+
+def test_phase_unit_round_trip_underscore_in_name():
+    # rsplit(n=1) preserves underscores inside the phase name; only the final
+    # `_<int>` segment is interpreted as the unit.
+    p = pd.Series(["foo_bar", "baz_42"])
+    u = pd.Series([3, 7])
+    p_out, u_out = _split_phase_unit(_join_phase_unit(p, u))
+    assert p_out.tolist() == ["foo_bar", "baz_42"]
+    assert u_out.tolist() == [3, 7]
+
+
+def test_split_phase_unit_rejects_non_integer_unit():
+    with pytest.raises(ValueError):
+        _split_phase_unit(pd.Series(["alpha_not_an_int"]))

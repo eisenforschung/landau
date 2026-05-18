@@ -14,7 +14,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import pairwise_distances
 from sklearn.decomposition import PCA
 
-from .calculate import get_transitions
+from .calculate import get_transitions, _split_phase_unit
 
 
 @dataclass
@@ -182,8 +182,7 @@ class Segments(AbstractPolyMethod):
             raise ValueError("Segments methods requires refined phase boundaries!")
         df.loc[:, "phase"] = df.phase_id
         tdf = get_transitions(df)
-        tdf["phase_unit"] = tdf.phase.str.rsplit('_', n=1).map(lambda x: int(x[1]))
-        tdf["phase"] = tdf.phase.str.rsplit('_', n=1).map(lambda x: x[0])
+        tdf["phase"], tdf["phase_unit"] = _split_phase_unit(tdf["phase"])
         return tdf
 
     @staticmethod

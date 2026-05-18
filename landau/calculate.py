@@ -21,6 +21,27 @@ kB = Boltzmann / eV
 __all__ = ["calc_phase_diagram", "get_transitions", "cluster_T_c", "cluster_T_c_mu"]
 
 
+_PHASE_UNIT_SEP = "_"
+
+
+def _join_phase_unit(phase: pd.Series, unit: pd.Series) -> pd.Series:
+    """Encode ``(phase, unit)`` pairs as ``f"{phase}{_PHASE_UNIT_SEP}{unit}"`` strings.
+
+    Inverse is :func:`_split_phase_unit`. The two functions round-trip as long as
+    the unit-side string is a valid integer literal — the split uses ``rsplit``
+    with ``n=1``, so underscores inside ``phase`` are preserved.
+    """
+    return phase.astype(str) + _PHASE_UNIT_SEP + unit.astype(str)
+
+
+def _split_phase_unit(combined: pd.Series) -> tuple[pd.Series, pd.Series]:
+    """Inverse of :func:`_join_phase_unit`. Returns ``(phase, unit)``."""
+    parts = combined.str.rsplit(_PHASE_UNIT_SEP, n=1)
+    phase = parts.map(lambda x: x[0])
+    unit = parts.map(lambda x: int(x[1]))
+    return phase, unit
+
+
 def _split_stable(df):
     udf = df.query("not stable").reset_index(drop=True)
     udf["border"] = False
@@ -290,9 +311,7 @@ def get_transitions(df):
              # sometimes pandas returns a DataFrame instead of a Series when only one group exists
              res = res.stack().reset_index(level=0, drop=True)
         tdf["transition_unit"] = res
-        tdf["border_segment"] = tdf[["transition", "transition_unit"]].apply(
-            lambda r: "_".join(map(str, r.tolist())), axis="columns"
-        )
+        tdf["border_segment"] = _join_phase_unit(tdf["transition"], tdf["transition_unit"])
     else:
         tdf["transition_unit"] = []
         tdf["border_segment"] = []
