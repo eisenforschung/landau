@@ -6,6 +6,49 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **landau.py** is a Python library for calculating thermodynamic equilibria and plotting phase diagrams in the (semi-)grand ensemble. It enables computational thermodynamics research, particularly for alloy systems.
 
+## Working Style (read this first)
+
+These are project-specific preferences distilled from past PR/issue feedback. Some restate harness defaults but are repeated here because they have been violated often enough to matter.
+
+### Tone in PRs, commits, and comments
+- Match a terse, imperative tone. No "Happy to...", no apologies, no enthusiasm filler. (Restates the harness default — keep it in mind anyway.)
+- PR bodies are plain technical reports. No **bold** "headline numbers", no "Conclusion" sections, no `[Fix this →]` action links, no marketing claims ("dramatic speedup", "significantly improves").
+- Do not invoke the maintainer's name or authority in PR bodies or comments (PR #94: "don't use my name in vain").
+
+### Evidence over claims
+- Cite the specific commit hash, file path, test count, or command output backing any claim. If a number appears in the PR body, the script that produced it goes in `benchmarks/` in the same PR (PR #94).
+- For physics/numerics claims, prefer saying nothing over saying something unverified (PR #112: "Rather say nothing than something wrong").
+- If asked to verify, actually verify — read the docs, run the code. Do not re-assert. (PR #113: "I'm not entirely sure I believe you. Read the docs and get back to me.")
+
+### Scope and abstraction
+- Prefer the minimal change. "I'd rather merge less features now and extend later than break API" (PR #68).
+- Before writing a new helper, check the codebase and existing deps (numpy, scipy, shapely, matplotlib.testing, pyiron_snippets) for one that already does the job. Reuse over reimplement (PR #115).
+- One purpose per PR. Notebooks, benchmarks, refactors, and unrelated fixes go in their own PRs (PR #68, #82, #85). Notebooks are committed with executed outputs only.
+- When a PR grows a second concept, propose splitting it before pushing more.
+- Speculative or "might be useful" work gets parked, not landed (PR #129 closed, #130 parked).
+
+### Test quality bar
+(Expands on the Testing section below.)
+- Tests must assert tight conditions a degenerate/constant solution would fail. Loose `atol=0.05` "it ran" tests get rejected (PR #80, #101).
+- Use Hypothesis for round-trip recovery (random coeffs in → `fit()` → coeffs out) where applicable (PR #82).
+- Share a single `atol` constant across related tests rather than scattering magic numbers (PR #82).
+- Use the module-wide pytest skip marker for optional-dep tests (PR #111).
+
+### Debugging numerics visually
+- When diagnosing a fit/solver/physics issue, generate a plot of the relevant landscape (loss vs parameter, etc.), attach it inline to the PR comment, and add a walkthrough section to a notebook so the maintainer can step through interactively (PR #82, #115).
+
+### Naming and layout
+- Module names: no underscores. `asewrapper`, not `ase_wrapper` (PR #68).
+- Promote single-file modules to subpackages once they grow (as was done for `interpolate/`).
+
+### Do not commit
+- `.hypothesis/`, `_version.py`, stray top-level scripts, duplicate exploratory files (PR #71, #94). Check for duplicates of what you are about to add before pushing.
+
+### Pandas 2/3 compatibility (hard constraint)
+(Historical context is in "Recent Important Changes" below.)
+- All `groupby().apply()` calls must pass `include_groups=False`.
+- Code must work on both pandas 2 and 3. Do not drop pandas 2 (PR #93, #113).
+
 ## Development Setup
 
 ### Python Version
