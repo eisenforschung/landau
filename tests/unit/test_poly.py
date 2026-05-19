@@ -157,6 +157,28 @@ def test_segment_fast_tsp(df):
             assert isinstance(p, Polygon)
 
 
+@pytest.mark.skipif(not HAS_PYTHON_TSP, reason="python-tsp not installed")
+def test_python_tsp_clustered_points():
+    # Regression for GH-38: clustered border points can produce a
+    # self-intersecting polygon that causes GEOSException in _trim_overlaps.
+    n = 10
+    # Two phases, each with many border points clustered near a single spot
+    # plus one outlier so the convex hull is not just a point.
+    data = {
+        "c":         [0.0] * n + [0.05] + [1.0] * n + [0.95],
+        "T":         [500.0] * n + [600.0] + [500.0] * n + [600.0],
+        "mu":        [0.0] * (n + 1) + [0.0] * (n + 1),
+        "border":    [True] * (n + 1) + [True] * (n + 1),
+        "phase":     ["A"] * (n + 1) + ["B"] * (n + 1),
+        "phase_unit":[0] * (n + 1) + [0] * (n + 1),
+        "refined":   [True] * (n + 1) + [True] * (n + 1),
+        "phase_id":  ["A_0"] * (n + 1) + ["B_0"] * (n + 1),
+    }
+    df = pd.DataFrame(data)
+    result = PythonTsp().apply(df)
+    assert isinstance(result, pd.Series)
+
+
 def test_handle_poly_method():
     assert isinstance(handle_poly_method("concave"), Concave)
     assert isinstance(handle_poly_method("segments"), Segments)

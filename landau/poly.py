@@ -67,8 +67,12 @@ class AbstractPolyMethod(abc.ABC):
                 return None
             if isinstance(shape, shapely.Polygon) and not shape.is_valid:
                 warn(f"{type(self).__name__}._make produced an invalid polygon "
-                     f"({shapely.is_valid_reason(shape)}); plotting will buffer it but "
-                     f"the result may be inaccurate.")
+                     f"({shapely.is_valid_reason(shape)}); repairing it.")
+                shape = shapely.make_valid(shape)
+                if isinstance(shape, shapely.MultiPolygon):
+                    shape = max(shape.geoms, key=shapely.area)
+                elif not isinstance(shape, shapely.Polygon):
+                    return None
 
         if shape.is_empty:
             return None
@@ -127,11 +131,14 @@ class AbstractPolyMethod(abc.ABC):
                 b_orig = b.buffer(-r)
                 if b_orig.is_empty:
                     continue
-                new = trimmed.difference(b_orig)
+                try:
+                    new = trimmed.difference(b_orig)
+                except shapely.errors.GEOSException:
+                    continue
                 if not new.is_empty:
                     trimmed = new
-            if isinstance(trimmed, shapely.MultiPolygon):
-                trimmed = max(trimmed.geoms, key=shapely.area)
+                if isinstance(trimmed, shapely.MultiPolygon):
+                    trimmed = max(trimmed.geoms, key=shapely.area)
             out[k] = trimmed
         return pd.Series(out, name=shapes.name).reindex(shapes.index)
 
