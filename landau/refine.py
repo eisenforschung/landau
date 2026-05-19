@@ -403,6 +403,9 @@ class DelaunayTripleRefiner(Refiner):
 
     label = "delaunay-triple"
 
+    def __init__(self):
+        self._found: list[TMuPoint] = []
+
     def propose(self, df: pd.DataFrame) -> Iterator[_SimplexCandidate]:
         for simplex, n in _delaunay_simplices(df):
             if n == 3:
@@ -413,6 +416,8 @@ class DelaunayTripleRefiner(Refiner):
         T0, mu0 = tr[["T", "mu"]].mean()
         names = tuple(tr.phase.unique())
         p1, p2, p3 = (phases[n] for n in names)
+        T_tol = float(tr["T"].max() - tr["T"].min())
+        mu_tol = float(tr["mu"].max() - tr["mu"].min())
 
         def triplemin(x):
             T, mu = x
@@ -422,30 +427,11 @@ class DelaunayTripleRefiner(Refiner):
             return abs(phi1 - phi2) + abs(phi2 - phi3) + abs(phi3 - phi1)
 
         T, mu = so.fmin(triplemin, (T0, mu0), disp=False)
+        if any(abs(T - fT) <= T_tol and abs(mu - fmu) <= mu_tol
+               for fT, fmu in self._found):
+            return []
+        self._found.append((T, mu))
         return [RefinedPoint(T=T, mu=mu, phases=names)]
-
-    def run(self, df: pd.DataFrame, phases: Mapping[str, Phase]) -> pd.DataFrame:
-        rows: list[dict] = []
-        found: list[TMuPoint] = []
-        for cand in self.propose(df):
-            simplex = cand.simplex
-            T_tol = float(simplex["T"].max() - simplex["T"].min())
-            mu_tol = float(simplex["mu"].max() - simplex["mu"].min())
-            for pt in self.solve(cand, phases):
-                if pt.T < 0 or _dominated(pt, phases):
-                    continue
-                if any(abs(pt.T - fT) <= T_tol and abs(pt.mu - fmu) <= mu_tol
-                       for fT, fmu in found):
-                    continue
-                found.append((pt.T, pt.mu))
-                rows.extend(pt.to_rows(phases))
-        out = pd.DataFrame(rows)
-        if out.empty:
-            return out
-        out["stable"] = True
-        out["border"] = True
-        out["refined"] = self.label
-        return out
 
 
 # -- Clausius-Clapeyron tracers ----------------------------------------------
