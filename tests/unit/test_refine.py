@@ -10,6 +10,7 @@ from landau.refine import (
     ClausiusClapeyronRefiner,
     MiscibilityGapRefiner,
     DelaunayLineRefiner,
+    DelaunayTripleRefiner,
     RefinedPoint,
     RefinedMiscibilityGap,
 )
@@ -17,6 +18,7 @@ from landau.refine import (
     _point_on_line,
     _simplex_straddles,
     _InterCandidate,
+    _delaunay_simplices,
 )
 
 
@@ -424,3 +426,58 @@ def test_clausius_clapeyron_refiner_no_two_phase_simplex():
     # have no c-spread (all c=0.5), so it also yields nothing.
     gap_out = MiscibilityGapRefiner().run(df, {"solo": p})
     assert gap_out.empty
+
+
+def _three_phase_system():
+    """Three LinePhases with a single triple point at (T=300 K, mu=0.2 eV).
+
+    Coexistence curves (derived from equal-phi conditions):
+      A-B: mu = 0.002*T - 0.4
+      A-C: mu = 0.003*T - 0.7
+      B-C: mu = 0.004*T - 1.0
+    All three meet at T=300, mu=0.2.
+    """
+    ph_a = LinePhase(name='A', fixed_concentration=0.0,
+                     line_energy=-1.0, line_entropy=0.004)
+    ph_b = LinePhase(name='B', fixed_concentration=0.5,
+                     line_energy=-1.2, line_entropy=0.003)
+    ph_c = LinePhase(name='C', fixed_concentration=1.0,
+                     line_energy=-1.7, line_entropy=0.001)
+    return {'A': ph_a, 'B': ph_b, 'C': ph_c}
+
+
+def _coarse_df(phases, Ts, mus):
+    rows = []
+    for T in Ts:
+        for mu in mus:
+            phis = {n: float(p.semigrand_potential(T, mu))
+                    for n, p in phases.items()}
+            name = min(phis, key=phis.get)
+            rows.append({"T": T, "mu": mu, "phi": phis[name],
+                         "c": float(phases[name].concentration(T, mu)),
+                         "phase": name, "stable": True})
+    return pd.DataFrame(rows)
+
+
+def test_delaunay_triple_refiner_deduplicates():
+    """Triple refiner emits each triple point exactly once even when
+    multiple three-phase Delaunay simplices independently detect it."""
+    phases = _three_phase_system()
+    # Coarse grid: step ~50 K × ~0.1 eV, triple point (300, 0.2) lies
+    # between grid lines so several adjacent simplices are three-phase.
+    Ts = np.linspace(220.0, 480.0, 6)
+    mus = np.linspace(-0.05, 0.55, 7)
+    df = _coarse_df(phases, Ts, mus)
+
+    n_triple = sum(1 for _, n in _delaunay_simplices(df) if n == 3)
+    assert n_triple > 1, "grid should produce multiple three-phase simplices"
+
+    out = DelaunayTripleRefiner().run(df, phases)
+
+    assert not out.empty
+    assert (out["refined"] == "delaunay-triple").all()
+    # Exactly one triple point → 3 rows (one per phase).
+    assert len(out) == 3
+    assert set(out["phase"]) == {"A", "B", "C"}
+    assert np.allclose(out["T"], 300.0, atol=10.0)
+    assert np.allclose(out["mu"], 0.2, atol=0.05)

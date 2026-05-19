@@ -424,6 +424,29 @@ class DelaunayTripleRefiner(Refiner):
         T, mu = so.fmin(triplemin, (T0, mu0), disp=False)
         return [RefinedPoint(T=T, mu=mu, phases=names)]
 
+    def run(self, df: pd.DataFrame, phases: Mapping[str, Phase]) -> pd.DataFrame:
+        rows: list[dict] = []
+        found: list[TMuPoint] = []
+        for cand in self.propose(df):
+            simplex = cand.simplex
+            T_tol = float(simplex["T"].max() - simplex["T"].min())
+            mu_tol = float(simplex["mu"].max() - simplex["mu"].min())
+            for pt in self.solve(cand, phases):
+                if pt.T < 0 or _dominated(pt, phases):
+                    continue
+                if any(abs(pt.T - fT) <= T_tol and abs(pt.mu - fmu) <= mu_tol
+                       for fT, fmu in found):
+                    continue
+                found.append((pt.T, pt.mu))
+                rows.extend(pt.to_rows(phases))
+        out = pd.DataFrame(rows)
+        if out.empty:
+            return out
+        out["stable"] = True
+        out["border"] = True
+        out["refined"] = self.label
+        return out
+
 
 # -- Clausius-Clapeyron tracers ----------------------------------------------
 #
