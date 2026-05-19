@@ -1,7 +1,7 @@
 import pytest
 import numpy as np
 
-from hypothesis import given, strategies as st
+from hypothesis import HealthCheck, given, settings, strategies as st
 from hypothesis.extra.numpy import arrays, mutually_broadcastable_shapes
 
 from pyiron_snippets.import_alarm import ImportAlarm
@@ -18,6 +18,7 @@ def ase_phase():
 
 @pytest.mark.skipif(ase_alarm.message is not None, reason="ASE is not installed")
 @given(data=st.data())
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
 def test_semigrand_potential_vectorization(ase_phase, data):
     shapes = data.draw(mutually_broadcastable_shapes(num_shapes=2, max_dims=3, max_side=3))
 
