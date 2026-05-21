@@ -4,11 +4,14 @@ Reads the comment body from ``$COMMENT_BODY`` and pipes it through the
 ``claude`` CLI (Claude Code), which must respond with a single JSON
 object of the form::
 
-    {"args": ["--only", "1d_T", "--poly-method", "fasttsp"], "note": "..."}
+    {"args": ["--only", "1d_T", "--poly-method", "fasttsp"],
+     "note": "...", "diff": false}
 
 The ``args`` list is shell-splattered into ``python tests/integration/testplots.py``
 by the calling workflow. ``note`` is a short human-readable summary that gets
-echoed back in the PR comment.
+echoed back in the PR comment. ``diff`` is a boolean: when true the workflow
+also renders the same args against ``main`` and posts a side-by-side
+comparison.
 
 Authenticated via ``$CLAUDE_CODE_OAUTH_TOKEN`` (same secret the existing
 .github/workflows/claude.yml uses). The script is invoked by
@@ -68,9 +71,15 @@ Mapping conventions:
   - "with and without tielines" / "both tieline modes" -> --tielines on off
   - "everything" / "all plots" / bare `@testplot` -> no extra args (renders every plot once)
 
+Diff mode:
+  Set `"diff": true` when the user wants a side-by-side comparison against
+  `main`. Triggers: "diff", "diff main", "vs main", "compare with main",
+  "before/after", "side by side", "regression". Otherwise omit the field
+  or set it to false.
+
 Respond with a single JSON object and NOTHING else (no prose, no code fences):
 
-  {{"args": ["--only", "1d_T"], "note": "1D T diagram"}}
+  {{"args": ["--only", "1d_T"], "note": "1D T diagram", "diff": false}}
 
 `args` is a flat list of strings to be passed to argparse. `note` is a short
 human-readable summary (under 80 chars). Do not include `--out`; the workflow
@@ -108,7 +117,10 @@ def _validate(payload: dict) -> dict:
     note = payload.get("note", "")
     if not isinstance(note, str):
         raise ValueError(f"note must be a string, got {note!r}")
-    return {"args": args, "note": note[:200]}
+    diff = payload.get("diff", False)
+    if not isinstance(diff, bool):
+        raise ValueError(f"diff must be a bool, got {diff!r}")
+    return {"args": args, "note": note[:200], "diff": diff}
 
 
 def _call_claude(body: str) -> str:
@@ -132,7 +144,7 @@ def _call_claude(body: str) -> str:
 def main() -> None:
     body = os.environ.get("COMMENT_BODY", "").strip()
     if not body:
-        print(json.dumps({"args": [], "note": "empty mention; rendering all plots"}))
+        print(json.dumps({"args": [], "note": "empty mention; rendering all plots", "diff": False}))
         return
 
     text = _call_claude(body)
