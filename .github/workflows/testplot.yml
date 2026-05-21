@@ -1,15 +1,16 @@
 name: testplot
 
-# Render reference phase diagrams and post them on the PR so reviewers
-# can eyeball them. The "correctness" of a landau plot is hard to
-# formalise in a unit test, so we trigger this on demand by adding the
-# `testplot` label to a PR.
+# Render reference phase diagrams when a PR is labeled `testplot`. Instead
+# of always rendering all six diagrams, the workflow pipes the PR's list
+# of changed files through Claude Haiku to choose a subset that's worth
+# eyeballing for this particular change (e.g. landau/poly.py touched ->
+# all 2D plots with all TSP poly methods).
 #
-# The rendered PNGs are committed to a dedicated orphan `testplots`
-# branch under <PR_NUMBER>/<short-content-sha>-<name>.png and then
-# referenced from a PR comment via raw.githubusercontent.com so they
-# render inline. This keeps the PR branch's commit history clean and
-# is idempotent: re-rendering identical plots reuses existing paths.
+# Job split mirrors testplot-mention.yml: a trusted `select` job runs the
+# Haiku selector from a main checkout with the Claude OAuth token; the
+# `render` job runs the PR's testplots.py in a no-secrets sandbox; and
+# `publish` pushes the PNGs to the orphan `testplots` gallery branch and
+# posts the inline-image comment.
 
 on:
   pull_request:
@@ -19,40 +20,118 @@ env:
   GALLERY_BRANCH: testplots
 
 jobs:
-  render:
+  select:
     if: >-
       (github.event.action == 'labeled' && github.event.label.name == 'testplot') ||
       (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'testplot'))
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
+      pull-requests: read
+    outputs:
+      args_json: ${{ steps.select.outputs.args_json }}
+      note: ${{ steps.select.outputs.note }}
     steps:
-      - name: Checkout PR head
+      - name: Checkout main (trusted selector)
+        uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: List changed files
+        id: files
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              per_page: 100,
+            });
+            const paths = files.map(f => f.filename).join('\n');
+            core.setOutput('paths', paths);
+
+      - name: Select args via Haiku
+        id: select
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CHANGED_FILES: ${{ steps.files.outputs.paths }}
+        run: |
+          set -euo pipefail
+          python .github/scripts/select_testplot_args_from_diff.py > parsed.json
+          cat parsed.json
+          {
+            echo "args_json=$(jq -c .args parsed.json)"
+            echo "note<<EOF"
+            jq -r '.note' parsed.json
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+  render:
+    needs: select
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout PR head (untrusted)
         uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          path: src
+          persist-credentials: false
 
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: src/pyproject.toml
+          cache-dependency-path: pyproject.toml
 
       - name: Install
-        working-directory: src
-        run: pip install -e .[fast-tsp]
+        run: pip install -e .[fast-tsp,python-tsp]
 
       - name: Render phase diagrams
-        working-directory: src
-        run: python tests/integration/testplots.py --out "${GITHUB_WORKSPACE}/_plots"
+        env:
+          ARGS_JSON: ${{ needs.select.outputs.args_json }}
+        run: |
+          set -euxo pipefail
+          mapfile -t ARGS < <(echo "$ARGS_JSON" | jq -r '.[]')
+          mkdir -p _plots
+          python tests/integration/testplots.py --out _plots "${ARGS[@]}"
+
+      - name: Upload rendered PNGs
+        uses: actions/upload-artifact@v4
+        with:
+          name: testplot-renders
+          path: _plots
+          retention-days: 7
+
+  publish:
+    needs: [select, render]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Download rendered PNGs
+        uses: actions/download-artifact@v4
+        with:
+          name: testplot-renders
+          path: _plots
 
       - name: Publish plots to ${{ env.GALLERY_BRANCH }} branch
-        id: publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euxo pipefail
           REPO_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
@@ -66,7 +145,7 @@ jobs:
           else
             git checkout --orphan "$GALLERY_BRANCH"
             git rm -rf . >/dev/null 2>&1 || true
-            printf '# Test plot gallery\n\nContent-addressed PNGs published by .github/workflows/testplot.yml.\n' > README.md
+            printf '# Test plot gallery\n\nContent-addressed PNGs published by .github/workflows/testplot*.yml.\n' > README.md
             git add README.md
             git commit -m "init $GALLERY_BRANCH branch"
           fi
@@ -83,7 +162,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "all plots already published; nothing to commit"
           else
-            git commit -m "testplots @ ${GITHUB_SHA}"
+            git commit -m "testplots @ ${HEAD_SHA}"
             git push origin "$GALLERY_BRANCH"
           fi
 
@@ -92,6 +171,7 @@ jobs:
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           GALLERY_BRANCH: ${{ env.GALLERY_BRANCH }}
+          NOTE: ${{ needs.select.outputs.note }}
         with:
           script: |
             const fs = require('fs');
@@ -102,12 +182,11 @@ jobs:
             const lines = [
               `### Test plots for \`${short}\``,
               '',
-              `Rendered by \`tests/integration/testplots.py\`.`,
+              `_${process.env.NOTE || 'rendered by tests/integration/testplots.py'}_`,
               '',
             ];
             for (const rel of paths) {
               const file = rel.split('/').pop();
-              // file is <sha>-<name>.png; strip the sha prefix for the heading
               const name = file.replace(/^[0-9a-f]+-/, '').replace(/\.png$/, '');
               lines.push(`#### ${name}`);
               lines.push('');
