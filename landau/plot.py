@@ -477,14 +477,16 @@ def plot_excess_free_energy(
     legend_fontsize=8,
     linewidth=2,
     color_override=None,
+    convex_hull=True,
 ):
     """Plot excess free energy vs concentration for competing phases.
 
     End-member reference energies are auto-detected per temperature as the
     minimum free energy of any phase that covers c=0 or c=1.  Line phases
     (``AbstractLinePhase`` subclasses) are drawn as scatter points;
-    solution phases as curves.  A dashed black line shows the lower convex
-    hull (common-tangent construction).
+    solution phases as curves.  When ``convex_hull=True``, a dashed black
+    line shows the lower convex hull (common-tangent construction) and the
+    hull vertices are marked with black scatter points.
 
     Args:
         phases: Iterable of Phase objects, each with a ``name`` attribute and
@@ -499,6 +501,8 @@ def plot_excess_free_energy(
         legend_fontsize: Font size for the legend.
         linewidth: Line width for solution-phase curves.
         color_override: Optional ``dict[name -> color]`` overriding default colours.
+        convex_hull: If True, overlay the lower convex hull as a dashed black
+            line and mark the hull vertices with black scatter points.
 
     Returns:
         tuple[matplotlib.figure.Figure, numpy.ndarray]: Figure and 2-D axes array
@@ -552,8 +556,10 @@ def plot_excess_free_energy(
                 all_c.extend(cs.tolist())
                 all_fex.extend(fex.tolist())
 
-        c_hull, f_hull = _lower_convex_hull(all_c, all_fex)
-        ax.plot(c_hull, f_hull, "k--", linewidth=1.2, label="convex hull", zorder=3)
+        if convex_hull:
+            c_hull, f_hull = _lower_convex_hull(all_c, all_fex)
+            ax.plot(c_hull, f_hull, "k--", linewidth=1.2, label="convex hull", zorder=3)
+            ax.scatter(c_hull, f_hull, color="k", s=30, zorder=4)
 
         ax.set_title(f"{T} K")
         ax.set_xlabel("Concentration $c$")
