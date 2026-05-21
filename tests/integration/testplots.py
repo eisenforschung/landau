@@ -9,21 +9,19 @@ landau plot is hard to formalise so we instead post the rendered figures
 on PRs labeled ``testplot`` (or mentioned with ``@testplot``) and review
 them by eye.
 
-Known issue (security / UX trade-off):
+Known issue (UX trade-off):
 
-The ``@testplot`` mention workflow checks out the PR head and runs both
-this script *and* ``.github/scripts/parse_testplot_mention.py`` with the
-repo's ``CLAUDE_CODE_OAUTH_TOKEN`` and a write-scoped ``GITHUB_TOKEN`` in
-scope. That is the classic "pwn request" pattern — an outside contributor
-can put anything in those files and have it run with secrets.
+The ``@testplot`` mention workflow is split into three jobs so PR code
+never runs in the same context as the Haiku OAuth token or a write-scoped
+``GITHUB_TOKEN``: ``parse`` checks out ``main`` (trusted parser, has the
+Claude secret), ``render`` checks out the PR head (untrusted code, no
+secrets, ``contents: read``), and ``publish`` runs no PR code at all.
 
-The natural fix is to run the parser from a trusted ``main`` checkout and
-render PR code in a no-secrets sandbox job. The downside is that the
-parser's allow-list of plot keys is then frozen to ``main``: any PR that
-adds a new plot here can't be exercised via ``@testplot`` until it lands.
-We're leaving the more permissive setup in place for now since the repo
-only takes maintainer-pushed branches; revisit before opening to outside
-contributors.
+The cost of that split is that the parser's allow-list of plot keys is
+frozen to ``main``. A PR that adds a new plot here can't be exercised
+via ``@testplot`` until the parser allow-list on ``main`` is updated to
+know the new key. The workaround is to land a small parser-only PR
+first, then the plot PR.
 """
 from __future__ import annotations
 
