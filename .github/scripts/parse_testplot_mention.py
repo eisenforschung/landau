@@ -28,9 +28,15 @@ POLY_METHODS = ["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "seg
 SYSTEM = f"""You translate informal `@testplot` mentions in GitHub PR comments
 into arguments for `tests/integration/testplots.py`.
 
-The script renders reference phase diagrams. Its relevant flags are:
+The script renders reference phase diagrams. All multi-valued flags
+cross-product, so `--poly-method a b --tielines on off` against four 2D
+plots renders 4 x 2 x 2 = 16 figures. Be generous: if the user says
+"everything" or names a plural ("methods", "tielines on and off"), pass
+every matching value rather than picking one.
 
-  --only {{{','.join(PLOT_NAMES)}}} ...
+Flags:
+
+  --only {{{','.join(PLOT_NAMES)}}} [...]
         restrict to a subset of plots. Plot keys:
           1d_T         : 1D temperature diagram (pure-A fcc/hcp/liquid line phases)
           1d_mu        : 1D chemical-potential diagram (hcp vs fcc isothermal)
@@ -39,11 +45,13 @@ The script renders reference phase diagrams. Its relevant flags are:
           2d_toy       : 2D c-T diagram (regular-solution liquid + intermediate solid)
           2d_toy_mu    : 2D T-mu diagram (same phases as 2d_toy)
 
-  --poly-method {{{','.join(POLY_METHODS)}}}
-        polygon-construction method for 2D plots (default: library default).
+  --poly-method {{{','.join(POLY_METHODS)}}} [...]
+        one or more polygon-construction methods, cross-producted over the
+        2D plots. Omit entirely to use the library default.
 
-  --tielines / --no-tielines
-        draw tielines on 2D c-T diagrams (default: on; only affects 2d_basics / 2d_toy).
+  --tielines {{on,off}} [...]
+        one or more tieline modes, cross-producted over 2D c-T plots
+        (only affects 2d_basics / 2d_toy). Default: on.
 
 Mapping conventions:
   - "1d T" / "1D temperature" -> --only 1d_T
@@ -53,9 +61,12 @@ Mapping conventions:
   - "2d basics" -> 2d_basics 2d_basics_mu ; "2d basics c" -> 2d_basics
   - "2d toy" -> 2d_toy 2d_toy_mu ; "2d toy mu" -> 2d_toy_mu
   - "fasttsp" / "fast tsp" -> --poly-method fasttsp
-  - "segment fasttsp" / "segment-fasttsp" -> --poly-method segment-fasttsp
-  - "tielines off" / "no tielines" -> --no-tielines
-  - bare `@testplot` with no other directives -> no extra args (renders everything)
+  - "all tsp methods" / "tsp methods" -> --poly-method tsp fasttsp segment-tsp segment-fasttsp
+  - "segment methods" / "segment tsp methods" -> --poly-method segment-tsp segment-fasttsp
+  - "all poly methods" / "every poly-method" -> --poly-method concave segments fasttsp tsp segment-fasttsp segment-tsp
+  - "tielines off" / "no tielines" -> --tielines off
+  - "with and without tielines" / "both tieline modes" -> --tielines on off
+  - "everything" / "all plots" / bare `@testplot` -> no extra args (renders every plot once)
 
 Respond with a single JSON object and NOTHING else (no prose, no code fences):
 
@@ -81,7 +92,12 @@ def _validate(payload: dict) -> dict:
     args = payload.get("args", [])
     if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
         raise ValueError(f"args must be a list of strings, got {args!r}")
-    allowed_values = set(PLOT_NAMES) | set(POLY_METHODS) | {"--only", "--poly-method", "--tielines", "--no-tielines"}
+    allowed_values = (
+        set(PLOT_NAMES)
+        | set(POLY_METHODS)
+        | {"on", "off"}
+        | {"--only", "--poly-method", "--tielines"}
+    )
     for a in args:
         if a.startswith("--"):
             if a not in allowed_values:

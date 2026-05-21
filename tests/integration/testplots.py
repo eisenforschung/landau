@@ -12,6 +12,7 @@ them by eye.
 from __future__ import annotations
 
 import argparse
+import itertools
 from pathlib import Path
 
 import matplotlib
@@ -26,6 +27,7 @@ import landau.phases as ldp
 import landau.plot as lpl
 
 POLY_METHODS = ["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"]
+TIELINE_VALUES = ["on", "off"]
 
 
 def _save(fig, out_dir: Path, name: str, suffix: str = "") -> Path:
@@ -34,6 +36,24 @@ def _save(fig, out_dir: Path, name: str, suffix: str = "") -> Path:
     fig.savefig(path, dpi=120, bbox_inches="tight")
     plt.close(fig)
     return path
+
+
+def _title_suffix(poly_method: str | None = None, tielines: bool = True) -> str:
+    parts = []
+    if poly_method:
+        parts.append(poly_method)
+    if not tielines:
+        parts.append("no tielines")
+    return f" [{', '.join(parts)}]" if parts else ""
+
+
+def _file_suffix(poly_method: str | None = None, tielines: bool = True) -> str:
+    parts = []
+    if poly_method:
+        parts.append(poly_method)
+    if not tielines:
+        parts.append("notielines")
+    return "_" + "_".join(parts) if parts else ""
 
 
 def plot_1d_T(out_dir: Path, **_) -> Path:
@@ -85,8 +105,8 @@ def plot_2d_basics(out_dir: Path, poly_method: str | None = None, tielines: bool
 
     fig, ax = plt.subplots(figsize=(6, 5))
     lpl.plot_phase_diagram(df, ax=ax, tielines=tielines, poly_method=poly_method)
-    ax.set_title(f"2D c-T diagram (hcp / fcc / liquid ideal solutions){_poly_suffix(poly_method)}")
-    return _save(fig, out_dir, "2d_basics_phase_diagram", _file_suffix(poly_method))
+    ax.set_title(f"2D c-T diagram (hcp / fcc / liquid ideal solutions){_title_suffix(poly_method, tielines)}")
+    return _save(fig, out_dir, "2d_basics_phase_diagram", _file_suffix(poly_method, tielines))
 
 
 def plot_2d_basics_mu(out_dir: Path, poly_method: str | None = None, **_) -> Path:
@@ -107,7 +127,7 @@ def plot_2d_basics_mu(out_dir: Path, poly_method: str | None = None, **_) -> Pat
 
     fig, ax = plt.subplots(figsize=(6, 5))
     lpl.plot_mu_phase_diagram(df, ax=ax, poly_method=poly_method)
-    ax.set_title(rf"2D T-$\mu$ diagram (hcp / fcc / liquid ideal solutions){_poly_suffix(poly_method)}")
+    ax.set_title(rf"2D T-$\mu$ diagram (hcp / fcc / liquid ideal solutions){_title_suffix(poly_method)}")
     return _save(fig, out_dir, "2d_basics_mu_phase_diagram", _file_suffix(poly_method))
 
 
@@ -146,8 +166,8 @@ def plot_2d_toy(out_dir: Path, poly_method: str | None = None, tielines: bool = 
 
     fig, ax = plt.subplots(figsize=(6, 5))
     lpl.plot_phase_diagram(df, ax=ax, tielines=tielines, poly_method=poly_method)
-    ax.set_title(f"2D c-T diagram (regular-solution liquid + intermediate solid){_poly_suffix(poly_method)}")
-    return _save(fig, out_dir, "2d_toy_phase_diagram", _file_suffix(poly_method))
+    ax.set_title(f"2D c-T diagram (regular-solution liquid + intermediate solid){_title_suffix(poly_method, tielines)}")
+    return _save(fig, out_dir, "2d_toy_phase_diagram", _file_suffix(poly_method, tielines))
 
 
 def plot_2d_toy_mu(out_dir: Path, poly_method: str | None = None, **_) -> Path:
@@ -185,25 +205,20 @@ def plot_2d_toy_mu(out_dir: Path, poly_method: str | None = None, **_) -> Path:
 
     fig, ax = plt.subplots(figsize=(6, 5))
     lpl.plot_mu_phase_diagram(df, ax=ax, poly_method=poly_method)
-    ax.set_title(rf"2D T-$\mu$ diagram (regular-solution liquid + intermediate solid){_poly_suffix(poly_method)}")
+    ax.set_title(rf"2D T-$\mu$ diagram (regular-solution liquid + intermediate solid){_title_suffix(poly_method)}")
     return _save(fig, out_dir, "2d_toy_mu_phase_diagram", _file_suffix(poly_method))
 
 
-def _poly_suffix(poly_method: str | None) -> str:
-    return f" [{poly_method}]" if poly_method else ""
-
-
-def _file_suffix(poly_method: str | None) -> str:
-    return f"_{poly_method}" if poly_method else ""
-
-
+# Each plot maps to (function, kwargs it actually consumes). 1D plots ignore
+# poly_method and tielines, so cross-product iteration over them dedupes
+# automatically instead of re-rendering identical files.
 PLOTS = {
-    "1d_T": plot_1d_T,
-    "1d_mu": plot_1d_mu,
-    "2d_basics": plot_2d_basics,
-    "2d_basics_mu": plot_2d_basics_mu,
-    "2d_toy": plot_2d_toy,
-    "2d_toy_mu": plot_2d_toy_mu,
+    "1d_T":         (plot_1d_T,         ()),
+    "1d_mu":        (plot_1d_mu,        ()),
+    "2d_basics":    (plot_2d_basics,    ("poly_method", "tielines")),
+    "2d_basics_mu": (plot_2d_basics_mu, ("poly_method",)),
+    "2d_toy":       (plot_2d_toy,       ("poly_method", "tielines")),
+    "2d_toy_mu":    (plot_2d_toy_mu,    ("poly_method",)),
 }
 
 
@@ -218,28 +233,37 @@ def main() -> None:
     parser.add_argument(
         "--only",
         choices=sorted(PLOTS),
-        nargs="*",
-        help="restrict to a subset of plots",
+        nargs="+",
+        help="restrict to a subset of plots (default: all)",
     )
     parser.add_argument(
         "--poly-method",
         choices=POLY_METHODS,
+        nargs="+",
         default=None,
-        help="polygon-construction method passed to 2D plot_phase_diagram / plot_mu_phase_diagram",
+        help="one or more polygon-construction methods to cross-product over the 2D plots "
+             "(default: library default, single rendering)",
     )
     parser.add_argument(
         "--tielines",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="draw tielines on 2D c-T diagrams (default: on)",
+        choices=TIELINE_VALUES,
+        nargs="+",
+        default=["on"],
+        help="tieline modes to cross-product over 2D c-T plots: 'on', 'off', or both (default: on)",
     )
     args = parser.parse_args()
 
     names = args.only or list(PLOTS)
-    kwargs = {"poly_method": args.poly_method, "tielines": args.tielines}
+    poly_methods = args.poly_method if args.poly_method else [None]
+    tielines = [v == "on" for v in args.tielines]
+    axes = {"poly_method": poly_methods, "tielines": tielines}
+
     for name in names:
-        path = PLOTS[name](args.out, **kwargs)
-        print(f"wrote {path}")
+        fn, uses = PLOTS[name]
+        for combo in itertools.product(*(axes[k] for k in uses)):
+            call_kwargs = dict(zip(uses, combo))
+            path = fn(args.out, **call_kwargs)
+            print(f"wrote {path}")
 
 
 if __name__ == "__main__":
