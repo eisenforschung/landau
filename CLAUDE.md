@@ -45,161 +45,148 @@ These are project-specific preferences distilled from past PR/issue feedback. So
 - `.hypothesis/`, `_version.py`, stray top-level scripts, duplicate exploratory files (PR #71, #94). Check for duplicates of what you are about to add before pushing.
 
 ### Pandas 2/3 compatibility (hard constraint)
-(Historical context is in "Recent Important Changes" below.)
 - All `groupby().apply()` calls must pass `include_groups=False`.
 - Code must work on both pandas 2 and 3. Do not drop pandas 2 (PR #93, #113).
+- The fix in commit `ae0a455` replaced deprecated `include_groups=True`; regressions are pinned in `tests/regression/test_single_group_apply.py` and `test_cluster_phase_pandas3.py`.
 
 ## Development Setup
 
-### Python Version
-- **Supported**: Python 3.11, 3.12, 3.13
-- **Required**: Python >=3.11,<3.14 (from pyproject.toml)
-
-### Installation
-
-```bash
-# Development install with all test dependencies
-pip install -e .[test,constraints,fast-tsp,python-tsp]
-
-# Minimal install
-pip install -e .
-
-# Build distributions
-python -m build --sdist
-```
-
-### Code Style
-
-The project uses **Ruff** and **Flake8** for code quality:
-- **Max line length**: 120 characters
-- Configuration: `.flake8` and `pyproject.toml` (`[tool.ruff]` section)
+- Python `>=3.11,<3.14` (`pyproject.toml`).
+- Install: `pip install -e .[test,constraints,fast-tsp,python-tsp]`. Optional extras: `ase`, `docs`, `python-tsp`, `fast-tsp`, `constraints` (`polyfit`).
+- Lint: Ruff, line length 120 (`pyproject.toml [tool.ruff]`). There is no `.flake8` in the repo currently.
+- TSP / polyfit / ASE deps gate behind `pyiron_snippets.import_alarm.ImportAlarm`, so importing the relevant module without the extra raises only at instantiation.
 
 ## Testing
 
-### Running Tests
-
 ```bash
-# All tests
-pytest
-
-# Single test file
-pytest tests/unit/test_calculate.py
-
-# Single test function
-pytest tests/unit/test_calculate.py::test_function_name
-
-# Tests matching a pattern
-pytest -k "pattern_name"
-
-# With verbose output
-pytest -v
+pytest                                          # full suite
+pytest tests/unit/test_calculate.py             # one file
+pytest tests/unit/test_calculate.py::test_foo   # one test
+pytest -k pattern                               # by name
 ```
 
-### Test Organization
-
-- **Unit tests**: `tests/unit/` — test individual components
-- **Regression tests**: `tests/regression/` — test against known issues (e.g., pandas groupby compatibility)
-- **Property-based tests**: Uses **Hypothesis** for generating test cases
+Layout:
+- `tests/unit/` — per-module: `test_calculate.py`, `test_phases.py`, `test_poly.py`, `test_refine.py`, `test_resample.py`, `test_softplus.py`, `test_whitney.py`; subdirs `interpolate/` (`test_g_calphad.py`, `test_polyfit.py`, `test_redlich_kister.py`, `test_sgte.py`, `test_softplus_fit.py`, `test_stitched_fit.py`), `phases/` (`test_ase.py`, `test_vectorize.py`), `plot/` (`test_axis.py`, `test_colors.py`, `test_polygons.py`).
+- `tests/regression/` — `test_issue_1.py`, `test_issue_51.py`, `test_pandas_groupby.py`, `test_single_group_apply.py`, `test_cluster_phase_pandas3.py`.
+- `tests/integration/testplots.py` — **not a pytest test**; a render script that writes phase-diagram PNGs to `tests/integration/_plots/`. Triggered by the `testplot` label (`.github/workflows/testplot.yml`) or by `@testplot ...` comments (`testplot-mention.yml`, parser uses Haiku to map free-text to `--only`/`--poly-method`/`--tielines` flags against an allow-list frozen on `main`; see PR #149 for the security split). Images are pushed to the `testplots` gallery branch and inlined into a PR comment.
+- `tests/conftest.py` provides shared `two_phase_ideal` / `three_phase_regular_solution` phase fixtures.
+- Uses **Hypothesis** for property-based tests; optional-dep tests use module-level `pytest.importorskip` (PR #111), not `try/except`.
 
 ## Architecture
 
-### Core Package Structure
+### Module layout
 
-**`landau/phases.py`** — Phase definitions (abstract base classes and implementations)
-- `Phase` — Abstract base for all phases
-- `AbstractLinePhase` — Base for fixed-concentration phases
-- `LinePhase`, `TemperatureDependentLinePhase` — Simple line phases
-- `IdealSolution`, `RegularSolution` — Solution models
-- `InterpolatingPhase`, `SlowInterpolatingPhase` — Interpolation-based phases
-- `AbstractPointDefect`, `ConstantPointDefect`, `PointDefectSublattice`, `PointDefectedPhase` — Point defect handling
+**`landau/phases/`** — phase definitions (subpackage; split from `phases.py` per PR #112). Re-exported from `landau/__init__.py`.
+- `phases/__init__.py` — `Phase` (ABC), `AbstractLinePhase`, `LinePhase`, `TemperatureDependentLinePhase` (alias `TemperatureDepandantLinePhase` kept for back-compat), `IdealSolution`, `RegularSolution`, `InterpolatingPhase`, `SlowInterpolatingPhase`, `AbstractPointDefect`, `ConstantPointDefect`, `PointDefectSublattice`, `PointDefectedPhase`.
+- `phases/asewrapper.py` — `AsePhase(AbstractLinePhase)` wrapping `ase.thermochemistry.ThermoChem`. Compares/hashes by `pickle.dumps(thermochem)` so two instances from equivalent inputs are equal. Falls back from `get_helmholtz_energy` to `get_gibbs_energy` (1 atm default). `atoms_per_formula` divides ASE's energy so the result is per atom. Splitting this further is open (#137).
 
-**`landau/interpolate/`** — Subpackage for interpolation methods
-- `interpolate/basic.py` — Core interpolators
-  - `Interpolator` — Base class
-  - `TemperatureInterpolator`, `ConcentrationInterpolator` — Dimension-specific interpolators
-  - `PolyFit` — Polynomial fitting
-  - `SGTE` — Gibbs energy standard model
-  - `RedlichKister` — Thermodynamic model implementation
-  - `StitchedFit` — Combines multiple interpolators
-- `interpolate/softplus.py` — Smoothed step interpolation
-  - `SoftplusFit` — Neural network-inspired smooth transitions
+**`landau/interpolate/`** — interpolation strategies.
+- `basic.py` — `Interpolator` (ABC), `TemperatureInterpolator`, `ConcentrationInterpolator`, `PolyFit`, `SGTE`, `RedlichKister` (+ `RedlichKisterInterpolation` helper), `StitchedFit`, `G_calphad` standalone fn.
+- `softplus.py` — `SoftplusFit` smooth-step.
+- `whitney.py` — `WhitneyRBFInterpolator` (sklearn-style estimator) and `WhitneyTemperatureInterpolator`. Used for Whitney-extension RBF interpolation that handles convex-hull projection.
 
-**`landau/calculate.py`** — Core thermodynamic calculations
+**`landau/calculate.py`** — core thermodynamic calculations.
+- `calc_phase_diagram(phases, Ts, mu=..., refine=True, ...)` — main entry point that builds the raw `(T, mu, phase, c, phi)` dataframe.
+- `refine_phase_diagram(pdf, phases, min_c, max_c)` — orchestrator over a sequence of `Refiner` instances (defaults via `landau.refine.default_refiners`).
+- `guess_mu_range(phases, T, samples, tolerance=1e-2)` — autodetect mu sampling window.
+- `cluster_T_c` / `cluster_T_c_mu` / `cluster` — agglomerative clustering for collapsing co-located transitions.
+- `get_transitions(df)` — extract phase-boundary rows.
+- Private `_join_phase_unit` / `_split_phase_unit` shared with `poly.py` / `plot.py` (PR #132).
 
-**`landau/plot.py`** — Phase diagram plotting
-- `plot_phase_diagram()` — Main plotting function
+**`landau/refine.py`** — phase-boundary refinement strategies (PR #115 introduced the `Refiner` API).
+- `Refiner` ABC: subclasses implement `propose(df, phases)` + `solve(candidate)` → `RefinedPoint` / `RefinedMiscibilityGap`. Base `run()` drops dominated/negative-T rows and packages output rows.
+- Shipped refiners: `ScanRefiner` (1-D bisection between disagreeing samples), `DelaunayLineRefiner` (one transition per two-phase simplex), `DelaunayTripleRefiner` (triple points from three-phase simplices; dedups via enclosing-simplex extents, PR #144), `ClausiusClapeyronRefiner` (predictor-corrector trace of a two-phase coexistence line, both T directions), `MiscibilityGapRefiner` (same idea for intra-phase miscibility splits). The last two share `_CCBase`.
+- `default_refiners(df)` picks the set based on which of `mu`/`T` is sampled.
+- A `boundary_id` column tagging refined rows by the line they belong to is planned (#124).
 
-**`landau/poly.py`** — Polynomial utilities and helpers
+**`landau/plot.py`** — phase-diagram plotting.
+- `plot_phase_diagram` (c–T), `plot_mu_phase_diagram` (μ–T), `plot_1d_mu_phase_diagram`, `plot_1d_T_phase_diagram`. The mu/c variants share `_plot_phase_diagram` + the `_set_axis_for` helper (PR #122). Generalising the 1D/2D split is open (#34, #60).
+- `get_polygons(df, poly_method=...)` / `plot_polygons` / `get_phase_colors(phase_names, override=None)`.
+- `cluster_phase(df)` is the pandas-groupby site that has historically broken on pandas 3 — keep `include_groups=False` (PR #93, #113).
 
-**`landau/resample.py`** — Data resampling and interpolation utilities
+**`landau/poly.py`** — point-cloud → matplotlib polygon conversion (per phase region).
+- `AbstractPolyMethod` (dataclass, `min_c_width=0.01`); concrete: `Concave`, `Segments`. With optional `python-tsp`/`fast-tsp` extras, `PythonTsp` / `SegmentPythonTsp` / `FastTsp` / `SegmentFastTsp` register themselves.
+- `handle_poly_method(poly_method, **kwargs)` resolves a string or `AbstractPolyMethod` against the active registry; the default falls back through `segment-fasttsp → segment-tsp → fasttsp → tsp → concave` based on what's installed.
+- `_trim_overlaps` (called from `AbstractPolyMethod.apply`) lives here too — buffer overlap trimming + apex residual cleanup (PR #127, #130), guarded against shapely `GEOSException` (PR #147).
 
-### Key Design Patterns
+**`landau/resample.py`** — bootstrap-style border resampling (`resample_borders`, `RandomlyShiftedPhase`).
 
-1. **Abstract Base Classes with dataclasses**: Phases use `@dataclass(frozen=True)` with ABC for immutability and interface definition
-2. **Interpolator Abstraction**: Multiple interpolation strategies (SGTE, PolyFit, RedlichKister, SoftplusFit) implement a common interface
-3. **Semi-grand Potential**: Core thermodynamic property calculated by phases for equilibrium determination
+### Key design patterns
 
-## Key Dependencies
-
-- **Scientific computing**: numpy, scipy, scikit-learn
-- **Data handling**: pandas (>=2.2), shapely
-- **Visualization**: matplotlib, seaborn
-- **Infrastructure**: pyiron_snippets
-- **Optional**: polyfit, python-tsp, fast-tsp (for TSP-based optimization)
-
-### Recent Important Changes
-
-- **Pandas 3.0 compatibility fix**: Replaced deprecated `include_groups=True` in `groupby.apply` (commit ae0a455)
-- **Interpolate subpackage split**: Recent refactoring split interpolation into its own subpackage (commit d7f679a)
+- **Frozen-dataclass + ABC** for all `Phase` / `Interpolator` / `Refiner` types — instances are immutable, structurally hashable.
+- **Semi-grand potential** is the central thermodynamic quantity; equilibrium = argmin over phases.
+- **Interpolator strategy** plugged into `InterpolatingPhase` / `SlowInterpolatingPhase` decouples the analytical model (SGTE, RedlichKister, PolyFit, Softplus, Whitney) from the phase wrapper.
+- **Refiner strategy** plugged into `refine_phase_diagram` decouples "where might a transition live?" from "find the exact location".
 
 ## Documentation
 
-- **Sphinx-based**: Located in `docs/` directory
-- **Build tool**: ReadTheDocs (Python 3.12)
-- **Extensions**: myst-nb (Jupyter notebook integration), sphinx-autodoc-typehints
+Sphinx in `docs/` (`api/`, `notebooks/`, `index.md`, `installation.md`). Built by ReadTheDocs on Python 3.12. Extensions: `myst-nb`, `sphinx-autodoc-typehints`, `furo`. Notebooks under `notebooks/` (`Basics`, `IdealSolution`, `Intermetallics`, `ClausiusClapeyron`, `PointDefects`, `Toy`, `ASE/{EMT_CuAg,FCC_BCC_Fe,Hydrate}`, `MgCa/...`); commit notebooks **with executed outputs only**.
 
-## Git Conventions
+Local build:
+```bash
+pip install -e .[docs]
+sphinx-build -b html docs docs/_build/html
+```
 
-- Main branch: `main`
-- Use conventional commits when possible
-- Reference issues in commit messages
+## Design themes / open scope (issue tracker)
 
-## Publication & Citation
+Cheat sheet of what's been considered. Fetch the issue before re-litigating.
 
-If modifying this code for research, cite:
+**Active design themes**
+- **Phase subpackage cleanup** (#137) — `phases/__init__.py` lumps everything together; split is desired.
+- **Refiner extensions** (#124 boundary_id, #142 closed via #144 triple-point dedup). `ClausiusClapeyronRefiner` and `MiscibilityGapRefiner` are recent; not on by default in `default_refiners`.
+- **Polygon plotting robustness** (#125 boundary-Voronoi vs simple-subtract decided in favour of subtract+apex-cleanup, see #127/#130; #38 closed by #147). Hypothesis strategies for polygon tests are weak (#70).
+- **Pandas 2/3 compat** — hard constraint. Every `groupby().apply()` needs `include_groups=False`. Recent regressions covered in `tests/regression/test_single_group_apply.py` (PR #143).
+- **API generalisation** (#34, #60) — plot_{mu,}_phase_diagram axes-as-arg refactor and the broader 2.0 plotting/calculate rearrangement.
+- **Performance** (#23) — `SlowInterpolatingPhase` needs a precomputed interpolation pass; (#33) fast Legendre transforms.
+- **Repo layout** (#62) — flat → `src/` layout is wanted.
+- **Phase extras** — `QuasiChemicalPhase` landed (PR #123, closes #81). Entropy/enthalpy methods on phases still open (#39). TDB import scoping in progress (#138). Analytic SRO models still open (#81 still tracking other models).
+
+**Decisions already landed (don't redo)**
+- `landau/phases.py` split into a `landau/phases/` subpackage with `asewrapper.py` (PR #112).
+- Refiner strategy (PR #115), `_set_axis_for` extraction (PR #122), `_join_phase_unit` DRY (PR #132).
+- Symmetric buffer trimming with apex cleanup landed; boundary-Voronoi alternative explicitly **rejected** (PR #129 closed, #130 merged).
+- `testplot` label + `@testplot` mention workflow (PR #103, #148, #149). PR-controlled code is sandboxed away from repo write secrets.
+
+**Out-of-scope / explicit non-goals**
+- Dropping pandas 2 support — *do not* (PR #93, #113).
+- Speculative / "might be useful" work parks rather than lands (PR #129).
+- Underscored module names; use `asewrapper`, not `ase_wrapper` (PR #68).
+
+## Common Tasks
+
+### Add a new phase type
+1. Subclass `Phase` (or `AbstractLinePhase`) as a `@dataclass(frozen=True)` in `landau/phases/__init__.py` (or a new module under `landau/phases/`).
+2. Implement `semigrand_potential(T, dmu)` and `concentration(T, dmu)`.
+3. Add to `landau/phases/__init__.py:__all__` *and* re-export from `landau/__init__.py` if it's user-facing.
+4. Tests: at minimum a `tests/unit/test_phases.py` case checking scalar/array input shapes plus a tight numerical assertion (loose `atol=0.05` "it ran" tests get rejected; see Working Style).
+
+### Add an interpolation method
+1. New class in `landau/interpolate/basic.py` (or a new module) inheriting `Interpolator` / `TemperatureInterpolator` / `ConcentrationInterpolator`.
+2. Implement the interpolation interface.
+3. Export from `landau/interpolate/__init__.py:__all__`.
+4. Add Hypothesis round-trip tests (random coeffs in → `fit()` → coeffs out) under `tests/unit/interpolate/` (PR #82).
+
+### Add a refiner
+1. New `Refiner` subclass in `landau/refine.py` with `propose` + `solve`.
+2. Add to `landau/refine.py:__all__`.
+3. Decide whether it belongs in `default_refiners` (most don't; opt-in unless cheap).
+4. Tests in `tests/unit/test_refine.py` against a small known-transition fixture; assert exact rows, not just non-empty.
+
+### Render the visual-review plots
+```bash
+python tests/integration/testplots.py --only 2d_basics 2d_toy --poly-method fasttsp
+```
+Output: `tests/integration/_plots/*.png`. Inline-attach the PNG to a PR comment when diagnosing a plotting change.
+
+## Citation
+
 ```
 @article{poul2025automated,
     title = {Automated generation of structure datasets for machine learning potentials and alloys},
     journal = {npj Computational Materials},
     author={Poul, Marvin and Huber, Liam and Neugebauer, Jörg},
-    volume = {11},
-    number = {1},
-    pages = {174},
-    year={2025},
+    volume = {11}, number = {1}, pages = {174}, year={2025},
     doi = {10.1038/s41524-025-01669-4},
 }
-```
-
-## Common Tasks
-
-### Adding a New Phase Type
-
-1. Inherit from `Phase` or `AbstractLinePhase`
-2. Implement `semigrand_potential()` and `concentration()` methods
-3. Add to `landau/__init__.py` exports
-4. Add tests in `tests/unit/` or `tests/regression/`
-
-### Adding an Interpolation Method
-
-1. Create a class inheriting from `Interpolator` in `landau/interpolate/basic.py`
-2. Implement the interpolation interface
-3. Export from `landau/interpolate/__init__.py`
-4. Add comprehensive tests with various data inputs
-
-### Running Documentation Locally
-
-```bash
-pip install -e .[docs]
-cd docs
-sphinx-build -b html . _build/html
 ```
