@@ -11,17 +11,18 @@ them by eye.
 
 Known issue (UX trade-off):
 
-The ``@testplot`` mention workflow is split into three jobs so PR code
-never runs in the same context as the Haiku OAuth token or a write-scoped
-``GITHUB_TOKEN``: ``parse`` checks out ``main`` (trusted parser, has the
-Claude secret), ``render`` checks out the PR head (untrusted code, no
-secrets, ``contents: read``), and ``publish`` runs no PR code at all.
+Both the ``testplot`` label workflow and the ``@testplot`` mention
+workflow are split into three jobs so PR code never runs in the same
+context as the Haiku OAuth token or a write-scoped ``GITHUB_TOKEN``:
+``select`` / ``parse`` checks out ``main`` (trusted, has the Claude
+secret), ``render`` checks out the PR head (untrusted code, no secrets,
+``contents: read``), and ``publish`` runs no PR code at all.
 
-The cost of that split is that the parser's allow-list of plot keys is
+The cost of that split is that the Haiku allow-list of plot keys is
 frozen to ``main``. A PR that adds a new plot here can't be exercised
-via ``@testplot`` until the parser allow-list on ``main`` is updated to
-know the new key. The workaround is to land a small parser-only PR
-first, then the plot PR.
+via ``@testplot`` or the diff-aware label until the allow-lists on
+``main`` are updated to know the new key. The workaround is to land a
+small parser-only PR first, then the plot PR.
 """
 from __future__ import annotations
 
