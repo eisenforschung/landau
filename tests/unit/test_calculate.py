@@ -64,7 +64,7 @@ def test_cluster_T_c_single_blob():
         "T": np.linspace(300, 400, 10),
         "c": np.linspace(0.0, 0.2, 10),
     })
-    labels = cluster_T_c(dd)
+    labels = cluster_T_c(dd, distance_threshold=0.5)
     assert labels.nunique() == 1
 
 
@@ -72,13 +72,13 @@ def test_cluster_T_c_two_blobs():
     # Two diagonal stripes separated by a gap > 0.5 in c
     T = np.concatenate([np.linspace(300, 400, 10), np.linspace(300, 400, 10)])
     c = np.concatenate([np.linspace(0.0, 0.1, 10), np.linspace(0.7, 0.8, 10)])
-    labels = cluster_T_c(pd.DataFrame({"T": T, "c": c}))
+    labels = cluster_T_c(pd.DataFrame({"T": T, "c": c}), distance_threshold=0.5)
     assert labels.nunique() == 2
 
 
 def test_cluster_T_c_empty():
     dd = pd.DataFrame({"T": [], "c": []})
-    labels = cluster_T_c(dd)
+    labels = cluster_T_c(dd, distance_threshold=0.5)
     assert len(labels) == 0
     assert labels.dtype.kind == "i"
 
@@ -91,7 +91,7 @@ def test_cluster_T_c_mu_inf_get_own_labels():
         "c": [0.0, 0.0, 1.0, 1.0],
         "mu": [-np.inf, -np.inf, np.inf, np.inf],
     })
-    labels = cluster_T_c_mu(dd)
+    labels = cluster_T_c_mu(dd, distance_threshold=0.5)
     pos_label = labels.loc[dd["mu"] == +np.inf].iloc[0]
     neg_label = labels.loc[dd["mu"] == -np.inf].iloc[0]
     assert labels.loc[dd["mu"] == +np.inf].nunique() == 1
@@ -105,13 +105,13 @@ def test_cluster_T_c_mu_degenerate_T():
         "c": [0.1, 0.2, 0.8, 0.9],
         "mu": [-0.1, 0.0, 0.0, 0.1],
     })
-    labels = cluster_T_c_mu(dd)
+    labels = cluster_T_c_mu(dd, distance_threshold=0.5)
     assert len(labels) == 4
 
 
 def test_cluster_T_c_mu_empty():
     dd = pd.DataFrame({"T": [], "c": [], "mu": []})
-    labels = cluster_T_c_mu(dd)
+    labels = cluster_T_c_mu(dd, distance_threshold=0.5)
     assert len(labels) == 0
     assert labels.dtype.kind == "i"
 

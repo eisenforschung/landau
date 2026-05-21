@@ -241,10 +241,7 @@ def _rescale_T(t):
     return t
 
 
-_DEFAULT_CLUSTER_THRESHOLD = 0.5
-
-
-def _agglomerative_clusterer(distance_threshold=_DEFAULT_CLUSTER_THRESHOLD):
+def _agglomerative_clusterer(distance_threshold):
     return AgglomerativeClustering(
         n_clusters=None,
         distance_threshold=distance_threshold,
@@ -252,15 +249,15 @@ def _agglomerative_clusterer(distance_threshold=_DEFAULT_CLUSTER_THRESHOLD):
     )
 
 
-def cluster_T_c(dd, eps=0.01, distance_threshold=_DEFAULT_CLUSTER_THRESHOLD) -> pd.Series:
+def cluster_T_c(dd, eps=0.01, *, distance_threshold) -> pd.Series:
     """Cluster points by (T, c) coordinates; used by cluster_phase.
 
     Args:
         dd: DataFrame with columns 'T' and 'c'.
         eps: Unused; kept for API compatibility.
         distance_threshold: Agglomerative clustering cut-off in normalised (T, c) space.
-            Smaller values split more aggressively; larger values merge more. Default 0.5
-            was hand-tuned for 2D T-c diagrams — lower it (e.g. 0.2) when disconnected
+            Smaller values split more aggressively; larger values merge more. 0.5 was
+            hand-tuned for 2D T-c diagrams — lower it (e.g. 0.2) when disconnected
             stable segments within one phase are incorrectly merged.
     """
     if dd.empty:
@@ -270,7 +267,7 @@ def cluster_T_c(dd, eps=0.01, distance_threshold=_DEFAULT_CLUSTER_THRESHOLD) -> 
     return pd.Series(ids, index=dd.index)
 
 
-def cluster_T_c_mu(dd, eps=0.01, distance_threshold=_DEFAULT_CLUSTER_THRESHOLD) -> pd.Series:
+def cluster_T_c_mu(dd, eps=0.01, *, distance_threshold) -> pd.Series:
     """Cluster points by (T, c, mu); rows with mu=±inf get their own distinct labels.
 
     Used by get_transitions. The mu=±inf rows are border edges from _border_edges
@@ -297,7 +294,7 @@ def cluster_T_c_mu(dd, eps=0.01, distance_threshold=_DEFAULT_CLUSTER_THRESHOLD) 
     return ids
 
 
-def cluster(dd, eps=0.01, use_mu=True, distance_threshold=_DEFAULT_CLUSTER_THRESHOLD):
+def cluster(dd, eps=0.01, use_mu=True, *, distance_threshold):
     """Thin dispatch to cluster_T_c or cluster_T_c_mu; prefer calling those directly."""
     if use_mu:
         return cluster_T_c_mu(dd, eps=eps, distance_threshold=distance_threshold)
@@ -322,7 +319,10 @@ def get_transitions(df):
     # cluster points that are assigned as one transition, because the same transition can appear multiple times in "disconnected" manner in a phase
     # diagram, e.g. a solid solution in contact with the melt interrupted by a higher melting intermetallic
     if not tdf.empty:
-        res = tdf.groupby("transition", group_keys=False).apply(cluster_T_c_mu, include_groups=False)
+        res = tdf.groupby("transition", group_keys=False).apply(
+            lambda g: cluster_T_c_mu(g, distance_threshold=0.5),  # 0.5 hand-tuned
+            include_groups=False,
+        )
         if isinstance(res, pd.DataFrame):
              # sometimes pandas returns a DataFrame instead of a Series when only one group exists
              res = res.stack().reset_index(level=0, drop=True)

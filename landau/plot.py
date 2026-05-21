@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 
-from .calculate import get_transitions, cluster, cluster_T_c, _join_phase_unit, _DEFAULT_CLUSTER_THRESHOLD
+from .calculate import get_transitions, cluster, cluster_T_c, _join_phase_unit
 import landau.poly as poly
 
 
@@ -19,7 +19,7 @@ __all__ = [
 ]
 
 
-def cluster_phase(df, distance_threshold=_DEFAULT_CLUSTER_THRESHOLD):
+def cluster_phase(df, distance_threshold=0.5):  # 0.5 hand-tuned
     """Cluster the stable, single phase regions.
 
     When a (e.g solid solution) phase has multiple disconnected regions of stability, the make_poly and
@@ -51,7 +51,7 @@ def get_polygons(
     df,
     poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
     variables: list[str] | None = None,
-    distance_threshold: float = _DEFAULT_CLUSTER_THRESHOLD,
+    distance_threshold: float = 0.5,  # hand-tuned
     **kwargs,
 ):
     """Turn the stable phase regions in df into polygons.
