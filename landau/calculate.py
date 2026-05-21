@@ -241,30 +241,46 @@ def _rescale_T(t):
     return t
 
 
-def _agglomerative_clusterer():
+_DEFAULT_CLUSTER_THRESHOLD = 0.5
+
+
+def _agglomerative_clusterer(distance_threshold=_DEFAULT_CLUSTER_THRESHOLD):
     return AgglomerativeClustering(
         n_clusters=None,
-        # FIXME: hand-optimized value; smaller values tend to partition the
-        # same transition too often
-        distance_threshold=0.5,
+        distance_threshold=distance_threshold,
         linkage="single",
     )
 
 
-def cluster_T_c(dd, eps=0.01) -> pd.Series:
-    """Cluster points by (T, c) coordinates; used by cluster_phase."""
+def cluster_T_c(dd, eps=0.01, distance_threshold=_DEFAULT_CLUSTER_THRESHOLD) -> pd.Series:
+    """Cluster points by (T, c) coordinates; used by cluster_phase.
+
+    Args:
+        dd: DataFrame with columns 'T' and 'c'.
+        eps: Unused; kept for API compatibility.
+        distance_threshold: Agglomerative clustering cut-off in normalised (T, c) space.
+            Smaller values split more aggressively; larger values merge more. Default 0.5
+            was hand-tuned for 2D T-c diagrams — lower it (e.g. 0.2) when disconnected
+            stable segments within one phase are incorrectly merged.
+    """
     if dd.empty:
         return pd.Series(dtype=np.intp)
     t = _rescale_T(dd["T"])
-    ids = _agglomerative_clusterer().fit_predict(np.transpose([t, dd["c"]]))
+    ids = _agglomerative_clusterer(distance_threshold).fit_predict(np.transpose([t, dd["c"]]))
     return pd.Series(ids, index=dd.index)
 
 
-def cluster_T_c_mu(dd, eps=0.01) -> pd.Series:
+def cluster_T_c_mu(dd, eps=0.01, distance_threshold=_DEFAULT_CLUSTER_THRESHOLD) -> pd.Series:
     """Cluster points by (T, c, mu); rows with mu=±inf get their own distinct labels.
 
     Used by get_transitions. The mu=±inf rows are border edges from _border_edges
     and must not be fed to AgglomerativeClustering.
+
+    Args:
+        dd: DataFrame with columns 'T', 'c', and 'mu'.
+        eps: Unused; kept for API compatibility.
+        distance_threshold: Agglomerative clustering cut-off in normalised (T, c, mu) space.
+            See :func:`cluster_T_c` for tuning guidance.
     """
     if dd.empty:
         return pd.Series(dtype=np.intp)
@@ -272,7 +288,7 @@ def cluster_T_c_mu(dd, eps=0.01) -> pd.Series:
     ids = pd.Series(np.zeros(len(dd), dtype=np.intp), index=dd.index)
     F = np.isfinite(dd["mu"])
     if F.any() and F.sum() >= 2:
-        ids.loc[F] = _agglomerative_clusterer().fit_predict(
+        ids.loc[F] = _agglomerative_clusterer(distance_threshold).fit_predict(
             np.transpose([t.loc[F], dd["c"].loc[F], dd["mu"].loc[F]])
         )
     m = ids.max()
@@ -281,12 +297,12 @@ def cluster_T_c_mu(dd, eps=0.01) -> pd.Series:
     return ids
 
 
-def cluster(dd, eps=0.01, use_mu=True):
+def cluster(dd, eps=0.01, use_mu=True, distance_threshold=_DEFAULT_CLUSTER_THRESHOLD):
     """Thin dispatch to cluster_T_c or cluster_T_c_mu; prefer calling those directly."""
     if use_mu:
-        return cluster_T_c_mu(dd, eps=eps)
+        return cluster_T_c_mu(dd, eps=eps, distance_threshold=distance_threshold)
     else:
-        return cluster_T_c(dd, eps=eps)
+        return cluster_T_c(dd, eps=eps, distance_threshold=distance_threshold)
 
 
 def get_transitions(df):

@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 
-from .calculate import get_transitions, cluster, cluster_T_c, _join_phase_unit
+from .calculate import get_transitions, cluster, cluster_T_c, _join_phase_unit, _DEFAULT_CLUSTER_THRESHOLD
 import landau.poly as poly
 
 
@@ -19,13 +19,19 @@ __all__ = [
 ]
 
 
-def cluster_phase(df):
+def cluster_phase(df, distance_threshold=_DEFAULT_CLUSTER_THRESHOLD):
     """Cluster the stable, single phase regions.
 
     When a (e.g solid solution) phase has multiple disconnected regions of stability, the make_poly and
     make_concave_poly functions give wrong results, because they draw a single polygon.
     Instead this function adds two new columns `phase_unit` and `phase_id` and the latter will always refer to only a
     single connected stability region.  `phase_unit` enumerates disconnected regions of one phase.
+
+    Args:
+        df: DataFrame with columns 'phase', 'T', 'c'.
+        distance_threshold: Passed to :func:`~landau.calculate.cluster_T_c`. Lower values
+            (e.g. 0.2) split more aggressively and are needed when two stable segments of
+            the same phase are close in concentration space.
     """
     # In pandas 3, ``groupby.apply`` collapses inconsistently when the callable returns a
     # ``Series``: with multiple groups the per-group Series get concatenated into one long
@@ -35,7 +41,7 @@ def cluster_phase(df):
     # the callable instead is the documented path that combines consistently across
     # pandas 2 and 3 (see "Flexible apply" in the pandas user guide).
     df["phase_unit"] = df.groupby("phase", group_keys=False).apply(
-        lambda g: cluster_T_c(g).to_frame("phase_unit"),
+        lambda g: cluster_T_c(g, distance_threshold=distance_threshold).to_frame("phase_unit"),
         include_groups=False,
     )["phase_unit"]
     df["phase_id"] = _join_phase_unit(df["phase"], df["phase_unit"])
@@ -45,6 +51,7 @@ def get_polygons(
     df,
     poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
     variables: list[str] | None = None,
+    distance_threshold: float = _DEFAULT_CLUSTER_THRESHOLD,
     **kwargs,
 ):
     """Turn the stable phase regions in df into polygons.
@@ -56,6 +63,9 @@ def get_polygons(
             The method to use for polygon construction.
         variables (list of str, optional):
             The columns in df to use as coordinates for the polygons. Defaults to ["c", "T"].
+        distance_threshold (float, optional):
+            Passed to :func:`cluster_phase`. Lower values split disconnected stable regions
+            more aggressively. Default is 0.5.
         **kwargs:
             Passed to poly.handle_poly_method.
 
@@ -66,7 +76,7 @@ def get_polygons(
     if variables is None:
         variables = ["c", "T"]
     df = df.query("stable").copy()
-    df = cluster_phase(df)
+    df = cluster_phase(df, distance_threshold=distance_threshold)
     if (df.phase_unit == -1).any():
         warn("Clustering of phase points failed for some points, dropping them.")
         df = df.query("phase_unit>=0")
