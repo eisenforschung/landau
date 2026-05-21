@@ -6,7 +6,8 @@ notebooks and saves a single phase-diagram PNG into the output directory
 
 The script is intentionally not a pytest test: the "correctness" of a
 landau plot is hard to formalise so we instead post the rendered figures
-on PRs labeled ``testplot`` and review them by eye.
+on PRs labeled ``testplot`` (or mentioned with ``@testplot``) and review
+them by eye.
 """
 from __future__ import annotations
 
@@ -24,16 +25,18 @@ import landau.interpolate as ldi
 import landau.phases as ldp
 import landau.plot as lpl
 
+POLY_METHODS = ["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"]
 
-def _save(fig, out_dir: Path, name: str) -> Path:
+
+def _save(fig, out_dir: Path, name: str, suffix: str = "") -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / f"{name}.png"
+    path = out_dir / f"{name}{suffix}.png"
     fig.savefig(path, dpi=120, bbox_inches="tight")
     plt.close(fig)
     return path
 
 
-def plot_1d_T(out_dir: Path) -> Path:
+def plot_1d_T(out_dir: Path, **_) -> Path:
     """1D T phase diagram from notebooks/Basics.ipynb (three pure-A phases)."""
     fcca = ldp.LinePhase("fcc", fixed_concentration=0, line_energy=-3.00, line_entropy=1.0 * ldp.kB)
     hcpa = ldp.LinePhase("hcp", fixed_concentration=0, line_energy=-2.975, line_entropy=1.8 * ldp.kB)
@@ -48,7 +51,7 @@ def plot_1d_T(out_dir: Path) -> Path:
     return _save(fig, out_dir, "1d_T_phase_diagram")
 
 
-def plot_1d_mu(out_dir: Path) -> Path:
+def plot_1d_mu(out_dir: Path, **_) -> Path:
     """1D mu phase diagram from notebooks/Basics.ipynb (hcp vs fcc isothermal)."""
     fcca = ldp.LinePhase("fccA", fixed_concentration=0, line_energy=-3.00, line_entropy=1.0 * ldp.kB)
     fccb = ldp.LinePhase("fccB", fixed_concentration=1, line_energy=-2.00, line_entropy=1.1 * ldp.kB)
@@ -65,7 +68,7 @@ def plot_1d_mu(out_dir: Path) -> Path:
     return _save(fig, out_dir, "1d_mu_phase_diagram")
 
 
-def plot_2d_basics(out_dir: Path) -> Path:
+def plot_2d_basics(out_dir: Path, poly_method: str | None = None, tielines: bool = True, **_) -> Path:
     """2D c-T phase diagram (hcp / fcc / liquid ideal solutions) from Basics.ipynb."""
     fcca = ldp.LinePhase("fccA", fixed_concentration=0, line_energy=-3.00, line_entropy=1.0 * ldp.kB)
     fccb = ldp.LinePhase("fccB", fixed_concentration=1, line_energy=-2.00, line_entropy=1.1 * ldp.kB)
@@ -81,12 +84,12 @@ def plot_2d_basics(out_dir: Path) -> Path:
     df = ldc.calc_phase_diagram([hcp, fcc, lqd], Ts, mu=100)
 
     fig, ax = plt.subplots(figsize=(6, 5))
-    lpl.plot_phase_diagram(df, ax=ax, tielines=True)
-    ax.set_title("2D c-T diagram (hcp / fcc / liquid ideal solutions)")
-    return _save(fig, out_dir, "2d_basics_phase_diagram")
+    lpl.plot_phase_diagram(df, ax=ax, tielines=tielines, poly_method=poly_method)
+    ax.set_title(f"2D c-T diagram (hcp / fcc / liquid ideal solutions){_poly_suffix(poly_method)}")
+    return _save(fig, out_dir, "2d_basics_phase_diagram", _file_suffix(poly_method))
 
 
-def plot_2d_basics_mu(out_dir: Path) -> Path:
+def plot_2d_basics_mu(out_dir: Path, poly_method: str | None = None, **_) -> Path:
     """2D T-mu phase diagram (hcp / fcc / liquid ideal solutions) from Basics.ipynb."""
     fcca = ldp.LinePhase("fccA", fixed_concentration=0, line_energy=-3.00, line_entropy=1.0 * ldp.kB)
     fccb = ldp.LinePhase("fccB", fixed_concentration=1, line_energy=-2.00, line_entropy=1.1 * ldp.kB)
@@ -103,12 +106,12 @@ def plot_2d_basics_mu(out_dir: Path) -> Path:
     df = ldc.calc_phase_diagram([hcp, fcc, lqd], Ts, mu=mus)
 
     fig, ax = plt.subplots(figsize=(6, 5))
-    lpl.plot_mu_phase_diagram(df, ax=ax)
-    ax.set_title(r"2D T-$\mu$ diagram (hcp / fcc / liquid ideal solutions)")
-    return _save(fig, out_dir, "2d_basics_mu_phase_diagram")
+    lpl.plot_mu_phase_diagram(df, ax=ax, poly_method=poly_method)
+    ax.set_title(rf"2D T-$\mu$ diagram (hcp / fcc / liquid ideal solutions){_poly_suffix(poly_method)}")
+    return _save(fig, out_dir, "2d_basics_mu_phase_diagram", _file_suffix(poly_method))
 
 
-def plot_2d_toy(out_dir: Path) -> Path:
+def plot_2d_toy(out_dir: Path, poly_method: str | None = None, tielines: bool = True, **_) -> Path:
     """2D c-T diagram with a regular-solution liquid + intermediate solid, from Toy.ipynb."""
     l1 = ldp.TemperatureDependentLinePhase(
         "l0", fixed_concentration=0, temperatures=[1, 750, 1000],
@@ -142,12 +145,12 @@ def plot_2d_toy(out_dir: Path) -> Path:
     df = ldc.calc_phase_diagram([rliq, sol, s3], np.linspace(500, 1000, 40), mu, refine=True)
 
     fig, ax = plt.subplots(figsize=(6, 5))
-    lpl.plot_phase_diagram(df, ax=ax, tielines=True)
-    ax.set_title("2D c-T diagram (regular-solution liquid + intermediate solid)")
-    return _save(fig, out_dir, "2d_toy_phase_diagram")
+    lpl.plot_phase_diagram(df, ax=ax, tielines=tielines, poly_method=poly_method)
+    ax.set_title(f"2D c-T diagram (regular-solution liquid + intermediate solid){_poly_suffix(poly_method)}")
+    return _save(fig, out_dir, "2d_toy_phase_diagram", _file_suffix(poly_method))
 
 
-def plot_2d_toy_mu(out_dir: Path) -> Path:
+def plot_2d_toy_mu(out_dir: Path, poly_method: str | None = None, **_) -> Path:
     """2D T-mu diagram with a regular-solution liquid + intermediate solid, from Toy.ipynb."""
     l1 = ldp.TemperatureDependentLinePhase(
         "l0", fixed_concentration=0, temperatures=[1, 750, 1000],
@@ -181,9 +184,17 @@ def plot_2d_toy_mu(out_dir: Path) -> Path:
     df = ldc.calc_phase_diagram([rliq, sol, s3], np.linspace(500, 1000, 40), mu, refine=True)
 
     fig, ax = plt.subplots(figsize=(6, 5))
-    lpl.plot_mu_phase_diagram(df, ax=ax)
-    ax.set_title(r"2D T-$\mu$ diagram (regular-solution liquid + intermediate solid)")
-    return _save(fig, out_dir, "2d_toy_mu_phase_diagram")
+    lpl.plot_mu_phase_diagram(df, ax=ax, poly_method=poly_method)
+    ax.set_title(rf"2D T-$\mu$ diagram (regular-solution liquid + intermediate solid){_poly_suffix(poly_method)}")
+    return _save(fig, out_dir, "2d_toy_mu_phase_diagram", _file_suffix(poly_method))
+
+
+def _poly_suffix(poly_method: str | None) -> str:
+    return f" [{poly_method}]" if poly_method else ""
+
+
+def _file_suffix(poly_method: str | None) -> str:
+    return f"_{poly_method}" if poly_method else ""
 
 
 PLOTS = {
@@ -210,11 +221,24 @@ def main() -> None:
         nargs="*",
         help="restrict to a subset of plots",
     )
+    parser.add_argument(
+        "--poly-method",
+        choices=POLY_METHODS,
+        default=None,
+        help="polygon-construction method passed to 2D plot_phase_diagram / plot_mu_phase_diagram",
+    )
+    parser.add_argument(
+        "--tielines",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="draw tielines on 2D c-T diagrams (default: on)",
+    )
     args = parser.parse_args()
 
     names = args.only or list(PLOTS)
+    kwargs = {"poly_method": args.poly_method, "tielines": args.tielines}
     for name in names:
-        path = PLOTS[name](args.out)
+        path = PLOTS[name](args.out, **kwargs)
         print(f"wrote {path}")
 
 

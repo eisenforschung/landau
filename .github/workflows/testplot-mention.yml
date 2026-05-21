@@ -1,0 +1,167 @@
+name: testplot-mention
+
+# Render reference phase diagrams in response to an `@testplot` mention in
+# a PR comment. The comment body is piped through Claude Haiku to turn
+# informal directives like "@testplot 2d fasttsp" into CLI flags for
+# tests/integration/testplots.py.
+#
+# Plots are published to the same content-addressed `testplots` gallery
+# branch used by .github/workflows/testplot.yml so a single PR can
+# accumulate diagrams from both the label-driven and mention-driven flows.
+
+on:
+  issue_comment:
+    types: [created]
+
+env:
+  GALLERY_BRANCH: testplots
+
+jobs:
+  render:
+    if: >-
+      github.event.issue.pull_request != null &&
+      contains(github.event.comment.body, '@testplot')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - name: React to the mention
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'eyes',
+            });
+
+      - name: Resolve PR head
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            core.setOutput('sha', pr.data.head.sha);
+            core.setOutput('ref', pr.data.head.ref);
+
+      - name: Checkout PR head
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.pr.outputs.sha }}
+          path: src
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: src/pyproject.toml
+
+      - name: Install
+        working-directory: src
+        run: |
+          pip install -e .[fast-tsp,python-tsp]
+          pip install 'anthropic>=0.40'
+
+      - name: Parse mention via Haiku
+        id: parse
+        working-directory: src
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          python .github/scripts/parse_testplot_mention.py > "${GITHUB_WORKSPACE}/_parsed.json"
+          cat "${GITHUB_WORKSPACE}/_parsed.json"
+          {
+            echo "note<<EOF"
+            jq -r '.note' "${GITHUB_WORKSPACE}/_parsed.json"
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Render phase diagrams
+        working-directory: src
+        run: |
+          set -euxo pipefail
+          mapfile -t ARGS < <(jq -r '.args[]' "${GITHUB_WORKSPACE}/_parsed.json")
+          python tests/integration/testplots.py --out "${GITHUB_WORKSPACE}/_plots" "${ARGS[@]}"
+
+      - name: Publish plots to ${{ env.GALLERY_BRANCH }} branch
+        id: publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.issue.number }}
+        run: |
+          set -euxo pipefail
+          REPO_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git clone --depth=1 "$REPO_URL" gallery
+          cd gallery
+          git config user.email "actions@github.com"
+          git config user.name "github-actions[bot]"
+          if git ls-remote --exit-code --heads origin "$GALLERY_BRANCH" >/dev/null; then
+            git fetch --depth=1 origin "$GALLERY_BRANCH":"$GALLERY_BRANCH"
+            git checkout "$GALLERY_BRANCH"
+          else
+            git checkout --orphan "$GALLERY_BRANCH"
+            git rm -rf . >/dev/null 2>&1 || true
+            printf '# Test plot gallery\n\nContent-addressed PNGs published by .github/workflows/testplot*.yml.\n' > README.md
+            git add README.md
+            git commit -m "init $GALLERY_BRANCH branch"
+          fi
+          mkdir -p "$PR"
+          : > "${GITHUB_WORKSPACE}/_plot_paths.txt"
+          for f in "${GITHUB_WORKSPACE}"/_plots/*.png; do
+            name=$(basename "$f" .png)
+            sha=$(sha256sum "$f" | cut -c1-16)
+            rel="${PR}/${sha}-${name}.png"
+            cp "$f" "$rel"
+            echo "$rel" >> "${GITHUB_WORKSPACE}/_plot_paths.txt"
+          done
+          git add "$PR"
+          if git diff --cached --quiet; then
+            echo "all plots already published; nothing to commit"
+          else
+            git commit -m "testplots @ ${GITHUB_SHA} (mention)"
+            git push origin "$GALLERY_BRANCH"
+          fi
+
+      - name: Post comment with images
+        uses: actions/github-script@v7
+        env:
+          HEAD_SHA: ${{ steps.pr.outputs.sha }}
+          GALLERY_BRANCH: ${{ env.GALLERY_BRANCH }}
+          NOTE: ${{ steps.parse.outputs.note }}
+          TRIGGER_COMMENT_URL: ${{ github.event.comment.html_url }}
+        with:
+          script: |
+            const fs = require('fs');
+            const paths = fs.readFileSync('_plot_paths.txt', 'utf8')
+              .split('\n').filter(Boolean).sort();
+            const short = process.env.HEAD_SHA.slice(0, 7);
+            const base = `https://raw.githubusercontent.com/${context.repo.owner}/${context.repo.repo}/${process.env.GALLERY_BRANCH}`;
+            const lines = [
+              `### Test plots for \`${short}\` ([mention](${process.env.TRIGGER_COMMENT_URL}))`,
+              '',
+              `_${process.env.NOTE || 'rendered via @testplot mention'}_`,
+              '',
+            ];
+            for (const rel of paths) {
+              const file = rel.split('/').pop();
+              const name = file.replace(/^[0-9a-f]+-/, '').replace(/\.png$/, '');
+              lines.push(`#### ${name}`);
+              lines.push('');
+              lines.push(`<img alt="${name}" src="${base}/${rel}" width="600">`);
+              lines.push('');
+            }
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: lines.join('\n'),
+            });
