@@ -1,7 +1,8 @@
 """Translate an ``@testplot`` PR-comment mention into testplots.py CLI args.
 
-Reads the comment body from ``$COMMENT_BODY`` and pipes it through Claude
-Haiku, which must respond with a single JSON object of the form::
+Reads the comment body from ``$COMMENT_BODY`` and pipes it through the
+``claude`` CLI (Claude Code), which must respond with a single JSON
+object of the form::
 
     {"args": ["--only", "1d_T", "--poly-method", "fasttsp"], "note": "..."}
 
@@ -9,17 +10,17 @@ The ``args`` list is shell-splattered into ``python tests/integration/testplots.
 by the calling workflow. ``note`` is a short human-readable summary that gets
 echoed back in the PR comment.
 
-The script is invoked by ``.github/workflows/testplot-mention.yml``; it has
-no dependencies beyond the official ``anthropic`` SDK.
+Authenticated via ``$CLAUDE_CODE_OAUTH_TOKEN`` (same secret the existing
+.github/workflows/claude.yml uses). The script is invoked by
+``.github/workflows/testplot-mention.yml``.
 """
 from __future__ import annotations
 
 import json
 import os
 import re
+import subprocess
 import sys
-
-import anthropic
 
 PLOT_NAMES = ["1d_T", "1d_mu", "2d_basics", "2d_basics_mu", "2d_toy", "2d_toy_mu"]
 POLY_METHODS = ["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"]
@@ -56,7 +57,7 @@ Mapping conventions:
   - "tielines off" / "no tielines" -> --no-tielines
   - bare `@testplot` with no other directives -> no extra args (renders everything)
 
-Respond with a single JSON object and NOTHING else:
+Respond with a single JSON object and NOTHING else (no prose, no code fences):
 
   {{"args": ["--only", "1d_T"], "note": "1D T diagram"}}
 
@@ -80,7 +81,6 @@ def _validate(payload: dict) -> dict:
     args = payload.get("args", [])
     if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
         raise ValueError(f"args must be a list of strings, got {args!r}")
-    # Reject anything that doesn't look like a flag or one of our known plot keys / poly methods.
     allowed_values = set(PLOT_NAMES) | set(POLY_METHODS) | {"--only", "--poly-method", "--tielines", "--no-tielines"}
     for a in args:
         if a.startswith("--"):
@@ -95,20 +95,31 @@ def _validate(payload: dict) -> dict:
     return {"args": args, "note": note[:200]}
 
 
+def _call_claude(body: str) -> str:
+    result = subprocess.run(
+        [
+            "claude",
+            "--model", "claude-haiku-4-5-20251001",
+            "--append-system-prompt", SYSTEM,
+            "--output-format", "text",
+            "--permission-mode", "plan",
+            "-p", body,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=120,
+    )
+    return result.stdout
+
+
 def main() -> None:
     body = os.environ.get("COMMENT_BODY", "").strip()
     if not body:
         print(json.dumps({"args": [], "note": "empty mention; rendering all plots"}))
         return
 
-    client = anthropic.Anthropic()
-    resp = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=400,
-        system=SYSTEM,
-        messages=[{"role": "user", "content": body}],
-    )
-    text = "".join(block.text for block in resp.content if getattr(block, "type", None) == "text")
+    text = _call_claude(body)
     payload = _validate(_extract_json(text))
     json.dump(payload, sys.stdout)
 
