@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from functools import lru_cache, cache
 from typing import Iterable, Optional
@@ -33,6 +34,7 @@ __all__ = [
     "PointDefectSublattice",
     "PointDefectedPhase",
     "AsePhase",
+    "BinaryCompoundEnergyPhase",
 ]
 
 
@@ -683,6 +685,69 @@ def check_concentration_interpolation(
             line_free_energy -= (((cmax-cline)*f_min + (cline-cmin)*f_max)/(cmax-cmin))
 
         plt.scatter(cline, line_free_energy)
+
+
+@dataclass(frozen=True)
+class BinaryCompoundEnergyPhase:
+    """
+    Binary Compound Energy Formalism (CEF) phase.
+
+    Models a binary A-B system with S sublattices. Site fractions y[s] are
+    the fraction of component B on sublattice s (A occupies 1 - y[s]).
+
+    Gibbs energy per atom:
+
+        G(y, T) = G_ref(y, T) + G_ideal(y, T)
+
+        G_ref = sum over 2^S end-members:
+                    G_endmember(T) * prod_s (y[s] if species_s=B else 1-y[s])
+
+        G_ideal = kB * T * sum_s a_s * (y[s]*ln(y[s]) + (1-y[s])*ln(1-y[s]))
+
+    site_multiplicities must sum to 1 (per-atom normalization).
+    end_member_energies maps each config tuple (length S, entries 0=A or 1=B)
+    to a callable G(T) in eV/atom.
+
+    Conversion to the semigrand ensemble is not implemented here; it can be
+    added generically via minimization over y at fixed T and dmu.
+    """
+
+    name: str
+    site_multiplicities: tuple[float, ...]
+    end_member_energies: Mapping[tuple[int, ...], Callable[[float], float]]
+
+    def __post_init__(self):
+        # Normalize to a sorted tuple of (config, callable) pairs so the
+        # instance is hashable and iteration order is deterministic.
+        items = tuple(sorted(self.end_member_energies.items()))
+        object.__setattr__(self, "end_member_energies", items)
+        S = len(self.site_multiplicities)
+        assert len(items) == 2**S, f"need 2^S={2**S} end-member energies for {S} sublattices"
+
+    def composition(self, y) -> float:
+        """Overall B concentration from site fractions."""
+        return float(np.dot(self.site_multiplicities, y))
+
+    def free_energy(self, y, T: float) -> float:
+        """
+        Gibbs free energy at site fractions y and temperature T (K).
+
+        y: array-like of length S, y[s] = fraction of B on sublattice s.
+        T: temperature in K.
+        Returns G in eV/atom.
+        """
+        y = np.asarray(y, dtype=float)
+        a = np.asarray(self.site_multiplicities)
+
+        g_ref = sum(
+            g_func(T) * np.prod(np.where(np.asarray(cfg) == 1, y, 1.0 - y))
+            for cfg, g_func in self.end_member_energies
+        )
+
+        # entropy lowers free energy: G = H - T*S; se.entr(x) = -x*ln(x) > 0
+        g_ideal = -kB * T * float(np.dot(a, se.entr(y) + se.entr(1.0 - y)))
+
+        return g_ref + g_ideal
 
 
 class AbstractPointDefect(ABC):
