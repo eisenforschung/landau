@@ -119,7 +119,7 @@ def test_get_polygons_drops_failed_clusters_and_warns(monkeypatch):
     """Rows where `cluster_phase` produces phase_unit == -1 are dropped and
     a warning is emitted."""
 
-    def fake_cluster_phase(df):
+    def fake_cluster_phase(df, **_):
         df = df.copy()
         df["phase_unit"] = [-1 if i == 0 else 0 for i in range(len(df))]
         df["phase_id"] = df["phase"].astype(str) + "_" + df["phase_unit"].astype(str)
