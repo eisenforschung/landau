@@ -413,3 +413,156 @@ def plot_1d_T_phase_diagram(
     ax.set_ylabel("Semi-grandcanonical potential [eV/atom]")
 
     return ax
+
+
+# ---------------------------------------------------------------------------
+# Excess free energy plot
+# ---------------------------------------------------------------------------
+
+def _phase_concentration_range(phase):
+    """Return (c_min, c_max) for any phase type."""
+    from .phases import AbstractLinePhase
+    if isinstance(phase, AbstractLinePhase):
+        c = phase.line_concentration
+        return (c, c)
+    if hasattr(phase, "concentration_range"):
+        return phase.concentration_range
+    return (0.0, 1.0)
+
+
+def _endmember_free_energy(phases, T, c_end):
+    """Return minimum free energy at c_end across all phases that cover that endpoint."""
+    from .phases import AbstractLinePhase
+    candidates = []
+    for p in phases:
+        cmin, cmax = _phase_concentration_range(p)
+        if isinstance(p, AbstractLinePhase):
+            if abs(p.line_concentration - c_end) < 1e-9:
+                candidates.append(float(p.free_energy(T, c_end)))
+        elif cmin <= c_end <= cmax:
+            candidates.append(float(np.atleast_1d(p.free_energy(T, c_end))[0]))
+    if not candidates:
+        raise ValueError(f"No phase covers c={c_end}; cannot determine end-member free energy.")
+    return min(candidates)
+
+
+def _lower_convex_hull(c_vals, f_vals):
+    """Return (c_hull, f_hull) tracing the lower convex hull (Andrew's monotone chain)."""
+    pts = sorted(zip(c_vals, f_vals))
+    pts = [(c, f) for c, f in pts if np.isfinite(f)]
+    if len(pts) < 2:
+        return np.array([p[0] for p in pts]), np.array([p[1] for p in pts])
+    hull = []
+    for p in pts:
+        while len(hull) >= 2:
+            o, a, b = hull[-2], hull[-1], p
+            # remove a if it is above the line o->b (left turn = concave, pop it)
+            if (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]) <= 0:
+                hull.pop()
+            else:
+                break
+        hull.append(p)
+    return np.array([p[0] for p in hull]), np.array([p[1] for p in hull])
+
+
+def plot_excess_free_energy(
+    phases,
+    temperatures,
+    n_points=200,
+    max_cols=3,
+    per_col_in=2.5,
+    per_row_in=3,
+    sharey=True,
+    add_legend=True,
+    legend_fontsize=8,
+    linewidth=2,
+    color_override=None,
+):
+    """Plot excess free energy vs concentration for competing phases.
+
+    End-member reference energies are auto-detected per temperature as the
+    minimum free energy of any phase that covers c=0 or c=1.  Line phases
+    (``AbstractLinePhase`` subclasses) are drawn as scatter points;
+    solution phases as curves.  A dashed black line shows the lower convex
+    hull (common-tangent construction).
+
+    Args:
+        phases: Iterable of Phase objects, each with a ``name`` attribute and
+            ``free_energy(T, c)`` method.
+        temperatures: Single temperature (K) or iterable of temperatures.
+        n_points: Number of concentration points per solution-phase curve.
+        max_cols: Maximum subplot columns per row.
+        per_col_in: Figure width in inches per column.
+        per_row_in: Figure height in inches per row.
+        sharey: Share y-axis across subplots.
+        add_legend: Add a legend to each subplot.
+        legend_fontsize: Font size for the legend.
+        linewidth: Line width for solution-phase curves.
+        color_override: Optional ``dict[name -> color]`` overriding default colours.
+
+    Returns:
+        tuple[matplotlib.figure.Figure, numpy.ndarray]: Figure and 2-D axes array
+        with shape ``(nrows, ncols)``.
+    """
+    from .phases import AbstractLinePhase
+
+    try:
+        temperatures = list(temperatures)
+    except TypeError:
+        temperatures = [float(temperatures)]
+    if not temperatures:
+        raise ValueError("temperatures is empty.")
+
+    n = len(temperatures)
+    ncols = min(max_cols, n)
+    nrows = int(np.ceil(n / ncols))
+
+    fig, axes = plt.subplots(
+        nrows, ncols,
+        figsize=(per_col_in * ncols, per_row_in * nrows),
+        sharey=sharey,
+        squeeze=False,
+        constrained_layout=True,
+    )
+    axes_flat = axes.ravel()
+
+    phase_names = [p.name for p in phases]
+    color_map = get_phase_colors(phase_names, color_override or {})
+
+    for i, T in enumerate(temperatures):
+        ax = axes_flat[i]
+        fa = _endmember_free_energy(phases, T, 0.0)
+        fb = _endmember_free_energy(phases, T, 1.0)
+
+        all_c, all_fex = [], []
+
+        for p in phases:
+            color = color_map.get(p.name)
+            if isinstance(p, AbstractLinePhase):
+                c = p.line_concentration
+                fex = float(p.free_energy(T, c)) - (c * fb + (1.0 - c) * fa)
+                ax.scatter([c], [fex], color=color, label=p.name, zorder=5, s=50)
+                all_c.append(c)
+                all_fex.append(fex)
+            else:
+                cmin, cmax = _phase_concentration_range(p)
+                cs = np.linspace(cmin, cmax, n_points)
+                fex = np.asarray(p.free_energy(T, cs), dtype=float) - (cs * fb + (1.0 - cs) * fa)
+                ax.plot(cs, fex, color=color, label=p.name, linewidth=linewidth)
+                all_c.extend(cs.tolist())
+                all_fex.extend(fex.tolist())
+
+        c_hull, f_hull = _lower_convex_hull(all_c, all_fex)
+        ax.plot(c_hull, f_hull, "k--", linewidth=1.2, label="convex hull", zorder=3)
+
+        ax.set_title(f"{T} K")
+        ax.set_xlabel("Concentration $c$")
+        if not sharey or i % ncols == 0:
+            ax.set_ylabel("Excess free energy [eV]")
+        if add_legend:
+            ax.legend(fontsize=legend_fontsize)
+
+    for j in range(n, nrows * ncols):
+        fig.delaxes(axes_flat[j])
+
+    return fig, axes
