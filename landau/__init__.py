@@ -18,7 +18,7 @@ from .interpolate import (
     SoftplusFit,
 )
 
-from .plot import plot_phase_diagram
+from .plot import plot_phase_diagram, plot_excess_free_energy
 
 try:
     from ._version import __version__
