@@ -6,8 +6,9 @@ from pyiron_snippets.deprecate import deprecate
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
+import pandas as pd
 
-from .calculate import get_transitions, cluster, cluster_T_c, _join_phase_unit
+from .calculate import calc_phase_diagram, get_transitions, cluster, cluster_T_c, _join_phase_unit
 import landau.poly as poly
 
 
@@ -30,7 +31,7 @@ def cluster_phase(df, distance_threshold=0.5):  # 0.5 hand-tuned
     Args:
         df: DataFrame with columns 'phase', 'T', 'c'.
         distance_threshold: Passed to :func:`~landau.calculate.cluster_T_c`. Lower values
-            (e.g. 0.2) split more aggressively and are needed when two stable segments of
+            (e.g. 0.1) split more aggressively and are needed when two stable segments of
             the same phase are close in concentration space.
     """
     # In pandas 3, ``groupby.apply`` collapses inconsistently when the callable returns a
@@ -423,3 +424,174 @@ def plot_1d_T_phase_diagram(
     ax.set_ylabel("Semi-grandcanonical potential [eV/atom]")
 
     return ax
+
+
+# ---------------------------------------------------------------------------
+# Excess free energy plot
+# ---------------------------------------------------------------------------
+
+def plot_excess_free_energy(
+    df,
+    col_wrap=3,
+    height=3.0,
+    aspect=1.3,
+    color_override=None,
+    convex_hull=True,
+):
+    """Plot excess free energy vs concentration for competing phases.
+
+    Takes a pre-computed DataFrame from ``calc_phase_diagram(..., keep_unstable=True)``
+    and delegates to seaborn ``relplot``.
+
+    When ``convex_hull=True``, stable solution phases render as solid curves,
+    metastable/unstable regions as faded lines (same colour, alpha=0.4), and
+    the common-tangent construction as black dotted segments — one segment per
+    coexistence region (grouped by ``mu``) — with black vertex markers.
+    Line phases always render as a single coloured scatter dot.
+    When ``convex_hull=False``, all solution phases render as plain solid curves
+    regardless of stability.
+
+    Args:
+        df: DataFrame from ``calc_phase_diagram(..., keep_unstable=True)`` with
+            columns ``c``, ``f_excess``, ``phase``, ``T``, ``stable``, and
+            optionally ``border`` and ``mu``.
+        col_wrap: Maximum subplot columns per row.
+        height: Height of each facet in inches.
+        aspect: Width-to-height ratio of each facet.
+        color_override: Optional ``dict[name -> color]`` overriding phase colours.
+        convex_hull: If True, distinguish stable (solid curves) from metastable
+            (faded lines) and overlay the common-tangent segments in black.
+            If False, all solution phases render as plain solid curves.
+
+    Returns:
+        seaborn.FacetGrid: FacetGrid with one column per temperature.
+        Access the figure via ``.fig`` and individual axes via ``.axes``.
+    """
+    import matplotlib.lines as mlines
+
+    df = df.copy()
+    if df.empty:
+        raise ValueError("df is empty.")
+    if "border" not in df.columns:
+        df["border"] = False
+
+    temperatures = sorted(df["T"].unique())
+
+    # Line phases have a fixed concentration — detect by zero range across all rows.
+    phase_names = list(df["phase"].unique())
+    c_range = df.groupby("phase")["c"].apply(lambda s: s.max() - s.min())
+    line_phase_names = set(c_range[c_range < 1e-9].index)
+
+    muted_colors = sns.color_palette("muted")
+    palette = {name: muted_colors[i % len(muted_colors)] for i, name in enumerate(phase_names)}
+    if color_override:
+        palette.update({k: v for k, v in color_override.items() if k in palette})
+
+    df_sol = df[~df["phase"].isin(line_phase_names)].copy()
+    df_lp = df[df["phase"].isin(line_phase_names)].copy()
+
+    sol_palette = {k: v for k, v in palette.items() if k not in line_phase_names}
+    sol_hue_order = [n for n in phase_names if n not in line_phase_names]
+
+    if convex_hull:
+        base_data = df_sol[df_sol["stable"]].copy()
+        base_data = cluster_phase(base_data, distance_threshold=0.1)
+        units_col = "phase_id"
+    else:
+        base_data = df_sol
+        units_col = None
+
+    g = sns.relplot(
+        data=base_data,
+        x="c",
+        y="f_excess",
+        hue="phase",
+        hue_order=sol_hue_order,
+        units=units_col,
+        col="T",
+        col_wrap=col_wrap,
+        palette=sol_palette,
+        height=height,
+        aspect=aspect,
+        kind="line",
+        estimator=None,
+        errorbar=None,
+        linewidth=2.5,
+    )
+
+    for ax, T_val in zip(g.axes.flat, temperatures):
+        sub_all = df[df["T"] == T_val]
+        sub_sol = df_sol[df_sol["T"] == T_val]
+        sub_lp = df_lp[df_lp["T"] == T_val]
+
+        if convex_hull:
+            # Metastable solution phases: faded lines, same colour as stable.
+            unstable = sub_sol[~sub_sol["stable"]]
+            for pname, grp in unstable.groupby("phase"):
+                grp_sorted = grp.sort_values("c")
+                diffs = grp_sorted["c"].diff().fillna(0)
+                pos_diffs = diffs[diffs > 0]
+                gap_thr = max(0.05, 5 * pos_diffs.quantile(0.9)) if not pos_diffs.empty else 0.05
+                seg_ids = (diffs > gap_thr).cumsum()
+                color = sol_palette.get(pname, "gray")
+                for _, seg in grp_sorted.groupby(seg_ids):
+                    ax.plot(
+                        seg["c"].values, seg["f_excess"].values,
+                        color=color, alpha=0.4, lw=2.5, zorder=2,
+                    )
+
+        # Line phases: single colored dot at fixed concentration.
+        for _, row in sub_lp.drop_duplicates("phase").iterrows():
+            ax.scatter(
+                [row["c"]], [row["f_excess"]],
+                color=palette.get(row["phase"], "k"),
+                zorder=5, s=80,
+            )
+
+        if convex_hull:
+            # Common-tangent lines: one dotted segment per coexistence region.
+            # Rows sharing the same mu value belong to one two-phase equilibrium,
+            # so grouping by mu gives one tangent line per coexistence pair.
+            bd_all = sub_all[sub_all["border"]]
+            for _mu, grp in bd_all.groupby("mu"):
+                grp_sorted = grp.drop_duplicates(subset=["c", "f_excess"]).sort_values("c")
+                if len(grp_sorted) >= 2:
+                    ax.plot(
+                        grp_sorted["c"].values, grp_sorted["f_excess"].values,
+                        ls="dotted", color="k", zorder=3, lw=1.5,
+                    )
+            # Hull vertex markers: deduplicated across all mu values.
+            bd_unique = bd_all.drop_duplicates(subset=["c", "f_excess"]).sort_values("c")
+            if not bd_unique.empty:
+                ax.scatter(
+                    bd_unique["c"].values, bd_unique["f_excess"].values,
+                    color="k", s=25, zorder=7,
+                )
+
+    # Add line phases to the figure legend.
+    if not df_lp.empty:
+        lp_handles = [
+            mlines.Line2D(
+                [0], [0], marker="o", color="w",
+                markerfacecolor=palette.get(n, "k"), markersize=8, label=n,
+            )
+            for n in sorted(line_phase_names)
+        ]
+        if g._legend is not None:
+            existing_handles = list(g._legend.legend_handles)
+            existing_labels = [t.get_text() for t in g._legend.texts]
+            g._legend.remove()
+            g.figure.legend(
+                existing_handles + lp_handles,
+                existing_labels + [h.get_label() for h in lp_handles],
+                title="phase",
+                bbox_to_anchor=(1.02, 0.5),
+                loc="center left",
+                borderaxespad=0,
+            )
+
+    g.refline(y=0)
+    g.set_titles("T = {col_name:.0f} K")
+    g.set(xlabel="Concentration", ylabel="Free Energy of Formation")
+
+    return g

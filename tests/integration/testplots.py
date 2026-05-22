@@ -185,6 +185,37 @@ def plot_2d_toy(out_dir: Path, poly_method: str | None = None, tielines: bool = 
     return _save(fig, out_dir, "2d_toy_phase_diagram", _file_suffix(poly_method, tielines))
 
 
+def plot_excess_free_energy(out_dir: Path, **_) -> Path:
+    """Excess free energy vs concentration (Intermetallics example) from ExcessFreeEnergy.ipynb."""
+    solid_a = ldp.LinePhase("A",    fixed_concentration=0, line_energy=-2.0, line_entropy=1.0 * ldp.kB)
+    solid_b = ldp.LinePhase("B",    fixed_concentration=1, line_energy=-3.0, line_entropy=1.5 * ldp.kB)
+    solid   = ldp.IdealSolution("solid", solid_a, solid_b)
+
+    liquid_a = ldp.LinePhase("A(l)", fixed_concentration=0, line_energy=-1.9, line_entropy=2.5 * ldp.kB)
+    liquid_b = ldp.LinePhase("B(l)", fixed_concentration=1, line_energy=-2.9, line_entropy=2.2 * ldp.kB)
+    liquid   = ldp.IdealSolution("liquid", liquid_a, liquid_b)
+
+    inter = ldp.LinePhase("AB$_2$", fixed_concentration=2/3, line_energy=-2.8, line_entropy=1.3 * ldp.kB)
+
+    sigma_pts = [
+        ldp.LinePhase("sig@0.30", fixed_concentration=0.30, line_energy=-2.30),
+        ldp.LinePhase("sig@0.40", fixed_concentration=0.40, line_energy=-2.50),
+        ldp.LinePhase("sig@0.50", fixed_concentration=0.50, line_energy=-2.60),
+        ldp.LinePhase("sig@0.60", fixed_concentration=0.60, line_energy=-2.55),
+        ldp.LinePhase("sig@0.70", fixed_concentration=0.70, line_energy=-2.40),
+    ]
+    sigma = ldp.SlowInterpolatingPhase(name="sigma", phases=sigma_pts)
+
+    import pandas as pd
+    df = pd.concat(
+        [ldc.calc_phase_diagram([solid, liquid, inter, sigma], Ts=T, mu=200, keep_unstable=True)
+         for T in [500, 1000, 1600]],
+        ignore_index=True,
+    )
+    g = lpl.plot_excess_free_energy(df, convex_hull=True, height=4, aspect=1.1)
+    return _save(g.fig, out_dir, "excess_free_energy")
+
+
 def plot_2d_toy_mu(out_dir: Path, poly_method: str | None = None, **_) -> Path:
     """2D T-mu diagram with a regular-solution liquid + intermediate solid, from Toy.ipynb."""
     l1 = ldp.TemperatureDependentLinePhase(
@@ -228,12 +259,13 @@ def plot_2d_toy_mu(out_dir: Path, poly_method: str | None = None, **_) -> Path:
 # poly_method and tielines, so cross-product iteration over them dedupes
 # automatically instead of re-rendering identical files.
 PLOTS = {
-    "1d_T":         (plot_1d_T,         ()),
-    "1d_mu":        (plot_1d_mu,        ()),
-    "2d_basics":    (plot_2d_basics,    ("poly_method", "tielines")),
-    "2d_basics_mu": (plot_2d_basics_mu, ("poly_method",)),
-    "2d_toy":       (plot_2d_toy,       ("poly_method", "tielines")),
-    "2d_toy_mu":    (plot_2d_toy_mu,    ("poly_method",)),
+    "1d_T":                (plot_1d_T,                ()),
+    "1d_mu":               (plot_1d_mu,               ()),
+    "2d_basics":           (plot_2d_basics,            ("poly_method", "tielines")),
+    "2d_basics_mu":        (plot_2d_basics_mu,         ("poly_method",)),
+    "2d_toy":              (plot_2d_toy,               ("poly_method", "tielines")),
+    "2d_toy_mu":           (plot_2d_toy_mu,            ("poly_method",)),
+    "excess_free_energy":  (plot_excess_free_energy,   ()),
 }
 
 
