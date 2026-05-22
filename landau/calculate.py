@@ -134,18 +134,8 @@ def guess_mu_range(phases: Iterable[Phase], T: float, samples: int, tolerance: f
         ci = (prob * conc).sum(axis=0)
         return ci
 
-    # Coarse scan over a wide mu range to find seeds for BFGS.  At low T,
-    # c(mu) is nearly a step function with zero gradient almost everywhere,
-    # so starting BFGS from mu=0 may not move at all.
-    mu_scan = np.linspace(-10, 10, 200)
-    cc_scan = c(mu_scan)
-    mu0_seed = mu_scan[np.argmin(cc_scan)]
-    mu1_seed = mu_scan[np.argmax(cc_scan)]
-
-    resi = so.minimize(lambda x: +c(x[0]), x0=[mu0_seed], tol=tolerance, method="BFGS")
-    resa = so.minimize(lambda x: -c(x[0]), x0=[mu1_seed], tol=tolerance, method="BFGS")
-    mu0 = resi.x[0]
-    mu1 = resa.x[0]
+    mu0 = so.brute(lambda x: +c(x[0]), ranges=[(-10, 10)], Ns=200)[0]
+    mu1 = so.brute(lambda x: -c(x[0]), ranges=[(-10, 10)], Ns=200)[0]
     if mu0 == mu1:
         if tolerance > 1e-7:
             return guess_mu_range(phases, T, samples, tolerance/10)
