@@ -134,8 +134,16 @@ def guess_mu_range(phases: Iterable[Phase], T: float, samples: int, tolerance: f
         ci = (prob * conc).sum(axis=0)
         return ci
 
-    resi = so.minimize(lambda x: +c(x[0]), x0=[0], tol=tolerance, method="BFGS")
-    resa = so.minimize(lambda x: -c(x[0]), x0=[0], tol=tolerance, method="BFGS")
+    # Coarse scan over a wide mu range to find seeds for BFGS.  At low T,
+    # c(mu) is nearly a step function with zero gradient almost everywhere,
+    # so starting BFGS from mu=0 may not move at all.
+    mu_scan = np.linspace(-10, 10, 200)
+    cc_scan = c(mu_scan)
+    mu0_seed = mu_scan[np.argmin(cc_scan)]
+    mu1_seed = mu_scan[np.argmax(cc_scan)]
+
+    resi = so.minimize(lambda x: +c(x[0]), x0=[mu0_seed], tol=tolerance, method="BFGS")
+    resa = so.minimize(lambda x: -c(x[0]), x0=[mu1_seed], tol=tolerance, method="BFGS")
     mu0 = resi.x[0]
     mu1 = resa.x[0]
     if mu0 == mu1:
@@ -149,7 +157,12 @@ def guess_mu_range(phases: Iterable[Phase], T: float, samples: int, tolerance: f
     cc = c(mm)
     c0 = min(cc) + tolerance
     c1 = max(cc) - tolerance
-    return si.interp1d(cc, mm)(np.linspace(c0, c1, samples)), c0, c1
+    # At very low T, c(mu) is a step function and cc may have repeated values;
+    # sort and deduplicate before passing to interp1d which requires monotone x.
+    sort_idx = np.argsort(cc)
+    cc_s, mm_s = cc[sort_idx], mm[sort_idx]
+    _, unique_idx = np.unique(cc_s, return_index=True)
+    return si.interp1d(cc_s[unique_idx], mm_s[unique_idx])(np.linspace(c0, c1, samples)), c0, c1
 
 
 def calc_phase_diagram(

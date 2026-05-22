@@ -8,6 +8,7 @@ from landau.calculate import (
     cluster_T_c_mu,
     _join_phase_unit,
     _split_phase_unit,
+    guess_mu_range,
 )
 from unittest.mock import MagicMock
 
@@ -164,3 +165,60 @@ def test_phase_unit_round_trip_underscore_in_name():
 def test_split_phase_unit_rejects_non_integer_unit():
     with pytest.raises(ValueError):
         _split_phase_unit(pd.Series(["alpha_not_an_int"]))
+
+
+# --- guess_mu_range tests ---
+
+from landau.phases import LinePhase, IdealSolution
+
+
+_GMR_SAMPLES = 50
+
+
+def _ideal_phases():
+    """Two terminal phases + IdealSolution; transition near dmu=0."""
+    a = LinePhase("A", 0, 0, 0)
+    b = LinePhase("B", 1, 0, 0)
+    sol = IdealSolution("sol", a, b)
+    return [a, b, sol]
+
+
+def test_guess_mu_range_returns_samples():
+    mus, c0, c1 = guess_mu_range(_ideal_phases(), T=1000, samples=_GMR_SAMPLES)
+    assert len(mus) == _GMR_SAMPLES
+
+
+def test_guess_mu_range_covers_concentration_space():
+    mus, c0, c1 = guess_mu_range(_ideal_phases(), T=1000, samples=_GMR_SAMPLES)
+    assert c0 < 0.1
+    assert c1 > 0.9
+
+
+def test_guess_mu_range_low_temperature():
+    # At T=10 K, c(mu) is a step function.  Before the fix, BFGS starting
+    # from mu=0 would not move and the function would raise or loop forever.
+    mus, c0, c1 = guess_mu_range(_ideal_phases(), T=10, samples=_GMR_SAMPLES)
+    assert len(mus) == _GMR_SAMPLES
+    assert c0 < 0.5
+    assert c1 > 0.5
+
+
+def test_guess_mu_range_mu_not_centred_at_zero():
+    # Phases whose transition lies far from mu=0; old x0=[0] seed would return
+    # in a flat region of c(mu) at low T.
+    shift = 5.0
+    a = LinePhase("A", 0, -shift, 0)
+    b = LinePhase("B", 1, 0, 0)
+    sol = IdealSolution("sol", a, b)
+    mus, c0, c1 = guess_mu_range([a, b, sol], T=100, samples=_GMR_SAMPLES)
+    assert len(mus) == _GMR_SAMPLES
+    assert c0 < 0.5
+    assert c1 > 0.5
+
+
+def test_guess_mu_range_degenerate_raises():
+    # All-same-concentration phases should raise.
+    a = LinePhase("A", 0.5, 0, 0)
+    b = LinePhase("B", 0.5, 0.1, 0)
+    with pytest.raises(ValueError):
+        guess_mu_range([a, b], T=1000, samples=_GMR_SAMPLES)
