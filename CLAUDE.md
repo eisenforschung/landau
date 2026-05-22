@@ -68,15 +68,15 @@ pytest -k pattern                               # by name
 Layout:
 - `tests/unit/` — per-module: `test_calculate.py`, `test_phases.py`, `test_poly.py`, `test_refine.py`, `test_resample.py`, `test_softplus.py`, `test_whitney.py`; subdirs `interpolate/` (`test_g_calphad.py`, `test_polyfit.py`, `test_redlich_kister.py`, `test_sgte.py`, `test_softplus_fit.py`, `test_stitched_fit.py`), `phases/` (`test_ase.py`, `test_vectorize.py`), `plot/` (`test_axis.py`, `test_colors.py`, `test_polygons.py`).
 - `tests/regression/` — `test_issue_1.py`, `test_issue_51.py`, `test_pandas_groupby.py`, `test_single_group_apply.py`, `test_cluster_phase_pandas3.py`.
-- `tests/integration/testplots.py` — **not a pytest test**; a render script that writes phase-diagram PNGs to `tests/integration/_plots/`. Triggered by the `testplot` label (`.github/workflows/testplot.yml`) or by `@testplot ...` comments (`testplot-mention.yml`, parser uses Haiku to map free-text to `--only`/`--poly-method`/`--tielines` flags against an allow-list frozen on `main`; see PR #149 for the security split). Images are pushed to the `testplots` gallery branch and inlined into a PR comment.
+- `tests/integration/testplots.py` — **not a pytest test**; a render script that writes phase-diagram PNGs to `tests/integration/_plots/`. Triggered by the `testplot` label (`.github/workflows/testplot.yml`; Haiku also auto-selects a plot subset from changed files — PR #152) or by `@testplot ...` comments (`testplot-mention.yml`, parser uses Haiku to map free-text to `--only`/`--poly-method`/`--tielines`/`diff` flags against an allow-list frozen on `main`; see PR #149 for the parse/render/publish security split, PR #150 for diff-against-main rendering). Images are pushed to the `testplots` gallery branch and inlined into a PR comment.
 - `tests/conftest.py` provides shared `two_phase_ideal` / `three_phase_regular_solution` phase fixtures.
-- Uses **Hypothesis** for property-based tests; optional-dep tests use module-level `pytest.importorskip` (PR #111), not `try/except`.
+- Uses **Hypothesis** for property-based tests. Optional-dep tests use a module-level `pytestmark = pytest.mark.skipif(ImportAlarm(...).message is not None, ...)` when a whole file depends on one extra (see `tests/unit/phases/test_ase.py`); files mixing independent extras use per-test `@pytest.mark.skipif` against `try/except`-set flags instead (see `tests/unit/test_poly.py`). Do not use `try/except ImportError` as the gate by itself (PR #111).
 
 ## Architecture
 
 ### Module layout
 
-**`landau/phases/`** — phase definitions (subpackage; split from `phases.py` per PR #112). Re-exported from `landau/__init__.py`.
+**`landau/phases/`** — phase definitions (subpackage; split from `phases.py` per PR #111). Re-exported from `landau/__init__.py`.
 - `phases/__init__.py` — `Phase` (ABC), `AbstractLinePhase`, `LinePhase`, `TemperatureDependentLinePhase` (alias `TemperatureDepandantLinePhase` kept for back-compat), `IdealSolution`, `RegularSolution`, `InterpolatingPhase`, `SlowInterpolatingPhase`, `AbstractPointDefect`, `ConstantPointDefect`, `PointDefectSublattice`, `PointDefectedPhase`.
 - `phases/asewrapper.py` — `AsePhase(AbstractLinePhase)` wrapping `ase.thermochemistry.ThermoChem`. Compares/hashes by `pickle.dumps(thermochem)` so two instances from equivalent inputs are equal. Falls back from `get_helmholtz_energy` to `get_gibbs_energy` (1 atm default). `atoms_per_formula` divides ASE's energy so the result is per atom. Splitting this further is open (#137).
 
@@ -107,7 +107,7 @@ Layout:
 **`landau/poly.py`** — point-cloud → matplotlib polygon conversion (per phase region).
 - `AbstractPolyMethod` (dataclass, `min_c_width=0.01`); concrete: `Concave`, `Segments`. With optional `python-tsp`/`fast-tsp` extras, `PythonTsp` / `SegmentPythonTsp` / `FastTsp` / `SegmentFastTsp` register themselves.
 - `handle_poly_method(poly_method, **kwargs)` resolves a string or `AbstractPolyMethod` against the active registry; the default falls back through `segment-fasttsp → segment-tsp → fasttsp → tsp → concave` based on what's installed.
-- `_trim_overlaps` (called from `AbstractPolyMethod.apply`) lives here too — buffer overlap trimming + apex residual cleanup (PR #127, #130), guarded against shapely `GEOSException` (PR #147).
+- `_trim_overlaps` (called from `AbstractPolyMethod.apply`) lives here too — symmetric buffer overlap trimming (PR #127), guarded against shapely `GEOSException` (PR #147). The apex-residual cleanup follow-up (PR #130) and the boundary-Voronoi alternative (PR #129) were both closed without merging — the eutectic-apex sliver is a known cosmetic issue.
 
 **`landau/resample.py`** — bootstrap-style border resampling (`resample_borders`, `RandomlyShiftedPhase`).
 
@@ -135,18 +135,19 @@ Cheat sheet of what's been considered. Fetch the issue before re-litigating.
 **Active design themes**
 - **Phase subpackage cleanup** (#137) — `phases/__init__.py` lumps everything together; split is desired.
 - **Refiner extensions** (#124 boundary_id, #142 closed via #144 triple-point dedup). `ClausiusClapeyronRefiner` and `MiscibilityGapRefiner` are recent; not on by default in `default_refiners`.
-- **Polygon plotting robustness** (#125 boundary-Voronoi vs simple-subtract decided in favour of subtract+apex-cleanup, see #127/#130; #38 closed by #147). Hypothesis strategies for polygon tests are weak (#70).
+- **Polygon plotting robustness** (#125 decided in favour of plain symmetric subtract — PR #127 landed; both the boundary-Voronoi alternative #129 and apex-cleanup follow-up #130 were rejected. #38 closed by #147). Hypothesis strategies for polygon tests are weak (#70).
+- **Excess-free-energy / common-tangent plot** (#136) — in progress on a `feature/excess_free_energy_plots` branch with PR #145 (draft) adding `plot_excess_free_energy` + a notebook, and PR #146 stacking tests. Touches `landau/plot.py` only.
 - **Pandas 2/3 compat** — hard constraint. Every `groupby().apply()` needs `include_groups=False`. Recent regressions covered in `tests/regression/test_single_group_apply.py` (PR #143).
 - **API generalisation** (#34, #60) — plot_{mu,}_phase_diagram axes-as-arg refactor and the broader 2.0 plotting/calculate rearrangement.
 - **Performance** (#23) — `SlowInterpolatingPhase` needs a precomputed interpolation pass; (#33) fast Legendre transforms.
 - **Repo layout** (#62) — flat → `src/` layout is wanted.
-- **Phase extras** — `QuasiChemicalPhase` landed (PR #123, closes #81). Entropy/enthalpy methods on phases still open (#39). TDB import scoping in progress (#138). Analytic SRO models still open (#81 still tracking other models).
+- **Phase extras** — analytic SRO models still open (#81; PR #123 prototype `QuasiChemicalPhase` was closed without merging). Entropy/enthalpy methods on phases still open (#39). TDB-file import scoping in progress (#138).
 
 **Decisions already landed (don't redo)**
-- `landau/phases.py` split into a `landau/phases/` subpackage with `asewrapper.py` (PR #112).
+- `landau/phases.py` split into a `landau/phases/` subpackage with `asewrapper.py` (PR #111, squashed replacement of #68).
 - Refiner strategy (PR #115), `_set_axis_for` extraction (PR #122), `_join_phase_unit` DRY (PR #132).
-- Symmetric buffer trimming with apex cleanup landed; boundary-Voronoi alternative explicitly **rejected** (PR #129 closed, #130 merged).
-- `testplot` label + `@testplot` mention workflow (PR #103, #148, #149). PR-controlled code is sandboxed away from repo write secrets.
+- Plain symmetric buffer trimming landed (PR #127); both the boundary-Voronoi alternative (PR #129) and apex-cleanup follow-up (PR #130) were **rejected**.
+- `testplot` label + `@testplot` mention workflow (PR #103, #148, #149, #150, #152). PR-controlled code is sandboxed away from repo write secrets; label workflow Haiku-picks the plot subset from changed files (#152); mention parser supports `diff` against main (#150).
 
 **Out-of-scope / explicit non-goals**
 - Dropping pandas 2 support — *do not* (PR #93, #113).
