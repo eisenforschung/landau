@@ -495,29 +495,45 @@ def plot_excess_free_energy(
 
     if convex_hull:
         base_data = df_sol[df_sol["stable"]].copy()
-        base_data = cluster_phase(base_data, distance_threshold=0.1)
-        units_col = "phase_id"
+        if not base_data.empty:
+            base_data = cluster_phase(base_data, distance_threshold=0.1)
+            units_col = "phase_id"
+        else:
+            units_col = None
     else:
         base_data = df_sol
         units_col = None
 
-    g = sns.relplot(
-        data=base_data,
-        x="c",
-        y="f_excess",
-        hue="phase",
-        hue_order=sol_hue_order,
-        units=units_col,
-        col="T",
-        col_wrap=col_wrap,
-        palette=sol_palette,
-        height=height,
-        aspect=aspect,
-        kind="line",
-        estimator=None,
-        errorbar=None,
-        linewidth=2.5,
-    )
+    if base_data.empty:
+        # No solution-phase rows (e.g. all phases are line phases, or all solution rows are
+        # unstable).  sns.relplot cannot create facets from an empty DataFrame, so build
+        # the grid structure directly and skip the line-drawing step.
+        g = sns.FacetGrid(
+            data=df[["T"]].drop_duplicates(),
+            col="T",
+            col_order=temperatures,
+            col_wrap=col_wrap,
+            height=height,
+            aspect=aspect,
+        )
+    else:
+        g = sns.relplot(
+            data=base_data,
+            x="c",
+            y="f_excess",
+            hue="phase",
+            hue_order=sol_hue_order,
+            units=units_col,
+            col="T",
+            col_wrap=col_wrap,
+            palette=sol_palette,
+            height=height,
+            aspect=aspect,
+            kind="line",
+            estimator=None,
+            errorbar=None,
+            linewidth=2.5,
+        )
 
     for ax, T_val in zip(g.axes.flat, temperatures):
         sub_all = df[df["T"] == T_val]
