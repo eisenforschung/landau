@@ -47,7 +47,7 @@ These are project-specific preferences distilled from past PR/issue feedback. So
 ### Pandas 2/3 compatibility (hard constraint)
 - All `groupby().apply()` calls must pass `include_groups=False`.
 - Code must work on both pandas 2 and 3. Do not drop pandas 2 (PR #93, #113).
-- The fix in commit `ae0a455` replaced deprecated `include_groups=True`; regressions are pinned in `tests/regression/test_single_group_apply.py` and `test_cluster_phase_pandas3.py`.
+- The fix in commit `945f850` replaced deprecated `include_groups=True`; regressions are pinned in `tests/regression/test_single_group_apply.py` and `test_cluster_phase_pandas3.py`.
 
 ## Development Setup
 
@@ -88,8 +88,8 @@ Layout:
 **`landau/calculate.py`** — core thermodynamic calculations.
 - `calc_phase_diagram(phases, Ts, mu=..., refine=True, ...)` — main entry point that builds the raw `(T, mu, phase, c, phi)` dataframe.
 - `refine_phase_diagram(pdf, phases, min_c, max_c)` — orchestrator over a sequence of `Refiner` instances (defaults via `landau.refine.default_refiners`).
-- `guess_mu_range(phases, T, samples, tolerance=1e-2)` — autodetect mu sampling window.
-- `cluster_T_c` / `cluster_T_c_mu` / `cluster` — agglomerative clustering for collapsing co-located transitions.
+- `guess_mu_range(phases, T, samples, tolerance=1e-2)` — autodetect mu sampling window via `scipy.optimize.brute` grid scan plus local refinement.
+- `cluster_T_c` / `cluster_T_c_mu` / `cluster` — agglomerative clustering for collapsing co-located transitions; `distance_threshold` is a **required** kwarg here. User-facing `cluster_phase` (`plot.py`) and `get_polygons` accept it with `default=0.5`.
 - `get_transitions(df)` — extract phase-boundary rows.
 - Private `_join_phase_unit` / `_split_phase_unit` shared with `poly.py` / `plot.py` (PR #132).
 
@@ -101,7 +101,7 @@ Layout:
 
 **`landau/plot.py`** — phase-diagram plotting.
 - `plot_phase_diagram` (c–T), `plot_mu_phase_diagram` (μ–T), `plot_1d_mu_phase_diagram`, `plot_1d_T_phase_diagram`. The mu/c variants share `_plot_phase_diagram` + the `_set_axis_for` helper (PR #122). Generalising the 1D/2D split is open (#34, #60).
-- `get_polygons(df, poly_method=...)` / `plot_polygons` / `get_phase_colors(phase_names, override=None)`.
+- `get_polygons(df, poly_method=..., distance_threshold=0.5)` / `plot_polygons` / `get_phase_colors(phase_names, override=None)`.
 - `cluster_phase(df)` is the pandas-groupby site that has historically broken on pandas 3 — keep `include_groups=False` (PR #93, #113).
 
 **`landau/poly.py`** — point-cloud → matplotlib polygon conversion (per phase region).
