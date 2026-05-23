@@ -111,3 +111,31 @@ def test_line_phase_renders_as_scatter():
     ax = g.axes.flat[0]
     assert len(ax.collections) >= 1
     plt.close(g.fig)
+
+
+# ---------------------------------------------------------------------------
+# Single temperature — comprehensive
+# ---------------------------------------------------------------------------
+
+
+def test_single_temperature_convex_hull_true():
+    """Single-T DataFrame: hull line and vertex scatter must be present."""
+    g = plot_excess_free_energy(_minimal_df([1000]), convex_hull=True)
+    ax = g.axes.flat[0]
+    black_dotted = [l for l in ax.lines if l.get_color() == "k" and l.get_linestyle() == ":"]
+    assert len(black_dotted) >= 1, "hull tangent line missing for single temperature"
+    assert len(ax.collections) >= 1, "hull vertex scatter missing for single temperature"
+    plt.close(g.fig)
+
+
+def test_all_line_phases_no_crash():
+    """When all phases are line phases, plot_excess_free_energy must not crash."""
+    from landau.calculate import calc_phase_diagram
+
+    e0 = LinePhase("A", fixed_concentration=0, line_energy=-2.0, line_entropy=1.0 * kB)
+    e1 = LinePhase("B", fixed_concentration=1, line_energy=-3.0, line_entropy=1.5 * kB)
+    inter = LinePhase("AB", fixed_concentration=0.5, line_energy=-2.8, line_entropy=1.3 * kB)
+    df = calc_phase_diagram([e0, e1, inter], Ts=1000, mu=50, keep_unstable=True)
+    g = plot_excess_free_energy(df, convex_hull=True)
+    assert g.axes.size == 1
+    plt.close(g.fig)
