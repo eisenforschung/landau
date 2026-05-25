@@ -248,37 +248,8 @@ class Segments(AbstractPolyMethod):
                                           (s[x_col].mean() - com[x_col]) / norm[0])
         )
 
-        def start(s):
-            return s.iloc[0][[x_col, y_col]]
-
-        def end(s):
-            return s.iloc[-1][[x_col, y_col]]
-
-        def dist(p1, p2):
-            return np.linalg.norm((p2 - p1) / norm)
-
-        def flip(s):
-            s.reset_index(drop=True, inplace=True)
-            s.loc[:] = s.loc[::-1].reset_index(drop=True)
-            return s
-
-        head, *remaining = sorted(segments, key=lambda s: s[x_col].min())
-
-        def find_distance(head, segment):
-            head2tail = dist(end(head), start(segment))
-            tail2tail = dist(end(head), end(segment))
-            if tail2tail < head2tail:
-                flip(segment)
-                return tail2tail
-            else:
-                return head2tail
-
-        segments = [head]
-        while len(remaining) > 0:
-            head, *remaining = sorted(remaining, key=lambda s: find_distance(head, s))
-            segments.append(head)
-
-        return pd.concat(segments, ignore_index=True)
+        ordered = _greedy_stitch(segments, norm, x_col, y_col)
+        return pd.concat(ordered, ignore_index=True)
 
     def _make(self, pp: np.ndarray, border: np.ndarray, segment_label: np.ndarray) -> shapely.Geometry | None:
         """
@@ -305,6 +276,60 @@ class Segments(AbstractPolyMethod):
             return None
 
         return shapely.Polygon(coords)
+
+
+def _greedy_stitch(
+        segments: list[pd.DataFrame],
+        norm: np.ndarray,
+        x_col: str,
+        y_col: str,
+) -> list[pd.DataFrame]:
+    """Greedy nearest-neighbour ordering of pre-sorted border segments.
+
+    Starts from the segment with the smallest ``x_col`` value, then repeatedly
+    picks from the remaining segments the one whose closer endpoint is nearest
+    to the current head's tail. The picked segment is reversed in place when
+    its end is closer than its start. Distances are scaled by ``norm`` so that
+    ``x_col`` and ``y_col`` contribute on comparable scales.
+
+    Returns the segments in stitch order; each segment is the original
+    DataFrame, possibly with row order reversed. The caller concatenates.
+
+    Notes
+    -----
+    The min-``x_col`` head heuristic is documented to fail when a phase is
+    stable at the upper or lower edge of the diagram (where no proper
+    "segment" is computed); see :class:`Segments`.
+    """
+    if not segments:
+        return []
+
+    def endpoint(s, where):
+        return s.iloc[where][[x_col, y_col]]
+
+    def scaled_dist(p1, p2):
+        return np.linalg.norm((p2 - p1) / norm)
+
+    def flip(s):
+        s.reset_index(drop=True, inplace=True)
+        s.loc[:] = s.loc[::-1].reset_index(drop=True)
+        return s
+
+    def find_distance(head, segment):
+        head_tail = endpoint(head, -1)
+        head2tail = scaled_dist(head_tail, endpoint(segment, 0))
+        tail2tail = scaled_dist(head_tail, endpoint(segment, -1))
+        if tail2tail < head2tail:
+            flip(segment)
+            return tail2tail
+        return head2tail
+
+    head, *remaining = sorted(segments, key=lambda s: s[x_col].min())
+    ordered = [head]
+    while remaining:
+        head, *remaining = sorted(remaining, key=lambda s: find_distance(head, s))
+        ordered.append(head)
+    return ordered
 
 
 def _pca_sort_segment(pts: np.ndarray) -> np.ndarray:
