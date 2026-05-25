@@ -1,6 +1,7 @@
+import numpy as np
 import pandas as pd
 from hypothesis import given, strategies as st, settings
-from landau.poly import Concave, Segments, handle_poly_method
+from landau.poly import Concave, Segments, _greedy_stitch, handle_poly_method
 import pytest
 from matplotlib.patches import Polygon
 
@@ -200,3 +201,95 @@ def test_handle_poly_method():
 
     with pytest.raises(TypeError):
         handle_poly_method(123)
+
+
+# --- _greedy_stitch tests ---
+
+
+def _segment(xs, ys):
+    return pd.DataFrame({"c": xs, "T": ys})
+
+
+@pytest.fixture
+def unit_norm():
+    return np.array([1.0, 1.0])
+
+
+def test_greedy_stitch_empty(unit_norm):
+    assert _greedy_stitch([], unit_norm, "c", "T") == []
+
+
+def test_greedy_stitch_single_segment_returns_unchanged(unit_norm):
+    seg = _segment([0.3, 0.4, 0.5], [10.0, 20.0, 30.0])
+    out = _greedy_stitch([seg], unit_norm, "c", "T")
+    assert len(out) == 1
+    pd.testing.assert_frame_equal(out[0], seg)
+
+
+def test_greedy_stitch_picks_min_x_as_head(unit_norm):
+    left = _segment([0.0, 0.1], [0.0, 0.0])
+    right = _segment([0.5, 0.6], [0.0, 0.0])
+    # right is passed first, but left has smaller min(x) and should lead
+    out = _greedy_stitch([right, left], unit_norm, "c", "T")
+    assert out[0] is left
+    assert out[1] is right
+
+
+def test_greedy_stitch_flips_segment_when_end_is_closer(unit_norm):
+    head = _segment([0.0, 0.1], [0.0, 0.0])  # head ends at (0.1, 0)
+    # Other goes from x=0.5 down to x=0.2. Its end (x=0.2) is closer to
+    # head's tail than its start (x=0.5) — should be flipped in place.
+    other = _segment([0.5, 0.4, 0.3, 0.2], [0.0, 0.0, 0.0, 0.0])
+    out = _greedy_stitch([head, other], unit_norm, "c", "T")
+    assert out[0] is head
+    assert out[1] is other
+    # other was flipped: now starts at the previously-final row
+    assert out[1].iloc[0]["c"] == pytest.approx(0.2)
+    assert out[1].iloc[-1]["c"] == pytest.approx(0.5)
+
+
+def test_greedy_stitch_no_flip_when_start_is_closer(unit_norm):
+    head = _segment([0.0, 0.1], [0.0, 0.0])
+    # Other starts at x=0.2 (close to head's tail) and ends at x=0.5 (far)
+    other = _segment([0.2, 0.3, 0.4, 0.5], [0.0, 0.0, 0.0, 0.0])
+    pre_flip = other.copy()
+    out = _greedy_stitch([head, other], unit_norm, "c", "T")
+    pd.testing.assert_frame_equal(out[1], pre_flip)
+
+
+def test_greedy_stitch_three_segments_orders_by_distance():
+    # head at x=[0,1], y=0; near segment touching head's tail; far segment
+    # further out. Expected order: head, near, far.
+    head = _segment([0.0, 1.0], [0.0, 0.0])
+    near = _segment([1.1, 2.0], [0.0, 0.0])
+    far = _segment([5.0, 6.0], [0.0, 0.0])
+    norm = np.array([1.0, 1.0])
+    out = _greedy_stitch([far, head, near], norm, "c", "T")
+    assert [s.iloc[0]["c"] for s in out] == pytest.approx([0.0, 1.1, 5.0])
+
+
+def test_greedy_stitch_norm_scales_axes():
+    # y dominates raw distance, but a large y-norm should make x dominate.
+    head = _segment([0.0, 0.1], [0.0, 0.0])  # head tail at (0.1, 0)
+    seg_a = _segment([0.2, 0.3], [100.0, 100.0])  # close in x, far in raw y
+    seg_b = _segment([5.0, 5.1], [0.5, 0.5])     # far in x, close in raw y
+    # With unit norm, seg_b wins (y matters more)
+    out_unit = _greedy_stitch(
+        [head, seg_a.copy(), seg_b.copy()], np.array([1.0, 1.0]), "c", "T"
+    )
+    assert out_unit[1].iloc[0]["c"] == pytest.approx(5.0)
+    # With y-norm large, y becomes irrelevant and seg_a (closer in x) wins
+    out_scaled = _greedy_stitch(
+        [head, seg_a.copy(), seg_b.copy()], np.array([1.0, 1000.0]), "c", "T"
+    )
+    assert out_scaled[1].iloc[0]["c"] == pytest.approx(0.2)
+
+
+def test_greedy_stitch_custom_columns(unit_norm):
+    # Sanity that the column names are honoured rather than hard-coded to c/T.
+    head = pd.DataFrame({"x": [0.0, 1.0], "y": [0.0, 0.0]})
+    other = pd.DataFrame({"x": [3.0, 2.0], "y": [0.0, 0.0]})  # ends at x=2, closer
+    out = _greedy_stitch([head, other], unit_norm, "x", "y")
+    assert out[0] is head
+    # other should have been flipped to start at x=2
+    assert out[1].iloc[0]["x"] == pytest.approx(2.0)
