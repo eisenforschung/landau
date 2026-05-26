@@ -481,3 +481,93 @@ def test_delaunay_triple_refiner_deduplicates():
     assert set(out["phase"]) == {"A", "B", "C"}
     assert np.allclose(out["T"], 300.0, atol=10.0)
     assert np.allclose(out["mu"], 0.2, atol=0.05)
+
+
+def test_boundary_id_cc_refiner_single_line(two_phase_system):
+    """All rows from a single two-phase trace share one boundary_id."""
+    phases, mapping = two_phase_system
+    df = _two_phase_diagram_df(phases)
+    out = ClausiusClapeyronRefiner(dT_max=100.0).run(df, mapping)
+
+    assert "boundary_id" in out.columns
+    # Two-phase system → one coexistence line → all rows share the same id.
+    assert out["boundary_id"].nunique() == 1
+
+
+def test_boundary_id_cc_refiner_two_lines():
+    """Rows from different coexistence lines get distinct boundary_ids."""
+    # Three-phase system has A-B and A-C (and possibly B-C) coexistence lines.
+    phases = _three_phase_system()
+    Ts = np.linspace(220.0, 480.0, 12)
+    mus = np.linspace(-0.05, 0.55, 15)
+    df = _coarse_df(phases, Ts, mus)
+    out = ClausiusClapeyronRefiner(dT_max=100.0).run(df, phases)
+
+    assert not out.empty
+    assert "boundary_id" in out.columns
+    # Three-phase system → at least two distinct coexistence lines.
+    assert out["boundary_id"].nunique() >= 2
+    # Each boundary_id group should contain rows from at most two phases.
+    for _bid, group in out.groupby("boundary_id"):
+        assert group["phase"].nunique() <= 2
+
+
+def test_boundary_id_miscibility_gap_refiner():
+    """MiscibilityGapRefiner assigns a single boundary_id to all gap rows."""
+    from scipy.constants import Boltzmann, eV
+    from landau.phases import RegularSolution
+    from landau.calculate import calc_phase_diagram, refine_phase_diagram
+
+    kB = Boltzmann / eV
+    L0 = 0.1
+    T_c = L0 / (2 * kB)
+    left = LinePhase(name="left", fixed_concentration=0.0, line_energy=0.0, line_entropy=0.0)
+    mid = LinePhase(name="mid", fixed_concentration=0.5, line_energy=L0 / 4, line_entropy=0.0)
+    right = LinePhase(name="right", fixed_concentration=1.0, line_energy=0.0, line_entropy=0.0)
+    sol = RegularSolution(name="sol", phases=[left, mid, right], num_coeffs=1, add_entropy=True)
+    Ts = np.linspace(150.0, T_c - 20.0, 15)
+    mus = np.linspace(-0.05, 0.05, 13)
+    coarse = calc_phase_diagram([sol], Ts=Ts, mu=mus, refine=False, keep_unstable=True)
+    out = refine_phase_diagram(coarse, {"sol": sol}, refiners=[MiscibilityGapRefiner()])
+    cc = out[out["refined"] == "miscibility-gap"]
+
+    assert not cc.empty
+    assert "boundary_id" in cc.columns
+    # One miscibility gap → one boundary_id.
+    assert cc["boundary_id"].nunique() == 1
+
+
+def test_boundary_id_refined_point_to_rows():
+    """RefinedPoint.to_rows propagates boundary_id into every emitted row."""
+    ph = LinePhase(name="x", fixed_concentration=0.3, line_energy=-1.0, line_entropy=0.0)
+    pt = RefinedPoint(T=500.0, mu=0.05, phases=("x",), boundary_id=7)
+    rows = pt.to_rows({"x": ph})
+    assert all(row["boundary_id"] == 7 for row in rows)
+
+
+def test_boundary_id_refined_miscibility_gap_to_rows():
+    """RefinedMiscibilityGap.to_rows propagates boundary_id into both rows."""
+    class _Phase:
+        name = "p"
+
+        def semigrand_potential(self, T, mu):
+            return 0.0
+
+    pt = RefinedMiscibilityGap(T=400.0, mu=0.0, phase="p",
+                               c_left=0.1, c_right=0.9, boundary_id=3)
+    rows = pt.to_rows({"p": _Phase()})
+    assert len(rows) == 2
+    assert all(row["boundary_id"] == 3 for row in rows)
+
+
+def test_boundary_id_delaunay_triple_rows_share_id():
+    """DelaunayTripleRefiner emits boundary_id; all rows of one triple share it."""
+    phases = _three_phase_system()
+    Ts = np.linspace(220.0, 480.0, 6)
+    mus = np.linspace(-0.05, 0.55, 7)
+    df = _coarse_df(phases, Ts, mus)
+    out = DelaunayTripleRefiner().run(df, phases)
+
+    assert "boundary_id" in out.columns
+    # One triple point (3 rows) → all rows share the same boundary_id.
+    assert out["boundary_id"].nunique() == 1

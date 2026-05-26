@@ -101,17 +101,24 @@ class RefinedPoint:
     phases : tuple[str, ...]
         Names of the phases that coexist here. Length 2 for a regular
         two-phase boundary, length 3 for a triple point.
+    boundary_id : int
+        Identifier shared by all rows that belong to the same coexistence
+        line (assigned by the refiner's ``run()``).
     """
 
     T: float
     mu: float
     phases: tuple[str, ...]
+    boundary_id: int = 0
 
     def phase_names(self) -> set[str]:
         return set(self.phases)
 
     def to_rows(self, phases: Mapping[str, Phase]) -> list[dict]:
-        return [_state_row(phases[name], self.T, self.mu) for name in self.phases]
+        rows = [_state_row(phases[name], self.T, self.mu) for name in self.phases]
+        for row in rows:
+            row["boundary_id"] = self.boundary_id
+        return rows
 
 
 @dataclass(frozen=True)
@@ -147,6 +154,7 @@ class RefinedMiscibilityGap:
     phase: str
     c_left: float
     c_right: float
+    boundary_id: int = 0
 
     def phase_names(self) -> set[str]:
         return {self.phase}
@@ -156,9 +164,9 @@ class RefinedMiscibilityGap:
         phi = float(ph.semigrand_potential(self.T, self.mu))
         return [
             {"T": self.T, "mu": self.mu, "phi": phi,
-             "c": self.c_left,  "phase": ph.name},
+             "c": self.c_left,  "phase": ph.name, "boundary_id": self.boundary_id},
             {"T": self.T, "mu": self.mu, "phi": phi,
-             "c": self.c_right, "phase": ph.name},
+             "c": self.c_right, "phase": ph.name, "boundary_id": self.boundary_id},
         ]
 
 
@@ -242,11 +250,14 @@ class Refiner(ABC):
     def run(self, df: pd.DataFrame, phases: Mapping[str, Phase]) -> pd.DataFrame:
         """propose → solve → filter → dataframe."""
         rows: list[dict] = []
+        boundary_id = 0
         for cand in self.propose(df):
-            for pt in self.solve(cand, phases):
-                if pt.T < 0 or _dominated(pt, phases):
-                    continue
-                rows.extend(pt.to_rows(phases))
+            pts = [pt for pt in self.solve(cand, phases)
+                   if pt.T >= 0 and not _dominated(pt, phases)]
+            for pt in pts:
+                rows.extend(replace(pt, boundary_id=boundary_id).to_rows(phases))
+            if pts:
+                boundary_id += 1
         out = pd.DataFrame(rows)
         if out.empty:
             return out
@@ -832,6 +843,9 @@ class _CCBase(Refiner):
         # _simplex_straddles inventing fake cross-segments between
         # unrelated single-point seed traces.
         traced: dict[object, list[Trace]] = {}
+        # One boundary_id per coexistence line (keyed by _pair_key).
+        boundary_ids: dict[object, int] = {}
+        next_bid = 0
         for cand in self.propose(df):
             key = self._pair_key(cand)
             traces = tuple(traced.get(key, ()))
@@ -843,10 +857,14 @@ class _CCBase(Refiner):
                 new_trace = tuple(
                     sorted(((p.T, p.mu) for p in pts), key=lambda tm: tm[0]))
                 traced.setdefault(key, []).append(new_trace)
+            if key not in boundary_ids:
+                boundary_ids[key] = next_bid
+                next_bid += 1
+            bid = boundary_ids[key]
             for pt in pts:
                 if pt.T < 0 or _dominated(pt, phases):
                     continue
-                rows.extend(pt.to_rows(phases))
+                rows.extend(replace(pt, boundary_id=bid).to_rows(phases))
         out = pd.DataFrame(rows)
         if out.empty:
             return out
