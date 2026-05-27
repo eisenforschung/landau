@@ -66,7 +66,7 @@ pytest -k pattern                               # by name
 ```
 
 Layout:
-- `tests/unit/` — per-module: `test_calculate.py`, `test_phases.py`, `test_poly.py`, `test_refine.py`, `test_resample.py`, `test_softplus.py`, `test_whitney.py`; subdirs `interpolate/` (`test_g_calphad.py`, `test_polyfit.py`, `test_redlich_kister.py`, `test_sgte.py`, `test_softplus_fit.py`, `test_stitched_fit.py`), `phases/` (`test_ase.py`, `test_vectorize.py`), `plot/` (`test_axis.py`, `test_colors.py`, `test_polygons.py`).
+- `tests/unit/` — per-module: `test_calculate.py`, `test_phases.py`, `test_poly.py`, `test_refine.py`, `test_resample.py`, `test_softplus.py`, `test_whitney.py`; subdirs `interpolate/` (`test_g_calphad.py`, `test_polyfit.py`, `test_redlich_kister.py`, `test_sgte.py`, `test_softplus_fit.py`, `test_stitched_fit.py`), `phases/` (`test_ase.py`, `test_vectorize.py`), `plot/` (`test_axis.py`, `test_colors.py`, `test_excess_free_energy.py`, `test_polygons.py`).
 - `tests/regression/` — `test_issue_1.py`, `test_issue_51.py`, `test_pandas_groupby.py`, `test_single_group_apply.py`, `test_cluster_phase_pandas3.py`.
 - `tests/integration/testplots.py` — **not a pytest test**; a render script that writes phase-diagram PNGs to `tests/integration/_plots/`. Triggered by the `testplot` label (`.github/workflows/testplot.yml`; Haiku also auto-selects a plot subset from changed files — PR #152) or by `@testplot ...` comments (`testplot-mention.yml`, parser uses Haiku to map free-text to `--only`/`--poly-method`/`--tielines`/`diff` flags against an allow-list frozen on `main`; see PR #149 for the parse/render/publish security split, PR #150 for diff-against-main rendering). Images are pushed to the `testplots` gallery branch and inlined into a PR comment.
 - `tests/conftest.py` provides shared `two_phase_ideal` / `three_phase_regular_solution` phase fixtures.
@@ -97,10 +97,11 @@ Layout:
 - `Refiner` ABC: subclasses implement `propose(df, phases)` + `solve(candidate)` → `RefinedPoint` / `RefinedMiscibilityGap`. Base `run()` drops dominated/negative-T rows and packages output rows.
 - Shipped refiners: `ScanRefiner` (1-D bisection between disagreeing samples), `DelaunayLineRefiner` (one transition per two-phase simplex), `DelaunayTripleRefiner` (triple points from three-phase simplices; dedups via enclosing-simplex extents, PR #144), `ClausiusClapeyronRefiner` (predictor-corrector trace of a two-phase coexistence line, both T directions), `MiscibilityGapRefiner` (same idea for intra-phase miscibility splits). The last two share `_CCBase`.
 - `default_refiners(df)` picks the set based on which of `mu`/`T` is sampled. For 2-D grids (both axes sampled) the default is `DelaunayTripleRefiner` + `ClausiusClapeyronRefiner` + `MiscibilityGapRefiner` — `DelaunayLineRefiner` and `ScanRefiner` are opt-in. For 1-D scans the default is just the matching `ScanRefiner`.
-- A `boundary_id` column tagging refined rows by the line they belong to is planned (#124).
+- A `boundary_id` column tagging refined rows by the line they belong to is in flight (PR #163, closes #124).
 
 **`landau/plot.py`** — phase-diagram plotting.
 - `plot_phase_diagram` (c–T), `plot_mu_phase_diagram` (μ–T), `plot_1d_mu_phase_diagram`, `plot_1d_T_phase_diagram`. The mu/c variants share `_plot_phase_diagram` + the `_set_axis_for` helper (PR #122). Generalising the 1D/2D split is open (#34, #60).
+- `plot_excess_free_energy(df, ...)` — common-tangent / excess-free-energy plot (one facet per T) with helpers `_phase_concentration_range`, `_endmember_free_energy`, `_lower_convex_hull`. Re-exported from `landau/__init__.py`.
 - `get_polygons(df, poly_method=..., distance_threshold=0.5)` / `plot_polygons` / `get_phase_colors(phase_names, override=None)`.
 - `cluster_phase(df)` is the pandas-groupby site that has historically broken on pandas 3 — keep `include_groups=False` (PR #93, #113).
 
@@ -120,7 +121,7 @@ Layout:
 
 ## Documentation
 
-Sphinx in `docs/` (`api/`, `notebooks/`, `index.md`, `installation.md`). Built by ReadTheDocs on Python 3.12. Extensions: `myst-nb`, `sphinx-autodoc-typehints`, `furo`. Notebooks under `notebooks/` (`Basics`, `IdealSolution`, `Intermetallics`, `ClausiusClapeyron`, `PointDefects`, `Toy`, `ASE/{EMT_CuAg,FCC_BCC_Fe,Hydrate}`, `MgCa/...`); commit notebooks **with executed outputs only**.
+Sphinx in `docs/` (`api/`, `notebooks/`, `index.md`, `installation.md`). Built by ReadTheDocs on Python 3.12. Extensions: `myst-nb`, `sphinx-autodoc-typehints`, `furo`. Notebooks under `notebooks/` (`Basics`, `IdealSolution`, `Intermetallics`, `ClausiusClapeyron`, `ExcessFreeEnergy`, `PointDefects`, `Toy`, `ASE/{EMT_CuAg,FCC_BCC_Fe,Hydrate}`, `MgCa/...`); commit notebooks **with executed outputs only**.
 
 Local build:
 ```bash
@@ -136,7 +137,7 @@ Cheat sheet of what's been considered. Fetch the issue before re-litigating.
 - **Phase subpackage cleanup** (#137) — `phases/__init__.py` lumps everything together; split is desired.
 - **Refiner extensions** (#124 boundary_id, #142 closed via #144 triple-point dedup). `ClausiusClapeyronRefiner` and `MiscibilityGapRefiner` are on by default for 2-D grids; `DelaunayLineRefiner` and the 1-D `ScanRefiner` remain opt-in.
 - **Polygon plotting robustness** (#125 decided in favour of plain symmetric subtract — PR #127 landed; both the boundary-Voronoi alternative #129 and apex-cleanup follow-up #130 were rejected. #38 closed by #147). Hypothesis strategies for polygon tests are weak (#70). Recent sub-issues under the #116 Refactor Opportunities umbrella: rewire `Segments._sort_segments` through `_segment_tsp_polygon` so the no-extras fallback no longer fails when a phase is stable at an axis edge (#162); add direct unit tests for the `_pca_sort_segment` / `_segments_from_labels` / `_segment_tsp_polygon` helpers (#161); pin pandas-3 single-group `groupby.apply` shape for `get_transitions`, `AbstractPolyMethod.apply`, and the `f_excess` `.T`-workaround branch in `calc_phase_diagram` (#160).
-- **Excess-free-energy / common-tangent plot** (#136) — `plot_excess_free_energy` + helpers (`_phase_concentration_range`, `_endmember_free_energy`, `_lower_convex_hull`) under review in PR #145 (open against `main`, head branch `claude/issue-136-20260521-1020`); PR #146 (tests) already merged into that head branch. Touches `landau/plot.py` only. Bug #155 (`f_excess` reference picks wrong endpoint phase when phases overlap near c=0/c=1) was identified during this work and still needs a fix.
+- **Excess-free-energy / common-tangent plot** (#136) — `plot_excess_free_energy` + helpers (`_phase_concentration_range`, `_endmember_free_energy`, `_lower_convex_hull`) landed in `landau/plot.py` along with the `ExcessFreeEnergy` notebook and `tests/unit/plot/test_excess_free_energy.py`; re-exported from `landau/__init__.py`. Bug #155 (`f_excess` reference picks wrong endpoint phase when phases overlap near c=0/c=1) was identified during this work and still needs a fix.
 - **Pandas 2/3 compat** — hard constraint. Every `groupby().apply()` needs `include_groups=False`. Recent regressions covered in `tests/regression/test_single_group_apply.py` (PR #143).
 - **API generalisation** (#34, #60) — plot_{mu,}_phase_diagram axes-as-arg refactor and the broader 2.0 plotting/calculate rearrangement.
 - **Performance** (#23) — `SlowInterpolatingPhase` needs a precomputed interpolation pass; (#33) fast Legendre transforms.
