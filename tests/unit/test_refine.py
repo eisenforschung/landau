@@ -571,3 +571,46 @@ def test_boundary_id_delaunay_triple_rows_share_id():
     assert "boundary_id" in out.columns
     # One triple point (3 rows) → all rows share the same boundary_id.
     assert out["boundary_id"].nunique() == 1
+
+
+def test_boundary_id_consistent_with_cluster(two_phase_system):
+    """No cluster label spans multiple boundary_id values.
+
+    Clustering groups spatially nearby points; it must always be a
+    sub-partition of the boundary_id grouping — all rows in one cluster
+    belong to the same coexistence line.  The inverse is allowed: one
+    boundary_id may map to several cluster labels (e.g. the two phase
+    branches on either side of the same coexistence line).
+
+    Note: this invariant is only guaranteed when coexistence lines are
+    spatially separated.  In three-phase systems the shared-phase rows near
+    a triple point are spatially indistinguishable by position alone, so
+    ``cluster_T_c_mu`` merges rows from different boundaries there.  The
+    two-phase fixture avoids that degeneracy: one boundary, one
+    ``boundary_id``, but two spatial clusters (one per coexisting phase
+    branch) demonstrating both directions of the relationship.
+    """
+    from landau.calculate import cluster_T_c_mu
+
+    phases, mapping = two_phase_system
+    df = _two_phase_diagram_df(phases)
+    refined = ClausiusClapeyronRefiner(dT_max=100.0).run(df, mapping)
+
+    assert not refined.empty
+
+    cluster_labels = cluster_T_c_mu(refined, distance_threshold=0.5)
+    refined = refined.copy()
+    refined["_cluster"] = cluster_labels
+
+    # Forward invariant: no cluster spans multiple boundary_ids.
+    for cl, group in refined.groupby("_cluster"):
+        n_bids = group["boundary_id"].nunique()
+        assert n_bids == 1, (
+            f"cluster {cl} spans {n_bids} boundary_ids: "
+            f"{sorted(group['boundary_id'].unique())}"
+        )
+
+    # Inverse direction: a single boundary_id is allowed to span multiple
+    # cluster labels (here: one cluster per coexisting phase branch).
+    bids_per_cluster = refined.groupby("boundary_id")["_cluster"].nunique()
+    assert (bids_per_cluster >= 1).all()
