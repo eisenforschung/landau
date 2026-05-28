@@ -209,10 +209,23 @@ def calc_phase_diagram(
 
     def sub(dd):
         dd = dd.query("-inf<mu<inf")
-        c0 = dd.c.min()
-        c1 = dd.c.max()
-        f0 = dd.query("c==@c0").f.min()
-        f1 = dd.query("c==@c1").f.min()
+        if dd.empty:
+            return dd.f
+        c_min = dd.c.min()
+        c_max = dd.c.max()
+        c_span = c_max - c_min
+        lo_thr = c_min + 0.1 * c_span
+        hi_thr = c_max - 0.1 * c_span
+        f0, f1 = np.inf, np.inf
+        for _, g in dd.groupby("phase"):
+            if g["c"].min() <= lo_thr:
+                f0 = min(f0, g.loc[g["c"].idxmin(), "f"])
+            if g["c"].max() >= hi_thr:
+                f1 = min(f1, g.loc[g["c"].idxmax(), "f"])
+        if not np.isfinite(f0):
+            f0 = dd.loc[dd["c"].idxmin(), "f"]
+        if not np.isfinite(f1):
+            f1 = dd.loc[dd["c"].idxmax(), "f"]
         return dd.f - (f0 * (1 - dd.c) + f1 * dd.c)
 
     fex = pdf.groupby("T", group_keys=False).apply(sub, include_groups=False)
