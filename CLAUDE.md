@@ -76,20 +76,21 @@ Layout:
 
 ### Module layout
 
-**`landau/phases/`** — phase definitions (subpackage; split from `phases.py` per PR #111). `landau/__init__.py` re-exports only the user-facing subset: `LinePhase`, `TemperatureDepandantLinePhase`/`TemperatureDependentLinePhase`, `IdealSolution`, `RegularSolution`, `InterpolatingPhase`, `SlowInterpolatingPhase`, `AsePhase` (the `Phase`/`AbstractLinePhase` ABCs and the point-defect classes are subpackage-only).
+**`landau/phases/`** — phase definitions (subpackage; split from `phases.py` per PR #111). `landau/__init__.py` re-exports the user-facing subset of phases (`LinePhase`, `TemperatureDepandantLinePhase`/`TemperatureDependentLinePhase`, `IdealSolution`, `RegularSolution`, `InterpolatingPhase`, `SlowInterpolatingPhase`, `AsePhase` — the `Phase`/`AbstractLinePhase` ABCs and the point-defect classes stay subpackage-only) plus the interpolators (`ConcentrationInterpolator`, `TemperatureInterpolator`, `SGTE`, `PolyFit`, `RedlichKister`, `SoftplusFit`) and the two top-level plot entry points (`plot_phase_diagram`, `plot_excess_free_energy`).
 - `phases/__init__.py` — `Phase` (ABC), `AbstractLinePhase`, `LinePhase`, `TemperatureDependentLinePhase` (alias `TemperatureDepandantLinePhase` kept for back-compat), `IdealSolution`, `RegularSolution`, `InterpolatingPhase`, `SlowInterpolatingPhase`, `AbstractPointDefect`, `ConstantPointDefect`, `PointDefectSublattice`, `PointDefectedPhase`.
 - `phases/asewrapper.py` — `AsePhase(AbstractLinePhase)` wrapping `ase.thermochemistry.ThermoChem`. Compares/hashes by a `_key()` tuple `(name, fixed_concentration, pressure, atoms_per_formula, pickle.dumps(thermochem))` so two instances from equivalent inputs are equal. Falls back from `get_helmholtz_energy` to `get_gibbs_energy` (1 atm default). `atoms_per_formula` divides ASE's energy so the result is per atom. Splitting this further is open (#137).
 
 **`landau/interpolate/`** — interpolation strategies.
 - `basic.py` — `Interpolator` (ABC), `TemperatureInterpolator`, `ConcentrationInterpolator`, `PolyFit`, `SGTE`, `RedlichKister` (+ `RedlichKisterInterpolation` helper), `StitchedFit`, `G_calphad` standalone fn.
 - `softplus.py` — `SoftplusFit` smooth-step.
-- `whitney.py` — `WhitneyRBFInterpolator` (sklearn-style estimator) and `WhitneyTemperatureInterpolator`. Used for Whitney-extension RBF interpolation that handles convex-hull projection.
+- `whitney.py` — `WhitneyRBFInterpolator` (sklearn-style estimator, module-private — not in `interpolate/__init__.py:__all__`) and `WhitneyTemperatureInterpolator` (public). Used for Whitney-extension RBF interpolation that handles convex-hull projection.
 
 **`landau/calculate.py`** — core thermodynamic calculations.
-- `calc_phase_diagram(phases, Ts, mu=..., refine=True, keep_unstable=False, ...)` — main entry point that builds the raw `(T, mu, phase, c, phi)` dataframe. `keep_unstable=True` retains unstable-phase rows (required by `plot_excess_free_energy`).
+- `calc_phase_diagram(phases, Ts, mu, refine=True, keep_unstable=False)` — main entry point that builds the raw `(T, mu, phase, c, phi)` dataframe. `mu` is required positional (pass an `int` to autodetect via `guess_mu_range`). `keep_unstable=True` retains unstable-phase rows (required by `plot_excess_free_energy`).
 - `refine_phase_diagram(pdf, phases, min_c, max_c)` — orchestrator over a sequence of `Refiner` instances (defaults via `landau.refine.default_refiners`).
 - `guess_mu_range(phases, T, samples, tolerance=1e-2)` — autodetect the μ window with two `scipy.optimize.brute` scans (μ at min/max concentration), then `interp1d`-invert c(μ) onto `samples` points; returns `(mu_array, c0, c1)`.
-- `cluster_T_c` / `cluster_T_c_mu` / `cluster` — agglomerative clustering for collapsing co-located transitions; `distance_threshold` is a **required** kwarg here. User-facing `cluster_phase` (`plot.py`) and `get_polygons` accept it with `default=0.5`.
+- `cluster_T_c` / `cluster_T_c_mu` — agglomerative clustering for collapsing co-located transitions; `distance_threshold` is a **required** kwarg. `cluster(dd, ..., *, distance_threshold)` is a one-line dispatcher that forwards to one of the two based on `use_mu`. User-facing `cluster_phase` (`plot.py`) and `get_polygons` accept it with `default=0.5`.
+- `find_one_point` is a back-compat alias re-exported from `landau.refine._find_one_point` (`landau/calculate.py:15`, `# noqa: F401`).
 - `get_transitions(df)` — extract phase-boundary rows.
 - Private `_join_phase_unit` / `_split_phase_unit` shared with `poly.py` / `plot.py` (PR #132).
 
