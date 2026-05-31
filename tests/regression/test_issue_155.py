@@ -6,15 +6,20 @@ when a different phase has a lower free energy there.  The fix evaluates each
 phase at its own endpoint concentration and takes the thermodynamically stable one
 as the reference.
 
+The endpoint threshold is 1% of the full concentration span.  10% was too loose:
+a line phase fixed at c=0.08 (within 10% of c=0) could be accepted as a c=0
+reference when it happens to have a low free energy at extreme μ, corrupting the
+entire f_excess column.
+
 Fixture setup (T=500 K, no vibrational entropy):
   solid:  f_a=-2.0 eV, f_b=-3.2 eV  (Δf=-1.2 eV)  → solid is more stable at c=0
   liquid: f_a=-1.5 eV, f_b=-2.5 eV  (Δf=-1.0 eV)  → Δf_liquid > Δf_solid
 
 Because |Δf_liquid| < |Δf_solid|, at any fixed negative mu liquid concentrates
-more strongly toward c=0 and samples a smaller c than solid.  The old code
-therefore picked liquid as the c=0 reference, giving solid a spurious
-f_excess ≈ -0.5 eV at c≈0 (thermodynamically impossible for the reference phase).
-The correct value is ≈ kT*(mixing entropy) ≈ 0.
+more strongly toward c=0 and samples a smaller c than solid (original bug: c_liquid
+≈ 2e-6 vs c_solid ≈ 5e-6).  The old code therefore picked liquid as the c=0
+reference, giving solid a spurious f_excess ≈ -0.5 eV at c≈0 (thermodynamically
+impossible for the reference phase).  The correct value is ≈ kT*(mixing entropy) ≈ 0.
 """
 
 import numpy as np
@@ -62,7 +67,8 @@ def test_stable_phase_at_c0_has_near_zero_f_excess(phase_diagram):
     solid_fex = near_c0[near_c0["phase"] == "solid"]["f_excess"]
 
     assert len(solid_fex) > 0, "solid should sample near c=0"
-    # kT*mixing at c=0.01 ≈ -0.0024 eV; threshold -0.1 eV catches the bug (-0.5 eV)
+    # kT*mixing at c=0.01 ≈ -0.0024 eV; threshold -0.1 eV clearly separates
+    # the fix (≈ 0) from the old bug (≈ -0.5 eV)
     assert solid_fex.min() > -0.1, (
         f"solid f_excess at c<0.01 should be ~0 (kT*mixing only), got {solid_fex.min():.4f} eV; "
         f"the old bug would give ≈ -0.5 eV"
@@ -91,4 +97,41 @@ def test_metastable_phase_f_excess_exceeds_stable_at_c0(phase_diagram):
     assert liquid_fex.min() > solid_fex.max(), (
         f"liquid f_excess ({liquid_fex.min():.4f}) should exceed solid f_excess "
         f"({solid_fex.max():.4f}) near c=0"
+    )
+
+
+def test_line_phase_near_endpoint_not_used_as_reference():
+    """A line phase fixed at c=0.08 must not corrupt the c=0 reference.
+
+    A LinePhase at c=0.08 has f = line_energy (constant, independent of μ).
+    With the old 10% threshold this phase's c_min=0.08 < lo_thr=0.1, so it
+    was accepted as a c=0 reference.  With line_energy=-5.0 that sets f0=-5.0
+    instead of the correct f0≈-2.0 (solid), producing f_excess(solid)≈+3 eV
+    at c≈0 — clearly wrong.  With the 1% threshold the intermetallic's
+    c_min=0.08 > lo_thr=0.01 and it is excluded; f_excess(solid)≈0.
+    """
+    solid_a = LinePhase("A", fixed_concentration=0, line_energy=-2.0, line_entropy=0)
+    solid_b = LinePhase("B", fixed_concentration=1, line_energy=-3.0, line_entropy=0)
+    solid = IdealSolution("solid", solid_a, solid_b)
+
+    im = LinePhase("IM", fixed_concentration=0.08, line_energy=-5.0, line_entropy=0)
+
+    mu_range = np.linspace(-2.0, 2.0, 50)
+    df = calc_phase_diagram(
+        [solid, im],
+        Ts=[500.0, 501.0],
+        mu=mu_range,
+        keep_unstable=True,
+        refine=False,
+    )
+    df_T = df[df["T"] == 500.0]
+    near_c0 = df_T[df_T["c"] < 0.01]
+    solid_fex = near_c0[near_c0["phase"] == "solid"]["f_excess"]
+
+    assert len(solid_fex) > 0, "solid should sample near c=0"
+    # With 10% threshold (old): f_excess(solid) ≈ -2.0 - (-5.0) = +3.0 eV
+    # With 1% threshold (fix):  f_excess(solid) ≈ kT*mixing ≈ 0 eV
+    assert solid_fex.min() < 0.1, (
+        f"solid f_excess at c<0.01 should be ~0; got {solid_fex.min():.4f} eV — "
+        f"the IM at c=0.08 may have been used as the c=0 reference (f_IM=-5 eV)"
     )

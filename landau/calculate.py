@@ -214,8 +214,8 @@ def calc_phase_diagram(
         c_min = dd.c.min()
         c_max = dd.c.max()
         c_span = c_max - c_min
-        lo_thr = c_min + 0.1 * c_span
-        hi_thr = c_max - 0.1 * c_span
+        lo_thr = c_min + 0.01 * c_span
+        hi_thr = c_max - 0.01 * c_span
         f0, f1 = np.inf, np.inf
         for _, g in dd.groupby("phase"):
             if g["c"].min() <= lo_thr:
