@@ -4,7 +4,7 @@ from scipy.constants import Boltzmann, eV
 
 from landau.interpolate import SGTE
 from landau.interpolate.basic import G_calphad
-from landau.phases import IdealSolution, LinePhase, TemperatureDependentLinePhase
+from landau.phases import BinaryCompoundEnergyPhase, IdealSolution, LinePhase, TemperatureDependentLinePhase
 
 kB = Boltzmann / eV
 
@@ -328,3 +328,123 @@ def test_ideal_concentration_from_semigrand_potential():
     c_numeric = -np.gradient(phi, dmu)
     c_direct = sol.concentration(T, dmu)
     assert_allclose(c_numeric, c_direct, atol=1e-3)
+
+
+# --- BinaryCompoundEnergyPhase tests ---
+
+_CEF_ATOL = 1e-10
+
+_G_A = -1.0   # eV/atom
+_G_B = -0.5   # eV/atom
+
+
+def _make_cef_1sl(g_A=_G_A, g_B=_G_B):
+    return BinaryCompoundEnergyPhase(
+        name="1sl",
+        site_multiplicities=(1.0,),
+        end_member_energies={(0,): lambda T: g_A, (1,): lambda T: g_B},
+    )
+
+
+def _make_cef_2sl(g_AA=-1.0, g_AB=-0.8, g_BA=-0.7, g_BB=-0.4):
+    return BinaryCompoundEnergyPhase(
+        name="2sl",
+        site_multiplicities=(0.5, 0.5),
+        end_member_energies={
+            (0, 0): lambda T: g_AA,
+            (0, 1): lambda T: g_AB,
+            (1, 0): lambda T: g_BA,
+            (1, 1): lambda T: g_BB,
+        },
+    )
+
+
+def test_cef_1sl_pure_A_zero_entropy():
+    phase = _make_cef_1sl()
+    assert_allclose(phase.free_energy([0.0], 1000.0), _G_A, atol=_CEF_ATOL)
+
+
+def test_cef_1sl_pure_B_zero_entropy():
+    phase = _make_cef_1sl()
+    assert_allclose(phase.free_energy([1.0], 1000.0), _G_B, atol=_CEF_ATOL)
+
+
+def test_cef_1sl_max_entropy():
+    """At y=0.5, G = (G_A+G_B)/2 - kB*T*ln(2)."""
+    phase = _make_cef_1sl()
+    T = 1000.0
+    expected = 0.5 * (_G_A + _G_B) - kB * T * np.log(2)
+    assert_allclose(phase.free_energy([0.5], T), expected, atol=_CEF_ATOL)
+
+
+def test_cef_2sl_pure_AA_zero_entropy():
+    phase = _make_cef_2sl()
+    assert_allclose(phase.free_energy([0.0, 0.0], 1000.0), -1.0, atol=_CEF_ATOL)
+
+
+def test_cef_2sl_pure_BB_zero_entropy():
+    phase = _make_cef_2sl()
+    assert_allclose(phase.free_energy([1.0, 1.0], 1000.0), -0.4, atol=_CEF_ATOL)
+
+
+def test_cef_2sl_ref_energy_mixed():
+    """At y=[0.5,0.5], G_ref = mean of all four end-members."""
+    phase = _make_cef_2sl(g_AA=-1.0, g_AB=-0.8, g_BA=-0.7, g_BB=-0.4)
+    T = 1000.0
+    g_ref = (-1.0 - 0.8 - 0.7 - 0.4) / 4
+    g_ideal = -kB * T * (0.5 * np.log(2) + 0.5 * np.log(2))
+    assert_allclose(phase.free_energy([0.5, 0.5], T), g_ref + g_ideal, atol=_CEF_ATOL)
+
+
+def test_cef_composition():
+    phase = _make_cef_2sl()
+    assert_allclose(phase.composition([0.2, 0.8]), 0.5, atol=_CEF_ATOL)
+    assert_allclose(phase.composition([1.0, 0.0]), 0.5, atol=_CEF_ATOL)
+
+
+# --- free_energy_c tests ---
+
+def test_cef_free_energy_c_1sl_matches_free_energy():
+    """For single sublattice, free_energy_c(c) == free_energy([c])."""
+    phase = _make_cef_1sl()
+    T = 800.0
+    for c in [0.0, 0.25, 0.5, 0.75, 1.0]:
+        assert_allclose(phase.free_energy_c(c, T), phase.free_energy([c], T), atol=_CEF_ATOL)
+
+
+def test_cef_free_energy_c_pure_ends():
+    """At c=0 and c=1, free_energy_c returns the pure end-member energy."""
+    phase = _make_cef_2sl(g_AA=-1.0, g_AB=-0.8, g_BA=-0.7, g_BB=-0.4)
+    T = 500.0
+    assert_allclose(phase.free_energy_c(0.0, T), -1.0, atol=1e-8)
+    assert_allclose(phase.free_energy_c(1.0, T), -0.4, atol=1e-8)
+
+
+def test_cef_free_energy_c_is_minimum():
+    """free_energy_c(c) <= free_energy(y) for any y with composition(y)==c."""
+    phase = _make_cef_2sl()
+    T = 600.0
+    c = 0.5
+    g_min = phase.free_energy_c(c, T)
+    # Several feasible points with composition 0.5
+    for y in [[0.5, 0.5], [0.0, 1.0], [1.0, 0.0], [0.3, 0.7], [0.7, 0.3]]:
+        assert phase.free_energy(y, T) >= g_min - 1e-10
+
+
+def test_cef_free_energy_c_ordered_ground_state():
+    """At low T and c=0.5, ordered config (y=[0,1] or [1,0]) beats disordered."""
+    # G_AB = G_BA = -1 (ordered is strongly favoured), G_AA = G_BB = 0
+    phase = BinaryCompoundEnergyPhase(
+        name="ordered",
+        site_multiplicities=(0.5, 0.5),
+        end_member_energies={
+            (0, 0): lambda T: 0.0,
+            (0, 1): lambda T: -1.0,
+            (1, 0): lambda T: -1.0,
+            (1, 1): lambda T: 0.0,
+        },
+    )
+    T = 10.0
+    g_min = phase.free_energy_c(0.5, T)
+    g_disordered = phase.free_energy([0.5, 0.5], T)  # uniform = disordered
+    assert g_min < g_disordered

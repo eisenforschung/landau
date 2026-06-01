@@ -7,6 +7,7 @@ from .phases import (
     InterpolatingPhase,
     SlowInterpolatingPhase,
     AsePhase,
+    BinaryCompoundEnergyPhase,
 )
 
 from .interpolate import (
