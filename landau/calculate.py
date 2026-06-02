@@ -252,12 +252,11 @@ def _agglomerative_clusterer(distance_threshold):
     )
 
 
-def cluster_T_c(dd, eps=0.01, *, distance_threshold) -> pd.Series:
+def cluster_T_c(dd, *, distance_threshold) -> pd.Series:
     """Cluster points by (T, c) coordinates; used by cluster_phase.
 
     Args:
         dd: DataFrame with columns 'T' and 'c'.
-        eps: Unused; kept for API compatibility.
         distance_threshold: Agglomerative clustering cut-off in normalised (T, c) space.
             Smaller values split more aggressively; larger values merge more. 0.5 was
             hand-tuned for 2D T-c diagrams — lower it (e.g. 0.2) when disconnected
@@ -270,7 +269,7 @@ def cluster_T_c(dd, eps=0.01, *, distance_threshold) -> pd.Series:
     return pd.Series(ids, index=dd.index)
 
 
-def cluster_T_c_mu(dd, eps=0.01, *, distance_threshold) -> pd.Series:
+def cluster_T_c_mu(dd, *, distance_threshold) -> pd.Series:
     """Cluster points by (T, c, mu); rows with mu=±inf get their own distinct labels.
 
     Used by get_transitions. The mu=±inf rows are border edges from _border_edges
@@ -278,7 +277,6 @@ def cluster_T_c_mu(dd, eps=0.01, *, distance_threshold) -> pd.Series:
 
     Args:
         dd: DataFrame with columns 'T', 'c', and 'mu'.
-        eps: Unused; kept for API compatibility.
         distance_threshold: Agglomerative clustering cut-off in normalised (T, c, mu) space.
             See :func:`cluster_T_c` for tuning guidance.
     """
@@ -297,12 +295,12 @@ def cluster_T_c_mu(dd, eps=0.01, *, distance_threshold) -> pd.Series:
     return ids
 
 
-def cluster(dd, eps=0.01, use_mu=True, *, distance_threshold):
+def cluster(dd, use_mu=True, *, distance_threshold):
     """Thin dispatch to cluster_T_c or cluster_T_c_mu; prefer calling those directly."""
     if use_mu:
-        return cluster_T_c_mu(dd, eps=eps, distance_threshold=distance_threshold)
+        return cluster_T_c_mu(dd, distance_threshold=distance_threshold)
     else:
-        return cluster_T_c(dd, eps=eps, distance_threshold=distance_threshold)
+        return cluster_T_c(dd, distance_threshold=distance_threshold)
 
 
 def get_transitions(df):
