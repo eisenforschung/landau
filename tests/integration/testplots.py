@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import itertools
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -298,9 +299,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--only",
-        choices=sorted(PLOTS),
         nargs="+",
-        help="restrict to a subset of plots (default: all)",
+        metavar="PLOT",
+        help=f"restrict to a subset of plots (default: all); choices: {', '.join(sorted(PLOTS))}",
     )
     parser.add_argument(
         "--poly-method",
@@ -319,7 +320,16 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    names = args.only or list(PLOTS)
+    if args.only:
+        unknown = [n for n in args.only if n not in PLOTS]
+        for u in unknown:
+            print(f"warning: unknown plot name {u!r}; skipping", file=sys.stderr)
+        names = [n for n in args.only if n in PLOTS]
+        if not names:
+            print("warning: no valid plot names given; rendering all plots", file=sys.stderr)
+            names = list(PLOTS)
+    else:
+        names = list(PLOTS)
     poly_methods = args.poly_method if args.poly_method else [None]
     tielines = [v == "on" for v in args.tielines]
     axes = {"poly_method": poly_methods, "tielines": tielines}
