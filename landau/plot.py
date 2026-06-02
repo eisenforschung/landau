@@ -505,6 +505,7 @@ def plot_excess_free_energy(
         df["border"] = False
 
     temperatures = sorted(df["T"].unique())
+    col_wrap = min(col_wrap, len(temperatures))
 
     # Line phases have a fixed concentration — detect by zero range across all rows.
     phase_names = list(df["phase"].unique())
