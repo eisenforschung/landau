@@ -86,6 +86,26 @@ def plot_1d_T(out_dir: Path, **_) -> Path:
     return _save(fig, out_dir, "1d_T_phase_diagram")
 
 
+def plot_1d_T_three_stable(out_dir: Path, **_) -> Path:
+    """1D T phase diagram with three stable phases (bcc / fcc / liquid).
+
+    The intermediate phase (fcc) is unstable in two disjoint T ranges, which
+    previously caused a plotting artifact: the two dashed segments were drawn
+    as one continuous line crossing the stable region.
+    """
+    bcca = ldp.LinePhase("bcc",    fixed_concentration=0, line_energy=-3.000, line_entropy=1.0 * ldp.kB)
+    fcca = ldp.LinePhase("fcc",    fixed_concentration=0, line_energy=-2.975, line_entropy=1.8 * ldp.kB)
+    lqda = ldp.LinePhase("liquid", fixed_concentration=0, line_energy=-2.750, line_entropy=5.0 * ldp.kB)
+
+    Ts = np.linspace(100, 1000, 50)
+    df = ldc.calc_phase_diagram([bcca, fcca, lqda], Ts, mu=0.0, refine=True, keep_unstable=True)
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    lpl.plot_1d_T_phase_diagram(df, ax=ax)
+    ax.set_title("1D T phase diagram (three stable phases: bcc / fcc / liquid)")
+    return _save(fig, out_dir, "1d_T_three_stable_phase_diagram")
+
+
 def plot_1d_mu(out_dir: Path, **_) -> Path:
     """1D mu phase diagram from notebooks/Basics.ipynb (hcp vs fcc isothermal)."""
     fcca = ldp.LinePhase("fccA", fixed_concentration=0, line_energy=-3.00, line_entropy=1.0 * ldp.kB)
@@ -260,6 +280,7 @@ def plot_2d_toy_mu(out_dir: Path, poly_method: str | None = None, **_) -> Path:
 # automatically instead of re-rendering identical files.
 PLOTS = {
     "1d_T":                (plot_1d_T,                ()),
+    "1d_T_three_stable":   (plot_1d_T_three_stable,   ()),
     "1d_mu":               (plot_1d_mu,               ()),
     "2d_basics":           (plot_2d_basics,            ("poly_method", "tielines")),
     "2d_basics_mu":        (plot_2d_basics_mu,         ("poly_method",)),

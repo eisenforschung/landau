@@ -398,11 +398,30 @@ def plot_1d_T_phase_diagram(
 
     if ax is None:
         fig, ax = plt.subplots()
+
+    df = df.copy()
+    # Assign per-segment IDs so that seaborn draws disconnected (phase, stable)
+    # blocks separately.  Without this a phase that is unstable in two disjoint
+    # T ranges (e.g. the middle phase in a three-phase sequence) gets connected
+    # into one continuous dashed line crossing the stable region.
+    df["_seg"] = df.groupby(["phase", "stable"], group_keys=False).apply(
+        lambda g: cluster_T_c(g, distance_threshold=0.1).to_frame("_seg"),
+        include_groups=False,
+    )["_seg"]
+    df["_seg_id"] = (
+        df["phase"].astype(str)
+        + "_"
+        + df["stable"].astype(int).astype(str)
+        + "_"
+        + df["_seg"].astype(str)
+    )
+
     sns.lineplot(
         data=df,
         x='T', y='phi',
         hue='phase', hue_order=sorted(df.phase.unique()),
         style='stable', style_order=[True, False],
+        units='_seg_id', estimator=None, errorbar=None,
         ax=ax,
     )
 
