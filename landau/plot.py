@@ -404,20 +404,22 @@ def plot_1d_T_phase_diagram(
     # blocks as separate lines.  A phase unstable in two disjoint T ranges
     # (e.g. the middle phase in a three-phase sequence) would otherwise be
     # connected into one continuous dashed line crossing the stable region.
-    # cluster_T_c cannot be used here: it normalises T within each group, so
-    # a narrow stable segment (small T range) ends up with all its points
-    # spaced far apart in normalised space and each gets its own cluster,
-    # causing seaborn to draw nothing (each "line" is a single point).
-    _unique_T = np.sort(df["T"].unique())
-    _dt = 2.0 * (np.median(np.diff(_unique_T)) if len(_unique_T) > 1 else 1.0)
+    # cluster_T_c normalises T within each group; the threshold must therefore
+    # be at least as large as the worst-case consecutive spacing in any stable
+    # group after that per-group normalisation.
+    def _max_normed_gap(t):
+        t = t.sort_values()
+        r = t.max() - t.min()
+        return float(t.diff().dropna().max() / r) if r > 0 else 0.0
 
-    def _seg_label(g):
-        sg = g.sort_values("T")
-        return (sg["T"].diff().fillna(0) > _dt).cumsum()
+    stable_T = df.loc[df["stable"], ["phase", "T"]]
+    spacings = stable_T.groupby("phase")["T"].apply(_max_normed_gap) if not stable_T.empty else pd.Series([], dtype=float)
+    seg_threshold = 1.5 * float(spacings.max()) if not spacings.empty else 0.5
 
     df["_seg"] = df.groupby(["phase", "stable"], group_keys=False).apply(
-        _seg_label, include_groups=False
-    )
+        lambda g: cluster_T_c(g, distance_threshold=seg_threshold).to_frame("_seg"),
+        include_groups=False,
+    )["_seg"]
     df["_seg_id"] = (
         df["phase"].astype(str)
         + "_"
