@@ -71,21 +71,6 @@ def _file_suffix(poly_method: str | None = None, tielines: bool = True) -> str:
     return "_" + "_".join(parts) if parts else ""
 
 
-def plot_1d_T(out_dir: Path, **_) -> Path:
-    """1D T phase diagram from notebooks/Basics.ipynb (three pure-A phases)."""
-    fcca = ldp.LinePhase("fcc", fixed_concentration=0, line_energy=-3.00, line_entropy=1.0 * ldp.kB)
-    hcpa = ldp.LinePhase("hcp", fixed_concentration=0, line_energy=-2.975, line_entropy=1.8 * ldp.kB)
-    lqda = ldp.LinePhase("liquid", fixed_concentration=0, line_energy=-2.75, line_entropy=5.0 * ldp.kB)
-
-    Ts = np.linspace(0, 1000, 25)
-    df = ldc.calc_phase_diagram([fcca, hcpa, lqda], Ts, mu=0.0, refine=True, keep_unstable=True)
-
-    fig, ax = plt.subplots(figsize=(6, 4))
-    lpl.plot_1d_T_phase_diagram(df, ax=ax)
-    ax.set_title("1D T phase diagram (pure A: fcc / hcp / liquid)")
-    return _save(fig, out_dir, "1d_T_phase_diagram")
-
-
 def plot_1d_T_three_stable(out_dir: Path, **_) -> Path:
     """1D T diagram: three stable phases with concave-down free energies.
 
@@ -293,7 +278,6 @@ def plot_2d_toy_mu(out_dir: Path, poly_method: str | None = None, **_) -> Path:
 # poly_method and tielines, so cross-product iteration over them dedupes
 # automatically instead of re-rendering identical files.
 PLOTS = {
-    "1d_T":                (plot_1d_T,                ()),
     "1d_T_three_stable":   (plot_1d_T_three_stable,   ()),
     "1d_mu":               (plot_1d_mu,               ()),
     "2d_basics":           (plot_2d_basics,            ("poly_method", "tielines")),
