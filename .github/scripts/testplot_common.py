@@ -1,4 +1,4 @@
-"""Shared helpers for parse_testplot_mention.py and select_testplot_args_from_diff.py."""
+"""Shared helpers for testplot_args.py (parse and select subcommands)."""
 from __future__ import annotations
 
 import ast
