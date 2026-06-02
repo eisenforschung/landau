@@ -206,6 +206,10 @@ def test_handle_poly_method():
     assert isinstance(res_alpha, Concave)
     assert res_alpha.ratio == 0.4
 
+    # canonical ratio= beats deprecated alpha= when both are supplied
+    res_both = handle_poly_method("concave", ratio=0.3, alpha=0.9)
+    assert res_both.ratio == 0.3
+
     with pytest.raises(ValueError):
         handle_poly_method("invalid_method")
 
