@@ -87,29 +87,28 @@ def plot_1d_T(out_dir: Path, **_) -> Path:
 
 
 def plot_1d_T_three_stable(out_dir: Path, **_) -> Path:
-    """1D T diagram: three stable phases with curved free energies.
+    """1D T diagram: three stable phases with concave-down free energies.
 
-    Uses TemperatureDependentLinePhase so the phi(T) lines are non-linear.
-    fcc is the intermediate phase, stable roughly 360–800 K; it is unstable
-    in two disjoint ranges at low and high T, exposing the segment-splitting
+    fcc is the intermediate phase, stable roughly 350–760 K; it is unstable
+    in two disjoint T ranges at low and high T, exposing the segment-splitting
     fix in plot_1d_T_phase_diagram.
     """
     T_s = np.array([100.0, 400.0, 700.0, 1000.0])
-    # G(T) designed for three-phase sequence bcc → fcc → liquid.
-    # bcc: concave-up parabola, lowest at low T.
-    # fcc: slight concave-down, wins at mid T.
-    # liquid: steep linear, dominates at high T.
+    # G(T) = a - b*T - c*T^2 (c > 0: concave-down, strictly decreasing).
+    # bcc: shallow slope, stable at low T.
+    # fcc: intermediate slope with more curvature, stable at mid T.
+    # liquid: steepest slope, stable at high T.
     bcc = ldp.TemperatureDependentLinePhase(
         "bcc", fixed_concentration=0, temperatures=T_s,
-        free_energies=-3.0 + 1e-7 * T_s**2,
+        free_energies=-3.00 - 2e-4 * T_s - 1e-7 * T_s**2,
     )
     fcc = ldp.TemperatureDependentLinePhase(
         "fcc", fixed_concentration=0, temperatures=T_s,
-        free_energies=-2.97 - 3e-5 * T_s - 5e-8 * T_s**2,
+        free_energies=-2.97 - 2.857e-4 * T_s - 2e-7 * T_s**2,
     )
     liquid = ldp.TemperatureDependentLinePhase(
         "liquid", fixed_concentration=0, temperatures=T_s,
-        free_energies=-2.7 - 4e-4 * T_s,
+        free_energies=-2.75 - 3.5e-4 * T_s - 5e-7 * T_s**2,
     )
 
     Ts = np.linspace(100, 1000, 50)
