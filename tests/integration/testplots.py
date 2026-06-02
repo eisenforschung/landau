@@ -87,22 +87,37 @@ def plot_1d_T(out_dir: Path, **_) -> Path:
 
 
 def plot_1d_T_three_stable(out_dir: Path, **_) -> Path:
-    """1D T phase diagram with three stable phases (bcc / fcc / liquid).
+    """1D T diagram: three stable phases with curved free energies.
 
-    The intermediate phase (fcc) is unstable in two disjoint T ranges, which
-    previously caused a plotting artifact: the two dashed segments were drawn
-    as one continuous line crossing the stable region.
+    Uses TemperatureDependentLinePhase so the phi(T) lines are non-linear.
+    fcc is the intermediate phase, stable roughly 360–800 K; it is unstable
+    in two disjoint ranges at low and high T, exposing the segment-splitting
+    fix in plot_1d_T_phase_diagram.
     """
-    bcca = ldp.LinePhase("bcc",    fixed_concentration=0, line_energy=-3.000, line_entropy=1.0 * ldp.kB)
-    fcca = ldp.LinePhase("fcc",    fixed_concentration=0, line_energy=-2.975, line_entropy=1.8 * ldp.kB)
-    lqda = ldp.LinePhase("liquid", fixed_concentration=0, line_energy=-2.750, line_entropy=5.0 * ldp.kB)
+    T_s = np.array([100.0, 400.0, 700.0, 1000.0])
+    # G(T) designed for three-phase sequence bcc → fcc → liquid.
+    # bcc: concave-up parabola, lowest at low T.
+    # fcc: slight concave-down, wins at mid T.
+    # liquid: steep linear, dominates at high T.
+    bcc = ldp.TemperatureDependentLinePhase(
+        "bcc", fixed_concentration=0, temperatures=T_s,
+        free_energies=-3.0 + 1e-7 * T_s**2,
+    )
+    fcc = ldp.TemperatureDependentLinePhase(
+        "fcc", fixed_concentration=0, temperatures=T_s,
+        free_energies=-2.97 - 3e-5 * T_s - 5e-8 * T_s**2,
+    )
+    liquid = ldp.TemperatureDependentLinePhase(
+        "liquid", fixed_concentration=0, temperatures=T_s,
+        free_energies=-2.7 - 4e-4 * T_s,
+    )
 
     Ts = np.linspace(100, 1000, 50)
-    df = ldc.calc_phase_diagram([bcca, fcca, lqda], Ts, mu=0.0, refine=True, keep_unstable=True)
+    df = ldc.calc_phase_diagram([bcc, fcc, liquid], Ts, mu=0.0, refine=True, keep_unstable=True)
 
     fig, ax = plt.subplots(figsize=(6, 4))
     lpl.plot_1d_T_phase_diagram(df, ax=ax)
-    ax.set_title("1D T phase diagram (three stable phases: bcc / fcc / liquid)")
+    ax.set_title("1D T phase diagram (curved G: bcc / fcc / liquid)")
     return _save(fig, out_dir, "1d_T_three_stable_phase_diagram")
 
 

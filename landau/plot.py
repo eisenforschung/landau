@@ -400,14 +400,24 @@ def plot_1d_T_phase_diagram(
         fig, ax = plt.subplots()
 
     df = df.copy()
-    # Assign per-segment IDs so that seaborn draws disconnected (phase, stable)
-    # blocks separately.  Without this a phase that is unstable in two disjoint
-    # T ranges (e.g. the middle phase in a three-phase sequence) gets connected
-    # into one continuous dashed line crossing the stable region.
+    # Assign per-segment IDs so seaborn draws disconnected (phase, stable)
+    # blocks as separate lines.  A phase unstable in two disjoint T ranges
+    # (e.g. the middle phase in a three-phase sequence) would otherwise be
+    # connected into one continuous dashed line crossing the stable region.
+    # cluster_T_c cannot be used here: it normalises T within each group, so
+    # a narrow stable segment (small T range) ends up with all its points
+    # spaced far apart in normalised space and each gets its own cluster,
+    # causing seaborn to draw nothing (each "line" is a single point).
+    _unique_T = np.sort(df["T"].unique())
+    _dt = 2.0 * (np.median(np.diff(_unique_T)) if len(_unique_T) > 1 else 1.0)
+
+    def _seg_label(g):
+        sg = g.sort_values("T")
+        return (sg["T"].diff().fillna(0) > _dt).cumsum()
+
     df["_seg"] = df.groupby(["phase", "stable"], group_keys=False).apply(
-        lambda g: cluster_T_c(g, distance_threshold=0.1).to_frame("_seg"),
-        include_groups=False,
-    )["_seg"]
+        _seg_label, include_groups=False
+    )
     df["_seg_id"] = (
         df["phase"].astype(str)
         + "_"
