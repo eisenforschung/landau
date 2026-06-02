@@ -98,7 +98,7 @@ jobs:
           COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
           set -euo pipefail
-          python .github/scripts/parse_testplot_mention.py > parsed.json
+          python .github/scripts/testplot_args.py parse > parsed.json
           cat parsed.json
           {
             echo "args_json=$(jq -c .args parsed.json)"
