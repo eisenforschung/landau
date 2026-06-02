@@ -4,7 +4,7 @@ Reads the comment body from ``$COMMENT_BODY`` and pipes it through the
 ``claude`` CLI (Claude Code), which must respond with a single JSON
 object of the form::
 
-    {"args": ["--only", "1d_T", "--poly-method", "fasttsp"],
+    {"args": ["--only", "1d_T_three_stable", "--poly-method", "fasttsp"],
      "note": "...", "diff": false}
 
 The ``args`` list is shell-splattered into ``python tests/integration/testplots.py``
@@ -19,14 +19,44 @@ Authenticated via ``$CLAUDE_CODE_OAUTH_TOKEN`` (same secret the existing
 """
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 
-PLOT_NAMES = ["1d_T", "1d_mu", "2d_basics", "2d_basics_mu", "2d_toy", "2d_toy_mu"]
 POLY_METHODS = ["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"]
+
+
+def _read_plot_names() -> list[str]:
+    """Read available plot names from tests/integration/testplots.py via AST.
+
+    Parses the PLOTS dict keys without importing landau, so it works in
+    the trusted parse job before the package is installed. Always stays in
+    sync with whatever is on the main checkout.
+    """
+    script = Path(__file__).parents[2] / "tests" / "integration" / "testplots.py"
+    try:
+        tree = ast.parse(script.read_text())
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Assign)
+                and any(isinstance(t, ast.Name) and t.id == "PLOTS" for t in node.targets)
+                and isinstance(node.value, ast.Dict)
+            ):
+                return [
+                    k.value
+                    for k in node.value.keys
+                    if isinstance(k, ast.Constant) and isinstance(k.value, str)
+                ]
+    except Exception as exc:
+        print(f"warning: could not read PLOTS from testplots.py ({exc}); using fallback list", file=sys.stderr)
+    return ["1d_T_three_stable", "1d_mu", "2d_basics", "2d_basics_mu", "2d_toy", "2d_toy_mu", "excess_free_energy"]
+
+
+PLOT_NAMES = _read_plot_names()
 
 SYSTEM = f"""You translate informal `@testplot` mentions in GitHub PR comments
 into arguments for `tests/integration/testplots.py`.
@@ -41,12 +71,13 @@ Flags:
 
   --only {{{','.join(PLOT_NAMES)}}} [...]
         restrict to a subset of plots. Plot keys:
-          1d_T         : 1D temperature diagram (pure-A fcc/hcp/liquid line phases)
-          1d_mu        : 1D chemical-potential diagram (hcp vs fcc isothermal)
-          2d_basics    : 2D c-T diagram (ideal-solution hcp/fcc/liquid)
-          2d_basics_mu : 2D T-mu diagram (same phases as 2d_basics)
-          2d_toy       : 2D c-T diagram (regular-solution liquid + intermediate solid)
-          2d_toy_mu    : 2D T-mu diagram (same phases as 2d_toy)
+          1d_T_three_stable : 1D temperature diagram (pure-A fcc/hcp/liquid line phases)
+          1d_mu             : 1D chemical-potential diagram (hcp vs fcc isothermal)
+          2d_basics         : 2D c-T diagram (ideal-solution hcp/fcc/liquid)
+          2d_basics_mu      : 2D T-mu diagram (same phases as 2d_basics)
+          2d_toy            : 2D c-T diagram (regular-solution liquid + intermediate solid)
+          2d_toy_mu         : 2D T-mu diagram (same phases as 2d_toy)
+          excess_free_energy: excess free energy vs concentration (Intermetallics example)
 
   --poly-method {{{','.join(POLY_METHODS)}}} [...]
         one or more polygon-construction methods, cross-producted over the
@@ -57,12 +88,13 @@ Flags:
         (only affects 2d_basics / 2d_toy). Default: on.
 
 Mapping conventions:
-  - "1d T" / "1D temperature" -> --only 1d_T
+  - "1d T" / "1D temperature" -> --only 1d_T_three_stable
   - "1d mu" / "1D chemical potential" -> --only 1d_mu
-  - "1d" alone -> --only 1d_T 1d_mu
-  - "2d" alone -> all four 2D plots
+  - "1d" alone -> --only 1d_T_three_stable 1d_mu
+  - "2d" alone -> all four 2D c-T/mu plots
   - "2d basics" -> 2d_basics 2d_basics_mu ; "2d basics c" -> 2d_basics
   - "2d toy" -> 2d_toy 2d_toy_mu ; "2d toy mu" -> 2d_toy_mu
+  - "excess" / "excess free energy" -> --only excess_free_energy
   - "fasttsp" / "fast tsp" -> --poly-method fasttsp
   - "all tsp methods" / "tsp methods" -> --poly-method tsp fasttsp segment-tsp segment-fasttsp
   - "segment methods" / "segment tsp methods" -> --poly-method segment-tsp segment-fasttsp
@@ -79,7 +111,7 @@ Diff mode:
 
 Respond with a single JSON object and NOTHING else (no prose, no code fences):
 
-  {{"args": ["--only", "1d_T"], "note": "1D T diagram", "diff": false}}
+  {{"args": ["--only", "1d_T_three_stable"], "note": "1D T diagram", "diff": false}}
 
 `args` is a flat list of strings to be passed to argparse. `note` is a short
 human-readable summary (under 80 chars). Do not include `--out`; the workflow
@@ -88,6 +120,7 @@ rather than refusing.
 """
 
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
+_FALLBACK = {"args": [], "note": "Haiku parse failed; rendering all plots", "diff": False}
 
 
 def _extract_json(text: str) -> dict:
@@ -147,9 +180,19 @@ def main() -> None:
         print(json.dumps({"args": [], "note": "empty mention; rendering all plots", "diff": False}))
         return
 
-    text = _call_claude(body)
-    payload = _validate(_extract_json(text))
-    json.dump(payload, sys.stdout)
+    last_exc: Exception | None = None
+    for attempt in range(2):
+        try:
+            text = _call_claude(body)
+            payload = _validate(_extract_json(text))
+            json.dump(payload, sys.stdout)
+            return
+        except Exception as exc:
+            last_exc = exc
+            print(f"attempt {attempt + 1} failed: {exc}", file=sys.stderr)
+
+    print(f"all attempts failed ({last_exc}); falling back to all plots", file=sys.stderr)
+    json.dump(_FALLBACK, sys.stdout)
 
 
 if __name__ == "__main__":
