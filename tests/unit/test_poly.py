@@ -196,6 +196,16 @@ def test_handle_poly_method():
     assert res.ratio == 0.2
     assert res.min_c_width == 0.02
 
+    # ratio= keyword (canonical spelling) must not raise TypeError (regression for #172)
+    res_ratio = handle_poly_method("concave", ratio=0.3)
+    assert isinstance(res_ratio, Concave)
+    assert res_ratio.ratio == 0.3
+
+    # deprecated alpha= spelling still works
+    res_alpha = handle_poly_method("concave", alpha=0.4)
+    assert isinstance(res_alpha, Concave)
+    assert res_alpha.ratio == 0.4
+
     with pytest.raises(ValueError):
         handle_poly_method("invalid_method")
 

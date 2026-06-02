@@ -518,7 +518,7 @@ with ImportAlarm("'fast-tsp' package required for FastTsp.  Install from pip.") 
 def handle_poly_method(poly_method, **kwargs):
     '''Uniform handling of poly_method between plot_phase_diagram and plot_mu_phase_diagram.
     Some **kwargs trickery required to handle now deprecated min_c_width and alpha arguments.'''
-    ratio = kwargs.pop('alpha', Concave.ratio)
+    ratio = kwargs.pop('alpha', kwargs.pop('ratio', Concave.ratio))
     allowed = {
                 'concave': Concave(**kwargs, ratio=ratio),
                 'segments': Segments(**kwargs),
