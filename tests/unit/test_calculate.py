@@ -231,7 +231,8 @@ def test_guess_mu_range_degenerate_raises():
 # --- _split_stable tests ---
 
 
-def _stable_unstable_frame():
+@pytest.fixture
+def stable_unstable_frame():
     return pd.DataFrame(
         {
             "T": [300.0, 400.0, 500.0, 600.0],
@@ -243,23 +244,23 @@ def _stable_unstable_frame():
     )
 
 
-def test_split_stable_partitions_by_stable_flag():
-    df = _stable_unstable_frame()
+def test_split_stable_partitions_by_stable_flag(stable_unstable_frame):
+    df = stable_unstable_frame
     sdf, udf = _split_stable(df)
     assert sdf["stable"].all()
     assert not udf["stable"].any()
     assert len(sdf) + len(udf) == len(df)
 
 
-def test_split_stable_resets_index():
-    df = _stable_unstable_frame().iloc[[3, 2, 1, 0]]  # shuffle source index
+def test_split_stable_resets_index(stable_unstable_frame):
+    df = stable_unstable_frame.iloc[[3, 2, 1, 0]]  # shuffle source index
     sdf, udf = _split_stable(df)
     assert list(sdf.index) == list(range(len(sdf)))
     assert list(udf.index) == list(range(len(udf)))
 
 
-def test_split_stable_adds_border_and_refined_columns():
-    df = _stable_unstable_frame()
+def test_split_stable_adds_border_and_refined_columns(stable_unstable_frame):
+    df = stable_unstable_frame
     sdf, udf = _split_stable(df)
     # both halves get a border=False column
     assert (sdf["border"] == False).all()  # noqa: E712
@@ -269,8 +270,8 @@ def test_split_stable_adds_border_and_refined_columns():
     assert "refined" not in udf.columns
 
 
-def test_split_stable_does_not_mutate_input():
-    df = _stable_unstable_frame()
+def test_split_stable_does_not_mutate_input(stable_unstable_frame):
+    df = stable_unstable_frame
     before = df.copy()
     _split_stable(df)
     pd.testing.assert_frame_equal(df, before)
@@ -279,7 +280,8 @@ def test_split_stable_does_not_mutate_input():
 # --- _border_edges tests ---
 
 
-def _grid_frame():
+@pytest.fixture
+def grid_frame():
     """A small (T, mu) grid with two phases; mimics the post-_split_stable
     `sdf` that `refine_phase_diagram` feeds into `_border_edges`."""
     Ts = [300.0, 400.0, 500.0]
@@ -291,16 +293,16 @@ def _grid_frame():
     return pd.DataFrame(rows)
 
 
-def test_border_edges_marks_T_extremes_in_place():
-    df = _grid_frame()
+def test_border_edges_marks_T_extremes_in_place(grid_frame):
+    df = grid_frame
     _border_edges(df, min_c=0.0, max_c=1.0)
     assert df.loc[df["T"] == 300.0, "border"].all()
     assert df.loc[df["T"] == 500.0, "border"].all()
     assert not df.loc[df["T"] == 400.0, "border"].any()
 
 
-def test_border_edges_left_right_use_extreme_mu_rows():
-    df = _grid_frame()
+def test_border_edges_left_right_use_extreme_mu_rows(grid_frame):
+    df = grid_frame
     left, right = _border_edges(df, min_c=0.05, max_c=0.95)
     # one synthetic row per (phase, T) at each mu extreme — here one phase × 3 Ts
     assert len(left) == 3
@@ -315,8 +317,8 @@ def test_border_edges_left_right_use_extreme_mu_rows():
     assert (right["stable"] == True).all()  # noqa: E712
 
 
-def test_border_edges_preserves_T_and_phase_from_source():
-    df = _grid_frame()
+def test_border_edges_preserves_T_and_phase_from_source(grid_frame):
+    df = grid_frame
     left, right = _border_edges(df, min_c=0.0, max_c=1.0)
     # the source rows at the extreme mu values are at all three Ts, single phase A
     assert sorted(left["T"].tolist()) == [300.0, 400.0, 500.0]
@@ -329,12 +331,13 @@ def test_border_edges_preserves_T_and_phase_from_source():
 
 
 def test_reduce_joins_phase_names_sorted_by_c():
-    # rows deliberately out of c order to verify sort_values("c") happens first
+    # rows deliberately out of c order; transition string must reflect ascending-c sort
     dd = pd.DataFrame({"phase": ["liq", "fcc", "bcc"], "c": [0.7, 0.2, 0.5]})
+    phases_by_c = dd.sort_values("c")["phase"].tolist()
     out = reduce(dd)
-    assert out["transition"] == "fcc-bcc-liq"
-    assert out["c"] == [0.2, 0.5, 0.7]
-    assert out["phase"] == ["fcc", "bcc", "liq"]
+    assert out["transition"] == "-".join(phases_by_c)
+    assert out["c"] == sorted(dd["c"].tolist())
+    assert out["phase"] == phases_by_c
 
 
 def test_reduce_single_phase_no_dash():
