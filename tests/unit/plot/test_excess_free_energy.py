@@ -128,6 +128,14 @@ def test_single_temperature_convex_hull_true():
     plt.close(g.fig)
 
 
+def test_single_temperature_figure_not_wide():
+    """Figure width for one temperature must not span more than one column."""
+    # default height=3.0, aspect=1.3 → one column ≈ 3.9 in; col_wrap=3 would give 11.7 in.
+    g = plot_excess_free_energy(_minimal_df([1000]))
+    assert g.fig.get_figwidth() < 2 * 3.0 * 1.3
+    plt.close(g.fig)
+
+
 def test_all_line_phases_no_crash():
     """When all phases are line phases, plot_excess_free_energy must not crash."""
     from landau.calculate import calc_phase_diagram
