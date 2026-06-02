@@ -68,7 +68,7 @@ jobs:
           CHANGED_FILES: ${{ steps.files.outputs.paths }}
         run: |
           set -euo pipefail
-          python .github/scripts/select_testplot_args_from_diff.py > parsed.json
+          python .github/scripts/testplot_args.py select > parsed.json
           cat parsed.json
           {
             echo "args_json=$(jq -c .args parsed.json)"
