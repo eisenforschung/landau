@@ -329,3 +329,98 @@ def test_plot_1d_T_middle_phase_three_lines(fixture, request):
         assert counts.get("liquid") == 2
     finally:
         plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# reference_phase subtraction
+# ---------------------------------------------------------------------------
+
+
+def _ydata_for_phase(ax, phase_name):
+    """Return a flat array of all y-values plotted for *phase_name* on *ax*."""
+    legend = ax.get_legend()
+    white = to_rgba("w")
+    gray2 = to_rgba(".2")
+    color_to_phase = {}
+    for handle, text in zip(legend.legend_handles, legend.texts):
+        try:
+            c = to_rgba(handle.get_color())
+        except (AttributeError, ValueError):
+            continue
+        if c == white or c == gray2:
+            continue
+        color_to_phase[c] = text.get_text()
+    ydata = []
+    for line in ax.lines:
+        yd = line.get_ydata()
+        if len(yd) == 0:
+            continue
+        try:
+            c = to_rgba(line.get_color())
+        except ValueError:
+            continue
+        if color_to_phase.get(c) == phase_name:
+            ydata.extend(yd)
+    return np.asarray(ydata)
+
+
+def test_plot_1d_mu_reference_phase_is_zero(df_mu_three_stable):
+    """After subtracting the reference phase, its own phi is zero at every mu."""
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_mu_phase_diagram(df_mu_three_stable, ax=ax, reference_phase="hcp")
+        yd = _ydata_for_phase(ax, "hcp")
+        assert len(yd) > 0
+        np.testing.assert_allclose(yd, 0.0, atol=1e-12)
+    finally:
+        plt.close(fig)
+
+
+def test_plot_1d_mu_reference_phase_differences_preserved(df_mu_three_stable):
+    """phi(fcc) - phi(ref) in the plot matches fcc_phi - hcp_phi from the raw data."""
+    df = df_mu_three_stable
+    ref = "hcp"
+    # Compute expected fcc - hcp difference at each mu point, sort for order-independence.
+    pivot = df.pivot_table(index="mu", columns="phase", values="phi")
+    expected = np.sort((pivot["fcc"] - pivot[ref]).dropna().values)
+
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_mu_phase_diagram(df, ax=ax, reference_phase=ref)
+        # fcc y-values across all segments, sorted for order-independence.
+        yd_fcc = np.sort(_ydata_for_phase(ax, "fcc"))
+        np.testing.assert_allclose(yd_fcc, expected, atol=1e-10)
+    finally:
+        plt.close(fig)
+
+
+def test_plot_1d_mu_reference_phase_invalid_raises(df_mu_three_stable):
+    """A reference_phase not present in the data raises ValueError."""
+    fig, ax = plt.subplots()
+    try:
+        with pytest.raises(ValueError, match="reference_phase"):
+            plot_1d_mu_phase_diagram(df_mu_three_stable, ax=ax, reference_phase="nonexistent")
+    finally:
+        plt.close(fig)
+
+
+def test_plot_1d_T_reference_phase_is_zero(df_T_three_stable):
+    """After subtracting the reference phase, its own phi is zero at every T."""
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax, reference_phase="bcc")
+        yd = _ydata_for_phase(ax, "bcc")
+        assert len(yd) > 0
+        np.testing.assert_allclose(yd, 0.0, atol=1e-12)
+    finally:
+        plt.close(fig)
+
+
+def test_plot_1d_T_reference_phase_invalid_raises(df_T_three_stable):
+    """A reference_phase not present in the data raises ValueError."""
+    fig, ax = plt.subplots()
+    try:
+        with pytest.raises(ValueError, match="reference_phase"):
+            plot_1d_T_phase_diagram(df_T_three_stable, ax=ax, reference_phase="nonexistent")
+    finally:
+        plt.close(fig)

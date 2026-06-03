@@ -338,13 +338,14 @@ def plot_1d_mu_phase_diagram(
         df,
         ax=None,
         show=True,
-        mark_transitions=True):
+        mark_transitions=True,
+        reference_phase=None):
     """
-    Plot a one dimensional isothermal phase diagram of the semi-grandcanonical 
+    Plot a one dimensional isothermal phase diagram of the semi-grandcanonical
     potential as function of the chemical potential difference.
 
     Args:
-        df (pandas.DataFrame): 
+        df (pandas.DataFrame):
             Input data containing columns for chemical potential difference ('mu'),
             semi-grandcanonical potential ('phi'), phase name ('phase'), stability
             ('stable'), and optionally a 'border' column indicating phase transition.
@@ -352,9 +353,12 @@ def plot_1d_mu_phase_diagram(
             Existing matplotlib Axes to plot on. If None, a new figure and axes are created.
         mark_transitions (bool, optional):
             If True, all transition temperatures are marked on the plot. Defaults to True.
+        reference_phase (str, optional):
+            If given, subtract this phase's potential from all other phases before
+            plotting so that the reference phase lies at zero throughout.
 
     Returns:
-        matplotlib.axes.Axes: 
+        matplotlib.axes.Axes:
             The Axes object with the phase diagram plot.
     """
 
@@ -364,6 +368,15 @@ def plot_1d_mu_phase_diagram(
         fig, ax = plt.subplots()
 
     df = df.sort_values("mu").copy()
+
+    if reference_phase is not None:
+        if reference_phase not in df["phase"].values:
+            raise ValueError(f"reference_phase {reference_phase!r} not found in data")
+        ref = df.loc[df["phase"] == reference_phase, ["mu", "phi"]].rename(columns={"phi": "_ref_phi"})
+        df = df.merge(ref, on="mu", how="left")
+        df["phi"] = df["phi"] - df["_ref_phi"]
+        df = df.drop(columns=["_ref_phi"])
+
     df["_seg_id"] = _assign_segment_ids(df, scan_col="mu")
     sns.lineplot(
         data=df,
@@ -389,21 +402,25 @@ def plot_1d_mu_phase_diagram(
             ax.text(mt - .05 * dfm, ft - dfa * .1, rf"$\Delta\mu = {mt:.03f}\,\mathrm{{eV}}$",
                     rotation='vertical', ha='center', va='top')
     ax.set_xlabel("Chemical Potential Difference [eV]")
-    ax.set_ylabel("Semi-grandcanonical Potential [eV/atom]")
+    ylabel = "Semi-grandcanonical Potential [eV/atom]"
+    if reference_phase is not None:
+        ylabel = f"Semi-grandcanonical Potential relative to {reference_phase} [eV/atom]"
+    ax.set_ylabel(ylabel)
 
     return ax
 
 def plot_1d_T_phase_diagram(
-        df, 
-        ax=None, 
+        df,
+        ax=None,
         mark_transitions=True,
-        show=True
+        show=True,
+        reference_phase=None,
         ):
     """
     Plots a one-dimensional equipotential phase diagram as a function of temperature.
 
     Args:
-        df (pandas.DataFrame): 
+        df (pandas.DataFrame):
             Input data containing columns for temperature ('T'), semi-grandcanonical
             potential ('phi'), phase name ('phase'), and optionally a 'border' column
             indicating phase transition.
@@ -411,9 +428,12 @@ def plot_1d_T_phase_diagram(
             Existing matplotlib Axes to plot on. If None, a new figure and axes are created.
         mark_transitions (bool, optional):
             If True, all transition temperatures are marked on the plot. Defaults to True.
+        reference_phase (str, optional):
+            If given, subtract this phase's potential from all other phases before
+            plotting so that the reference phase lies at zero throughout.
 
     Returns:
-        matplotlib.axes.Axes: 
+        matplotlib.axes.Axes:
             The Axes object with the phase diagram plot.
     """
 
@@ -424,6 +444,15 @@ def plot_1d_T_phase_diagram(
         fig, ax = plt.subplots()
 
     df = df.copy()
+
+    if reference_phase is not None:
+        if reference_phase not in df["phase"].values:
+            raise ValueError(f"reference_phase {reference_phase!r} not found in data")
+        ref = df.loc[df["phase"] == reference_phase, ["T", "phi"]].rename(columns={"phi": "_ref_phi"})
+        df = df.merge(ref, on="T", how="left")
+        df["phi"] = df["phi"] - df["_ref_phi"]
+        df = df.drop(columns=["_ref_phi"])
+
     df["_seg_id"] = _assign_segment_ids(df, scan_col="T")
 
     sns.lineplot(
@@ -450,7 +479,10 @@ def plot_1d_T_phase_diagram(
             ax.text(Tt + .05 * dft, ft + dfa * .1, rf"$T = {Tt:.0f}\,\mathrm{{K}}$", rotation='vertical', ha='center')
 
     ax.set_xlabel("Temperature [K]")
-    ax.set_ylabel("Semi-grandcanonical potential [eV/atom]")
+    ylabel = "Semi-grandcanonical potential [eV/atom]"
+    if reference_phase is not None:
+        ylabel = f"Semi-grandcanonical potential relative to {reference_phase} [eV/atom]"
+    ax.set_ylabel(ylabel)
 
     return ax
 
