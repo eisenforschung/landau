@@ -1,0 +1,331 @@
+"""Unit tests for _assign_segment_ids (scan-order segmentation) and 1d-plot functions.
+
+A 1d phase diagram is a scan along one cut axis (mu, T, ... in future generalised
+cuts).  ``_assign_segment_ids`` splits a phase into a new line segment at each
+stability flip in scan order.  The tests below pin two properties that the prior
+distance-threshold approaches got wrong:
+
+* density independence — the segment count depends only on the stability pattern,
+  never on how finely the cut is sampled (a constant threshold over-split coarse
+  grids; a data-informed one merged disjoint branches on coarse grids);
+* metric independence — disjoint runs are split even when their concentration (or
+  any other derived quantity) coincides (a (T, c) clusterer would merge them).
+"""
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import pytest
+from collections import Counter
+from hypothesis import given, settings
+from hypothesis import strategies as st
+from matplotlib.colors import to_rgba
+
+import landau.calculate as ldc
+import landau.phases as ldp
+from landau.plot import (
+    _assign_segment_ids,
+    plot_1d_mu_phase_diagram,
+    plot_1d_T_phase_diagram,
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _scan_df(stable_pattern, phase="A", scan_col="mu"):
+    """One phase sampled at evenly spaced scan points with a given stability pattern.
+
+    ``stable_pattern`` is a sequence of bools, one per scan point in scan order.
+    """
+    n = len(stable_pattern)
+    return pd.DataFrame(
+        {scan_col: np.linspace(0.0, 1.0, n), "phase": phase, "stable": list(stable_pattern)}
+    )
+
+
+def _run_count(pattern):
+    """Number of maximal constant-``stable`` runs = 1 + number of flips."""
+    return 1 + sum(a != b for a, b in zip(pattern, pattern[1:]))
+
+
+def _lines_per_phase(ax):
+    """Return {phase_name: line_count} for non-empty Line2D objects on *ax*.
+
+    Uses the seaborn legend to map hue colors to phase names; skips legend
+    section-header entries (white) and style-legend entries (gray '.2').
+    """
+    legend = ax.get_legend()
+    white = to_rgba("w")
+    gray2 = to_rgba(".2")
+    color_to_phase = {}
+    for handle, text in zip(legend.legend_handles, legend.texts):
+        try:
+            c = to_rgba(handle.get_color())
+        except (AttributeError, ValueError):
+            continue
+        if c == white or c == gray2:
+            continue
+        color_to_phase[c] = text.get_text()
+    counts = Counter()
+    for line in ax.lines:
+        if len(line.get_xdata()) == 0:
+            continue
+        try:
+            c = to_rgba(line.get_color())
+        except ValueError:
+            continue
+        phase = color_to_phase.get(c)
+        if phase is not None:
+            counts[phase] += 1
+    return dict(counts)
+
+
+# ---------------------------------------------------------------------------
+# Deterministic unit tests — scan-order semantics
+# ---------------------------------------------------------------------------
+
+
+def test_single_run_is_one_segment():
+    ids = _assign_segment_ids(_scan_df([True] * 20), "mu")
+    assert ids.nunique() == 1
+
+
+def test_single_flip_two_segments():
+    ids = _assign_segment_ids(_scan_df([True] * 5 + [False] * 5), "mu")
+    assert ids.nunique() == 2
+
+
+def test_middle_phase_three_segments():
+    # unstable / stable / unstable along the scan -> 3 segments, 2 of them unstable
+    df = _scan_df([False] * 4 + [True] * 4 + [False] * 4)
+    ids = _assign_segment_ids(df, "mu")
+    assert ids.nunique() == 3
+    assert ids[~df["stable"]].nunique() == 2
+
+
+@pytest.mark.parametrize("n", [3, 4, 5, 8, 11, 50, 500])
+def test_contiguous_run_one_segment_at_any_density(n):
+    """A single contiguous run stays one segment regardless of sampling density.
+
+    The constant-0.1 threshold shattered this into one segment per point once the
+    normalised spacing 1/(n-1) exceeded 0.1 (n <= 11).
+    """
+    assert _assign_segment_ids(_scan_df([True] * n), "mu").nunique() == 1
+
+
+@pytest.mark.parametrize("k", [1, 2, 3, 5, 10, 40])
+def test_density_independent_three_runs(k):
+    """unstable/stable/unstable is always 3 segments, however coarse or fine.
+
+    A data-informed (1.5x spacing) threshold merged the two unstable branches on
+    coarse grids, where the inter-branch gap and intra-run spacing are comparable.
+    """
+    df = _scan_df([False] * k + [True] * k + [False] * k)
+    assert _assign_segment_ids(df, "mu").nunique() == 3
+
+
+def test_disjoint_runs_split_with_constant_concentration():
+    """Two unstable runs separated by a stable run split even at identical c.
+
+    A (T, c) distance clusterer would merge all rows (one c value); scan-order
+    splits on the stability flips instead.
+    """
+    df = _scan_df([False, False, True, True, False, False])
+    df["c"] = 0.5
+    ids = _assign_segment_ids(df, "mu")
+    assert ids.nunique() == 3
+    assert ids[~df["stable"]].nunique() == 2
+
+
+def test_different_phases_never_share_id():
+    a = _scan_df([True] * 10, phase="A")
+    b = _scan_df([True] * 10, phase="B")
+    df = pd.concat([a, b], ignore_index=True)
+    ids = _assign_segment_ids(df, "mu")
+    assert set(ids[df.phase == "A"]).isdisjoint(set(ids[df.phase == "B"]))
+
+
+def test_stable_and_unstable_never_share_id():
+    df = _scan_df([True] * 5 + [False] * 5)
+    ids = _assign_segment_ids(df, "mu")
+    assert set(ids[df.stable]).isdisjoint(set(ids[~df.stable]))
+
+
+def test_unsorted_input_realigned_to_index():
+    df = _scan_df([True, True, False, False])
+    shuffled = df.iloc[[3, 1, 0, 2]]
+    ids = _assign_segment_ids(shuffled, "mu")
+    # result is realigned to the caller's (shuffled) index, so df[col] = ids works
+    assert list(ids.index) == list(shuffled.index)
+    # the two stable rows share one id; the two unstable rows share another
+    assert ids.loc[0] == ids.loc[1]
+    assert ids.loc[2] == ids.loc[3]
+    assert ids.loc[1] != ids.loc[2]
+
+
+# ---------------------------------------------------------------------------
+# Hypothesis — the tight invariant: segments == stability runs
+# ---------------------------------------------------------------------------
+
+
+@given(pattern=st.lists(st.booleans(), min_size=1, max_size=40))
+@settings(max_examples=300)
+def test_segments_equal_number_of_stability_runs(pattern):
+    """For one phase, the segment count equals its number of constant-stable runs."""
+    df = _scan_df(pattern)
+    assert _assign_segment_ids(df, "mu").nunique() == _run_count(pattern)
+
+
+@given(
+    pattern=st.lists(st.booleans(), min_size=1, max_size=20),
+    n_per_point=st.integers(min_value=1, max_value=8),
+)
+@settings(max_examples=200)
+def test_segment_count_invariant_under_upsampling(pattern, n_per_point):
+    """Refining each scan point into ``n_per_point`` copies keeps the segment count."""
+    coarse = _assign_segment_ids(_scan_df(pattern), "mu").nunique()
+    dense_pattern = [s for s in pattern for _ in range(n_per_point)]
+    dense = _assign_segment_ids(_scan_df(dense_pattern), "mu").nunique()
+    assert coarse == dense == _run_count(pattern)
+
+
+@given(
+    phases=st.lists(st.text(alphabet="ABCDE", min_size=1, max_size=2), min_size=2, max_size=4, unique=True),
+)
+@settings(max_examples=100)
+def test_multiple_phases_ids_pairwise_disjoint(phases):
+    df = pd.concat([_scan_df([True, False, True], phase=p) for p in phases], ignore_index=True)
+    ids = _assign_segment_ids(df, "mu")
+    id_sets = {p: set(ids[df.phase == p]) for p in phases}
+    for i, p in enumerate(phases):
+        for q in phases[i + 1:]:
+            assert id_sets[p].isdisjoint(id_sets[q]), f"{p!r} and {q!r} share IDs"
+
+
+# ---------------------------------------------------------------------------
+# Three-phase physics fixtures (shared by segment-id and line-count tests)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def df_mu_three_stable():
+    """Isothermal (T=1000K) 3-phase mu scan: hcp / fcc / liquid.
+
+    fcc is the middle stable phase; it is unstable in two disjoint mu ranges
+    (one below and one above its stable window).  liquid's stable window is a
+    narrow c-band near 1, which inflated the c-distance threshold and merged
+    fcc's two branches under the data-informed approach.
+    """
+    fcca = ldp.LinePhase("fccA", fixed_concentration=0, line_energy=-3.02, line_entropy=1.0 * ldp.kB)
+    fccb = ldp.LinePhase("fccB", fixed_concentration=1, line_energy=-2.02, line_entropy=1.1 * ldp.kB)
+    hcpa = ldp.LinePhase("hcpA", fixed_concentration=0, line_energy=-2.975, line_entropy=1.8 * ldp.kB)
+    hcpb = ldp.LinePhase("hcpB", fixed_concentration=1, line_energy=-1.95, line_entropy=1.1 * ldp.kB)
+    lqda = ldp.LinePhase("liquidA", fixed_concentration=0, line_energy=-2.724, line_entropy=1.5 * ldp.kB)
+    lqdb = ldp.LinePhase("liquidB", fixed_concentration=1, line_energy=-2.050, line_entropy=1.2 * ldp.kB)
+    fcc = ldp.IdealSolution("fcc", fcca, fccb)
+    hcp = ldp.IdealSolution("hcp", hcpa, hcpb)
+    lqd = ldp.IdealSolution("liquid", lqda, lqdb)
+    return ldc.calc_phase_diagram([hcp, fcc, lqd], Ts=1000.0, mu=100, keep_unstable=True)
+
+
+def _three_line_phases():
+    T_s = np.array([100.0, 400.0, 700.0, 1000.0])
+    bcc = ldp.TemperatureDependentLinePhase(
+        "bcc", fixed_concentration=0, temperatures=T_s,
+        free_energies=-3.00 - 2e-4 * T_s - 1e-7 * T_s**2,
+    )
+    fcc = ldp.TemperatureDependentLinePhase(
+        "fcc", fixed_concentration=0, temperatures=T_s,
+        free_energies=-2.97 - 2.857e-4 * T_s - 2e-7 * T_s**2,
+    )
+    liquid = ldp.TemperatureDependentLinePhase(
+        "liquid", fixed_concentration=0, temperatures=T_s,
+        free_energies=-2.75 - 3.5e-4 * T_s - 5e-7 * T_s**2,
+    )
+    return [bcc, fcc, liquid]
+
+
+@pytest.fixture(scope="module")
+def df_T_three_stable():
+    """1D T scan (mu=0) on a fine 50-point grid: bcc / fcc / liquid line phases.
+
+    fcc is the middle stable phase; it is unstable at both low and high T.
+    """
+    Ts = np.linspace(100, 1000, 50)
+    return ldc.calc_phase_diagram(_three_line_phases(), Ts, mu=0.0, refine=True, keep_unstable=True)
+
+
+@pytest.fixture(scope="module")
+def df_T_three_stable_coarse():
+    """Same three line phases on a coarse 8-point T grid.
+
+    At this density the inter-branch T-gap and the intra-run spacing are
+    comparable: constant-0.1 shatters every line, the data-informed threshold
+    merges fcc's two unstable branches.  Scan-order is unaffected.
+    """
+    Ts = np.linspace(100, 1000, 8)
+    return ldc.calc_phase_diagram(_three_line_phases(), Ts, mu=0.0, refine=True, keep_unstable=True)
+
+
+# ---------------------------------------------------------------------------
+# _assign_segment_ids on the physics fixtures
+# ---------------------------------------------------------------------------
+
+
+def test_assign_segment_ids_mu_middle_phase_three_segments(df_mu_three_stable):
+    """fcc (middle stable phase) gets three distinct segment IDs in the mu scan."""
+    df = df_mu_three_stable
+    ids = _assign_segment_ids(df, "mu")
+    fcc_ids = ids[df["phase"] == "fcc"]
+    assert fcc_ids.nunique() == 3, f"Expected 3 fcc segments, got {fcc_ids.nunique()}: {fcc_ids.unique()}"
+    assert ids[(df["phase"] == "fcc") & (~df["stable"])].nunique() == 2
+    for phase in ("hcp", "liquid"):
+        assert ids[df["phase"] == phase].nunique() == 2, f"Expected 2 segments for {phase}"
+
+
+@pytest.mark.parametrize("fixture", ["df_T_three_stable", "df_T_three_stable_coarse"])
+def test_assign_segment_ids_T_middle_phase_three_segments(fixture, request):
+    """fcc gets three segment IDs in the T scan, at both fine and coarse density."""
+    df = request.getfixturevalue(fixture)
+    ids = _assign_segment_ids(df, "T")
+    fcc_ids = ids[df["phase"] == "fcc"]
+    assert fcc_ids.nunique() == 3, f"Expected 3 fcc segments, got {fcc_ids.nunique()}: {fcc_ids.unique()}"
+    assert ids[(df["phase"] == "fcc") & (~df["stable"])].nunique() == 2
+
+
+# ---------------------------------------------------------------------------
+# plot_1d_mu / plot_1d_T — line-count tests
+# ---------------------------------------------------------------------------
+
+
+def test_plot_1d_mu_middle_phase_three_lines(df_mu_three_stable):
+    """fcc appears as three distinct Line2D objects on the axis (stable + 2 unstable)."""
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_mu_phase_diagram(df_mu_three_stable, ax=ax)
+        counts = _lines_per_phase(ax)
+        assert counts.get("fcc") == 3, f"Expected 3 fcc lines, got {counts.get('fcc')}"
+        assert counts.get("hcp") == 2
+        assert counts.get("liquid") == 2
+    finally:
+        plt.close(fig)
+
+
+@pytest.mark.parametrize("fixture", ["df_T_three_stable", "df_T_three_stable_coarse"])
+def test_plot_1d_T_middle_phase_three_lines(fixture, request):
+    """fcc appears as three Line2D objects at both fine and coarse T sampling."""
+    df = request.getfixturevalue(fixture)
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_T_phase_diagram(df, ax=ax)
+        counts = _lines_per_phase(ax)
+        assert counts.get("fcc") == 3, f"Expected 3 fcc lines, got {counts.get('fcc')}"
+        assert counts.get("bcc") == 2
+        assert counts.get("liquid") == 2
+    finally:
+        plt.close(fig)
