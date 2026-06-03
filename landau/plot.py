@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 import pandas as pd
+from matplotlib.colors import to_rgba
+from matplotlib.transforms import blended_transform_factory
 
 from .calculate import calc_phase_diagram, get_transitions, cluster, cluster_T_c, _join_phase_unit
 import landau.poly as poly
@@ -345,6 +347,101 @@ def _subtract_reference_phase(df, scan_col, reference_phase):
     return df
 
 
+def _add_1d_phase_legend(ax, df, scan_col):
+    """Replace the seaborn hue/style legend on a 1d phase diagram.
+
+    Stable-only
+        Ticks on the top spine mark each transition boundary (positions where
+        ``border == True``).  The stable phase name is placed at the midpoint
+        between adjacent boundaries.
+
+    Stable + unstable
+        The above, plus every phase is annotated by name at the right end of
+        its final line segment so that names form a column to the right of the
+        plot.
+
+    Args:
+        ax: matplotlib Axes with a seaborn lineplot already rendered.
+        df: DataFrame with 'phase', 'stable', ``scan_col``, 'phi', and
+            (if available) 'border' columns.
+        scan_col: Scan-axis column ('mu' or 'T').
+    """
+    # Extract phase → color before removing the legend.
+    phase_colors = {}
+    legend = ax.get_legend()
+    if legend is not None:
+        white = to_rgba("w")
+        gray2 = to_rgba(".2")
+        for handle, text in zip(legend.legend_handles, legend.texts):
+            try:
+                c = handle.get_color()
+            except AttributeError:
+                continue
+            if to_rgba(c) in (white, gray2):
+                continue
+            phase_colors[text.get_text()] = c
+        legend.remove()
+
+    # Store so tests (or user code) can still access the color map.
+    ax._landau_phase_colors = phase_colors
+
+    if "border" not in df.columns:
+        return
+
+    # Interior transition positions only.
+    x_min = df[scan_col].min()
+    x_max = df[scan_col].max()
+    transitions = sorted(
+        t for t in df.loc[df["border"], scan_col].unique()
+        if x_min < t < x_max
+    )
+    boundaries = [x_min] + transitions + [x_max]
+
+    # Top-spine ticks at transition boundaries (no tick labels; just marks).
+    ax2 = ax.secondary_xaxis("top")
+    ax2.set_ticks(transitions)
+    ax2.set_xticklabels([])
+    ax2.tick_params(direction="in", length=6)
+
+    # Phase-name labels centered between adjacent boundaries.
+    # get_xaxis_transform(): x in data coords, y in axes [0,1] fraction.
+    xform = ax.get_xaxis_transform()
+    for lo, hi in zip(boundaries[:-1], boundaries[1:]):
+        mid = (lo + hi) / 2
+        # Strict inequalities exclude the border rows themselves, which can have
+        # two phases marked stable simultaneously (the transition point).
+        mask = (df[scan_col] > lo) & (df[scan_col] < hi) & df["stable"]
+        stable_phases = df.loc[mask, "phase"].unique()
+        if len(stable_phases) != 1:
+            continue
+        phase = stable_phases[0]
+        ax.text(
+            mid, 1.03, phase,
+            transform=xform,
+            ha="center", va="bottom", fontsize="small",
+            color=phase_colors.get(phase, "black"),
+        )
+
+    if df["stable"].all():
+        return
+
+    # Right-edge phase annotations for the stable + unstable case.
+    # Shrink the axes horizontally to leave room for the name column.
+    ax.figure.subplots_adjust(right=0.82)
+
+    trans = blended_transform_factory(ax.transAxes, ax.transData)
+    for phase, group in df.groupby("phase"):
+        rightmost = group.sort_values(scan_col).iloc[-1]
+        y = rightmost["phi"]
+        ax.text(
+            1.02, y, phase,
+            transform=trans,
+            ha="left", va="center", fontsize="small",
+            color=phase_colors.get(phase, "black"),
+            clip_on=False,
+        )
+
+
 def plot_1d_mu_phase_diagram(
         df,
         ax=None,
@@ -392,6 +489,8 @@ def plot_1d_mu_phase_diagram(
         units='_seg_id', estimator=None, errorbar=None,
         ax=ax,
     )
+
+    _add_1d_phase_legend(ax, df, scan_col="mu")
 
     if 'border' not in df.columns:
         return ax
@@ -464,6 +563,8 @@ def plot_1d_T_phase_diagram(
         units='_seg_id', estimator=None, errorbar=None,
         ax=ax,
     )
+
+    _add_1d_phase_legend(ax, df, scan_col="T")
 
     if 'border' not in df.columns:
         return ax

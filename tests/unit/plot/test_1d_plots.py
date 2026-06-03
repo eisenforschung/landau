@@ -53,16 +53,18 @@ def _run_count(pattern):
     return 1 + sum(a != b for a, b in zip(pattern, pattern[1:]))
 
 
-def _lines_per_phase(ax):
-    """Return {phase_name: line_count} for non-empty Line2D objects on *ax*.
-
-    Uses the seaborn legend to map hue colors to phase names; skips legend
-    section-header entries (white) and style-legend entries (gray '.2').
-    """
-    legend = ax.get_legend()
+def _color_to_phase_map(ax):
+    """Return {rgba_color: phase_name} from the axes, preferring the axes attribute."""
     white = to_rgba("w")
     gray2 = to_rgba(".2")
-    color_to_phase = {}
+    # Prefer the color map stored by _add_1d_phase_legend (legend is removed).
+    if hasattr(ax, "_landau_phase_colors") and ax._landau_phase_colors:
+        return {to_rgba(v): k for k, v in ax._landau_phase_colors.items()}
+    # Fallback: read from the seaborn legend (pre-legend-removal code paths).
+    legend = ax.get_legend()
+    if legend is None:
+        return {}
+    result = {}
     for handle, text in zip(legend.legend_handles, legend.texts):
         try:
             c = to_rgba(handle.get_color())
@@ -70,7 +72,13 @@ def _lines_per_phase(ax):
             continue
         if c == white or c == gray2:
             continue
-        color_to_phase[c] = text.get_text()
+        result[c] = text.get_text()
+    return result
+
+
+def _lines_per_phase(ax):
+    """Return {phase_name: line_count} for non-empty Line2D objects on *ax*."""
+    color_to_phase = _color_to_phase_map(ax)
     counts = Counter()
     for line in ax.lines:
         if len(line.get_xdata()) == 0:
@@ -338,18 +346,7 @@ def test_plot_1d_T_middle_phase_three_lines(fixture, request):
 
 def _ydata_for_phase(ax, phase_name):
     """Return a flat array of all y-values plotted for *phase_name* on *ax*."""
-    legend = ax.get_legend()
-    white = to_rgba("w")
-    gray2 = to_rgba(".2")
-    color_to_phase = {}
-    for handle, text in zip(legend.legend_handles, legend.texts):
-        try:
-            c = to_rgba(handle.get_color())
-        except (AttributeError, ValueError):
-            continue
-        if c == white or c == gray2:
-            continue
-        color_to_phase[c] = text.get_text()
+    color_to_phase = _color_to_phase_map(ax)
     ydata = []
     for line in ax.lines:
         yd = line.get_ydata()
@@ -486,5 +483,195 @@ def test_plot_1d_T_reference_phase_all_transitions_marked(df_T_three_stable):
             f"got {len(ys)}. Likely NaN phi at a border point where bcc has no row."
         )
         assert np.all(np.isfinite(ys)), f"Some transition markers have non-finite y: {ys}"
+    finally:
+        plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Custom phase legend (_add_1d_phase_legend)
+# ---------------------------------------------------------------------------
+
+
+def _top_axis_tick_positions(ax):
+    """Return the tick positions on the secondary (top) x-axis, if present."""
+    for child in ax.get_children():
+        if hasattr(child, "get_ticks"):
+            try:
+                ticks = child.get_ticks()
+                if len(ticks) > 0:
+                    return list(ticks)
+            except Exception:
+                pass
+    # secondary_xaxis returns a parasite axes; iterate via ax.figure
+    for other_ax in ax.figure.axes:
+        if other_ax is ax:
+            continue
+        try:
+            if other_ax.xaxis.get_label().get_text() == "" and hasattr(other_ax, "get_ticks"):
+                pass
+        except Exception:
+            pass
+    return []
+
+
+def _get_secondary_top_ax(ax):
+    """Return the secondary top Axes added by secondary_xaxis('top'), or None."""
+    for other_ax in ax.figure.axes:
+        if other_ax is ax:
+            continue
+        # secondary_xaxis attaches a child Axes; it has no title/xlabel by default
+        try:
+            pos = other_ax.get_position()
+            main_pos = ax.get_position()
+            # Top secondary axis shares the same x-extent and sits at the top of main
+            if abs(pos.x0 - main_pos.x0) < 0.01 and abs(pos.width - main_pos.width) < 0.01:
+                return other_ax
+        except Exception:
+            pass
+    return None
+
+
+def _top_labels(ax):
+    """Return the text strings of top-spine phase-name annotations on *ax*."""
+    texts = []
+    for t in ax.texts:
+        # get_xaxis_transform places labels at y > 1 in axes fraction → va='bottom'
+        try:
+            if t.get_va() == "bottom" and t.get_ha() == "center":
+                texts.append(t.get_text())
+        except Exception:
+            pass
+    return texts
+
+
+def _right_annotations(ax):
+    """Return text strings of right-edge phase annotations (ha='left', clip_on=False)."""
+    texts = []
+    for t in ax.texts:
+        try:
+            if t.get_ha() == "left" and not t.get_clip_on():
+                texts.append(t.get_text())
+        except Exception:
+            pass
+    return texts
+
+
+def test_mu_legend_removed(df_mu_three_stable):
+    """seaborn legend is replaced: ax.get_legend() returns None after plotting."""
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_mu_phase_diagram(df_mu_three_stable, ax=ax)
+        assert ax.get_legend() is None
+    finally:
+        plt.close(fig)
+
+
+def test_T_legend_removed(df_T_three_stable):
+    """seaborn legend is replaced: ax.get_legend() returns None after plotting."""
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax)
+        assert ax.get_legend() is None
+    finally:
+        plt.close(fig)
+
+
+def test_mu_phase_colors_stored(df_mu_three_stable):
+    """ax._landau_phase_colors is populated for all phases."""
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_mu_phase_diagram(df_mu_three_stable, ax=ax)
+        colors = ax._landau_phase_colors
+        assert set(colors.keys()) == {"hcp", "fcc", "liquid"}
+    finally:
+        plt.close(fig)
+
+
+def test_T_phase_colors_stored(df_T_three_stable):
+    """ax._landau_phase_colors is populated for all phases."""
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax)
+        colors = ax._landau_phase_colors
+        assert set(colors.keys()) == {"bcc", "fcc", "liquid"}
+    finally:
+        plt.close(fig)
+
+
+def test_mu_top_spine_labels_all_stable_phases(df_mu_three_stable):
+    """Each stable phase appears as a centered top-spine label."""
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_mu_phase_diagram(df_mu_three_stable, ax=ax)
+        labels = _top_labels(ax)
+        stable_phases = df_mu_three_stable.loc[df_mu_three_stable["stable"], "phase"].unique()
+        for phase in stable_phases:
+            assert phase in labels, f"{phase!r} not in top labels {labels}"
+    finally:
+        plt.close(fig)
+
+
+def test_T_top_spine_labels_all_stable_phases(df_T_three_stable):
+    """Each stable phase appears as a centered top-spine label."""
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax)
+        labels = _top_labels(ax)
+        stable_phases = df_T_three_stable.loc[df_T_three_stable["stable"], "phase"].unique()
+        for phase in stable_phases:
+            assert phase in labels, f"{phase!r} not in top labels {labels}"
+    finally:
+        plt.close(fig)
+
+
+def test_mu_right_annotations_when_unstable(df_mu_three_stable):
+    """With unstable phases present, every phase gets a right-edge annotation."""
+    assert not df_mu_three_stable["stable"].all(), "fixture must have unstable rows"
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_mu_phase_diagram(df_mu_three_stable, ax=ax)
+        right = set(_right_annotations(ax))
+        all_phases = set(df_mu_three_stable["phase"].unique())
+        assert all_phases == right, f"expected right annotations {all_phases}, got {right}"
+    finally:
+        plt.close(fig)
+
+
+def test_T_right_annotations_when_unstable(df_T_three_stable):
+    """With unstable phases present, every phase gets a right-edge annotation."""
+    assert not df_T_three_stable["stable"].all(), "fixture must have unstable rows"
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax)
+        right = set(_right_annotations(ax))
+        all_phases = set(df_T_three_stable["phase"].unique())
+        assert all_phases == right, f"expected right annotations {all_phases}, got {right}"
+    finally:
+        plt.close(fig)
+
+
+def _stable_only_df(df):
+    """Return a version of df with only stable rows."""
+    return df.loc[df["stable"]].copy()
+
+
+def test_mu_no_right_annotations_stable_only(df_mu_three_stable):
+    """Stable-only data produces no right-edge annotations."""
+    df = _stable_only_df(df_mu_three_stable)
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_mu_phase_diagram(df, ax=ax)
+        assert _right_annotations(ax) == []
+    finally:
+        plt.close(fig)
+
+
+def test_T_no_right_annotations_stable_only(df_T_three_stable):
+    """Stable-only data produces no right-edge annotations."""
+    df = _stable_only_df(df_T_three_stable)
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_T_phase_diagram(df, ax=ax)
+        assert _right_annotations(ax) == []
     finally:
         plt.close(fig)
