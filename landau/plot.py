@@ -334,6 +334,16 @@ def _assign_segment_ids(df: pd.DataFrame, scan_col: str) -> pd.Series:
     ).reindex(df.index)
 
 
+def _subtract_reference_phase(df, scan_col, reference_phase):
+    """Subtract reference phase's phi from all phases along scan_col."""
+    if reference_phase not in df["phase"].values:
+        raise ValueError(f"reference_phase {reference_phase!r} not found in data")
+    ref = df.loc[df["phase"] == reference_phase, [scan_col, "phi"]].rename(columns={"phi": "_ref_phi"})
+    df = df.merge(ref, on=scan_col, how="left")
+    df["phi"] = df["phi"] - df["_ref_phi"]
+    return df.drop(columns=["_ref_phi"])
+
+
 def plot_1d_mu_phase_diagram(
         df,
         ax=None,
@@ -370,12 +380,7 @@ def plot_1d_mu_phase_diagram(
     df = df.sort_values("mu").copy()
 
     if reference_phase is not None:
-        if reference_phase not in df["phase"].values:
-            raise ValueError(f"reference_phase {reference_phase!r} not found in data")
-        ref = df.loc[df["phase"] == reference_phase, ["mu", "phi"]].rename(columns={"phi": "_ref_phi"})
-        df = df.merge(ref, on="mu", how="left")
-        df["phi"] = df["phi"] - df["_ref_phi"]
-        df = df.drop(columns=["_ref_phi"])
+        df = _subtract_reference_phase(df, "mu", reference_phase)
 
     df["_seg_id"] = _assign_segment_ids(df, scan_col="mu")
     sns.lineplot(
@@ -404,7 +409,7 @@ def plot_1d_mu_phase_diagram(
     ax.set_xlabel("Chemical Potential Difference [eV]")
     ylabel = "Semi-grandcanonical Potential [eV/atom]"
     if reference_phase is not None:
-        ylabel = f"Semi-grandcanonical Potential relative to {reference_phase} [eV/atom]"
+        ylabel = f"Semi-grandcanonical Potential\nrelative to {reference_phase} [eV/atom]"
     ax.set_ylabel(ylabel)
 
     return ax
@@ -446,12 +451,7 @@ def plot_1d_T_phase_diagram(
     df = df.copy()
 
     if reference_phase is not None:
-        if reference_phase not in df["phase"].values:
-            raise ValueError(f"reference_phase {reference_phase!r} not found in data")
-        ref = df.loc[df["phase"] == reference_phase, ["T", "phi"]].rename(columns={"phi": "_ref_phi"})
-        df = df.merge(ref, on="T", how="left")
-        df["phi"] = df["phi"] - df["_ref_phi"]
-        df = df.drop(columns=["_ref_phi"])
+        df = _subtract_reference_phase(df, "T", reference_phase)
 
     df["_seg_id"] = _assign_segment_ids(df, scan_col="T")
 
@@ -481,7 +481,7 @@ def plot_1d_T_phase_diagram(
     ax.set_xlabel("Temperature [K]")
     ylabel = "Semi-grandcanonical potential [eV/atom]"
     if reference_phase is not None:
-        ylabel = f"Semi-grandcanonical potential relative to {reference_phase} [eV/atom]"
+        ylabel = f"Semi-grandcanonical potential\nrelative to {reference_phase} [eV/atom]"
     ax.set_ylabel(ylabel)
 
     return ax
