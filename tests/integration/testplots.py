@@ -72,13 +72,8 @@ def _file_suffix(poly_method: str | None = None, tielines: bool = True) -> str:
     return "_" + "_".join(parts) if parts else ""
 
 
-def plot_1d_T_three_stable(out_dir: Path, **_) -> Path:
-    """1D T diagram: three stable phases with concave-down free energies.
-
-    fcc is the intermediate phase, stable roughly 350–760 K; it is unstable
-    in two disjoint T ranges at low and high T, exposing the segment-splitting
-    fix in plot_1d_T_phase_diagram.
-    """
+def _calc_1d_T_bcc_fcc_liquid():
+    """bcc/fcc/liquid TemperatureDependentLinePhase scan shared by the 1D T testplots."""
     T_s = np.array([100.0, 400.0, 700.0, 1000.0])
     # G(T) = a - b*T - c*T^2 (c > 0: concave-down, strictly decreasing).
     # bcc: shallow slope, stable at low T.
@@ -96,10 +91,32 @@ def plot_1d_T_three_stable(out_dir: Path, **_) -> Path:
         "liquid", fixed_concentration=0, temperatures=T_s,
         free_energies=-2.75 - 3.5e-4 * T_s - 5e-7 * T_s**2,
     )
-
     Ts = np.linspace(100, 1000, 50)
-    df = ldc.calc_phase_diagram([bcc, fcc, liquid], Ts, mu=0.0, refine=True, keep_unstable=True)
+    return ldc.calc_phase_diagram([bcc, fcc, liquid], Ts, mu=0.0, refine=True, keep_unstable=True)
 
+
+def _calc_1d_mu_hcp_fcc_liquid():
+    """hcp/fcc/liquid IdealSolution mu scan shared by the 1D mu testplots."""
+    fcca = ldp.LinePhase("fccA", fixed_concentration=0, line_energy=-3.02, line_entropy=1.0 * ldp.kB)
+    fccb = ldp.LinePhase("fccB", fixed_concentration=1, line_energy=-2.02, line_entropy=1.1 * ldp.kB)
+    hcpa = ldp.LinePhase("hcpA", fixed_concentration=0, line_energy=-2.975, line_entropy=1.8 * ldp.kB)
+    hcpb = ldp.LinePhase("hcpB", fixed_concentration=1, line_energy=-1.95, line_entropy=1.1 * ldp.kB)
+    lqda = ldp.LinePhase("liquidA", fixed_concentration=0, line_energy=-2.724, line_entropy=1.5 * ldp.kB)
+    lqdb = ldp.LinePhase("liquidB", fixed_concentration=1, line_energy=-2.050, line_entropy=1.2 * ldp.kB)
+    fcc = ldp.IdealSolution("fcc", fcca, fccb)
+    hcp = ldp.IdealSolution("hcp", hcpa, hcpb)
+    lqd = ldp.IdealSolution("liquid", lqda, lqdb)
+    return ldc.calc_phase_diagram([hcp, fcc, lqd], Ts=1000.0, mu=100, keep_unstable=True)
+
+
+def plot_1d_T_three_stable(out_dir: Path, **_) -> Path:
+    """1D T diagram: three stable phases with concave-down free energies.
+
+    fcc is the intermediate phase, stable roughly 350–760 K; it is unstable
+    in two disjoint T ranges at low and high T, exposing the segment-splitting
+    fix in plot_1d_T_phase_diagram.
+    """
+    df = _calc_1d_T_bcc_fcc_liquid()
     fig, ax = plt.subplots(figsize=(6, 4))
     lpl.plot_1d_T_phase_diagram(df, ax=ax)
     ax.set_title("1D T phase diagram (curved G: bcc / fcc / liquid)")
@@ -116,18 +133,7 @@ def plot_1d_mu_three_stable(out_dir: Path, **_) -> Path:
     fcc is unstable in two disjoint µ ranges (below and above its stable
     window), exposing the segment-splitting fix in plot_1d_mu_phase_diagram.
     """
-    fcca = ldp.LinePhase("fccA", fixed_concentration=0, line_energy=-3.02, line_entropy=1.0 * ldp.kB)
-    fccb = ldp.LinePhase("fccB", fixed_concentration=1, line_energy=-2.02, line_entropy=1.1 * ldp.kB)
-    hcpa = ldp.LinePhase("hcpA", fixed_concentration=0, line_energy=-2.975, line_entropy=1.8 * ldp.kB)
-    hcpb = ldp.LinePhase("hcpB", fixed_concentration=1, line_energy=-1.95, line_entropy=1.1 * ldp.kB)
-    lqda = ldp.LinePhase("liquidA", fixed_concentration=0, line_energy=-2.724, line_entropy=1.5 * ldp.kB)
-    lqdb = ldp.LinePhase("liquidB", fixed_concentration=1, line_energy=-2.050, line_entropy=1.2 * ldp.kB)
-    fcc = ldp.IdealSolution("fcc", fcca, fccb)
-    hcp = ldp.IdealSolution("hcp", hcpa, hcpb)
-    lqd = ldp.IdealSolution("liquid", lqda, lqdb)
-
-    df = ldc.calc_phase_diagram([hcp, fcc, lqd], Ts=1000.0, mu=100, keep_unstable=True)
-
+    df = _calc_1d_mu_hcp_fcc_liquid()
     fig, ax = plt.subplots(figsize=(6, 4))
     lpl.plot_1d_mu_phase_diagram(df, ax=ax)
     ax.set_title(r"1D $\mu$ phase diagram (hcp / fcc / liquid, T=1000K)")
@@ -135,47 +141,20 @@ def plot_1d_mu_three_stable(out_dir: Path, **_) -> Path:
 
 
 def plot_1d_T_reference_phase(out_dir: Path, **_) -> Path:
-    """1D T diagram: bcc/fcc/liquid with reference_phase='bcc', showing relative semi-grand potential."""
-    T_s = np.array([100.0, 400.0, 700.0, 1000.0])
-    bcc = ldp.TemperatureDependentLinePhase(
-        "bcc", fixed_concentration=0, temperatures=T_s,
-        free_energies=-3.00 - 2e-4 * T_s - 1e-7 * T_s**2,
-    )
-    fcc = ldp.TemperatureDependentLinePhase(
-        "fcc", fixed_concentration=0, temperatures=T_s,
-        free_energies=-2.97 - 2.857e-4 * T_s - 2e-7 * T_s**2,
-    )
-    liquid = ldp.TemperatureDependentLinePhase(
-        "liquid", fixed_concentration=0, temperatures=T_s,
-        free_energies=-2.75 - 3.5e-4 * T_s - 5e-7 * T_s**2,
-    )
-
-    Ts = np.linspace(100, 1000, 50)
-    df = ldc.calc_phase_diagram([bcc, fcc, liquid], Ts, mu=0.0, refine=True, keep_unstable=True)
-
+    """1D T diagram: bcc/fcc/liquid with reference_phase='fcc', showing relative semi-grand potential."""
+    df = _calc_1d_T_bcc_fcc_liquid()
     fig, ax = plt.subplots(figsize=(6, 4))
-    lpl.plot_1d_T_phase_diagram(df, ax=ax, reference_phase="bcc")
-    ax.set_title("1D T phase diagram with reference_phase='bcc'")
+    lpl.plot_1d_T_phase_diagram(df, ax=ax, reference_phase="fcc")
+    ax.set_title("1D T phase diagram with reference_phase='fcc'")
     return _save(fig, out_dir, "1d_T_reference_phase_diagram")
 
 
 def plot_1d_mu_reference_phase(out_dir: Path, **_) -> Path:
-    """1D mu diagram: hcp/fcc/liquid with reference_phase='hcp', showing relative semi-grand potential."""
-    fcca = ldp.LinePhase("fccA", fixed_concentration=0, line_energy=-3.02, line_entropy=1.0 * ldp.kB)
-    fccb = ldp.LinePhase("fccB", fixed_concentration=1, line_energy=-2.02, line_entropy=1.1 * ldp.kB)
-    hcpa = ldp.LinePhase("hcpA", fixed_concentration=0, line_energy=-2.975, line_entropy=1.8 * ldp.kB)
-    hcpb = ldp.LinePhase("hcpB", fixed_concentration=1, line_energy=-1.95, line_entropy=1.1 * ldp.kB)
-    lqda = ldp.LinePhase("liquidA", fixed_concentration=0, line_energy=-2.724, line_entropy=1.5 * ldp.kB)
-    lqdb = ldp.LinePhase("liquidB", fixed_concentration=1, line_energy=-2.050, line_entropy=1.2 * ldp.kB)
-    fcc = ldp.IdealSolution("fcc", fcca, fccb)
-    hcp = ldp.IdealSolution("hcp", hcpa, hcpb)
-    lqd = ldp.IdealSolution("liquid", lqda, lqdb)
-
-    df = ldc.calc_phase_diagram([hcp, fcc, lqd], Ts=1000.0, mu=100, keep_unstable=True)
-
+    """1D mu diagram: hcp/fcc/liquid with reference_phase='fcc', showing relative semi-grand potential."""
+    df = _calc_1d_mu_hcp_fcc_liquid()
     fig, ax = plt.subplots(figsize=(6, 4))
-    lpl.plot_1d_mu_phase_diagram(df, ax=ax, reference_phase="hcp")
-    ax.set_title(r"1D $\mu$ phase diagram with reference_phase='hcp'")
+    lpl.plot_1d_mu_phase_diagram(df, ax=ax, reference_phase="fcc")
+    ax.set_title(r"1D $\mu$ phase diagram with reference_phase='fcc'")
     return _save(fig, out_dir, "1d_mu_reference_phase_diagram")
 
 

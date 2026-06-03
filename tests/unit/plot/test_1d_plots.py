@@ -380,16 +380,23 @@ def test_plot_1d_mu_reference_phase_differences_preserved(df_mu_three_stable):
     """phi(fcc) - phi(ref) in the plot matches fcc_phi - hcp_phi from the raw data."""
     df = df_mu_three_stable
     ref = "hcp"
-    # Compute expected fcc - hcp difference at each mu point, sort for order-independence.
-    pivot = df.pivot_table(index="mu", columns="phase", values="phi")
+    # Differences at mu values where BOTH fcc and hcp have exact rows.  At
+    # border-only mu values (where the reference is absent from the refined data),
+    # _subtract_reference_phase interpolates; those extra values are not tested here.
+    shared_mu = set(df.loc[df["phase"] == ref, "mu"]) & set(df.loc[df["phase"] == "fcc", "mu"])
+    pivot = df[df["mu"].isin(shared_mu)].pivot_table(index="mu", columns="phase", values="phi")
     expected = np.sort((pivot["fcc"] - pivot[ref]).dropna().values)
 
     fig, ax = plt.subplots()
     try:
         plot_1d_mu_phase_diagram(df, ax=ax, reference_phase=ref)
-        # fcc y-values across all segments, sorted for order-independence.
-        yd_fcc = np.sort(_ydata_for_phase(ax, "fcc"))
-        np.testing.assert_allclose(yd_fcc, expected, atol=1e-10)
+        yd_fcc = _ydata_for_phase(ax, "fcc")
+        yd_valid = np.sort(yd_fcc[~np.isnan(yd_fcc)])
+        assert len(yd_valid) >= len(expected)
+        for v in expected:
+            assert np.any(np.isclose(yd_valid, v, atol=1e-10)), (
+                f"Expected fcc-hcp difference {v:.8f} not found in plotted fcc values"
+            )
     finally:
         plt.close(fig)
 
@@ -422,5 +429,62 @@ def test_plot_1d_T_reference_phase_invalid_raises(df_T_three_stable):
     try:
         with pytest.raises(ValueError, match="reference_phase"):
             plot_1d_T_phase_diagram(df_T_three_stable, ax=ax, reference_phase="nonexistent")
+    finally:
+        plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Transition-marker introspection
+# ---------------------------------------------------------------------------
+
+
+def _transition_marker_y_positions(ax):
+    """Return the y-positions of all black scatter markers (transition dots) on *ax*.
+
+    Transition markers are added via ``ax.scatter(..., c='k')``, producing a
+    PathCollection with black facecolor.  Other artists (seaborn line plots) do
+    not create black PathCollections, so this isolates the marker set.
+    """
+    ys = []
+    for coll in ax.collections:
+        try:
+            fc = coll.get_facecolor()
+        except AttributeError:
+            continue
+        if fc is None or len(fc) == 0:
+            continue
+        color = np.asarray(fc[0])
+        if len(color) >= 3 and np.allclose(color[:3], [0.0, 0.0, 0.0], atol=0.01):
+            offsets = np.asarray(coll.get_offsets())
+            if len(offsets) > 0:
+                ys.extend(offsets[:, 1])
+    return np.asarray(ys)
+
+
+def test_plot_1d_T_reference_phase_all_transitions_marked(df_T_three_stable):
+    """All transition markers are present and have finite y when reference_phase is set.
+
+    Before the np.interp fix, border points where the reference phase had no
+    exact row got phi=NaN from the merge, making every marker after the first
+    invisible (ax.scatter with y=NaN renders nothing).
+    """
+    fig0, ax0 = plt.subplots()
+    try:
+        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax0)
+        n_expected = len(_transition_marker_y_positions(ax0))
+    finally:
+        plt.close(fig0)
+
+    assert n_expected >= 2, "fixture must have at least 2 transition markers"
+
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax, reference_phase="bcc")
+        ys = _transition_marker_y_positions(ax)
+        assert len(ys) == n_expected, (
+            f"Expected {n_expected} transition markers with reference_phase='bcc', "
+            f"got {len(ys)}. Likely NaN phi at a border point where bcc has no row."
+        )
+        assert np.all(np.isfinite(ys)), f"Some transition markers have non-finite y: {ys}"
     finally:
         plt.close(fig)
