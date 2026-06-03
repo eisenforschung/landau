@@ -588,34 +588,46 @@ def test_T_phase_legend_removed(df_T_three_stable):
         plt.close(fig)
 
 
-def test_style_legend_present_when_unstable(df_T_three_stable):
-    """style_legend=True adds a solid/dashed stable-vs-unstable legend."""
+def test_side_labels_false_keeps_seaborn_legend(df_T_three_stable):
+    """side_labels=False keeps the default seaborn legend (phase names present)."""
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax, side_labels=False)
+        phases = set(df_T_three_stable["phase"].unique())
+        assert phases <= _legend_texts(ax), "phase names missing from kept legend"
+    finally:
+        plt.close(fig)
+
+
+def test_side_labels_false_no_right_annotations(df_T_three_stable):
+    """side_labels=False draws no right-end annotations."""
     assert not df_T_three_stable["stable"].all(), "fixture must have unstable rows"
     fig, ax = plt.subplots()
     try:
-        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax, style_legend=True)
-        assert _legend_texts(ax) == {"stable", "unstable"}
+        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax, side_labels=False)
+        assert _right_annotations(ax) == []
     finally:
         plt.close(fig)
 
 
-def test_style_legend_absent_when_disabled(df_T_three_stable):
-    """style_legend=False leaves no legend on the axis."""
+def test_top_labels_false_no_top_labels(df_T_three_stable):
+    """top_labels=False draws no top-spine phase labels."""
     fig, ax = plt.subplots()
     try:
-        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax, style_legend=False)
-        assert ax.get_legend() is None
+        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax, top_labels=False)
+        assert _top_labels(ax) == []
     finally:
         plt.close(fig)
 
 
-def test_style_legend_absent_when_all_stable(df_T_three_stable):
-    """No style legend is drawn when there are no unstable (dashed) lines."""
-    df = df_T_three_stable.loc[df_T_three_stable["stable"]].copy()
+def test_flags_are_independent(df_T_three_stable):
+    """top_labels and side_labels toggle their own annotations without affecting the other."""
     fig, ax = plt.subplots()
     try:
-        plot_1d_T_phase_diagram(df, ax=ax, style_legend=True)
-        assert ax.get_legend() is None
+        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax, top_labels=True, side_labels=False)
+        assert _top_labels(ax), "top labels missing with top_labels=True"
+        assert _right_annotations(ax) == [], "side labels present with side_labels=False"
+        assert ax.get_legend() is not None, "seaborn legend removed with side_labels=False"
     finally:
         plt.close(fig)
 

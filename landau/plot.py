@@ -8,7 +8,6 @@ import seaborn as sns
 import numpy as np
 import pandas as pd
 from matplotlib.colors import to_rgba
-from matplotlib.lines import Line2D
 
 from .calculate import calc_phase_diagram, get_transitions, cluster, cluster_T_c, _join_phase_unit
 import landau.poly as poly
@@ -347,27 +346,29 @@ def _subtract_reference_phase(df, scan_col, reference_phase):
     return df
 
 
-def _add_1d_phase_legend(ax, df, scan_col, style_legend=True):
-    """Replace the seaborn hue/style legend on a 1d phase diagram.
+def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True):
+    """Annotate a 1d phase diagram with inline phase labels.
 
-    Stable-only
+    top_labels
         Ticks on the top spine mark each transition boundary (positions where
-        ``border == True``).  The stable phase name is placed near the top of
+        ``border == True``) and the stable phase name is placed near the top of
         the axis, centered between adjacent boundaries.
 
-    Stable + unstable
-        The above, plus every phase is annotated by name at the right end of
-        its final line segment inside the axis.
+    side_labels
+        The default seaborn legend is removed and, when unstable lines are
+        present, every phase is annotated by name at the right end of its final
+        line segment inside the axis.
 
     Args:
         ax: matplotlib Axes with a seaborn lineplot already rendered.
         df: DataFrame with 'phase', 'stable', ``scan_col``, 'phi', and
             (if available) 'border' columns.
         scan_col: Scan-axis column ('mu' or 'T').
-        style_legend: If True (and unstable lines are present), add a small
-            legend explaining the solid (stable) / dashed (unstable) line styles.
+        top_labels: If True, add the top-spine ticks and stable-phase labels.
+        side_labels: If True, remove the default seaborn legend and add the
+            right-end side labels.
     """
-    # Extract phase → color before removing the legend.
+    # Extract phase → color from the seaborn legend (used by both label sets).
     phase_colors = {}
     legend = ax.get_legend()
     if legend is not None:
@@ -381,77 +382,68 @@ def _add_1d_phase_legend(ax, df, scan_col, style_legend=True):
             if to_rgba(c) in (white, gray2):
                 continue
             phase_colors[text.get_text()] = c
-        legend.remove()
+        # The side labels replace the default seaborn legend.
+        if side_labels:
+            legend.remove()
 
     # Store so tests (or user code) can still access the color map.
     ax._landau_phase_colors = phase_colors
 
-    if "border" not in df.columns:
-        return
+    if top_labels and "border" in df.columns:
+        # Interior transition positions only.
+        x_min = df[scan_col].min()
+        x_max = df[scan_col].max()
+        transitions = sorted(
+            t for t in df.loc[df["border"], scan_col].unique()
+            if x_min < t < x_max
+        )
+        boundaries = [x_min] + transitions + [x_max]
 
-    # Interior transition positions only.
-    x_min = df[scan_col].min()
-    x_max = df[scan_col].max()
-    transitions = sorted(
-        t for t in df.loc[df["border"], scan_col].unique()
-        if x_min < t < x_max
-    )
-    boundaries = [x_min] + transitions + [x_max]
+        # Top-spine ticks at transition boundaries (no tick labels; just marks).
+        ax2 = ax.secondary_xaxis("top")
+        ax2.set_ticks(transitions)
+        ax2.set_xticklabels([])
+        ax2.tick_params(direction="in", length=6)
 
-    # Top-spine ticks at transition boundaries (no tick labels; just marks).
-    ax2 = ax.secondary_xaxis("top")
-    ax2.set_ticks(transitions)
-    ax2.set_xticklabels([])
-    ax2.tick_params(direction="in", length=6)
-
-    # Phase-name labels near the top of the axis, centered between boundaries.
-    # get_xaxis_transform(): x in data coords, y in axes [0,1] fraction.
-    xform = ax.get_xaxis_transform()
-    for lo, hi in zip(boundaries[:-1], boundaries[1:]):
-        mid = (lo + hi) / 2
-        # Strict inequalities exclude the border rows themselves, which can have
-        # two phases marked stable simultaneously (the transition point).
-        mask = (df[scan_col] > lo) & (df[scan_col] < hi) & df["stable"]
-        stable_phases = df.loc[mask, "phase"].unique()
-        if len(stable_phases) != 1:
-            raise RuntimeError(
-                f"expected exactly one stable phase in [{lo}, {hi}], "
-                f"got {list(stable_phases)}"
+        # Phase-name labels near the top of the axis, centered between boundaries.
+        # get_xaxis_transform(): x in data coords, y in axes [0,1] fraction.
+        xform = ax.get_xaxis_transform()
+        for lo, hi in zip(boundaries[:-1], boundaries[1:]):
+            mid = (lo + hi) / 2
+            # Strict inequalities exclude the border rows themselves, which can have
+            # two phases marked stable simultaneously (the transition point).
+            mask = (df[scan_col] > lo) & (df[scan_col] < hi) & df["stable"]
+            stable_phases = df.loc[mask, "phase"].unique()
+            if len(stable_phases) != 1:
+                raise RuntimeError(
+                    f"expected exactly one stable phase in [{lo}, {hi}], "
+                    f"got {list(stable_phases)}"
+                )
+            phase = stable_phases[0]
+            # White, semi-transparent bbox keeps the bold label legible on top of tielines.
+            ax.text(
+                mid, 0.97, phase,
+                transform=xform,
+                ha="center", va="top", fontsize="small", fontweight="bold",
+                color=phase_colors.get(phase, "black"),
+                bbox=dict(boxstyle="round", facecolor="white", alpha=0.6, edgecolor="none"),
             )
-        phase = stable_phases[0]
-        # White, semi-transparent bbox keeps the bold label legible on top of tielines.
-        ax.text(
-            mid, 0.97, phase,
-            transform=xform,
-            ha="center", va="top", fontsize="small", fontweight="bold",
-            color=phase_colors.get(phase, "black"),
-            bbox=dict(boxstyle="round", facecolor="white", alpha=0.6, edgecolor="none"),
-        )
 
-    if df["stable"].all():
-        return
-
-    if style_legend:
-        handles = [
-            Line2D([0], [0], color="0.3", linestyle="-", label="stable"),
-            Line2D([0], [0], color="0.3", linestyle="--", label="unstable"),
-        ]
-        ax.legend(handles=handles, loc="best", fontsize="small", framealpha=0.6)
-
-    # Right-end phase annotations placed just past each line's end but kept
-    # inside the axis by widening the right limit to make room for them.
-    x_min, x_max = df[scan_col].min(), df[scan_col].max()
-    span = x_max - x_min
-    ax.set_xlim(right=x_max + 0.13 * span)
-    for phase, group in df.groupby("phase"):
-        rightmost = group.sort_values(scan_col).iloc[-1]
-        ax.text(
-            rightmost[scan_col] + 0.02 * span, rightmost["phi"], phase,
-            transform=ax.transData,
-            ha="left", va="center", fontsize="small",
-            color=phase_colors.get(phase, "black"),
-            clip_on=True,
-        )
+    if side_labels and not df["stable"].all():
+        # Right-end phase annotations placed just past each line's end but kept
+        # inside the axis by widening the right limit to make room for them.
+        x_min, x_max = df[scan_col].min(), df[scan_col].max()
+        span = x_max - x_min
+        ax.set_xlim(right=x_max + 0.13 * span)
+        for phase, group in df.groupby("phase"):
+            rightmost = group.sort_values(scan_col).iloc[-1]
+            ax.text(
+                rightmost[scan_col] + 0.02 * span, rightmost["phi"], phase,
+                transform=ax.transData,
+                ha="left", va="center", fontsize="small",
+                color=phase_colors.get(phase, "black"),
+                clip_on=True,
+            )
 
 
 def plot_1d_mu_phase_diagram(
@@ -460,7 +452,8 @@ def plot_1d_mu_phase_diagram(
         show=True,
         mark_transitions=True,
         reference_phase=None,
-        style_legend=True):
+        top_labels=True,
+        side_labels=True):
     """
     Plot a one dimensional isothermal phase diagram of the semi-grandcanonical
     potential as function of the chemical potential difference.
@@ -477,9 +470,12 @@ def plot_1d_mu_phase_diagram(
         reference_phase (str, optional):
             If given, subtract this phase's potential from all other phases before
             plotting so that the reference phase lies at zero throughout.
-        style_legend (bool, optional):
-            If True, add a small legend explaining the solid (stable) / dashed
-            (unstable) line styles when unstable lines are present. Defaults to True.
+        top_labels (bool, optional):
+            If True, label the stable phase of each segment near the top of the
+            axis. Defaults to True.
+        side_labels (bool, optional):
+            If True, remove the default seaborn legend and label every phase at
+            the right end of its line instead. Defaults to True.
 
     Returns:
         matplotlib.axes.Axes:
@@ -506,7 +502,7 @@ def plot_1d_mu_phase_diagram(
         ax=ax,
     )
 
-    _add_1d_phase_legend(ax, df, scan_col="mu", style_legend=style_legend)
+    _add_1d_phase_legend(ax, df, scan_col="mu", top_labels=top_labels, side_labels=side_labels)
 
     if 'border' not in df.columns:
         return ax
@@ -536,7 +532,8 @@ def plot_1d_T_phase_diagram(
         mark_transitions=True,
         show=True,
         reference_phase=None,
-        style_legend=True,
+        top_labels=True,
+        side_labels=True,
         ):
     """
     Plots a one-dimensional equipotential phase diagram as a function of temperature.
@@ -553,9 +550,12 @@ def plot_1d_T_phase_diagram(
         reference_phase (str, optional):
             If given, subtract this phase's potential from all other phases before
             plotting so that the reference phase lies at zero throughout.
-        style_legend (bool, optional):
-            If True, add a small legend explaining the solid (stable) / dashed
-            (unstable) line styles when unstable lines are present. Defaults to True.
+        top_labels (bool, optional):
+            If True, label the stable phase of each segment near the top of the
+            axis. Defaults to True.
+        side_labels (bool, optional):
+            If True, remove the default seaborn legend and label every phase at
+            the right end of its line instead. Defaults to True.
 
     Returns:
         matplotlib.axes.Axes:
@@ -584,7 +584,7 @@ def plot_1d_T_phase_diagram(
         ax=ax,
     )
 
-    _add_1d_phase_legend(ax, df, scan_col="T", style_legend=style_legend)
+    _add_1d_phase_legend(ax, df, scan_col="T", top_labels=top_labels, side_labels=side_labels)
 
     if 'border' not in df.columns:
         return ax
