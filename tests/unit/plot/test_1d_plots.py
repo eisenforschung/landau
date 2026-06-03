@@ -492,45 +492,6 @@ def test_plot_1d_T_reference_phase_all_transitions_marked(df_T_three_stable):
 # ---------------------------------------------------------------------------
 
 
-def _top_axis_tick_positions(ax):
-    """Return the tick positions on the secondary (top) x-axis, if present."""
-    for child in ax.get_children():
-        if hasattr(child, "get_ticks"):
-            try:
-                ticks = child.get_ticks()
-                if len(ticks) > 0:
-                    return list(ticks)
-            except Exception:
-                pass
-    # secondary_xaxis returns a parasite axes; iterate via ax.figure
-    for other_ax in ax.figure.axes:
-        if other_ax is ax:
-            continue
-        try:
-            if other_ax.xaxis.get_label().get_text() == "" and hasattr(other_ax, "get_ticks"):
-                pass
-        except Exception:
-            pass
-    return []
-
-
-def _get_secondary_top_ax(ax):
-    """Return the secondary top Axes added by secondary_xaxis('top'), or None."""
-    for other_ax in ax.figure.axes:
-        if other_ax is ax:
-            continue
-        # secondary_xaxis attaches a child Axes; it has no title/xlabel by default
-        try:
-            pos = other_ax.get_position()
-            main_pos = ax.get_position()
-            # Top secondary axis shares the same x-extent and sits at the top of main
-            if abs(pos.x0 - main_pos.x0) < 0.01 and abs(pos.width - main_pos.width) < 0.01:
-                return other_ax
-        except Exception:
-            pass
-    return None
-
-
 def _top_labels(ax):
     """Return text strings of top-interior phase-name annotations on *ax*."""
     texts = []
@@ -620,11 +581,19 @@ def test_top_labels_false_no_top_labels(df_T_three_stable):
         plt.close(fig)
 
 
-def test_flags_are_independent(df_T_three_stable):
-    """top_labels and side_labels toggle their own annotations without affecting the other."""
+@pytest.mark.parametrize(
+    "plot_func, fixture",
+    [
+        (plot_1d_mu_phase_diagram, "df_mu_three_stable"),
+        (plot_1d_T_phase_diagram, "df_T_three_stable"),
+    ],
+)
+def test_flags_are_independent(plot_func, fixture, request):
+    """top_labels and side_labels toggle their own annotations, in both 1d plots."""
+    df = request.getfixturevalue(fixture)
     fig, ax = plt.subplots()
     try:
-        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax, top_labels=True, side_labels=False)
+        plot_func(df, ax=ax, top_labels=True, side_labels=False)
         assert _top_labels(ax), "top labels missing with top_labels=True"
         assert _right_annotations(ax) == [], "side labels present with side_labels=False"
         assert ax.get_legend() is not None, "seaborn legend removed with side_labels=False"
@@ -680,6 +649,26 @@ def test_T_top_spine_labels_all_stable_phases(df_T_three_stable):
         plt.close(fig)
 
 
+def test_T_top_spine_ticks_at_transitions(df_T_three_stable):
+    """The secondary top axis carries one tick at each interior transition."""
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax)
+        # secondary_xaxis('top') registers itself as a child axis.
+        assert ax.child_axes, "no secondary top axis created"
+        ticks = sorted(ax.child_axes[0].get_xticks())
+        x_min, x_max = df_T_three_stable["T"].min(), df_T_three_stable["T"].max()
+        expected = sorted(
+            t for t in df_T_three_stable.loc[df_T_three_stable["border"], "T"].unique()
+            if x_min < t < x_max
+        )
+        assert len(expected) >= 2, "fixture must have at least two interior transitions"
+        assert len(ticks) == len(expected), f"got {ticks}, expected {expected}"
+        np.testing.assert_allclose(ticks, expected, atol=1e-6)
+    finally:
+        plt.close(fig)
+
+
 def test_top_spine_labels_bold_with_translucent_white_bbox(df_T_three_stable):
     """Top labels are bold and backed by a semi-transparent white box (legible over tielines)."""
     fig, ax = plt.subplots()
@@ -703,9 +692,9 @@ def test_mu_right_annotations_when_unstable(df_mu_three_stable):
     fig, ax = plt.subplots()
     try:
         plot_1d_mu_phase_diagram(df_mu_three_stable, ax=ax)
-        right = set(_right_annotations(ax))
-        all_phases = set(df_mu_three_stable["phase"].unique())
-        assert all_phases == right, f"expected right annotations {all_phases}, got {right}"
+        right = sorted(_right_annotations(ax))
+        all_phases = sorted(df_mu_three_stable["phase"].unique())
+        assert right == all_phases, f"expected right annotations {all_phases}, got {right}"
     finally:
         plt.close(fig)
 
@@ -716,9 +705,9 @@ def test_T_right_annotations_when_unstable(df_T_three_stable):
     fig, ax = plt.subplots()
     try:
         plot_1d_T_phase_diagram(df_T_three_stable, ax=ax)
-        right = set(_right_annotations(ax))
-        all_phases = set(df_T_three_stable["phase"].unique())
-        assert all_phases == right, f"expected right annotations {all_phases}, got {right}"
+        right = sorted(_right_annotations(ax))
+        all_phases = sorted(df_T_three_stable["phase"].unique())
+        assert right == all_phases, f"expected right annotations {all_phases}, got {right}"
     finally:
         plt.close(fig)
 
