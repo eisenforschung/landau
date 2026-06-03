@@ -8,7 +8,6 @@ import seaborn as sns
 import numpy as np
 import pandas as pd
 from matplotlib.colors import to_rgba
-from matplotlib.transforms import blended_transform_factory
 
 from .calculate import calc_phase_diagram, get_transitions, cluster, cluster_T_c, _join_phase_unit
 import landau.poly as poly
@@ -352,13 +351,12 @@ def _add_1d_phase_legend(ax, df, scan_col):
 
     Stable-only
         Ticks on the top spine mark each transition boundary (positions where
-        ``border == True``).  The stable phase name is placed at the midpoint
-        between adjacent boundaries.
+        ``border == True``).  The stable phase name is placed near the top of
+        the axis, centered between adjacent boundaries.
 
     Stable + unstable
         The above, plus every phase is annotated by name at the right end of
-        its final line segment so that names form a column to the right of the
-        plot.
+        its final line segment inside the axis.
 
     Args:
         ax: matplotlib Axes with a seaborn lineplot already rendered.
@@ -403,7 +401,7 @@ def _add_1d_phase_legend(ax, df, scan_col):
     ax2.set_xticklabels([])
     ax2.tick_params(direction="in", length=6)
 
-    # Phase-name labels centered between adjacent boundaries.
+    # Phase-name labels near the top of the axis, centered between boundaries.
     # get_xaxis_transform(): x in data coords, y in axes [0,1] fraction.
     xform = ax.get_xaxis_transform()
     for lo, hi in zip(boundaries[:-1], boundaries[1:]):
@@ -413,32 +411,29 @@ def _add_1d_phase_legend(ax, df, scan_col):
         mask = (df[scan_col] > lo) & (df[scan_col] < hi) & df["stable"]
         stable_phases = df.loc[mask, "phase"].unique()
         if len(stable_phases) != 1:
-            continue
+            raise RuntimeError(
+                f"expected exactly one stable phase in [{lo}, {hi}], "
+                f"got {list(stable_phases)}"
+            )
         phase = stable_phases[0]
         ax.text(
-            mid, 1.03, phase,
+            mid, 0.97, phase,
             transform=xform,
-            ha="center", va="bottom", fontsize="small",
+            ha="center", va="top", fontsize="small",
             color=phase_colors.get(phase, "black"),
         )
 
     if df["stable"].all():
         return
 
-    # Right-edge phase annotations for the stable + unstable case.
-    # Shrink the axes horizontally to leave room for the name column.
-    ax.figure.subplots_adjust(right=0.82)
-
-    trans = blended_transform_factory(ax.transAxes, ax.transData)
+    # Right-end phase annotations inside the axis for the stable + unstable case.
     for phase, group in df.groupby("phase"):
         rightmost = group.sort_values(scan_col).iloc[-1]
-        y = rightmost["phi"]
         ax.text(
-            1.02, y, phase,
-            transform=trans,
-            ha="left", va="center", fontsize="small",
+            rightmost[scan_col], rightmost["phi"], phase,
+            transform=ax.transData,
+            ha="right", va="center", fontsize="small",
             color=phase_colors.get(phase, "black"),
-            clip_on=False,
         )
 
 

@@ -532,12 +532,11 @@ def _get_secondary_top_ax(ax):
 
 
 def _top_labels(ax):
-    """Return the text strings of top-spine phase-name annotations on *ax*."""
+    """Return text strings of top-interior phase-name annotations on *ax*."""
     texts = []
     for t in ax.texts:
-        # get_xaxis_transform places labels at y > 1 in axes fraction → va='bottom'
         try:
-            if t.get_va() == "bottom" and t.get_ha() == "center":
+            if t.get_va() == "top" and t.get_ha() == "center":
                 texts.append(t.get_text())
         except Exception:
             pass
@@ -545,11 +544,11 @@ def _top_labels(ax):
 
 
 def _right_annotations(ax):
-    """Return text strings of right-edge phase annotations (ha='left', clip_on=False)."""
+    """Return text strings of right-end phase annotations placed in data coords."""
     texts = []
     for t in ax.texts:
         try:
-            if t.get_ha() == "left" and not t.get_clip_on():
+            if t.get_ha() == "right" and t.get_va() == "center":
                 texts.append(t.get_text())
         except Exception:
             pass
@@ -599,7 +598,7 @@ def test_T_phase_colors_stored(df_T_three_stable):
 
 
 def test_mu_top_spine_labels_all_stable_phases(df_mu_three_stable):
-    """Each stable phase appears as a centered top-spine label."""
+    """Each stable phase appears as a centered label near the top of the axis."""
     fig, ax = plt.subplots()
     try:
         plot_1d_mu_phase_diagram(df_mu_three_stable, ax=ax)
@@ -612,7 +611,7 @@ def test_mu_top_spine_labels_all_stable_phases(df_mu_three_stable):
 
 
 def test_T_top_spine_labels_all_stable_phases(df_T_three_stable):
-    """Each stable phase appears as a centered top-spine label."""
+    """Each stable phase appears as a centered label near the top of the axis."""
     fig, ax = plt.subplots()
     try:
         plot_1d_T_phase_diagram(df_T_three_stable, ax=ax)
@@ -625,7 +624,7 @@ def test_T_top_spine_labels_all_stable_phases(df_T_three_stable):
 
 
 def test_mu_right_annotations_when_unstable(df_mu_three_stable):
-    """With unstable phases present, every phase gets a right-edge annotation."""
+    """With unstable phases present, every phase gets a right-end annotation inside the axis."""
     assert not df_mu_three_stable["stable"].all(), "fixture must have unstable rows"
     fig, ax = plt.subplots()
     try:
@@ -638,7 +637,7 @@ def test_mu_right_annotations_when_unstable(df_mu_three_stable):
 
 
 def test_T_right_annotations_when_unstable(df_T_three_stable):
-    """With unstable phases present, every phase gets a right-edge annotation."""
+    """With unstable phases present, every phase gets a right-end annotation inside the axis."""
     assert not df_T_three_stable["stable"].all(), "fixture must have unstable rows"
     fig, ax = plt.subplots()
     try:
