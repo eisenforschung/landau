@@ -780,14 +780,17 @@ def plot_excess_free_energy(
             existing_handles = list(g._legend.legend_handles)
             existing_labels = [t.get_text() for t in g._legend.texts]
             g._legend.remove()
-            g.figure.legend(
-                existing_handles + lp_handles,
-                existing_labels + [h.get_label() for h in lp_handles],
-                title="phase",
-                bbox_to_anchor=(1.02, 0.5),
-                loc="center left",
-                borderaxespad=0,
-            )
+        else:
+            existing_handles = []
+            existing_labels = []
+        g.figure.legend(
+            existing_handles + lp_handles,
+            existing_labels + [h.get_label() for h in lp_handles],
+            title="phase",
+            bbox_to_anchor=(1.02, 0.5),
+            loc="center left",
+            borderaxespad=0,
+        )
 
     g.refline(y=0)
     g.set_titles("T = {col_name:.0f} K")
