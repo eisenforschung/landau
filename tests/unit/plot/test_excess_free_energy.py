@@ -147,3 +147,19 @@ def test_all_line_phases_no_crash():
     g = plot_excess_free_energy(df, convex_hull=True)
     assert g.axes.size == 1
     plt.close(g.fig)
+
+
+def test_all_line_phases_legend_present():
+    """When only line phases are stable the figure legend must list all phase names."""
+    from landau.calculate import calc_phase_diagram
+
+    e0 = LinePhase("A", fixed_concentration=0, line_energy=-2.0, line_entropy=1.0 * kB)
+    e1 = LinePhase("B", fixed_concentration=1, line_energy=-3.0, line_entropy=1.5 * kB)
+    inter = LinePhase("AB", fixed_concentration=0.5, line_energy=-2.8, line_entropy=1.3 * kB)
+    df = calc_phase_diagram([e0, e1, inter], Ts=1000, mu=50, keep_unstable=True)
+    g = plot_excess_free_energy(df, convex_hull=True)
+    legend = g.figure.legends
+    assert legend, "figure legend is missing when only line phases are stable"
+    legend_labels = {t.get_text() for t in legend[0].texts}
+    assert {"A", "B", "AB"} <= legend_labels
+    plt.close(g.fig)
