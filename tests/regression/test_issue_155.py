@@ -2,7 +2,7 @@
 
 When two solution phases both sample near c=0, the old code selected the phase
 with the globally smallest sampled concentration as the f_excess reference, even
-when a different phase has a lower free energy there.  The fix evaluates each
+when a different phase has a lower free energy nearby.  The fix evaluates each
 phase at its own endpoint concentration and takes the thermodynamically stable one
 as the reference.
 
@@ -23,7 +23,7 @@ from landau.calculate import calc_phase_diagram
 from landau.phases import LinePhase, IdealSolution
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def two_phase_system():
     """Solid + liquid where solid is stable at c=0 but liquid samples smaller c."""
     solid_a = LinePhase("A", fixed_concentration=0, line_energy=-2.0, line_entropy=0)
@@ -37,7 +37,7 @@ def two_phase_system():
     return solid, liquid
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def phase_diagram(two_phase_system):
     solid, liquid = two_phase_system
     mu_range = np.linspace(-2.0, 2.0, 50)
