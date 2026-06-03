@@ -169,7 +169,13 @@ class Concave(AbstractPolyMethod):
         if len(pp) == 0:
             return None
         points = shapely.MultiPoint(pp)
-        shape = shapely.concave_hull(points, ratio=self.ratio)
+        try:
+            shape = shapely.concave_hull(points, ratio=self.ratio)
+        except shapely.errors.GEOSException:
+            # Degenerate point clouds (collinear/coincident/denormal coordinates)
+            # can make GEOS fail to locate a vertex; such a set has no polygon.
+            warn("concave_hull failed on a degenerate point set, skipping.")
+            return None
         if not isinstance(shape, shapely.Polygon):
             warn(f"Failed to construct polygon, got {shape} instead, skipping.")
             return None
