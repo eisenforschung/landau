@@ -271,6 +271,21 @@ def plot_excess_free_energy(out_dir: Path, **_) -> Path:
     return _save(g.fig, out_dir, "excess_free_energy")
 
 
+def plot_excess_free_energy_line_phases(out_dir: Path, **_) -> Path:
+    """Excess free energy with only line phases — legend fix for #182."""
+    import pandas as pd
+    e0 = ldp.LinePhase("A",  fixed_concentration=0,   line_energy=-2.0, line_entropy=1.0 * ldp.kB)
+    e1 = ldp.LinePhase("B",  fixed_concentration=1,   line_energy=-3.0, line_entropy=1.5 * ldp.kB)
+    inter = ldp.LinePhase("AB", fixed_concentration=0.5, line_energy=-2.8, line_entropy=1.3 * ldp.kB)
+    df = pd.concat(
+        [ldc.calc_phase_diagram([e0, e1, inter], Ts=T, mu=50, keep_unstable=True)
+         for T in [500, 1000, 1500]],
+        ignore_index=True,
+    )
+    g = lpl.plot_excess_free_energy(df, convex_hull=True, height=4, aspect=1.1)
+    return _save(g.fig, out_dir, "excess_free_energy_line_phases")
+
+
 def plot_2d_toy_mu(out_dir: Path, poly_method: str | None = None, **_) -> Path:
     """2D T-mu diagram with a regular-solution liquid + intermediate solid, from Toy.ipynb."""
     l1 = ldp.TemperatureDependentLinePhase(
@@ -322,7 +337,8 @@ PLOTS = {
     "2d_basics_mu":           (plot_2d_basics_mu,            ("poly_method",)),
     "2d_toy":                 (plot_2d_toy,                  ("poly_method", "tielines")),
     "2d_toy_mu":              (plot_2d_toy_mu,               ("poly_method",)),
-    "excess_free_energy":     (plot_excess_free_energy,      ()),
+    "excess_free_energy":             (plot_excess_free_energy,             ()),
+    "excess_free_energy_line_phases": (plot_excess_free_energy_line_phases, ()),
 }
 
 
