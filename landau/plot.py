@@ -428,14 +428,19 @@ def _add_1d_phase_legend(ax, df, scan_col):
     if df["stable"].all():
         return
 
-    # Right-end phase annotations inside the axis for the stable + unstable case.
+    # Right-end phase annotations placed just past each line's end but kept
+    # inside the axis by widening the right limit to make room for them.
+    x_min, x_max = df[scan_col].min(), df[scan_col].max()
+    span = x_max - x_min
+    ax.set_xlim(right=x_max + 0.13 * span)
     for phase, group in df.groupby("phase"):
         rightmost = group.sort_values(scan_col).iloc[-1]
         ax.text(
-            rightmost[scan_col], rightmost["phi"], phase,
+            rightmost[scan_col] + 0.02 * span, rightmost["phi"], phase,
             transform=ax.transData,
-            ha="right", va="center", fontsize="small",
+            ha="left", va="center", fontsize="small",
             color=phase_colors.get(phase, "black"),
+            clip_on=True,
         )
 
 

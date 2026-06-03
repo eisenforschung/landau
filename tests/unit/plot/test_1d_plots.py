@@ -553,7 +553,7 @@ def _right_annotations(ax):
     texts = []
     for t in ax.texts:
         try:
-            if t.get_ha() == "right" and t.get_va() == "center":
+            if t.get_ha() == "left" and t.get_va() == "center":
                 texts.append(t.get_text())
         except Exception:
             pass
@@ -667,6 +667,23 @@ def test_T_right_annotations_when_unstable(df_T_three_stable):
         right = set(_right_annotations(ax))
         all_phases = set(df_T_three_stable["phase"].unique())
         assert all_phases == right, f"expected right annotations {all_phases}, got {right}"
+    finally:
+        plt.close(fig)
+
+
+def test_T_right_annotations_right_of_line_ends_inside_axis(df_T_three_stable):
+    """Right-end labels sit past each line's end but stay within the axis x-limits."""
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax)
+        line_end = df_T_three_stable["T"].max()
+        x_left, x_right = ax.get_xlim()
+        artists = [t for t in ax.texts if t.get_ha() == "left" and t.get_va() == "center"]
+        assert artists, "no right-end annotations found"
+        for t in artists:
+            x = t.get_position()[0]
+            assert x > line_end, f"{t.get_text()!r} at x={x} not right of line end {line_end}"
+            assert x_left < x < x_right, f"{t.get_text()!r} at x={x} outside axis [{x_left}, {x_right}]"
     finally:
         plt.close(fig)
 
