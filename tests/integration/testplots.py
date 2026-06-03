@@ -106,21 +106,32 @@ def plot_1d_T_three_stable(out_dir: Path, **_) -> Path:
     return _save(fig, out_dir, "1d_T_three_stable_phase_diagram")
 
 
-def plot_1d_mu(out_dir: Path, **_) -> Path:
-    """1D mu phase diagram from notebooks/Basics.ipynb (hcp vs fcc isothermal)."""
-    fcca = ldp.LinePhase("fccA", fixed_concentration=0, line_energy=-3.00, line_entropy=1.0 * ldp.kB)
-    fccb = ldp.LinePhase("fccB", fixed_concentration=1, line_energy=-2.00, line_entropy=1.1 * ldp.kB)
+def plot_1d_mu_three_stable(out_dir: Path, **_) -> Path:
+    """1D mu phase diagram: three stable solution phases (hcp / fcc / liquid).
+
+    hcp/fcc parameters are taken from the two-phase Basics.ipynb scenario; a
+    liquid phase is added so that fcc is the intermediate stable phase.  fcc
+    endpoint energies are shifted −0.02 eV relative to the Basics.ipynb values
+    to open a stable window (~0.09 eV wide in µ, c ≈ 0.37–0.62 at T=1000 K).
+    fcc is unstable in two disjoint µ ranges (below and above its stable
+    window), exposing the segment-splitting fix in plot_1d_mu_phase_diagram.
+    """
+    fcca = ldp.LinePhase("fccA", fixed_concentration=0, line_energy=-3.02, line_entropy=1.0 * ldp.kB)
+    fccb = ldp.LinePhase("fccB", fixed_concentration=1, line_energy=-2.02, line_entropy=1.1 * ldp.kB)
     hcpa = ldp.LinePhase("hcpA", fixed_concentration=0, line_energy=-2.975, line_entropy=1.8 * ldp.kB)
     hcpb = ldp.LinePhase("hcpB", fixed_concentration=1, line_energy=-1.95, line_entropy=1.1 * ldp.kB)
+    lqda = ldp.LinePhase("liquidA", fixed_concentration=0, line_energy=-2.724, line_entropy=1.5 * ldp.kB)
+    lqdb = ldp.LinePhase("liquidB", fixed_concentration=1, line_energy=-2.050, line_entropy=1.2 * ldp.kB)
     fcc = ldp.IdealSolution("fcc", fcca, fccb)
     hcp = ldp.IdealSolution("hcp", hcpa, hcpb)
+    lqd = ldp.IdealSolution("liquid", lqda, lqdb)
 
-    df = ldc.calc_phase_diagram([hcp, fcc], Ts=1000.0, mu=100, keep_unstable=True)
+    df = ldc.calc_phase_diagram([hcp, fcc, lqd], Ts=1000.0, mu=100, keep_unstable=True)
 
     fig, ax = plt.subplots(figsize=(6, 4))
     lpl.plot_1d_mu_phase_diagram(df, ax=ax)
-    ax.set_title(r"1D $\mu$ phase diagram (hcp vs fcc, T=1000K)")
-    return _save(fig, out_dir, "1d_mu_phase_diagram")
+    ax.set_title(r"1D $\mu$ phase diagram (hcp / fcc / liquid, T=1000K)")
+    return _save(fig, out_dir, "1d_mu_three_stable_phase_diagram")
 
 
 def plot_2d_basics(out_dir: Path, poly_method: str | None = None, tielines: bool = True, **_) -> Path:
@@ -280,7 +291,7 @@ def plot_2d_toy_mu(out_dir: Path, poly_method: str | None = None, **_) -> Path:
 # automatically instead of re-rendering identical files.
 PLOTS = {
     "1d_T_three_stable":   (plot_1d_T_three_stable,   ()),
-    "1d_mu":               (plot_1d_mu,               ()),
+    "1d_mu_three_stable":  (plot_1d_mu_three_stable,  ()),
     "2d_basics":           (plot_2d_basics,            ("poly_method", "tielines")),
     "2d_basics_mu":        (plot_2d_basics_mu,         ("poly_method",)),
     "2d_toy":              (plot_2d_toy,               ("poly_method", "tielines")),

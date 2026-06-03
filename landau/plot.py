@@ -293,10 +293,51 @@ def plot_mu_phase_diagram(
         ax=ax,
     )
 
+
+def _assign_segment_ids(df: pd.DataFrame, scan_col: str) -> pd.Series:
+    """Assign contiguous-segment IDs for a 1d scan along ``scan_col``.
+
+    Ordering the points by ``scan_col``, a phase begins a new segment whenever its
+    ``stable`` flag flips.  This is threshold-free and independent of grid density
+    or of how derived quantities (concentration, ...) vary along the cut, so two
+    disjoint metastable branches of one phase – e.g. a middle phase that is
+    unstable both below and above its stable window – are never joined into one
+    line.  Pass the result as ``units=`` to seaborn so it draws each segment
+    separately.
+
+    The cut axis is a parameter, so the helper extends unchanged to generalised
+    1d diagrams along arbitrary T / mu / ... cuts: pass whichever column orders
+    the points along the cut.
+
+    Assumes every phase is sampled at every scan point – as produced by
+    :func:`~landau.calculate.calc_phase_diagram` with ``keep_unstable=True`` – so
+    a stability flip is the only way a phase's run along the cut can break.
+
+    Args:
+        df: DataFrame with 'phase', 'stable', and ``scan_col`` columns.
+        scan_col: Column ordering the points along the cut ('mu', 'T', ...).
+
+    Returns:
+        String Series aligned with ``df.index``, one unique value per segment.
+    """
+    ordered = df.sort_values(scan_col)
+    seg = ordered.groupby("phase", group_keys=False).apply(
+        lambda g: (g["stable"] != g["stable"].shift()).cumsum().to_frame("_seg"),
+        include_groups=False,
+    )["_seg"]
+    return (
+        ordered["phase"].astype(str)
+        + "_"
+        + ordered["stable"].astype(int).astype(str)
+        + "_"
+        + seg.astype(str)
+    ).reindex(df.index)
+
+
 def plot_1d_mu_phase_diagram(
         df,
-        ax=None, 
-        show=True, 
+        ax=None,
+        show=True,
         mark_transitions=True):
     """
     Plot a one dimensional isothermal phase diagram of the semi-grandcanonical 
@@ -322,41 +363,24 @@ def plot_1d_mu_phase_diagram(
     if ax is None:
         fig, ax = plt.subplots()
 
+    df = df.sort_values("mu").copy()
+    df["_seg_id"] = _assign_segment_ids(df, scan_col="mu")
+    sns.lineplot(
+        data=df,
+        x='mu', y='phi',
+        hue='phase', hue_order=sorted(df.phase.unique()),
+        style='stable', style_order=[True, False],
+        units='_seg_id', estimator=None, errorbar=None,
+        ax=ax,
+    )
+
     if 'border' not in df.columns:
-        sns.lineplot(
-            data=df,
-            x='mu', y='phi',
-            hue='phase',
-            style='stable', style_order=[True, False],
-            ax=ax,
-        )
         return ax
-
-    df_sorted = df.sort_values("mu").reset_index(drop=True)
-    border_rows = df_sorted.query("border")
-    border_mus = np.sort(border_rows['mu'])
-
-    split_points = np.concatenate(([-np.inf], border_mus, [np.inf]))
-
-    for i in range(len(split_points) - 1):
-        left = split_points[i]
-        right = split_points[i + 1]
-
-        seg = df_sorted.query("@left < mu <= @right")
-        if not seg.empty:
-            sns.lineplot(
-                data=seg,
-                x='mu', y='phi',
-                hue='phase', hue_order=sorted(df.phase.unique()),
-                style='stable', style_order=[True, False],
-                legend='auto' if i == 0 else False,
-                ax=ax,
-            )
 
     dfa = np.ptp(df['phi'].dropna())
     dfm = np.ptp(df['mu'].dropna())
 
-    if mark_transitions and 'border' in df.columns:
+    if mark_transitions:
         for mt, dd in df.query("mu.min()<mu<mu.max() and border").groupby("mu"):
             ft = dd['phi'].iloc[0]
             ax.axvline(mt, color='k', linestyle='dotted', alpha=.5)
@@ -400,33 +424,7 @@ def plot_1d_T_phase_diagram(
         fig, ax = plt.subplots()
 
     df = df.copy()
-    # Assign per-segment IDs so seaborn draws disconnected (phase, stable)
-    # blocks as separate lines.  A phase unstable in two disjoint T ranges
-    # (e.g. the middle phase in a three-phase sequence) would otherwise be
-    # connected into one continuous dashed line crossing the stable region.
-    # cluster_T_c normalises T within each group; the threshold must therefore
-    # be at least as large as the worst-case consecutive spacing in any stable
-    # group after that per-group normalisation.
-    def _max_normed_gap(t):
-        t = t.sort_values()
-        r = t.max() - t.min()
-        return float(t.diff().dropna().max() / r) if r > 0 else 0.0
-
-    stable_T = df.loc[df["stable"], ["phase", "T"]]
-    spacings = stable_T.groupby("phase")["T"].apply(_max_normed_gap) if not stable_T.empty else pd.Series([], dtype=float)
-    seg_threshold = 1.5 * float(spacings.max()) if not spacings.empty else 0.5
-
-    df["_seg"] = df.groupby(["phase", "stable"], group_keys=False).apply(
-        lambda g: cluster_T_c(g, distance_threshold=seg_threshold).to_frame("_seg"),
-        include_groups=False,
-    )["_seg"]
-    df["_seg_id"] = (
-        df["phase"].astype(str)
-        + "_"
-        + df["stable"].astype(int).astype(str)
-        + "_"
-        + df["_seg"].astype(str)
-    )
+    df["_seg_id"] = _assign_segment_ids(df, scan_col="T")
 
     sns.lineplot(
         data=df,
@@ -443,7 +441,7 @@ def plot_1d_T_phase_diagram(
     dfa = np.ptp(df['phi'].dropna())
     dft = np.ptp(df['T'].dropna())
 
-    if mark_transitions and 'border' in df.columns:
+    if mark_transitions:
         for Tt, dd in df.query("T.min()<T<T.max() and border").groupby("T"):
             ft = dd['phi'].iloc[0]
             ax.axvline(Tt, color='k', linestyle='dotted', alpha=.5)
@@ -573,15 +571,14 @@ def plot_excess_free_energy(
 
         if convex_hull:
             # Metastable solution phases: faded lines, same colour as stable.
+            # T is constant within this facet, so cluster_T_c reduces to c-only
+            # clustering, correctly splitting disjoint metastable c-ranges.
             unstable = sub_sol[~sub_sol["stable"]]
             for pname, grp in unstable.groupby("phase"):
-                grp_sorted = grp.sort_values("c")
-                diffs = grp_sorted["c"].diff().fillna(0)
-                pos_diffs = diffs[diffs > 0]
-                gap_thr = max(0.05, 5 * pos_diffs.quantile(0.9)) if not pos_diffs.empty else 0.05
-                seg_ids = (diffs > gap_thr).cumsum()
+                seg_ids = cluster_T_c(grp, distance_threshold=0.1)
                 color = sol_palette.get(pname, "gray")
-                for _, seg in grp_sorted.groupby(seg_ids):
+                for seg_id in seg_ids.unique():
+                    seg = grp.loc[seg_ids == seg_id].sort_values("c")
                     ax.plot(
                         seg["c"].values, seg["f_excess"].values,
                         color=color, alpha=0.4, lw=2.5, zorder=2,
