@@ -134,6 +134,51 @@ def plot_1d_mu_three_stable(out_dir: Path, **_) -> Path:
     return _save(fig, out_dir, "1d_mu_three_stable_phase_diagram")
 
 
+def plot_1d_T_reference_phase(out_dir: Path, **_) -> Path:
+    """1D T diagram: bcc/fcc/liquid with reference_phase='bcc', showing relative semi-grand potential."""
+    T_s = np.array([100.0, 400.0, 700.0, 1000.0])
+    bcc = ldp.TemperatureDependentLinePhase(
+        "bcc", fixed_concentration=0, temperatures=T_s,
+        free_energies=-3.00 - 2e-4 * T_s - 1e-7 * T_s**2,
+    )
+    fcc = ldp.TemperatureDependentLinePhase(
+        "fcc", fixed_concentration=0, temperatures=T_s,
+        free_energies=-2.97 - 2.857e-4 * T_s - 2e-7 * T_s**2,
+    )
+    liquid = ldp.TemperatureDependentLinePhase(
+        "liquid", fixed_concentration=0, temperatures=T_s,
+        free_energies=-2.75 - 3.5e-4 * T_s - 5e-7 * T_s**2,
+    )
+
+    Ts = np.linspace(100, 1000, 50)
+    df = ldc.calc_phase_diagram([bcc, fcc, liquid], Ts, mu=0.0, refine=True, keep_unstable=True)
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    lpl.plot_1d_T_phase_diagram(df, ax=ax, reference_phase="bcc")
+    ax.set_title("1D T phase diagram with reference_phase='bcc'")
+    return _save(fig, out_dir, "1d_T_reference_phase_diagram")
+
+
+def plot_1d_mu_reference_phase(out_dir: Path, **_) -> Path:
+    """1D mu diagram: hcp/fcc/liquid with reference_phase='hcp', showing relative semi-grand potential."""
+    fcca = ldp.LinePhase("fccA", fixed_concentration=0, line_energy=-3.02, line_entropy=1.0 * ldp.kB)
+    fccb = ldp.LinePhase("fccB", fixed_concentration=1, line_energy=-2.02, line_entropy=1.1 * ldp.kB)
+    hcpa = ldp.LinePhase("hcpA", fixed_concentration=0, line_energy=-2.975, line_entropy=1.8 * ldp.kB)
+    hcpb = ldp.LinePhase("hcpB", fixed_concentration=1, line_energy=-1.95, line_entropy=1.1 * ldp.kB)
+    lqda = ldp.LinePhase("liquidA", fixed_concentration=0, line_energy=-2.724, line_entropy=1.5 * ldp.kB)
+    lqdb = ldp.LinePhase("liquidB", fixed_concentration=1, line_energy=-2.050, line_entropy=1.2 * ldp.kB)
+    fcc = ldp.IdealSolution("fcc", fcca, fccb)
+    hcp = ldp.IdealSolution("hcp", hcpa, hcpb)
+    lqd = ldp.IdealSolution("liquid", lqda, lqdb)
+
+    df = ldc.calc_phase_diagram([hcp, fcc, lqd], Ts=1000.0, mu=100, keep_unstable=True)
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    lpl.plot_1d_mu_phase_diagram(df, ax=ax, reference_phase="hcp")
+    ax.set_title(r"1D $\mu$ phase diagram with reference_phase='hcp'")
+    return _save(fig, out_dir, "1d_mu_reference_phase_diagram")
+
+
 def plot_2d_basics(out_dir: Path, poly_method: str | None = None, tielines: bool = True, **_) -> Path:
     """2D c-T phase diagram (hcp / fcc / liquid ideal solutions) from Basics.ipynb."""
     fcca = ldp.LinePhase("fccA", fixed_concentration=0, line_energy=-3.00, line_entropy=1.0 * ldp.kB)
@@ -290,13 +335,15 @@ def plot_2d_toy_mu(out_dir: Path, poly_method: str | None = None, **_) -> Path:
 # poly_method and tielines, so cross-product iteration over them dedupes
 # automatically instead of re-rendering identical files.
 PLOTS = {
-    "1d_T_three_stable":   (plot_1d_T_three_stable,   ()),
-    "1d_mu_three_stable":  (plot_1d_mu_three_stable,  ()),
-    "2d_basics":           (plot_2d_basics,            ("poly_method", "tielines")),
-    "2d_basics_mu":        (plot_2d_basics_mu,         ("poly_method",)),
-    "2d_toy":              (plot_2d_toy,               ("poly_method", "tielines")),
-    "2d_toy_mu":           (plot_2d_toy_mu,            ("poly_method",)),
-    "excess_free_energy":  (plot_excess_free_energy,   ()),
+    "1d_T_three_stable":      (plot_1d_T_three_stable,      ()),
+    "1d_T_reference_phase":   (plot_1d_T_reference_phase,   ()),
+    "1d_mu_three_stable":     (plot_1d_mu_three_stable,     ()),
+    "1d_mu_reference_phase":  (plot_1d_mu_reference_phase,  ()),
+    "2d_basics":              (plot_2d_basics,               ("poly_method", "tielines")),
+    "2d_basics_mu":           (plot_2d_basics_mu,            ("poly_method",)),
+    "2d_toy":                 (plot_2d_toy,                  ("poly_method", "tielines")),
+    "2d_toy_mu":              (plot_2d_toy_mu,               ("poly_method",)),
+    "excess_free_energy":     (plot_excess_free_energy,      ()),
 }
 
 
