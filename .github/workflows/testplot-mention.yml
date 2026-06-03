@@ -272,20 +272,33 @@ jobs:
               `_${process.env.NOTE || 'rendered via @testplot mention'}_`,
               '',
             ];
+            // group by dimensionality; both groups collapsed by default
+            const groups = { '2D': [], '1D': [] };
             for (const name of Object.keys(byName).sort()) {
-              const entries = byName[name];
-              lines.push(`#### ${name}`);
+              (name.startsWith('1d_') ? groups['1D'] : groups['2D']).push(name);
+            }
+            for (const [label, names] of Object.entries(groups)) {
+              if (!names.length) continue;
+              lines.push(`<details>`);
+              lines.push(`<summary>${label} plots (${names.length})</summary>`);
               lines.push('');
-              if (entries.pr && entries.main) {
-                lines.push('<table><tr><th>main</th><th>PR</th></tr><tr>');
-                lines.push(`<td><img alt="main:${name}" src="${base}/${entries.main}" width="450"></td>`);
-                lines.push(`<td><img alt="pr:${name}" src="${base}/${entries.pr}" width="450"></td>`);
-                lines.push('</tr></table>');
-              } else {
-                const [target, rel] = Object.entries(entries)[0];
-                const tag = target === 'pr' ? '' : ` (${target})`;
-                lines.push(`<img alt="${name}${tag}" src="${base}/${rel}" width="600">`);
+              for (const name of names) {
+                const entries = byName[name];
+                lines.push(`#### ${name}`);
+                lines.push('');
+                if (entries.pr && entries.main) {
+                  lines.push('<table><tr><th>main</th><th>PR</th></tr><tr>');
+                  lines.push(`<td><img alt="main:${name}" src="${base}/${entries.main}" width="450"></td>`);
+                  lines.push(`<td><img alt="pr:${name}" src="${base}/${entries.pr}" width="450"></td>`);
+                  lines.push('</tr></table>');
+                } else {
+                  const [target, rel] = Object.entries(entries)[0];
+                  const tag = target === 'pr' ? '' : ` (${target})`;
+                  lines.push(`<img alt="${name}${tag}" src="${base}/${rel}" width="600">`);
+                }
+                lines.push('');
               }
+              lines.push(`</details>`);
               lines.push('');
             }
             await github.rest.issues.createComment({
