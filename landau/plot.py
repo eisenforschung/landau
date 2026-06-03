@@ -416,11 +416,13 @@ def _add_1d_phase_legend(ax, df, scan_col):
                 f"got {list(stable_phases)}"
             )
         phase = stable_phases[0]
+        # White, semi-transparent bbox keeps the bold label legible on top of tielines.
         ax.text(
             mid, 0.97, phase,
             transform=xform,
-            ha="center", va="top", fontsize="small",
+            ha="center", va="top", fontsize="small", fontweight="bold",
             color=phase_colors.get(phase, "black"),
+            bbox=dict(boxstyle="round", facecolor="white", alpha=0.6, edgecolor="none"),
         )
 
     if df["stable"].all():

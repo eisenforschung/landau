@@ -543,6 +543,11 @@ def _top_labels(ax):
     return texts
 
 
+def _top_label_artists(ax):
+    """Return the Text artists for the top-interior phase-name annotations on *ax*."""
+    return [t for t in ax.texts if t.get_va() == "top" and t.get_ha() == "center"]
+
+
 def _right_annotations(ax):
     """Return text strings of right-end phase annotations placed in data coords."""
     texts = []
@@ -619,6 +624,23 @@ def test_T_top_spine_labels_all_stable_phases(df_T_three_stable):
         stable_phases = df_T_three_stable.loc[df_T_three_stable["stable"], "phase"].unique()
         for phase in stable_phases:
             assert phase in labels, f"{phase!r} not in top labels {labels}"
+    finally:
+        plt.close(fig)
+
+
+def test_top_spine_labels_bold_with_translucent_white_bbox(df_T_three_stable):
+    """Top labels are bold and backed by a semi-transparent white box (legible over tielines)."""
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax)
+        artists = _top_label_artists(ax)
+        assert artists, "no top-spine phase labels found"
+        for t in artists:
+            assert t.get_fontweight() == "bold", f"{t.get_text()!r} not bold"
+            patch = t.get_bbox_patch()
+            assert patch is not None, f"{t.get_text()!r} has no bbox patch"
+            assert to_rgba(patch.get_facecolor())[:3] == to_rgba("white")[:3]
+            assert 0 < patch.get_alpha() < 1, f"bbox alpha {patch.get_alpha()} not translucent"
     finally:
         plt.close(fig)
 
