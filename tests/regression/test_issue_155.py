@@ -6,11 +6,6 @@ when a different phase has a lower free energy there.  The fix evaluates each
 phase at its own endpoint concentration and takes the thermodynamically stable one
 as the reference.
 
-The endpoint threshold is 1% of the full concentration span.  10% was too loose:
-a line phase fixed at c=0.08 (within 10% of c=0) could be accepted as a c=0
-reference when it happens to have a low free energy at extreme μ, corrupting the
-entire f_excess column.
-
 Fixture setup (T=500 K, no vibrational entropy):
   solid:  f_a=-2.0 eV, f_b=-3.2 eV  (Δf=-1.2 eV)  → solid is more stable at c=0
   liquid: f_a=-1.5 eV, f_b=-2.5 eV  (Δf=-1.0 eV)  → Δf_liquid > Δf_solid
@@ -103,12 +98,10 @@ def test_metastable_phase_f_excess_exceeds_stable_at_c0(phase_diagram):
 def test_line_phase_near_endpoint_not_used_as_reference():
     """A line phase fixed at c=0.08 must not corrupt the c=0 reference.
 
-    A LinePhase at c=0.08 has f = line_energy (constant, independent of μ).
-    With the old 10% threshold this phase's c_min=0.08 < lo_thr=0.1, so it
-    was accepted as a c=0 reference.  With line_energy=-5.0 that sets f0=-5.0
-    instead of the correct f0≈-2.0 (solid), producing f_excess(solid)≈+3 eV
-    at c≈0 — clearly wrong.  With the 1% threshold the intermetallic's
-    c_min=0.08 > lo_thr=0.01 and it is excluded; f_excess(solid)≈0.
+    The endpoint threshold is 1% of the full concentration span.  A LinePhase
+    at c=0.08 has c_min=0.08 > lo_thr=0.01, so it is excluded as a c=0
+    reference even when its line_energy=-5.0 is lower than the solution phase
+    endpoint energy.  f_excess(solid) must therefore be ≈0 at c≈0.
     """
     solid_a = LinePhase("A", fixed_concentration=0, line_energy=-2.0, line_entropy=0)
     solid_b = LinePhase("B", fixed_concentration=1, line_energy=-3.0, line_entropy=0)
@@ -129,8 +122,6 @@ def test_line_phase_near_endpoint_not_used_as_reference():
     solid_fex = near_c0[near_c0["phase"] == "solid"]["f_excess"]
 
     assert len(solid_fex) > 0, "solid should sample near c=0"
-    # With 10% threshold (old): f_excess(solid) ≈ -2.0 - (-5.0) = +3.0 eV
-    # With 1% threshold (fix):  f_excess(solid) ≈ kT*mixing ≈ 0 eV
     assert solid_fex.min() < 0.1, (
         f"solid f_excess at c<0.01 should be ~0; got {solid_fex.min():.4f} eV — "
         f"the IM at c=0.08 may have been used as the c=0 reference (f_IM=-5 eV)"

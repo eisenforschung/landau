@@ -15,6 +15,10 @@ These are project-specific preferences distilled from past PR/issue feedback. So
 - PR bodies are plain technical reports. No **bold** "headline numbers", no "Conclusion" sections, no `[Fix this →]` action links, no marketing claims ("dramatic speedup", "significantly improves").
 - Do not invoke the maintainer's name or authority in PR bodies or comments (PR #94: "don't use my name in vain").
 
+### Comments and docstrings
+- Reflect only the current state of the code. Historical motivation is acceptable (why a threshold exists, why an approach was chosen), but never narrate the intermediate steps, rejected alternatives, or "old 10% vs new 1%" comparisons that arose during a PR. Those belong in the PR description, not in the source.
+- Do not reference thresholds, approaches, or behaviour that no longer exist in the code.
+
 ### Evidence over claims
 - Cite the specific commit hash, file path, test count, or command output backing any claim. If a number appears in the PR body, the script that produced it goes in `benchmarks/` in the same PR (PR #94).
 - For physics/numerics claims, prefer saying nothing over saying something unverified (PR #112: "Rather say nothing than something wrong").
