@@ -560,21 +560,61 @@ def _right_annotations(ax):
     return texts
 
 
-def test_mu_legend_removed(df_mu_three_stable):
-    """seaborn legend is replaced: ax.get_legend() returns None after plotting."""
+def _legend_texts(ax):
+    """Return the set of legend entry strings on *ax*, empty if no legend."""
+    legend = ax.get_legend()
+    return set() if legend is None else {t.get_text() for t in legend.texts}
+
+
+def test_mu_phase_legend_removed(df_mu_three_stable):
+    """The seaborn phase legend is replaced: no phase names appear in any legend."""
     fig, ax = plt.subplots()
     try:
         plot_1d_mu_phase_diagram(df_mu_three_stable, ax=ax)
+        phases = set(df_mu_three_stable["phase"].unique())
+        assert phases.isdisjoint(_legend_texts(ax))
+    finally:
+        plt.close(fig)
+
+
+def test_T_phase_legend_removed(df_T_three_stable):
+    """The seaborn phase legend is replaced: no phase names appear in any legend."""
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax)
+        phases = set(df_T_three_stable["phase"].unique())
+        assert phases.isdisjoint(_legend_texts(ax))
+    finally:
+        plt.close(fig)
+
+
+def test_style_legend_present_when_unstable(df_T_three_stable):
+    """style_legend=True adds a solid/dashed stable-vs-unstable legend."""
+    assert not df_T_three_stable["stable"].all(), "fixture must have unstable rows"
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax, style_legend=True)
+        assert _legend_texts(ax) == {"stable", "unstable"}
+    finally:
+        plt.close(fig)
+
+
+def test_style_legend_absent_when_disabled(df_T_three_stable):
+    """style_legend=False leaves no legend on the axis."""
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax, style_legend=False)
         assert ax.get_legend() is None
     finally:
         plt.close(fig)
 
 
-def test_T_legend_removed(df_T_three_stable):
-    """seaborn legend is replaced: ax.get_legend() returns None after plotting."""
+def test_style_legend_absent_when_all_stable(df_T_three_stable):
+    """No style legend is drawn when there are no unstable (dashed) lines."""
+    df = df_T_three_stable.loc[df_T_three_stable["stable"]].copy()
     fig, ax = plt.subplots()
     try:
-        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax)
+        plot_1d_T_phase_diagram(df, ax=ax, style_legend=True)
         assert ax.get_legend() is None
     finally:
         plt.close(fig)
