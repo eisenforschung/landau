@@ -338,10 +338,11 @@ def _subtract_reference_phase(df, scan_col, reference_phase):
     """Subtract reference phase's phi from all phases along scan_col."""
     if reference_phase not in df["phase"].values:
         raise ValueError(f"reference_phase {reference_phase!r} not found in data")
-    ref = df.loc[df["phase"] == reference_phase, [scan_col, "phi"]].rename(columns={"phi": "_ref_phi"})
-    df = df.merge(ref, on=scan_col, how="left")
-    df["phi"] = df["phi"] - df["_ref_phi"]
-    return df.drop(columns=["_ref_phi"])
+    ref = df.loc[df["phase"] == reference_phase, [scan_col, "phi"]].sort_values(scan_col)
+    # np.interp handles border points where the reference phase has no exact row
+    # (refinement adds rows only for the two transitioning phases, not all phases).
+    df["phi"] = df["phi"] - np.interp(df[scan_col], ref[scan_col], ref["phi"])
+    return df
 
 
 def plot_1d_mu_phase_diagram(
