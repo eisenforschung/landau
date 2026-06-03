@@ -185,12 +185,25 @@ jobs:
               `_${process.env.NOTE || 'rendered by tests/integration/testplots.py'}_`,
               '',
             ];
+            // group by dimensionality; both groups collapsed by default
+            const groups = { '2D': [], '1D': [] };
             for (const rel of paths) {
               const file = rel.split('/').pop();
               const name = file.replace(/^[0-9a-f]+-/, '').replace(/\.png$/, '');
-              lines.push(`#### ${name}`);
+              (name.startsWith('1d_') ? groups['1D'] : groups['2D']).push({ name, rel });
+            }
+            for (const [label, plots] of Object.entries(groups)) {
+              if (!plots.length) continue;
+              lines.push(`<details>`);
+              lines.push(`<summary>${label} plots (${plots.length})</summary>`);
               lines.push('');
-              lines.push(`<img alt="${name}" src="${base}/${rel}" width="600">`);
+              for (const { name, rel } of plots) {
+                lines.push(`#### ${name}`);
+                lines.push('');
+                lines.push(`<img alt="${name}" src="${base}/${rel}" width="600">`);
+                lines.push('');
+              }
+              lines.push(`</details>`);
               lines.push('');
             }
             await github.rest.issues.createComment({
