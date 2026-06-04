@@ -1,9 +1,19 @@
 import numpy as np
 import pandas as pd
+import shapely
 from hypothesis import given, strategies as st, settings
-from landau.poly import Concave, Segments, _greedy_stitch, handle_poly_method
+from landau.poly import (
+    Concave,
+    Segments,
+    _greedy_stitch,
+    _pca_sort_segment,
+    _segment_tsp_polygon,
+    _segments_from_labels,
+    handle_poly_method,
+)
 import pytest
 from matplotlib.patches import Polygon
+from sklearn.decomposition import PCA as SkPCA
 
 # Check if optional dependencies are available
 try:
@@ -307,3 +317,140 @@ def test_greedy_stitch_custom_columns(unit_norm):
     assert out[0] is head
     # other should have been flipped to start at x=2
     assert out[1].iloc[0]["x"] == pytest.approx(2.0)
+
+
+# --- _pca_sort_segment tests ---
+
+
+def test_pca_sort_segment_empty():
+    pts = np.zeros((0, 2))
+    result = _pca_sort_segment(pts)
+    assert result.shape == (0, 2)
+
+
+def test_pca_sort_segment_single_point():
+    pts = np.array([[3.0, 4.0]])
+    result = _pca_sort_segment(pts)
+    np.testing.assert_array_equal(result, pts)
+
+
+def test_pca_sort_segment_collinear_x():
+    # Collinear along x-axis in scrambled order; result must be monotone in x.
+    pts = np.array([[2.0, 0.0], [0.0, 0.0], [1.0, 0.0]])
+    result = _pca_sort_segment(pts)
+    assert set(map(tuple, result.tolist())) == {(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)}
+    xs = result[:, 0]
+    assert np.all(np.diff(xs) >= 0) or np.all(np.diff(xs) <= 0)
+
+
+def test_pca_sort_segment_diagonal_matches_argsort():
+    # Points on y=x diagonal. PCA principal axis is [1,1]/sqrt(2).
+    # Assert the returned order equals pts[argsort(PCA projection)].
+    pts = np.array([[3.0, 3.0], [1.0, 1.0], [2.0, 2.0]])
+    result = _pca_sort_segment(pts)
+    pca = SkPCA(n_components=1)
+    proj = pca.fit_transform(pts).ravel()
+    expected = pts[np.argsort(proj)]
+    np.testing.assert_array_equal(result, expected)
+
+
+# --- _segments_from_labels tests ---
+
+
+def test_segments_from_labels_empty():
+    pp = np.zeros((0, 2))
+    labels = np.array([], dtype=int)
+    result = _segments_from_labels(pp, labels)
+    assert result == []
+
+
+def test_segments_from_labels_single_label():
+    pts = np.array([[2.0, 0.0], [0.0, 0.0], [1.0, 0.0]])
+    labels = np.array([7, 7, 7])
+    result = _segments_from_labels(pts, labels)
+    assert len(result) == 1
+    assert set(map(tuple, result[0].tolist())) == {(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)}
+
+
+def test_segments_from_labels_two_labels():
+    pts = np.array([[1.0, 0.0], [0.0, 0.0], [3.0, 1.0], [2.0, 1.0]])
+    labels = np.array([0, 0, 1, 1])
+    result = _segments_from_labels(pts, labels)
+    assert len(result) == 2
+    assert set(map(tuple, result[0].tolist())) == {(0.0, 0.0), (1.0, 0.0)}
+    assert set(map(tuple, result[1].tolist())) == {(2.0, 1.0), (3.0, 1.0)}
+
+
+def test_segments_from_labels_each_group_pca_sorted():
+    # Two groups of 3 collinear points; each must come out monotone along its axis.
+    pts = np.array([
+        [2.0, 0.0], [0.0, 0.0], [1.0, 0.0],   # label 0, collinear along x
+        [0.0, 3.0], [0.0, 1.0], [0.0, 2.0],   # label 1, collinear along y
+    ])
+    labels = np.array([0, 0, 0, 1, 1, 1])
+    result = _segments_from_labels(pts, labels)
+    assert len(result) == 2
+    xs = result[0][:, 0]
+    ys = result[1][:, 1]
+    assert np.all(np.diff(xs) >= 0) or np.all(np.diff(xs) <= 0)
+    assert np.all(np.diff(ys) >= 0) or np.all(np.diff(ys) <= 0)
+
+
+# --- _segment_tsp_polygon tests ---
+
+
+def _identity_tour(dm):
+    return list(range(len(dm)))
+
+
+def test_segment_tsp_polygon_no_segments():
+    assert _segment_tsp_polygon([], _identity_tour) is None
+
+
+def test_segment_tsp_polygon_single_segment_two_points():
+    seg = np.array([[0.0, 0.0], [1.0, 0.0]])
+    assert _segment_tsp_polygon([seg], _identity_tour) is None
+
+
+def test_segment_tsp_polygon_single_segment_triangle():
+    seg = np.array([[0.0, 0.0], [1.0, 0.0], [0.5, 1.0]])
+    result = _segment_tsp_polygon([seg], _identity_tour)
+    assert isinstance(result, shapely.Polygon)
+    assert not result.is_empty
+
+
+def test_segment_tsp_polygon_all_zero_distances():
+    # All endpoints at the same location → pairwise distance matrix is all-zero
+    # → solve_tour must not be called; convex-hull fallback returned instead.
+    seg = np.array([[1.0, 1.0], [1.0, 1.0]])
+    called = []
+
+    def tracking_tour(dm):
+        called.append(dm)
+        return list(range(len(dm)))
+
+    result = _segment_tsp_polygon([seg, seg.copy()], tracking_tour)
+    assert not called
+    assert result is not None
+
+
+def test_segment_tsp_polygon_forward_traversal():
+    # Even-numbered tour nodes → segment traversed in its stored order.
+    seg0 = np.array([[0.0, 0.0], [1.0, 0.0]])
+    seg1 = np.array([[1.0, 1.0], [0.0, 1.0]])
+    # Tour [0,1,2,3]: node 0 (even) → seg0 forward; node 2 (even) → seg1 forward.
+    result = _segment_tsp_polygon([seg0, seg1], lambda dm: [0, 1, 2, 3])
+    assert isinstance(result, shapely.Polygon)
+    coords = np.array(result.exterior.coords)[:-1]  # drop closing vertex
+    np.testing.assert_allclose(coords, [[0, 0], [1, 0], [1, 1], [0, 1]])
+
+
+def test_segment_tsp_polygon_backward_traversal():
+    # Odd-numbered tour nodes → segment traversed in reverse.
+    seg0 = np.array([[0.0, 0.0], [1.0, 0.0]])
+    seg1 = np.array([[1.0, 1.0], [0.0, 1.0]])
+    # Tour [1,0,3,2]: node 1 (odd) → seg0 backward; node 3 (odd) → seg1 backward.
+    result = _segment_tsp_polygon([seg0, seg1], lambda dm: [1, 0, 3, 2])
+    assert isinstance(result, shapely.Polygon)
+    coords = np.array(result.exterior.coords)[:-1]
+    np.testing.assert_allclose(coords, [[1, 0], [0, 0], [0, 1], [1, 1]])
