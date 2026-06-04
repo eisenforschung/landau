@@ -434,30 +434,31 @@ def test_segment_tsp_polygon_all_zero_distances():
     assert result is not None
 
 
-# Property: a segment is appended to the polygon in the direction set by the
-# parity of the tour node through which it is first entered. Segment k owns
-# nodes 2k (its start endpoint) and 2k+1 (its end endpoint); entering via the
-# even node walks the segment in stored order, via the odd node reverses it.
-# Both tests below stitch the same two segments and read the polygon back as
-# one chunk per segment, asserting each chunk against `seg` or `seg[::-1]`.
+class TestSegmentTspPolygonTraversalDirection:
+    """A segment is appended to the polygon in the direction set by the parity
+    of the tour node through which it is first entered. Segment k owns nodes 2k
+    (its start endpoint) and 2k+1 (its end endpoint); entering via the even node
+    walks the segment in stored order, via the odd node reverses it. Both tests
+    stitch the same two segments and read the polygon back as one chunk per
+    segment, asserting each chunk against ``seg`` or ``seg[::-1]``.
+    """
 
-def test_segment_tsp_polygon_even_entry_node_keeps_segment_order():
-    seg0 = np.array([[0.0, 0.0], [1.0, 0.0]])
-    seg1 = np.array([[1.0, 1.0], [0.0, 1.0]])
-    # Tour enters seg0 via node 0 (even) and seg1 via node 2 (even).
-    result = _segment_tsp_polygon([seg0, seg1], lambda dm: [0, 1, 2, 3])
-    assert isinstance(result, shapely.Polygon)
-    coords = np.array(result.exterior.coords)[:-1]  # drop closing vertex
-    np.testing.assert_allclose(coords[:2], seg0)
-    np.testing.assert_allclose(coords[2:], seg1)
+    def test_even_entry_node_keeps_segment_order(self):
+        seg0 = np.array([[0.0, 0.0], [1.0, 0.0]])
+        seg1 = np.array([[1.0, 1.0], [0.0, 1.0]])
+        # Tour enters seg0 via node 0 (even) and seg1 via node 2 (even).
+        result = _segment_tsp_polygon([seg0, seg1], lambda dm: [0, 1, 2, 3])
+        assert isinstance(result, shapely.Polygon)
+        coords = np.array(result.exterior.coords)[:-1]  # drop closing vertex
+        np.testing.assert_allclose(coords[:2], seg0)
+        np.testing.assert_allclose(coords[2:], seg1)
 
-
-def test_segment_tsp_polygon_odd_entry_node_reverses_segment():
-    seg0 = np.array([[0.0, 0.0], [1.0, 0.0]])
-    seg1 = np.array([[1.0, 1.0], [0.0, 1.0]])
-    # Tour enters seg0 via node 1 (odd) and seg1 via node 3 (odd).
-    result = _segment_tsp_polygon([seg0, seg1], lambda dm: [1, 0, 3, 2])
-    assert isinstance(result, shapely.Polygon)
-    coords = np.array(result.exterior.coords)[:-1]
-    np.testing.assert_allclose(coords[:2], seg0[::-1])
-    np.testing.assert_allclose(coords[2:], seg1[::-1])
+    def test_odd_entry_node_reverses_segment(self):
+        seg0 = np.array([[0.0, 0.0], [1.0, 0.0]])
+        seg1 = np.array([[1.0, 1.0], [0.0, 1.0]])
+        # Tour enters seg0 via node 1 (odd) and seg1 via node 3 (odd).
+        result = _segment_tsp_polygon([seg0, seg1], lambda dm: [1, 0, 3, 2])
+        assert isinstance(result, shapely.Polygon)
+        coords = np.array(result.exterior.coords)[:-1]
+        np.testing.assert_allclose(coords[:2], seg0[::-1])
+        np.testing.assert_allclose(coords[2:], seg1[::-1])
