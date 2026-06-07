@@ -109,6 +109,20 @@ def _calc_1d_mu_hcp_fcc_liquid():
     return ldc.calc_phase_diagram([hcp, fcc, lqd], Ts=1000.0, mu=100, keep_unstable=True)
 
 
+def _calc_1d_mu_intermetallic():
+    """A/B solid solution + AB2 line phase mu scan for the 1D intermetallic testplot.
+
+    The subscripted phase name (``AB$_2$``) exercises the bold-mathtext top-spine
+    label path: AB2 is the stable intermediate over a mu window, with the solid
+    solution stable on the A-rich and B-rich sides.
+    """
+    sa = ldp.LinePhase("A", fixed_concentration=0, line_energy=-2.0, line_entropy=1.0 * ldp.kB)
+    sb = ldp.LinePhase("B", fixed_concentration=1, line_energy=-3.0, line_entropy=1.5 * ldp.kB)
+    solid = ldp.IdealSolution("solid", sa, sb)
+    inter = ldp.LinePhase("AB$_2$", fixed_concentration=2 / 3, line_energy=-2.8, line_entropy=1.3 * ldp.kB)
+    return ldc.calc_phase_diagram([solid, inter], Ts=600.0, mu=200, keep_unstable=True)
+
+
 def plot_1d_T_three_stable(out_dir: Path, **_) -> Path:
     """1D T diagram: three stable phases with concave-down free energies.
 
@@ -156,6 +170,15 @@ def plot_1d_mu_reference_phase(out_dir: Path, **_) -> Path:
     lpl.plot_1d_mu_phase_diagram(df, ax=ax, reference_phase="fcc")
     ax.set_title(r"1D $\mu$ phase diagram with reference_phase='fcc'")
     return _save(fig, out_dir, "1d_mu_reference_phase_diagram")
+
+
+def plot_1d_mu_intermetallic(out_dir: Path, **_) -> Path:
+    """1D mu diagram with a subscripted phase name (AB$_2$), exercising bold mathtext labels."""
+    df = _calc_1d_mu_intermetallic()
+    fig, ax = plt.subplots(figsize=(6, 4))
+    lpl.plot_1d_mu_phase_diagram(df, ax=ax)
+    ax.set_title(r"1D $\mu$ phase diagram (solid / AB$_2$ intermetallic, T=600K)")
+    return _save(fig, out_dir, "1d_mu_intermetallic_phase_diagram")
 
 
 def plot_2d_basics(out_dir: Path, poly_method: str | None = None, tielines: bool = True, **_) -> Path:
@@ -333,6 +356,7 @@ PLOTS = {
     "1d_T_reference_phase":   (plot_1d_T_reference_phase,   ()),
     "1d_mu_three_stable":     (plot_1d_mu_three_stable,     ()),
     "1d_mu_reference_phase":  (plot_1d_mu_reference_phase,  ()),
+    "1d_mu_intermetallic":    (plot_1d_mu_intermetallic,    ()),
     "2d_basics":              (plot_2d_basics,               ("poly_method", "tielines")),
     "2d_basics_mu":           (plot_2d_basics_mu,            ("poly_method",)),
     "2d_toy":                 (plot_2d_toy,                  ("poly_method", "tielines")),
