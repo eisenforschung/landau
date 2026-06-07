@@ -4,6 +4,7 @@ from warnings import warn
 from pyiron_snippets.deprecate import deprecate
 
 import matplotlib.pyplot as plt
+import matplotlib.patheffects as patheffects
 import seaborn as sns
 import numpy as np
 import pandas as pd
@@ -23,18 +24,20 @@ __all__ = [
 ]
 
 
-def _text_with_background(ax, x, y, s, *, bg_alpha=0.6, **kwargs):
-    """Draw text with a semi-transparent white rounded background.
+def _text_with_outline(ax, x, y, s, *, outline_width=3, **kwargs):
+    """Draw text with a solid white outline so it stays legible over any fill.
 
-    A small reusable wrapper around :meth:`matplotlib.axes.Axes.text` that keeps
-    a label legible when it sits on top of coloured regions or tielines.  Extra
-    keyword arguments are forwarded to ``ax.text``.
+    A small reusable wrapper around :meth:`matplotlib.axes.Axes.text` that
+    strokes the glyphs with a white outline (via matplotlib path effects)
+    instead of drawing an opaque box behind them, keeping a label readable on
+    top of coloured regions or tielines.  Extra keyword arguments are forwarded
+    to ``ax.text``.
 
     Returns the created :class:`matplotlib.text.Text`.
     """
     kwargs.setdefault(
-        "bbox",
-        dict(boxstyle="round", facecolor="white", alpha=bg_alpha, edgecolor="none"),
+        "path_effects",
+        [patheffects.withStroke(linewidth=outline_width, foreground="white")],
     )
     return ax.text(x, y, s, **kwargs)
 
@@ -73,9 +76,9 @@ def _add_inline_polygon_labels(ax, polys):
 
     Every polygon is annotated with its phase name (with trailing apostrophes
     for repeated stability regions, matching :func:`plot_polygons`) at the
-    centre of its largest inscribed circle, on a semi-transparent white
-    background.  The text is black: the polygon fill already carries the phase
-    colour, and black on white stays legible even for the pale pastel fills.
+    centre of its largest inscribed circle, with a white outline.  The text is
+    black: the polygon fill already carries the phase colour, and black with a
+    white stroke stays legible even over the pale pastel fills.
 
     Args:
         ax: matplotlib Axes the polygons were drawn on.
@@ -89,7 +92,7 @@ def _add_inline_polygon_labels(ax, polys):
         center = _largest_inscribed_circle_center(p.get_xy(), ax)
         if center is None:
             continue
-        _text_with_background(
+        _text_with_outline(
             ax, center[0], center[1], phase + "'" * rep,
             ha="center", va="center", fontsize="small", fontweight="bold",
             color="black",
@@ -505,8 +508,8 @@ def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True):
                     f"got {list(stable_phases)}"
                 )
             phase = stable_phases[0]
-            # White, semi-transparent bbox keeps the bold label legible on top of tielines.
-            _text_with_background(
+            # White outline keeps the bold label legible on top of tielines.
+            _text_with_outline(
                 ax, mid, 0.97, phase,
                 transform=xform,
                 ha="center", va="top", fontsize="small", fontweight="bold",
