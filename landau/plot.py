@@ -826,17 +826,20 @@ def plot_1d_mu_phase_diagram(
     if 'border' not in df.columns:
         return ax
 
-    dfa = np.ptp(df['phi'].dropna())
     dfm = np.ptp(df['mu'].dropna())
 
     if mark_transitions:
+        # Label y in axes fraction (blended transform) so a zoomed ylim can't fling the
+        # text out of view; the marker dot stays in data coords and is simply clipped if
+        # the crossing lies outside the window.
         for mt, dd in df.query("mu.min()<mu<mu.max() and border").groupby("mu"):
             ft = dd['phi'].iloc[0]
             ax.axvline(mt, color='k', linestyle='dotted', alpha=.5)
             ax.scatter(mt, ft, marker='o', c='k', zorder=10)
 
-            ax.text(mt - .05 * dfm, ft - dfa * .1, rf"$\Delta\mu = {mt:.03f}\,\mathrm{{eV}}$",
-                    rotation='vertical', ha='center', va='top')
+            ax.text(mt - .05 * dfm, 0.02, rf"$\Delta\mu = {mt:.03f}\,\mathrm{{eV}}$",
+                    transform=ax.get_xaxis_transform(),
+                    rotation='vertical', ha='center', va='bottom')
     ax.set_xlabel("Chemical Potential Difference [eV]")
     ylabel = "Semi-grandcanonical Potential [eV/atom]"
     if reference_phase is not None:
@@ -915,16 +918,20 @@ def plot_1d_T_phase_diagram(
     if 'border' not in df.columns:
         return ax
 
-    dfa = np.ptp(df['phi'].dropna())
     dft = np.ptp(df['T'].dropna())
 
     if mark_transitions:
+        # Label y in axes fraction (blended transform) so a zoomed ylim can't fling the
+        # text out of view; the marker dot stays in data coords and is simply clipped if
+        # the crossing lies outside the window.
         for Tt, dd in df.query("T.min()<T<T.max() and border").groupby("T"):
             ft = dd['phi'].iloc[0]
             ax.axvline(Tt, color='k', linestyle='dotted', alpha=.5)
             ax.scatter(Tt, ft, marker='o', c='k', zorder=10)
 
-            ax.text(Tt + .05 * dft, ft + dfa * .1, rf"$T = {Tt:.0f}\,\mathrm{{K}}$", rotation='vertical', ha='center')
+            ax.text(Tt + .05 * dft, 0.02, rf"$T = {Tt:.0f}\,\mathrm{{K}}$",
+                    transform=ax.get_xaxis_transform(),
+                    rotation='vertical', ha='center', va='bottom')
 
     ax.set_xlabel("Temperature [K]")
     ylabel = "Semi-grandcanonical potential [eV/atom]"
