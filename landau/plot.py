@@ -574,7 +574,7 @@ def _phase_visible_in_band(phi, lo, hi):
     return bool(np.any(crosses))
 
 
-def _place_side_labels(ax, df, scan_col, phase_colors):
+def _place_side_labels(ax, df, scan_col, phase_colors, top_texts=()):
     """Label every phase at the end of its line, reserving room adaptively.
 
     A phase is labelled at its right-hand line end by default.  The horizontal space
@@ -587,6 +587,9 @@ def _place_side_labels(ax, df, scan_col, phase_colors):
     the visible window), that phase is instead labelled at its left-hand line end on a
     mirrored left-hand stack, which is reserved and laid out by the same rules.  A phase
     whose line the y-limit pushes entirely out of view is not labelled at all.
+
+    ``top_texts`` are the bold top stable-phase labels; both stacks are capped just below
+    their rendered bottom so they never intrude into that band.
     """
     fig = ax.figure
     x_min, x_max = df[scan_col].min(), df[scan_col].max()
@@ -597,6 +600,12 @@ def _place_side_labels(ax, df, scan_col, phase_colors):
     renderer = _get_renderer(fig)
     lo_d, hi_d = sorted(ax.get_ylim())
     axbb = ax.get_window_extent(renderer)
+
+    # Ceiling for both stacks: just below the bold top-label band so they don't collide.
+    hi_px = axbb.y1
+    if len(top_texts):
+        top_bottom = min(t.get_window_extent(renderer).y0 for t in top_texts)
+        hi_px = max(min(hi_px, top_bottom - 0.01 * axbb.height), axbb.y0)
 
     # Split phases: those visible at the right end label on the right; those whose
     # right end is above the window label at their left end instead.  A phase whose
@@ -654,7 +663,7 @@ def _place_side_labels(ax, df, scan_col, phase_colors):
         # the terminals' vertical order.  Pre-clamping would tie targets that fall
         # outside the window and collapse that order.
         target_px = [ax.transData.transform((anchor_x, y))[1] for _, y in entries]
-        placed_px = _spread_labels(target_px, heights, axbb.y0, axbb.y1)
+        placed_px = _spread_labels(target_px, heights, axbb.y0, hi_px)
         inv = ax.transData.inverted()
         for t, py in zip(texts, placed_px):
             y_d = inv.transform((axbb.x0, py))[1]
@@ -715,6 +724,7 @@ def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True, yl
     # Store so tests (or user code) can still access the color map.
     ax._landau_phase_colors = phase_colors
 
+    top_texts = []
     if top_labels and "border" in df.columns:
         # Interior transition positions only.
         x_min = df[scan_col].min()
@@ -747,15 +757,15 @@ def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True, yl
                 )
             phase = stable_phases[0]
             # White outline keeps the bold label legible on top of tielines.
-            _text_with_outline(
+            top_texts.append(_text_with_outline(
                 ax, mid, 0.97, _bold_math(phase),
                 transform=xform,
                 ha="center", va="top", fontsize="small", fontweight="bold",
                 color=phase_colors.get(phase, "black"),
-            )
+            ))
 
     if side_labels and not df["stable"].all():
-        _place_side_labels(ax, df, scan_col, phase_colors)
+        _place_side_labels(ax, df, scan_col, phase_colors, top_texts)
 
 
 def plot_1d_mu_phase_diagram(

@@ -1128,6 +1128,27 @@ def test_side_labels_keep_terminal_order_when_clamped():
         plt.close(fig)
 
 
+def test_side_labels_stay_below_top_labels(df_T_three_stable):
+    """Both side stacks are capped below the bold top stable-phase labels.
+
+    With a ylim placing a right-end value near the top of the window, the side label
+    would otherwise rise into the top-label band; it must be pushed below it.
+    """
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax, reference_phase="fcc", ylim=(-0.16, 0.16))
+        renderer = _renderer(fig)
+        top_boxes = [t.get_window_extent(renderer) for t in _top_label_artists(ax)]
+        side_boxes = [t.get_window_extent(renderer) for t in _side_label_artists(ax)]
+        assert top_boxes, "no top labels present"
+        assert side_boxes, "no side labels present"
+        top_bottom = min(b.y0 for b in top_boxes)
+        for b in side_boxes:
+            assert b.y1 <= top_bottom + 0.5, "side label intrudes into the top-label band"
+    finally:
+        plt.close(fig)
+
+
 def test_side_labels_do_not_overlap():
     """Side labels in a stack never overlap vertically once placed.
 
