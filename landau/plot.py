@@ -556,6 +556,24 @@ def _spread_labels(centers, heights, lo, hi, gap=0.0):
     return adj
 
 
+def _phase_visible_in_band(phi, lo, hi):
+    """Whether a line with potentials ``phi`` (in scan order) shows inside ``[lo, hi]``.
+
+    Visible if any sampled point falls within the band, or if two consecutive points
+    straddle it (the connecting segment crosses the whole window).  Used to drop the
+    label of a phase whose line an applied ``ylim`` pushes entirely out of view.
+    """
+    phi = np.asarray(phi, dtype=float)
+    phi = phi[np.isfinite(phi)]
+    if phi.size == 0:
+        return False
+    if np.any((phi >= lo) & (phi <= hi)):
+        return True
+    below, above = phi < lo, phi > hi
+    crosses = (below[:-1] & above[1:]) | (above[:-1] & below[1:])
+    return bool(np.any(crosses))
+
+
 def _place_side_labels(ax, df, scan_col, phase_colors):
     """Label every phase at the end of its line, reserving room adaptively.
 
@@ -567,7 +585,8 @@ def _place_side_labels(ax, df, scan_col, phase_colors):
 
     If the current y-limit would clip a label off the top (its right-end value lies above
     the visible window), that phase is instead labelled at its left-hand line end on a
-    mirrored left-hand stack, which is reserved and laid out by the same rules.
+    mirrored left-hand stack, which is reserved and laid out by the same rules.  A phase
+    whose line the y-limit pushes entirely out of view is not labelled at all.
     """
     fig = ax.figure
     x_min, x_max = df[scan_col].min(), df[scan_col].max()
@@ -580,10 +599,14 @@ def _place_side_labels(ax, df, scan_col, phase_colors):
     axbb = ax.get_window_extent(renderer)
 
     # Split phases: those visible at the right end label on the right; those whose
-    # right end is above the window label at their left end instead.
+    # right end is above the window label at their left end instead.  A phase whose
+    # whole line is pushed out of view by the y-limit gets no label at all.
     right, left = [], []
     for phase, group in df.groupby("phase"):
         g = group.sort_values(scan_col)
+        phi = g["phi"].to_numpy()
+        if not _phase_visible_in_band(phi, lo_d, hi_d):
+            continue
         right_y = g["phi"].iloc[-1]
         if right_y > hi_d:
             left.append((phase, g["phi"].iloc[0]))
@@ -769,7 +792,8 @@ def plot_1d_mu_phase_diagram(
             If given, applied like :func:`matplotlib.pyplot.ylim`. A scalar is
             treated as ``(None, ylim)`` (upper bound only). It also bounds the
             side-label stack: a label whose line end is above the window is moved
-            to a mirrored stack on the left.
+            to a mirrored stack on the left, and a phase whose line is pushed
+            entirely out of view is not labelled.
 
     Returns:
         matplotlib.axes.Axes:
@@ -855,7 +879,8 @@ def plot_1d_T_phase_diagram(
             If given, applied like :func:`matplotlib.pyplot.ylim`. A scalar is
             treated as ``(None, ylim)`` (upper bound only). It also bounds the
             side-label stack: a label whose line end is above the window is moved
-            to a mirrored stack on the left.
+            to a mirrored stack on the left, and a phase whose line is pushed
+            entirely out of view is not labelled.
 
     Returns:
         matplotlib.axes.Axes:
