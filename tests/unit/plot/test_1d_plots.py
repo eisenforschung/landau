@@ -29,6 +29,7 @@ from landau.plot import (
     _assign_segment_ids,
     _bold_math,
     _bridge_unstable_segments,
+    _phase_visible_in_band,
     _spread_labels,
     plot_1d_mu_phase_diagram,
     plot_1d_T_phase_diagram,
@@ -643,6 +644,23 @@ def _renderer(fig):
     return fig.canvas.get_renderer()
 
 
+def _synthetic_T_df(specs):
+    """Build a 1d T-scan frame with controlled per-phase phi curves.
+
+    ``specs`` maps a phase name to its phi values along the scan.  All rows are marked
+    unstable so the side-label stack is exercised; no 'border' column is added so the
+    plot function returns right after the legend (top labels and transition markers are
+    skipped, keeping the test focused on the side stack).
+    """
+    n = len(next(iter(specs.values())))
+    T = np.linspace(0.0, 1.0, n)
+    frames = [
+        pd.DataFrame({"T": T, "mu": 0.0, "phase": phase, "phi": np.asarray(phi, float), "stable": False})
+        for phase, phi in specs.items()
+    ]
+    return pd.concat(frames, ignore_index=True)
+
+
 def test_mu_phase_legend_removed(df_mu_three_stable):
     """The seaborn phase legend is replaced: no phase names appear in any legend."""
     fig, ax = plt.subplots()
@@ -986,14 +1004,15 @@ def test_ylim_scalar_sets_upper_bound_only(df_T_three_stable):
         plt.close(fig)
 
 
-def test_ylim_clamps_side_labels_within_window(df_T_three_stable):
+def test_ylim_clamps_side_labels_within_window():
     """Side labels stay within the ylim window (their y is clamped to it)."""
-    ylim = (-0.05, 0.05)
+    df = _synthetic_T_df({"rising": np.linspace(-1.0, 3.0, 6), "flat": np.zeros(6)})
+    ylim = (-2.0, 2.0)
     fig, ax = plt.subplots()
     try:
-        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax, ylim=ylim)
+        plot_1d_T_phase_diagram(df, ax=ax, ylim=ylim, top_labels=False)
         labels = _side_label_artists(ax)
-        assert labels, "no side labels drawn"
+        assert {t.get_text() for t in labels} == {"rising", "flat"}
         for t in labels:
             y = t.get_position()[1]
             assert ylim[0] - 1e-9 <= y <= ylim[1] + 1e-9, f"{t.get_text()!r} at y={y} outside {ylim}"
@@ -1053,12 +1072,20 @@ def test_longer_labels_reserve_more_space(df_T_three_stable):
 # ---------------------------------------------------------------------------
 
 
-def test_side_labels_do_not_overlap(df_T_three_stable):
-    """Side labels in a stack never overlap vertically once placed."""
-    ylim = (-0.05, 0.05)  # tight window forces the targets close together
+def test_side_labels_do_not_overlap():
+    """Side labels in a stack never overlap vertically once placed.
+
+    Three phases whose right ends nearly coincide would collide without spreading.
+    """
+    df = _synthetic_T_df({
+        "a": np.linspace(-0.8, 0.00, 6),
+        "b": np.linspace(-0.7, 0.03, 6),
+        "c": np.linspace(-0.9, -0.03, 6),
+    })
     fig, ax = plt.subplots()
     try:
-        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax, ylim=ylim)
+        plot_1d_T_phase_diagram(df, ax=ax, ylim=(-1.0, 1.0), top_labels=False)
+        assert len(_side_label_artists(ax)) == 3
         renderer = _renderer(fig)
         # Each stack shares an x anchor; group by ha so the two columns are checked apart.
         for ha in ("left", "right"):
@@ -1077,41 +1104,50 @@ def test_side_labels_do_not_overlap(df_T_three_stable):
 # ---------------------------------------------------------------------------
 
 
-def test_ylim_moves_clipped_label_to_left_stack(df_T_three_stable):
-    """A phase whose right end is above the window is labelled on the left (ha='right')."""
-    df = df_T_three_stable
-    # Pick a ylim top that cuts off at least one phase's right-end value but not all.
-    right_ends = df.sort_values("T").groupby("phase", group_keys=False).apply(
-        lambda g: g["phi"].iloc[-1], include_groups=False
-    )
-    assert right_ends.nunique() > 1, "fixture needs phases with distinct right-end phi"
-    top = (right_ends.min() + right_ends.max()) / 2
-    expected_left = set(right_ends[right_ends > top].index)
-    expected_right = set(right_ends[right_ends <= top].index)
-    assert expected_left and expected_right, "ylim must split phases across both stacks"
+def test_ylim_moves_clipped_label_to_left_stack():
+    """A phase visible at its left end but clipped off the top labels on the left.
 
+    'rising' is visible at low T but exits the top of the window before its right end,
+    so it labels on the left (ha='right'); 'flat' stays in view and labels on the right.
+    """
+    df = _synthetic_T_df({"rising": np.linspace(-1.0, 3.0, 6), "flat": np.zeros(6)})
     fig, ax = plt.subplots()
     try:
-        plot_1d_T_phase_diagram(df, ax=ax, ylim=(df["phi"].min() - 0.05, top))
+        plot_1d_T_phase_diagram(df, ax=ax, ylim=(-2.0, 2.0), top_labels=False)
         left_labels = {t.get_text() for t in ax.texts if t.get_ha() == "right" and t.get_va() == "center"}
         right_labels = {t.get_text() for t in ax.texts if t.get_ha() == "left" and t.get_va() == "center"}
-        assert left_labels == expected_left
-        assert right_labels == expected_right
+        assert left_labels == {"rising"}
+        assert right_labels == {"flat"}
     finally:
         plt.close(fig)
 
 
-def test_left_stack_reserves_space_on_left(df_T_three_stable):
-    """When labels move to the left stack, the left x-limit is widened to fit them."""
-    df = df_T_three_stable
-    x_data_min = df["T"].min()
-    top = df["phi"].min() + 0.01  # very low top so most phases spill to the left
-
+def test_ylim_drops_fully_invisible_phase_labels():
+    """A phase whose whole line the y-limit pushes out of view gets no label."""
+    df = _synthetic_T_df({
+        "rising": np.linspace(-1.0, 3.0, 6),  # visible at left, clipped top -> left stack
+        "flat": np.zeros(6),                   # fully in view -> right stack
+        "above": np.full(6, 5.0),              # entirely above the window -> dropped
+        "below": np.full(6, -5.0),             # entirely below the window -> dropped
+    })
     fig, ax = plt.subplots()
     try:
-        plot_1d_T_phase_diagram(df, ax=ax, ylim=(df["phi"].min() - 0.05, top))
+        plot_1d_T_phase_diagram(df, ax=ax, ylim=(-2.0, 2.0), top_labels=False)
+        labelled = {t.get_text() for t in _side_label_artists(ax)}
+        assert labelled == {"rising", "flat"}
+    finally:
+        plt.close(fig)
+
+
+def test_left_stack_reserves_space_on_left():
+    """When labels move to the left stack, the left x-limit is widened to fit them."""
+    df = _synthetic_T_df({"rise1": np.linspace(-1.0, 3.0, 6), "rise2": np.linspace(-1.2, 4.0, 6)})
+    x_data_min = df["T"].min()
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_T_phase_diagram(df, ax=ax, ylim=(-2.0, 2.0), top_labels=False)
         left_stack = [t for t in ax.texts if t.get_ha() == "right" and t.get_va() == "center"]
-        assert left_stack, "expected a populated left stack"
+        assert {t.get_text() for t in left_stack} == {"rise1", "rise2"}
         # The left x-limit has been pushed below the leftmost data point to make room.
         assert ax.get_xlim()[0] < x_data_min
         # Every left label sits inside the axis.
@@ -1122,3 +1158,30 @@ def test_left_stack_reserves_space_on_left(df_T_three_stable):
             assert bb.x0 >= axbb.x0 - 0.5, f"{t.get_text()!r} clipped past the left spine"
     finally:
         plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# _phase_visible_in_band — line visibility within a y-window
+# ---------------------------------------------------------------------------
+
+
+def test_phase_visible_point_inside_band():
+    assert _phase_visible_in_band([5.0, 6.0, 7.0], 5.5, 6.5) is True
+
+
+def test_phase_visible_all_above_band():
+    assert _phase_visible_in_band([5.0, 6.0], 0.0, 1.0) is False
+
+
+def test_phase_visible_all_below_band():
+    assert _phase_visible_in_band([-5.0, -6.0], 0.0, 1.0) is False
+
+
+def test_phase_visible_segment_crosses_band():
+    # No sampled point lies inside, but the segment straddles the whole window.
+    assert _phase_visible_in_band([-5.0, 5.0], -1.0, 1.0) is True
+
+
+def test_phase_visible_empty_or_nan():
+    assert _phase_visible_in_band([np.nan, np.nan], 0.0, 1.0) is False
+    assert _phase_visible_in_band([], 0.0, 1.0) is False
