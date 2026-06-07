@@ -434,6 +434,24 @@ def _subtract_reference_phase(df, scan_col, reference_phase):
     return df
 
 
+def _bold_math(label: str) -> str:
+    """Wrap mathtext segments of ``label`` in ``\\mathbf`` so subscripts render bold.
+
+    matplotlib's ``fontweight="bold"`` only affects the regular-text portions of a
+    string; content inside ``$...$`` keeps the regular math weight. Wrapping each
+    math segment in ``\\mathbf{...}`` bolds it to match while leaving arbitrary
+    LaTeX inside renderable. A malformed string (odd number of ``$``) is returned
+    unchanged.
+    """
+    parts = label.split("$")
+    if len(parts) % 2 == 0:  # unbalanced '$' -> leave untouched
+        return label
+    for i in range(1, len(parts), 2):
+        if parts[i]:
+            parts[i] = r"\mathbf{" + parts[i] + "}"
+    return "$".join(parts)
+
+
 def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True):
     """Annotate a 1d phase diagram with inline phase labels.
 
@@ -510,7 +528,7 @@ def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True):
             phase = stable_phases[0]
             # White outline keeps the bold label legible on top of tielines.
             _text_with_outline(
-                ax, mid, 0.97, phase,
+                ax, mid, 0.97, _bold_math(phase),
                 transform=xform,
                 ha="center", va="top", fontsize="small", fontweight="bold",
                 color=phase_colors.get(phase, "black"),

@@ -27,6 +27,7 @@ import landau.calculate as ldc
 import landau.phases as ldp
 from landau.plot import (
     _assign_segment_ids,
+    _bold_math,
     plot_1d_mu_phase_diagram,
     plot_1d_T_phase_diagram,
 )
@@ -683,6 +684,42 @@ def test_top_spine_labels_bold_with_white_outline(df_T_three_stable):
             assert to_rgba(effects[0]._gc["foreground"]) == to_rgba("white")
     finally:
         plt.close(fig)
+
+
+@pytest.mark.parametrize(
+    "label, expected",
+    [
+        ("Al", "Al"),                                       # no math: unchanged
+        ("liquid", "liquid"),
+        ("Ca (bcc)", "Ca (bcc)"),
+        ("Al$_4$Ca$_2$", r"Al$\mathbf{_4}$Ca$\mathbf{_2}$"),
+        ("Al$_{14}$Ca$_{13}$", r"Al$\mathbf{_{14}}$Ca$\mathbf{_{13}}$"),
+        (r"$\frac{1}{2}$AB", r"$\mathbf{\frac{1}{2}}$AB"),  # arbitrary LaTeX preserved
+        ("a$b$c$d", "a$b$c$d"),                             # unbalanced '$': untouched
+        ("X$$Y", "X$$Y"),                                   # empty math segment: untouched
+    ],
+)
+def test_bold_math_wraps_math_segments(label, expected):
+    assert _bold_math(label) == expected
+
+
+def _label_darkness(text):
+    """Rendered ink (summed darkness) of a bold Text artist drawn on a fresh figure."""
+    fig = plt.figure(figsize=(3, 1), dpi=200)
+    try:
+        fig.text(0.5, 0.5, text, fontsize=40, fontweight="bold", ha="center", va="center")
+        fig.canvas.draw()
+        buf = np.asarray(fig.canvas.buffer_rgba())
+        return int((255 - buf[..., 0]).sum())
+    finally:
+        plt.close(fig)
+
+
+def test_bold_math_subscripts_render_bolder():
+    """The \\mathbf wrap actually thickens the subscript; fontweight='bold' alone does not."""
+    plain = _label_darkness("X$_2$")
+    bolded = _label_darkness(_bold_math("X$_2$"))
+    assert bolded > plain * 1.05, f"bolded subscript not thicker: {bolded} vs {plain}"
 
 
 def test_mu_right_annotations_when_unstable(df_mu_three_stable):
