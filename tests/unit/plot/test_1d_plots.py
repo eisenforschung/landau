@@ -967,6 +967,25 @@ def test_ylim_sets_axis_limits(plot_func, fixture, request):
         plt.close(fig)
 
 
+def test_ylim_scalar_sets_upper_bound_only(df_T_three_stable):
+    """A scalar ylim sets only the top; the bottom stays at its autoscaled value."""
+    fig0, ax0 = plt.subplots()
+    try:
+        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax0)
+        auto_bottom = ax0.get_ylim()[0]
+    finally:
+        plt.close(fig0)
+
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax, ylim=0.2)
+        bottom, top = ax.get_ylim()
+        assert top == pytest.approx(0.2)
+        assert bottom == pytest.approx(auto_bottom)
+    finally:
+        plt.close(fig)
+
+
 def test_ylim_clamps_side_labels_within_window(df_T_three_stable):
     """Side labels stay within the ylim window (their y is clamped to it)."""
     ylim = (-0.05, 0.05)
