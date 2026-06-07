@@ -28,6 +28,7 @@ import landau.phases as ldp
 from landau.plot import (
     _assign_segment_ids,
     _bold_math,
+    _bridge_unstable_segments,
     plot_1d_mu_phase_diagram,
     plot_1d_T_phase_diagram,
 )
@@ -305,6 +306,105 @@ def test_assign_segment_ids_T_middle_phase_three_segments(fixture, request):
     fcc_ids = ids[df["phase"] == "fcc"]
     assert fcc_ids.nunique() == 3, f"Expected 3 fcc segments, got {fcc_ids.nunique()}: {fcc_ids.unique()}"
     assert ids[(df["phase"] == "fcc") & (~df["stable"])].nunique() == 2
+
+
+# ---------------------------------------------------------------------------
+# _bridge_unstable_segments — dashed branch reaches the exact transition
+# ---------------------------------------------------------------------------
+
+
+def _two_phase_transition_df(scan_col="T"):
+    """Two line phases sharing one refined transition at x=2, as keep_unstable output.
+
+    A is stable below the transition and metastable above; B is the mirror.  The
+    transition row (x=2) is marked ``border`` and ``stable`` for both phases, the
+    way :func:`~landau.calculate.calc_phase_diagram` tags a refined coexistence
+    point.  Both metastable branches resume only at the next sample (x=3 for A,
+    x=1 for B), so without bridging each leaves a gap back to x=2.
+    """
+    df = pd.DataFrame(
+        {
+            "phase": ["A"] * 5 + ["B"] * 5,
+            scan_col: [0, 1, 2, 3, 4] * 2,
+            "phi": [0.0, -1.0, -2.0, -3.0, -4.0, 1.0, 0.0, -2.0, -3.5, -5.0],
+            "stable": [True, True, True, False, False, False, False, True, True, True],
+            "border": [False, False, True, False, False, False, False, True, False, False],
+        }
+    )
+    df["_seg_id"] = _assign_segment_ids(df, scan_col)
+    return df
+
+
+def test_bridge_no_border_column_is_noop():
+    df = _scan_df([True] * 3 + [False] * 3)
+    df["_seg_id"] = _assign_segment_ids(df, "mu")
+    pd.testing.assert_frame_equal(_bridge_unstable_segments(df, "mu"), df)
+
+
+def test_bridge_adds_one_unstable_twin_per_metastable_side():
+    df = _two_phase_transition_df("T")
+    bridged = _bridge_unstable_segments(df, "T")
+    # Two phases, one metastable side each -> two appended rows.
+    assert len(bridged) == len(df) + 2
+    added = bridged.iloc[len(df):]
+    assert (~added["stable"]).all()
+    assert (added["T"] == 2).all()
+    # Twins carry the transition's phi, not an interpolated/edge value.
+    assert sorted(added["phi"]) == [-2.0, -2.0]
+
+
+def test_bridge_twin_shares_adjacent_unstable_segment_id():
+    df = _two_phase_transition_df("T")
+    bridged = _bridge_unstable_segments(df, "T")
+    for phase, neighbour_x in (("A", 3), ("B", 1)):
+        twin = bridged[(bridged.phase == phase) & (bridged["T"] == 2) & (~bridged.stable)]
+        assert len(twin) == 1
+        neighbour_seg = df.loc[(df.phase == phase) & (df["T"] == neighbour_x), "_seg_id"].iloc[0]
+        assert twin["_seg_id"].iloc[0] == neighbour_seg
+
+
+def test_bridge_closes_gap_metastable_branch_reaches_transition():
+    df = _two_phase_transition_df("T")
+    bridged = _bridge_unstable_segments(df, "T")
+    # A's single metastable branch now starts exactly at the transition (x=2),
+    # B's ends exactly at it -- no gap to the solid line on either side.
+    a_unstable = bridged[(bridged.phase == "A") & (~bridged.stable)]
+    b_unstable = bridged[(bridged.phase == "B") & (~bridged.stable)]
+    assert a_unstable["T"].min() == 2
+    assert b_unstable["T"].max() == 2
+    # The original solid lines are untouched: A and B still reach x=2 while stable.
+    assert ((df.phase == "A") & (df["T"] == 2) & df.stable).any()
+    assert ((df.phase == "B") & (df["T"] == 2) & df.stable).any()
+
+
+@pytest.mark.parametrize(
+    "fixture,scan_col",
+    [
+        ("df_T_three_stable", "T"),
+        ("df_T_three_stable_coarse", "T"),
+        ("df_mu_three_stable", "mu"),
+    ],
+)
+def test_bridge_every_interior_transition_reached_on_metastable_side(fixture, scan_col, request):
+    """On the physics fixtures, every metastable branch touches its bounding transition.
+
+    For each phase and each metastable segment, an endpoint that is not the global
+    scan edge must coincide with a transition point -- i.e. the dashed branch runs
+    flush to the solid line at the flip, with no grid-density-dependent gap.
+    """
+    df = request.getfixturevalue(fixture).copy()
+    df["_seg_id"] = _assign_segment_ids(df, scan_col)
+    bridged = _bridge_unstable_segments(df, scan_col)
+    transitions = set(np.round(df.loc[df["border"], scan_col].unique(), 9))
+    x_lo, x_hi = df[scan_col].min(), df[scan_col].max()
+    for _, seg in bridged[~bridged["stable"]].groupby("_seg_id"):
+        lo, hi = seg[scan_col].min(), seg[scan_col].max()
+        for end in (lo, hi):
+            if np.isclose(end, x_lo) or np.isclose(end, x_hi):
+                continue
+            assert round(end, 9) in transitions, (
+                f"metastable segment endpoint {end} is neither a scan edge nor a transition"
+            )
 
 
 # ---------------------------------------------------------------------------

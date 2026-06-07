@@ -423,6 +423,57 @@ def _assign_segment_ids(df: pd.DataFrame, scan_col: str) -> pd.Series:
     ).reindex(df.index)
 
 
+def _bridge_unstable_segments(df: pd.DataFrame, scan_col: str) -> pd.DataFrame:
+    """Extend each unstable branch up to the exact transition point.
+
+    A refined transition (``border``) row sits exactly at a stability flip but is
+    marked ``stable``, so it anchors the solid line of both coexisting phases.
+    The phase that turns metastable across the flip only resumes at the next
+    sampled point, leaving a gap between the transition and the start of its
+    dashed branch – the wider the gap, the coarser the grid.  For every such
+    border row this duplicates it as an unstable point tagged with the adjacent
+    unstable segment's ``_seg_id`` (the metastable side of the flip), so the
+    dashed branch is drawn right up to the transition.
+
+    Operates on the ``_seg_id``-tagged frame and returns it with the bridge rows
+    appended; the originals are untouched, so the solid line still reaches the
+    same point.  A no-op when no ``border`` column is present.
+
+    Args:
+        df: DataFrame with 'phase', 'stable', '_seg_id', ``scan_col`` and
+            optionally 'border' columns.
+        scan_col: Column ordering the points along the cut ('mu', 'T', ...).
+
+    Returns:
+        ``df`` with one duplicated unstable row per (border, adjacent-unstable)
+        pair appended, reindexed.
+    """
+    if "border" not in df.columns:
+        return df
+    src_idx, seg_ids = [], []
+    for _, g in df.groupby("phase", sort=False):
+        g = g.sort_values(scan_col)
+        idx = g.index.to_numpy()
+        stable = g["stable"].to_numpy()
+        border = g["border"].to_numpy()
+        seg = g["_seg_id"].to_numpy()
+        for i in range(len(g)):
+            if not (border[i] and stable[i]):
+                continue
+            # The flip is stable on one side, metastable on the other; bridge to
+            # whichever neighbour(s) along the cut are unstable.
+            for j in (i - 1, i + 1):
+                if 0 <= j < len(g) and not stable[j]:
+                    src_idx.append(idx[i])
+                    seg_ids.append(seg[j])
+    if not src_idx:
+        return df
+    bridges = df.loc[src_idx].copy()
+    bridges["stable"] = False
+    bridges["_seg_id"] = seg_ids
+    return pd.concat([df, bridges], ignore_index=True)
+
+
 def _subtract_reference_phase(df, scan_col, reference_phase):
     """Subtract reference phase's phi from all phases along scan_col."""
     if reference_phase not in df["phase"].values:
@@ -599,7 +650,7 @@ def plot_1d_mu_phase_diagram(
 
     df["_seg_id"] = _assign_segment_ids(df, scan_col="mu")
     sns.lineplot(
-        data=df,
+        data=_bridge_unstable_segments(df, scan_col="mu"),
         x='mu', y='phi',
         hue='phase', hue_order=sorted(df.phase.unique()),
         style='stable', style_order=[True, False],
@@ -681,7 +732,7 @@ def plot_1d_T_phase_diagram(
     df["_seg_id"] = _assign_segment_ids(df, scan_col="T")
 
     sns.lineplot(
-        data=df,
+        data=_bridge_unstable_segments(df, scan_col="T"),
         x='T', y='phi',
         hue='phase', hue_order=sorted(df.phase.unique()),
         style='stable', style_order=[True, False],
