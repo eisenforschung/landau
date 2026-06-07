@@ -663,8 +663,11 @@ def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True, yl
             right-end side labels.
         ylim: If given, applied via ``ax.set_ylim`` before the labels are placed,
             so the side labels are clamped to (and spread within) this window.
+            A scalar is treated as ``(None, ylim)`` — an upper bound only.
     """
     if ylim is not None:
+        if np.isscalar(ylim):
+            ylim = (None, ylim)
         ax.set_ylim(ylim)
 
     # Extract phase → color from the seaborn legend (used by both label sets).
@@ -762,10 +765,11 @@ def plot_1d_mu_phase_diagram(
         side_labels (bool, optional):
             If True, remove the default seaborn legend and label every phase at
             the right end of its line instead. Defaults to True.
-        ylim (tuple, optional):
-            If given, applied like :func:`matplotlib.pyplot.ylim`. It also bounds
-            the side-label stack: a label whose line end is above the window is
-            moved to a mirrored stack on the left.
+        ylim (tuple or float, optional):
+            If given, applied like :func:`matplotlib.pyplot.ylim`. A scalar is
+            treated as ``(None, ylim)`` (upper bound only). It also bounds the
+            side-label stack: a label whose line end is above the window is moved
+            to a mirrored stack on the left.
 
     Returns:
         matplotlib.axes.Axes:
@@ -847,10 +851,11 @@ def plot_1d_T_phase_diagram(
         side_labels (bool, optional):
             If True, remove the default seaborn legend and label every phase at
             the right end of its line instead. Defaults to True.
-        ylim (tuple, optional):
-            If given, applied like :func:`matplotlib.pyplot.ylim`. It also bounds
-            the side-label stack: a label whose line end is above the window is
-            moved to a mirrored stack on the left.
+        ylim (tuple or float, optional):
+            If given, applied like :func:`matplotlib.pyplot.ylim`. A scalar is
+            treated as ``(None, ylim)`` (upper bound only). It also bounds the
+            side-label stack: a label whose line end is above the window is moved
+            to a mirrored stack on the left.
 
     Returns:
         matplotlib.axes.Axes:
