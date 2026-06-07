@@ -68,18 +68,18 @@ def _largest_inscribed_circle_center(polygon_xy, ax):
     return point.x * sx, point.y * sy
 
 
-def _add_inline_polygon_labels(ax, polys, color_map):
+def _add_inline_polygon_labels(ax, polys):
     """Label each phase polygon in place instead of drawing a legend box.
 
     Every polygon is annotated with its phase name (with trailing apostrophes
     for repeated stability regions, matching :func:`plot_polygons`) at the
     centre of its largest inscribed circle, on a semi-transparent white
-    background for legibility.
+    background.  The text is black: the polygon fill already carries the phase
+    colour, and black on white stays legible even for the pale pastel fills.
 
     Args:
         ax: matplotlib Axes the polygons were drawn on.
         polys: Series of matplotlib Polygons indexed as in :func:`get_polygons`.
-        color_map: Mapping from phase name to colour, used to tint each label.
     """
     for key, p in polys.items():
         if isinstance(key, tuple):
@@ -92,7 +92,7 @@ def _add_inline_polygon_labels(ax, polys, color_map):
         _text_with_background(
             ax, center[0], center[1], phase + "'" * rep,
             ha="center", va="center", fontsize="small", fontweight="bold",
-            color=color_map.get(phase, "black"),
+            color="black",
         )
 
 
@@ -306,7 +306,7 @@ def _plot_phase_diagram(
     # Inline labels need the final axis limits to place each label at the centre
     # of its polygon, so this runs after the limits above are set.
     if inline_legend:
-        _add_inline_polygon_labels(ax, polys, color_map)
+        _add_inline_polygon_labels(ax, polys)
     else:
         ax.legend(ncols=2)
     ax.set_ylabel("$T$ [K]")

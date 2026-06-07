@@ -340,13 +340,12 @@ def test_add_inline_polygon_labels_one_text_per_polygon():
     ax.set_xlim(0, 3)
     ax.set_ylim(0, 1)
     polys = _polys_series([("A", 0), ("B", 0), ("A", 1)])
-    _add_inline_polygon_labels(ax, polys, {"A": "red", "B": "blue"})
+    _add_inline_polygon_labels(ax, polys)
     texts = [t.get_text() for t in ax.texts]
     assert texts == ["A", "B", "A'"]
-    # Each label uses its phase colour.
-    colors = {t.get_text(): matplotlib.colors.to_rgba(t.get_color()) for t in ax.texts}
-    assert colors["A"] == matplotlib.colors.to_rgba("red")
-    assert colors["B"] == matplotlib.colors.to_rgba("blue")
+    # Labels are black for legibility on the white background.
+    for t in ax.texts:
+        assert matplotlib.colors.to_rgba(t.get_color()) == matplotlib.colors.to_rgba("black")
     plt.close(fig)
 
 
