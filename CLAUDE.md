@@ -45,6 +45,9 @@ These are project-specific preferences distilled from past PR/issue feedback. So
 - Module names: no underscores. `asewrapper`, not `ase_wrapper` (PR #68).
 - Promote single-file modules to subpackages once they grow (as was done for `interpolate/`).
 
+### Git workflow
+- Merge commits are disabled on GitHub; never bring a branch up to date with `git merge`. Rebase onto `origin/main` instead (`git reset` off any stray merge, then `git rebase origin/main`) and force-push, so history stays linear.
+
 ### Do not commit
 - `.hypothesis/`, `_version.py`, stray top-level scripts, duplicate exploratory files (PR #71, #94). Check for duplicates of what you are about to add before pushing.
 
