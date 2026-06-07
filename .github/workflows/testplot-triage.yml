@@ -1,0 +1,101 @@
+name: Testplot Triage
+
+# Runs on every new pull request and asks Claude Haiku to judge — from the PR
+# description and the change diff — whether the change could alter the rendered
+# reference phase diagrams (i.e. touches the calculation or plotting code that
+# tests/integration/testplots.py exercises).
+#
+# If Haiku decides it could, it adds the `testplot` label to the PR. That label
+# is the existing trigger for `testplot.yml` (it runs on the `labeled` event and
+# gates on the label name `testplot`), so labelling here transparently kicks off
+# the select/render/publish gallery flow without duplicating that logic. If
+# Haiku decides it could not, it does nothing.
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+
+# Don't pile up triage runs if a PR is rapidly reopened / edited.
+concurrency:
+  group: testplot-triage-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    # Skip drafts and PRs that already carry the label (nothing to decide).
+    if: |
+      github.event.pull_request.draft == false &&
+      !contains(github.event.pull_request.labels.*.name, 'testplot')
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Triage plot impact with Claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: |
+            --model claude-haiku-4-5
+            --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr edit:*),Bash(gh label list:*),Bash(gh label create:*)"
+          prompt: |
+            You are triaging a pull request to decide whether it could change the
+            **rendered phase diagrams** and therefore warrants regenerating the
+            visual-review test plots. Be decisive and terse — do not post any PR
+            comment.
+
+            Context:
+            - Repo: ${{ github.repository }}
+            - PR number: ${{ github.event.pull_request.number }}
+
+            landau is a computational-thermodynamics library. The visual-review
+            plots are rendered by `tests/integration/testplots.py`, which calls
+            into the library to compute and draw phase diagrams. A change is
+            **plot-relevant** if it could alter the pixels of those diagrams,
+            which means it touches:
+              1. **The render script itself** — `tests/integration/testplots.py`.
+              2. **Calculation** — `landau/calculate.py`, `landau/refine.py`,
+                 `landau/phases/**`, `landau/interpolate/**` (the dataframe of
+                 transitions/concentrations the plots are built from).
+              3. **Plotting** — `landau/plot.py`, `landau/poly.py` (axes, colours,
+                 polygon/region construction, 1D/2D phase-diagram drawing).
+
+            Do the following. Fetch input lazily — triage by filename first and
+            only pull the full diff when the changed paths could plausibly touch
+            plot output. This keeps the model input small on the common
+            (docs/test/CI) cases instead of loading a large diff every run.
+            1. Read the PR title and description:
+               `gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json title,body`
+            2. List the changed files first (cheap):
+               `gh pr diff ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --name-only`
+               - If **every** changed path is confined to non-plotting files
+                 (`docs/`, `.github/`, `*.md`, or unit/regression tests under
+                 `tests/` other than `tests/integration/testplots.py`), decide NO
+                 immediately and skip to step 5 — do NOT fetch the full diff.
+               - Otherwise continue to step 3.
+            3. Only now pull the hunks, and focus on the runtime/plot code. Prefer
+               restricting the diff to the relevant trees, e.g.
+               `gh pr diff ${{ github.event.pull_request.number }} --repo ${{ github.repository }} -- 'landau/**' 'tests/integration/testplots.py'`
+               (fall back to the unfiltered diff only if that yields nothing).
+               Decide: is this change **plot-relevant**? Treat it as YES if it
+               modifies runtime behaviour of any path above — the equilibrium
+               calculation, refinement, phase/interpolation models, polygon
+               construction, or the plotting/axes/colour code, or anything the PR
+               text itself flags as affecting plot output (mentions phase diagram,
+               tielines, polygons, colours, axes, rendering). Treat it as NO for
+               docs-only, comment, typing-only, CI/workflow, or test-only changes
+               that do not touch `tests/integration/testplots.py`.
+            4. If and only if your decision is YES, add the label that triggers the
+               testplot workflow:
+               `gh pr edit ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --add-label testplot`
+               (If the label does not exist, create it first:
+               `gh label create testplot --repo ${{ github.repository }} --color 1D76DB --description "Render reference phase diagrams on this PR" || true`)
+            5. Finish by printing a single line: either
+               `DECISION: plot-relevant — testplot label added` or
+               `DECISION: not plot-relevant — no action`, followed by one short
+               sentence of justification.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
