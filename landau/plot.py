@@ -649,10 +649,11 @@ def _place_side_labels(ax, df, scan_col, phase_colors):
         if not texts:
             return
         anchor_x = x0 + anchor_frac * total_span
-        target_px = [
-            ax.transData.transform((anchor_x, min(max(y, lo_d), hi_d)))[1]
-            for _, y in entries
-        ]
+        # Spread the true (unclamped) line-terminal pixels: _spread_labels bounds the
+        # result to the axes box itself, so the labels stay in the window while keeping
+        # the terminals' vertical order.  Pre-clamping would tie targets that fall
+        # outside the window and collapse that order.
+        target_px = [ax.transData.transform((anchor_x, y))[1] for _, y in entries]
         placed_px = _spread_labels(target_px, heights, axbb.y0, axbb.y1)
         inv = ax.transData.inverted()
         for t, py in zip(texts, placed_px):

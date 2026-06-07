@@ -1072,6 +1072,27 @@ def test_longer_labels_reserve_more_space(df_T_three_stable):
 # ---------------------------------------------------------------------------
 
 
+def test_side_labels_keep_terminal_order_when_clamped():
+    """Spread labels keep their line-terminal vertical order, even clamped to the window.
+
+    'a' ends higher (-8) than 'b' (-10); both terminals fall below the window so both
+    are pulled to the bottom edge.  Pre-clamping tied them and fell back to alphabetical
+    order (b above a); the fix keeps the terminal order (a above b).
+    """
+    df = _synthetic_T_df({
+        "a": np.linspace(0.0, -8.0, 6),
+        "b": np.linspace(0.0, -10.0, 6),
+    })
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_T_phase_diagram(df, ax=ax, ylim=(-2.0, 2.0), top_labels=False)
+        ypos = {t.get_text(): t.get_position()[1] for t in _side_label_artists(ax)}
+        assert set(ypos) == {"a", "b"}
+        assert ypos["a"] > ypos["b"], f"terminal order not preserved: {ypos}"
+    finally:
+        plt.close(fig)
+
+
 def test_side_labels_do_not_overlap():
     """Side labels in a stack never overlap vertically once placed.
 
