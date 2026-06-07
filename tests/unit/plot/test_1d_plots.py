@@ -669,8 +669,8 @@ def test_T_top_spine_ticks_at_transitions(df_T_three_stable):
         plt.close(fig)
 
 
-def test_top_spine_labels_bold_with_translucent_white_bbox(df_T_three_stable):
-    """Top labels are bold and backed by a semi-transparent white box (legible over tielines)."""
+def test_top_spine_labels_bold_with_white_outline(df_T_three_stable):
+    """Top labels are bold and stroked with a white outline (legible over tielines)."""
     fig, ax = plt.subplots()
     try:
         plot_1d_T_phase_diagram(df_T_three_stable, ax=ax)
@@ -678,10 +678,9 @@ def test_top_spine_labels_bold_with_translucent_white_bbox(df_T_three_stable):
         assert artists, "no top-spine phase labels found"
         for t in artists:
             assert t.get_fontweight() == "bold", f"{t.get_text()!r} not bold"
-            patch = t.get_bbox_patch()
-            assert patch is not None, f"{t.get_text()!r} has no bbox patch"
-            assert to_rgba(patch.get_facecolor())[:3] == to_rgba("white")[:3]
-            assert 0 < patch.get_alpha() < 1, f"bbox alpha {patch.get_alpha()} not translucent"
+            effects = t.get_path_effects()
+            assert len(effects) == 1, f"{t.get_text()!r} has no path effect"
+            assert to_rgba(effects[0]._gc["foreground"]) == to_rgba("white")
     finally:
         plt.close(fig)
 

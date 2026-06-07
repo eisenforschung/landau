@@ -23,7 +23,7 @@ from landau import plot as plot_mod
 from landau.plot import (
     _add_inline_polygon_labels,
     _largest_inscribed_circle_center,
-    _text_with_background,
+    _text_with_outline,
     get_phase_colors,
     get_polygons,
     plot_phase_diagram,
@@ -259,19 +259,21 @@ def test_plot_polygons_zorder_is_inverse_to_bbox_area():
 # --- inline-legend helpers ---------------------------------------------------
 
 
-def test_text_with_background_sets_white_alpha_bbox():
+def test_text_with_outline_sets_white_stroke():
     fig, ax = plt.subplots()
-    t = _text_with_background(ax, 0.5, 0.5, "X", bg_alpha=0.3)
-    patch = t.get_bbox_patch()
-    assert patch is not None
-    # facecolor carries the requested alpha so it shows through as semi-transparent.
-    assert patch.get_facecolor() == matplotlib.colors.to_rgba("white", 0.3)
+    t = _text_with_outline(ax, 0.5, 0.5, "X", outline_width=4)
+    effects = t.get_path_effects()
+    assert len(effects) == 1
+    stroke = effects[0]
+    # The stroke is white and uses the requested linewidth.
+    assert matplotlib.colors.to_rgba(stroke._gc["foreground"]) == matplotlib.colors.to_rgba("white")
+    assert stroke._gc["linewidth"] == 4
     plt.close(fig)
 
 
-def test_text_with_background_forwards_kwargs():
+def test_text_with_outline_forwards_kwargs():
     fig, ax = plt.subplots()
-    t = _text_with_background(ax, 1.0, 2.0, "Y", color="red", ha="center")
+    t = _text_with_outline(ax, 1.0, 2.0, "Y", color="red", ha="center")
     assert t.get_text() == "Y"
     assert matplotlib.colors.to_rgba(t.get_color()) == matplotlib.colors.to_rgba("red")
     assert t.get_horizontalalignment() == "center"
