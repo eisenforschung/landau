@@ -590,6 +590,41 @@ def test_plot_1d_T_reference_phase_all_transitions_marked(df_T_three_stable):
         plt.close(fig)
 
 
+def _transition_text_artists(ax):
+    """Return the rotated transition-marker text artists ($T=...$ / $\\Delta\\mu=...$)."""
+    return [t for t in ax.texts if abs(t.get_rotation() - 90.0) < 1e-6]
+
+
+@pytest.mark.parametrize(
+    "plot_func, fixture, ylim",
+    [
+        (plot_1d_T_phase_diagram, "df_T_three_stable", (-3.3, -3.1)),
+        (plot_1d_mu_phase_diagram, "df_mu_three_stable", (-3.3, -3.1)),
+    ],
+)
+def test_transition_labels_stay_inside_axis_under_ylim(plot_func, fixture, ylim, request):
+    """A zoomed ylim keeps the transition-marker text inside the axes.
+
+    The labels are positioned in axes-fraction y, so they no longer track the crossing
+    phi (which the zoom can place far outside the window).
+    """
+    df = request.getfixturevalue(fixture)
+    fig, ax = plt.subplots()
+    try:
+        plot_func(df, ax=ax, ylim=ylim)
+        renderer = _renderer(fig)
+        axbb = ax.get_window_extent(renderer)
+        labels = _transition_text_artists(ax)
+        assert labels, "no transition-marker labels found"
+        for t in labels:
+            bb = t.get_window_extent(renderer)
+            assert axbb.y0 - 0.5 <= bb.y0 and bb.y1 <= axbb.y1 + 0.5, (
+                f"{t.get_text()!r} y-box [{bb.y0}, {bb.y1}] outside axes [{axbb.y0}, {axbb.y1}]"
+            )
+    finally:
+        plt.close(fig)
+
+
 # ---------------------------------------------------------------------------
 # Custom phase legend (_add_1d_phase_legend)
 # ---------------------------------------------------------------------------
