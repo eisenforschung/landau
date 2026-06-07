@@ -29,6 +29,7 @@ from landau.plot import (
     _assign_segment_ids,
     _bold_math,
     _bridge_unstable_segments,
+    _spread_labels,
     plot_1d_mu_phase_diagram,
     plot_1d_T_phase_diagram,
 )
@@ -628,6 +629,20 @@ def _legend_texts(ax):
     return set() if legend is None else {t.get_text() for t in legend.texts}
 
 
+def _side_label_artists(ax):
+    """Return the Text artists for the right/left side-label stacks on *ax*.
+
+    Both stacks use va='center'; the right stack is ha='left', the left ha='right'.
+    The top-spine labels use va='top', so filtering on va='center' isolates them.
+    """
+    return [t for t in ax.texts if t.get_va() == "center" and t.get_ha() in ("left", "right")]
+
+
+def _renderer(fig):
+    fig.canvas.draw()
+    return fig.canvas.get_renderer()
+
+
 def test_mu_phase_legend_removed(df_mu_three_stable):
     """The seaborn phase legend is replaced: no phase names appear in any legend."""
     fig, ax = plt.subplots()
@@ -888,5 +903,203 @@ def test_T_no_right_annotations_stable_only(df_T_three_stable):
     try:
         plot_1d_T_phase_diagram(df, ax=ax)
         assert _right_annotations(ax) == []
+    finally:
+        plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# _spread_labels — vertical overlap resolution
+# ---------------------------------------------------------------------------
+
+
+def test_spread_labels_separates_coincident_targets():
+    """Three labels requesting the same center come out non-overlapping in [lo, hi]."""
+    out = _spread_labels([5.0, 5.0, 5.0], [1.0, 1.0, 1.0], lo=0.0, hi=10.0)
+    out = sorted(out)
+    for a, b in zip(out, out[1:]):
+        assert b - a >= 1.0 - 1e-9, f"labels overlap: {out}"
+    assert out[0] >= 0.0 - 1e-9 and out[-1] <= 10.0 + 1e-9
+
+
+def test_spread_labels_leaves_separated_targets_untouched():
+    """Targets already clear of one another are returned unchanged."""
+    out = _spread_labels([1.0, 5.0, 9.0], [1.0, 1.0, 1.0], lo=0.0, hi=10.0)
+    np.testing.assert_allclose(out, [1.0, 5.0, 9.0])
+
+
+def test_spread_labels_preserves_input_order():
+    """The returned list is aligned with the input order, not the sorted order."""
+    out = _spread_labels([9.0, 1.0, 5.0], [1.0, 1.0, 1.0], lo=0.0, hi=10.0)
+    # largest target stays the largest output, smallest stays smallest
+    assert out[0] == max(out)
+    assert out[1] == min(out)
+
+
+def test_spread_labels_respects_top_bound():
+    """Targets piled near the top are pushed down to fit under hi."""
+    out = _spread_labels([9.5, 9.6, 9.7], [1.0, 1.0, 1.0], lo=0.0, hi=10.0)
+    assert max(out) <= 10.0 + 1e-9
+    out_sorted = sorted(out)
+    for a, b in zip(out_sorted, out_sorted[1:]):
+        assert b - a >= 1.0 - 1e-9
+
+
+# ---------------------------------------------------------------------------
+# ylim keyword
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "plot_func, fixture",
+    [
+        (plot_1d_mu_phase_diagram, "df_mu_three_stable"),
+        (plot_1d_T_phase_diagram, "df_T_three_stable"),
+    ],
+)
+def test_ylim_sets_axis_limits(plot_func, fixture, request):
+    """The ylim kwarg sets the axes y-limits like the matplotlib builtin."""
+    df = request.getfixturevalue(fixture)
+    fig, ax = plt.subplots()
+    try:
+        plot_func(df, ax=ax, ylim=(-0.1, 0.2))
+        np.testing.assert_allclose(ax.get_ylim(), (-0.1, 0.2))
+    finally:
+        plt.close(fig)
+
+
+def test_ylim_clamps_side_labels_within_window(df_T_three_stable):
+    """Side labels stay within the ylim window (their y is clamped to it)."""
+    ylim = (-0.05, 0.05)
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax, ylim=ylim)
+        labels = _side_label_artists(ax)
+        assert labels, "no side labels drawn"
+        for t in labels:
+            y = t.get_position()[1]
+            assert ylim[0] - 1e-9 <= y <= ylim[1] + 1e-9, f"{t.get_text()!r} at y={y} outside {ylim}"
+    finally:
+        plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Adaptive width reservation (rendered text size, not string length)
+# ---------------------------------------------------------------------------
+
+
+def test_side_labels_fit_inside_axis(df_T_three_stable):
+    """Every side label's rendered box fits horizontally inside the axes."""
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax)
+        renderer = _renderer(fig)
+        axbb = ax.get_window_extent(renderer)
+        labels = _side_label_artists(ax)
+        assert labels, "no side labels drawn"
+        for t in labels:
+            bb = t.get_window_extent(renderer)
+            assert axbb.x0 - 0.5 <= bb.x0 and bb.x1 <= axbb.x1 + 0.5, (
+                f"{t.get_text()!r} box [{bb.x0}, {bb.x1}] not within axes [{axbb.x0}, {axbb.x1}]"
+            )
+    finally:
+        plt.close(fig)
+
+
+def test_longer_labels_reserve_more_space(df_T_three_stable):
+    """Wider rendered labels reserve more horizontal room than narrow ones.
+
+    The reservation is read off the rendered text size, so renaming the phases to long
+    strings widens the right x-limit beyond what the short names need — no string-length
+    heuristic, just the measured box.
+    """
+    short = df_T_three_stable
+    long = short.copy()
+    long["phase"] = long["phase"].map(lambda p: p + "_" + "x" * 30)
+
+    x_data_max = short["T"].max()
+
+    def reserved(df):
+        fig, ax = plt.subplots()
+        try:
+            plot_1d_T_phase_diagram(df, ax=ax)
+            return ax.get_xlim()[1] - x_data_max
+        finally:
+            plt.close(fig)
+
+    assert reserved(long) > reserved(short)
+
+
+# ---------------------------------------------------------------------------
+# Adaptive vertical avoidance
+# ---------------------------------------------------------------------------
+
+
+def test_side_labels_do_not_overlap(df_T_three_stable):
+    """Side labels in a stack never overlap vertically once placed."""
+    ylim = (-0.05, 0.05)  # tight window forces the targets close together
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_T_phase_diagram(df_T_three_stable, ax=ax, ylim=ylim)
+        renderer = _renderer(fig)
+        # Each stack shares an x anchor; group by ha so the two columns are checked apart.
+        for ha in ("left", "right"):
+            boxes = sorted(
+                (t.get_window_extent(renderer) for t in _side_label_artists(ax) if t.get_ha() == ha),
+                key=lambda b: b.y0,
+            )
+            for lower, upper in zip(boxes, boxes[1:]):
+                assert upper.y0 >= lower.y1 - 0.5, "side labels overlap vertically"
+    finally:
+        plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Left-hand stack for labels clipped off the top by ylim
+# ---------------------------------------------------------------------------
+
+
+def test_ylim_moves_clipped_label_to_left_stack(df_T_three_stable):
+    """A phase whose right end is above the window is labelled on the left (ha='right')."""
+    df = df_T_three_stable
+    # Pick a ylim top that cuts off at least one phase's right-end value but not all.
+    right_ends = df.sort_values("T").groupby("phase", group_keys=False).apply(
+        lambda g: g["phi"].iloc[-1], include_groups=False
+    )
+    assert right_ends.nunique() > 1, "fixture needs phases with distinct right-end phi"
+    top = (right_ends.min() + right_ends.max()) / 2
+    expected_left = set(right_ends[right_ends > top].index)
+    expected_right = set(right_ends[right_ends <= top].index)
+    assert expected_left and expected_right, "ylim must split phases across both stacks"
+
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_T_phase_diagram(df, ax=ax, ylim=(df["phi"].min() - 0.05, top))
+        left_labels = {t.get_text() for t in ax.texts if t.get_ha() == "right" and t.get_va() == "center"}
+        right_labels = {t.get_text() for t in ax.texts if t.get_ha() == "left" and t.get_va() == "center"}
+        assert left_labels == expected_left
+        assert right_labels == expected_right
+    finally:
+        plt.close(fig)
+
+
+def test_left_stack_reserves_space_on_left(df_T_three_stable):
+    """When labels move to the left stack, the left x-limit is widened to fit them."""
+    df = df_T_three_stable
+    x_data_min = df["T"].min()
+    top = df["phi"].min() + 0.01  # very low top so most phases spill to the left
+
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_T_phase_diagram(df, ax=ax, ylim=(df["phi"].min() - 0.05, top))
+        left_stack = [t for t in ax.texts if t.get_ha() == "right" and t.get_va() == "center"]
+        assert left_stack, "expected a populated left stack"
+        # The left x-limit has been pushed below the leftmost data point to make room.
+        assert ax.get_xlim()[0] < x_data_min
+        # Every left label sits inside the axis.
+        renderer = _renderer(fig)
+        axbb = ax.get_window_extent(renderer)
+        for t in left_stack:
+            bb = t.get_window_extent(renderer)
+            assert bb.x0 >= axbb.x0 - 0.5, f"{t.get_text()!r} clipped past the left spine"
     finally:
         plt.close(fig)

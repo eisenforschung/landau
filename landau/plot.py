@@ -503,7 +503,144 @@ def _bold_math(label: str) -> str:
     return "$".join(parts)
 
 
-def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True):
+def _get_renderer(fig):
+    """Return a renderer for *fig*, drawing the canvas first so text can be measured.
+
+    ``Text.get_window_extent`` needs a renderer to report the rendered pixel size of a
+    label.  ``Figure.canvas.get_renderer`` exists on the Agg backend; other backends
+    expose it via the private ``Figure._get_renderer`` (matplotlib >= 3.6).
+    """
+    fig.canvas.draw()
+    if hasattr(fig.canvas, "get_renderer"):
+        return fig.canvas.get_renderer()
+    return fig._get_renderer()
+
+
+def _spread_labels(centers, heights, lo, hi, gap=0.0):
+    """Nudge label centers apart so their vertical extents never overlap.
+
+    Each label *i* occupies ``[center - heights[i]/2, center + heights[i]/2]``.  The
+    returned centers keep the input order's stacking, sit within ``[lo, hi]`` where the
+    stack fits, and move as little as possible from the requested ``centers``.  Works in
+    whatever 1-d coordinate the caller passes (display pixels are convenient because a
+    rendered text height is constant there regardless of the data scale).
+
+    Args:
+        centers: Desired center coordinate of each label.
+        heights: Full extent of each label in the same units as ``centers``.
+        lo, hi: Lower / upper bounds the stack should stay within.
+        gap: Extra clearance to keep between adjacent labels.
+
+    Returns:
+        List of adjusted centers, one per input label, in the input order.
+    """
+    n = len(centers)
+    if n == 0:
+        return []
+    order = sorted(range(n), key=lambda i: centers[i])
+    adj = list(centers)
+    # Upward pass: push each label up just enough to clear the one below it.
+    prev_top = lo
+    for i in order:
+        half = heights[i] / 2
+        c = max(centers[i], prev_top + half)
+        adj[i] = c
+        prev_top = c + half + gap
+    # Downward pass: pull labels down to respect the top bound while staying separated.
+    next_bot = hi
+    for i in reversed(order):
+        half = heights[i] / 2
+        c = min(adj[i], next_bot - half)
+        adj[i] = c
+        next_bot = c - half - gap
+    return adj
+
+
+def _place_side_labels(ax, df, scan_col, phase_colors):
+    """Label every phase at the end of its line, reserving room adaptively.
+
+    A phase is labelled at its right-hand line end by default.  The horizontal space
+    reserved for the stack is derived from the widest *rendered* label (measured in
+    pixels), not from any string-length heuristic, so the axis is widened by exactly as
+    much as the labels need.  Within a stack the labels are spread vertically so they do
+    not overlap, clamped to the current y-limits.
+
+    If the current y-limit would clip a label off the top (its right-end value lies above
+    the visible window), that phase is instead labelled at its left-hand line end on a
+    mirrored left-hand stack, which is reserved and laid out by the same rules.
+    """
+    fig = ax.figure
+    x_min, x_max = df[scan_col].min(), df[scan_col].max()
+    span0 = x_max - x_min
+
+    # Settle autoscaled limits (and obtain a renderer) before deciding which side each
+    # label belongs to or measuring any text.
+    renderer = _get_renderer(fig)
+    lo_d, hi_d = sorted(ax.get_ylim())
+    axbb = ax.get_window_extent(renderer)
+
+    # Split phases: those visible at the right end label on the right; those whose
+    # right end is above the window label at their left end instead.
+    right, left = [], []
+    for phase, group in df.groupby("phase"):
+        g = group.sort_values(scan_col)
+        right_y = g["phi"].iloc[-1]
+        if right_y > hi_d:
+            left.append((phase, g["phi"].iloc[0]))
+        else:
+            right.append((phase, right_y))
+
+    def make_texts(entries, ha):
+        return [
+            ax.text(
+                x_min, y, phase, transform=ax.transData,
+                ha=ha, va="center", fontsize="small",
+                color=phase_colors.get(phase, "black"), clip_on=True,
+            )
+            for phase, y in entries
+        ]
+
+    right_texts = make_texts(right, "left")
+    left_texts = make_texts(left, "right")
+
+    def measure(texts):
+        if not texts:
+            return 0.0, []
+        ext = [t.get_window_extent(renderer) for t in texts]
+        return max(e.width for e in ext) / axbb.width, [e.height for e in ext]
+
+    gap_frac, margin_frac = 0.02, 0.01
+    f_right, h_right = measure(right_texts)
+    f_left, h_left = measure(left_texts)
+    reserve_r = (gap_frac + f_right + margin_frac) if right_texts else 0.0
+    reserve_l = (gap_frac + f_left + margin_frac) if left_texts else 0.0
+
+    # Widen the axis so the line data occupies the middle (1 - reserve_l - reserve_r) of
+    # it and each stack sits in its reserved strip.
+    denom = max(1.0 - reserve_l - reserve_r, 0.2)
+    total_span = span0 / denom
+    x0 = x_min - reserve_l * total_span
+    ax.set_xlim(x0, x0 + total_span)
+
+    def place(texts, entries, heights, anchor_frac):
+        if not texts:
+            return
+        anchor_x = x0 + anchor_frac * total_span
+        target_px = [
+            ax.transData.transform((anchor_x, min(max(y, lo_d), hi_d)))[1]
+            for _, y in entries
+        ]
+        placed_px = _spread_labels(target_px, heights, axbb.y0, axbb.y1)
+        inv = ax.transData.inverted()
+        for t, py in zip(texts, placed_px):
+            y_d = inv.transform((axbb.x0, py))[1]
+            t.set_position((anchor_x, y_d))
+
+    place(right_texts, right, h_right, 1.0 - margin_frac - f_right)
+    place(left_texts, left, h_left, f_left + margin_frac)
+
+
+def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True, ylim=None):
     """Annotate a 1d phase diagram with inline phase labels.
 
     top_labels
@@ -524,7 +661,12 @@ def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True):
         top_labels: If True, add the top-spine ticks and stable-phase labels.
         side_labels: If True, remove the default seaborn legend and add the
             right-end side labels.
+        ylim: If given, applied via ``ax.set_ylim`` before the labels are placed,
+            so the side labels are clamped to (and spread within) this window.
     """
+    if ylim is not None:
+        ax.set_ylim(ylim)
+
     # Extract phase → color from the seaborn legend (used by both label sets).
     phase_colors = {}
     legend = ax.get_legend()
@@ -586,20 +728,7 @@ def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True):
             )
 
     if side_labels and not df["stable"].all():
-        # Right-end phase annotations placed just past each line's end but kept
-        # inside the axis by widening the right limit to make room for them.
-        x_min, x_max = df[scan_col].min(), df[scan_col].max()
-        span = x_max - x_min
-        ax.set_xlim(right=x_max + 0.13 * span)
-        for phase, group in df.groupby("phase"):
-            rightmost = group.sort_values(scan_col).iloc[-1]
-            ax.text(
-                rightmost[scan_col] + 0.02 * span, rightmost["phi"], phase,
-                transform=ax.transData,
-                ha="left", va="center", fontsize="small",
-                color=phase_colors.get(phase, "black"),
-                clip_on=True,
-            )
+        _place_side_labels(ax, df, scan_col, phase_colors)
 
 
 def plot_1d_mu_phase_diagram(
@@ -609,7 +738,8 @@ def plot_1d_mu_phase_diagram(
         mark_transitions=True,
         reference_phase=None,
         top_labels=True,
-        side_labels=True):
+        side_labels=True,
+        ylim=None):
     """
     Plot a one dimensional isothermal phase diagram of the semi-grandcanonical
     potential as function of the chemical potential difference.
@@ -632,6 +762,10 @@ def plot_1d_mu_phase_diagram(
         side_labels (bool, optional):
             If True, remove the default seaborn legend and label every phase at
             the right end of its line instead. Defaults to True.
+        ylim (tuple, optional):
+            If given, applied like :func:`matplotlib.pyplot.ylim`. It also bounds
+            the side-label stack: a label whose line end is above the window is
+            moved to a mirrored stack on the left.
 
     Returns:
         matplotlib.axes.Axes:
@@ -658,7 +792,7 @@ def plot_1d_mu_phase_diagram(
         ax=ax,
     )
 
-    _add_1d_phase_legend(ax, df, scan_col="mu", top_labels=top_labels, side_labels=side_labels)
+    _add_1d_phase_legend(ax, df, scan_col="mu", top_labels=top_labels, side_labels=side_labels, ylim=ylim)
 
     if 'border' not in df.columns:
         return ax
@@ -690,6 +824,7 @@ def plot_1d_T_phase_diagram(
         reference_phase=None,
         top_labels=True,
         side_labels=True,
+        ylim=None,
         ):
     """
     Plots a one-dimensional equipotential phase diagram as a function of temperature.
@@ -712,6 +847,10 @@ def plot_1d_T_phase_diagram(
         side_labels (bool, optional):
             If True, remove the default seaborn legend and label every phase at
             the right end of its line instead. Defaults to True.
+        ylim (tuple, optional):
+            If given, applied like :func:`matplotlib.pyplot.ylim`. It also bounds
+            the side-label stack: a label whose line end is above the window is
+            moved to a mirrored stack on the left.
 
     Returns:
         matplotlib.axes.Axes:
@@ -740,7 +879,7 @@ def plot_1d_T_phase_diagram(
         ax=ax,
     )
 
-    _add_1d_phase_legend(ax, df, scan_col="T", top_labels=top_labels, side_labels=side_labels)
+    _add_1d_phase_legend(ax, df, scan_col="T", top_labels=top_labels, side_labels=side_labels, ylim=ylim)
 
     if 'border' not in df.columns:
         return ax
