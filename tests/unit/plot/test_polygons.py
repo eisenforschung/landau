@@ -16,8 +16,19 @@ import pytest
 from matplotlib.patches import Polygon
 from matplotlib.testing.decorators import check_figures_equal, remove_ticks_and_titles
 
+from shapely import Polygon as ShapelyPolygon
+from shapely.ops import polylabel
+
 from landau import plot as plot_mod
-from landau.plot import get_phase_colors, get_polygons, plot_phase_diagram, plot_polygons
+from landau.plot import (
+    _add_inline_polygon_labels,
+    _largest_inscribed_circle_center,
+    _text_with_background,
+    get_phase_colors,
+    get_polygons,
+    plot_phase_diagram,
+    plot_polygons,
+)
 from landau.poly import AbstractPolyMethod, Concave
 
 
@@ -245,6 +256,130 @@ def test_plot_polygons_zorder_is_inverse_to_bbox_area():
     plt.close(fig)
 
 
+# --- inline-legend helpers ---------------------------------------------------
+
+
+def test_text_with_background_sets_white_alpha_bbox():
+    fig, ax = plt.subplots()
+    t = _text_with_background(ax, 0.5, 0.5, "X", bg_alpha=0.3)
+    patch = t.get_bbox_patch()
+    assert patch is not None
+    # facecolor carries the requested alpha so it shows through as semi-transparent.
+    assert patch.get_facecolor() == matplotlib.colors.to_rgba("white", 0.3)
+    plt.close(fig)
+
+
+def test_text_with_background_forwards_kwargs():
+    fig, ax = plt.subplots()
+    t = _text_with_background(ax, 1.0, 2.0, "Y", color="red", ha="center")
+    assert t.get_text() == "Y"
+    assert matplotlib.colors.to_rgba(t.get_color()) == matplotlib.colors.to_rgba("red")
+    assert t.get_horizontalalignment() == "center"
+    plt.close(fig)
+
+
+def test_inscribed_circle_center_of_unit_square_is_centroid():
+    fig, ax = plt.subplots()
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    xy = np.array([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+    cx, cy = _largest_inscribed_circle_center(xy, ax)
+    assert cx == pytest.approx(0.5, abs=2e-3)
+    assert cy == pytest.approx(0.5, abs=2e-3)
+    plt.close(fig)
+
+
+def test_inscribed_circle_center_handles_axis_anisotropy():
+    """The label sits in the visually fat lobe, not where raw coordinates point.
+
+    The polygon is an L on axes spanning c in [0, 1] and T in [0, 1000].  Its
+    horizontal arm spans all of ``c`` but is only 0.4 K tall – a thin sliver on
+    screen – while the vertical arm is the visually large region.  Without
+    normalising by the axis ranges, the raw distance metric (where 0.4 in T
+    dwarfs 1.0 in c) would place the centre in the sliver; normalising picks the
+    vertical arm instead.
+    """
+    fig, ax = plt.subplots()
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1000)
+    xy = np.array(
+        [(0.0, 0.0), (1.0, 0.0), (1.0, 0.4), (0.2, 0.4), (0.2, 1000.0), (0.0, 1000.0)]
+    )
+    cx, cy = _largest_inscribed_circle_center(xy, ax)
+    # Vertical arm: above the sliver and within its narrow c-width.
+    assert cy > 0.4
+    assert cx < 0.2
+    # A raw (un-normalised) pole of inaccessibility would land in the sliver.
+    raw = polylabel(ShapelyPolygon(xy), tolerance=1e-3)
+    assert raw.y < 0.4
+    plt.close(fig)
+
+
+def test_inscribed_circle_center_is_inside_polygon():
+    fig, ax = plt.subplots()
+    ax.set_xlim(0, 4)
+    ax.set_ylim(0, 4)
+    xy = np.array([(0, 0), (4, 0), (4, 1), (1, 1), (1, 4), (0, 4)], dtype=float)
+    center = _largest_inscribed_circle_center(xy, ax)
+    assert ShapelyPolygon(xy).contains(_point(center))
+    plt.close(fig)
+
+
+def test_inscribed_circle_center_returns_none_for_degenerate():
+    fig, ax = plt.subplots()
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    # Collinear points -> zero-area polygon.
+    xy = np.array([(0.0, 0.0), (0.5, 0.5), (1.0, 1.0)])
+    assert _largest_inscribed_circle_center(xy, ax) is None
+    plt.close(fig)
+
+
+def test_add_inline_polygon_labels_one_text_per_polygon():
+    fig, ax = plt.subplots()
+    ax.set_xlim(0, 3)
+    ax.set_ylim(0, 1)
+    polys = _polys_series([("A", 0), ("B", 0), ("A", 1)])
+    _add_inline_polygon_labels(ax, polys, {"A": "red", "B": "blue"})
+    texts = [t.get_text() for t in ax.texts]
+    assert texts == ["A", "B", "A'"]
+    # Each label uses its phase colour.
+    colors = {t.get_text(): matplotlib.colors.to_rgba(t.get_color()) for t in ax.texts}
+    assert colors["A"] == matplotlib.colors.to_rgba("red")
+    assert colors["B"] == matplotlib.colors.to_rgba("blue")
+    plt.close(fig)
+
+
+def test_plot_phase_diagram_inline_legend_default_labels_in_place():
+    fig, ax = plt.subplots()
+    plot_phase_diagram(_stable_df(), ax=ax, poly_method=Concave(drop_interior=False))
+    assert ax.get_legend() is None
+    labels = sorted(t.get_text() for t in ax.texts)
+    assert labels == ["A", "B"]
+    # Each label sits inside its polygon.
+    for t in ax.texts:
+        x, y = t.get_position()
+        inside = any(p.get_path().contains_point((x, y)) for p in ax.patches)
+        assert inside, f"label {t.get_text()!r} at {(x, y)} is outside every polygon"
+    plt.close(fig)
+
+
+def test_plot_phase_diagram_inline_legend_false_draws_legend():
+    fig, ax = plt.subplots()
+    plot_phase_diagram(
+        _stable_df(), ax=ax, poly_method=Concave(drop_interior=False), inline_legend=False
+    )
+    assert ax.get_legend() is not None
+    assert len(ax.texts) == 0
+    plt.close(fig)
+
+
+def _point(xy):
+    from shapely import Point
+
+    return Point(*xy)
+
+
 # --- rendered-image equivalence tests ----------------------------------------
 #
 # `matplotlib.testing.decorators.check_figures_equal` renders both figures and
@@ -308,7 +443,7 @@ def test_plot_phase_diagram_matches_explicit_pipeline(fig_test, fig_ref):
     method = Concave(drop_interior=False)
 
     ax_test = fig_test.subplots()
-    plot_phase_diagram(df, ax=ax_test, poly_method=method)
+    plot_phase_diagram(df, ax=ax_test, poly_method=method, inline_legend=False)
 
     df_stable = df.query("stable")
     color_map = get_phase_colors(df_stable.phase.unique())

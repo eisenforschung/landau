@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 import pandas as pd
+import shapely
+from shapely.ops import polylabel
 from matplotlib.colors import to_rgba
 
 from .calculate import calc_phase_diagram, get_transitions, cluster, cluster_T_c, _join_phase_unit
@@ -19,6 +21,79 @@ __all__ = [
     "plot_1d_mu_phase_diagram",
     "plot_1d_T_phase_diagram",
 ]
+
+
+def _text_with_background(ax, x, y, s, *, bg_alpha=0.6, **kwargs):
+    """Draw text with a semi-transparent white rounded background.
+
+    A small reusable wrapper around :meth:`matplotlib.axes.Axes.text` that keeps
+    a label legible when it sits on top of coloured regions or tielines.  Extra
+    keyword arguments are forwarded to ``ax.text``.
+
+    Returns the created :class:`matplotlib.text.Text`.
+    """
+    kwargs.setdefault(
+        "bbox",
+        dict(boxstyle="round", facecolor="white", alpha=bg_alpha, edgecolor="none"),
+    )
+    return ax.text(x, y, s, **kwargs)
+
+
+def _largest_inscribed_circle_center(polygon_xy, ax):
+    """Centre of the largest circle inscribable in a polygon, in data units.
+
+    Uses shapely's pole of inaccessibility (:func:`shapely.ops.polylabel`),
+    which lies inside even concave or crescent-shaped regions.  Phase-diagram
+    axes are strongly anisotropic (``c`` spans ~1, ``T`` spans hundreds of
+    kelvin), so the coordinates are normalised by the axis data-ranges before
+    the search and mapped back afterwards; this yields the visually – rather
+    than numerically – largest circle.
+
+    Returns ``(x, y)`` in data coordinates, or ``None`` for a degenerate
+    polygon.
+    """
+    x0, x1 = ax.get_xlim()
+    y0, y1 = ax.get_ylim()
+    sx = (x1 - x0) or 1.0
+    sy = (y1 - y0) or 1.0
+    coords = np.asarray(polygon_xy, dtype=float)
+    poly = shapely.Polygon(np.column_stack([coords[:, 0] / sx, coords[:, 1] / sy]))
+    if not poly.is_valid:
+        poly = shapely.make_valid(poly)
+        if isinstance(poly, shapely.MultiPolygon):
+            poly = max(poly.geoms, key=lambda g: g.area)
+    if not isinstance(poly, shapely.Polygon) or poly.is_empty or poly.area == 0:
+        return None
+    point = polylabel(poly, tolerance=1e-3)
+    return point.x * sx, point.y * sy
+
+
+def _add_inline_polygon_labels(ax, polys, color_map):
+    """Label each phase polygon in place instead of drawing a legend box.
+
+    Every polygon is annotated with its phase name (with trailing apostrophes
+    for repeated stability regions, matching :func:`plot_polygons`) at the
+    centre of its largest inscribed circle, on a semi-transparent white
+    background for legibility.
+
+    Args:
+        ax: matplotlib Axes the polygons were drawn on.
+        polys: Series of matplotlib Polygons indexed as in :func:`get_polygons`.
+        color_map: Mapping from phase name to colour, used to tint each label.
+    """
+    for key, p in polys.items():
+        if isinstance(key, tuple):
+            phase, rep = key
+        else:
+            phase, rep = key, 0
+        center = _largest_inscribed_circle_center(p.get_xy(), ax)
+        if center is None:
+            continue
+        _text_with_background(
+            ax, center[0], center[1], phase + "'" * rep,
+            ha="center", va="center", fontsize="small", fontweight="bold",
+            color=color_map.get(phase, "black"),
+        )
 
 
 def cluster_phase(df, distance_threshold=0.5):  # 0.5 hand-tuned
@@ -208,6 +283,7 @@ def _plot_phase_diagram(
     tielines=False,
     poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
     variables: list[str] | None = None,
+    inline_legend=True,
     ax=None,
 ):
     if variables is None:
@@ -227,7 +303,12 @@ def _plot_phase_diagram(
     _set_axis_for(variables[0], df_stable, element, ax)
 
     ax.set_ylim(df_stable["T"].min(), df_stable["T"].max())
-    ax.legend(ncols=2)
+    # Inline labels need the final axis limits to place each label at the centre
+    # of its polygon, so this runs after the limits above are set.
+    if inline_legend:
+        _add_inline_polygon_labels(ax, polys, color_map)
+    else:
+        ax.legend(ncols=2)
     ax.set_ylabel("$T$ [K]")
 
 
@@ -244,6 +325,7 @@ def plot_phase_diagram(
     tielines=False,
     poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
     variables: list[str] | None = None,
+    inline_legend=True,
     ax=None,
 ):
     return _plot_phase_diagram(
@@ -255,6 +337,7 @@ def plot_phase_diagram(
         tielines=tielines,
         poly_method=poly_method,
         variables=variables,
+        inline_legend=inline_legend,
         ax=ax,
     )
 
@@ -282,6 +365,7 @@ def plot_mu_phase_diagram(
     element=None,
     color_override: dict[str, str] = {},
     poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
+    inline_legend=True,
     ax=None,
 ):
     return _plot_phase_diagram(
@@ -291,6 +375,7 @@ def plot_mu_phase_diagram(
         color_override=color_override,
         poly_method=poly_method,
         variables=["mu", "T"],
+        inline_legend=inline_legend,
         ax=ax,
     )
 
@@ -421,12 +506,11 @@ def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True):
                 )
             phase = stable_phases[0]
             # White, semi-transparent bbox keeps the bold label legible on top of tielines.
-            ax.text(
-                mid, 0.97, phase,
+            _text_with_background(
+                ax, mid, 0.97, phase,
                 transform=xform,
                 ha="center", va="top", fontsize="small", fontweight="bold",
                 color=phase_colors.get(phase, "black"),
-                bbox=dict(boxstyle="round", facecolor="white", alpha=0.6, edgecolor="none"),
             )
 
     if side_labels and not df["stable"].all():
