@@ -1307,16 +1307,18 @@ def plot_excess_free_energy(
                 )
 
         if inline_legend:
-            # Anchor each solution-phase label above the centre of its largest
-            # continuous region: a free-energy curve is convex, so the space above it
-            # is open whether the phase is stable (lower-hull) or metastable (upper
-            # arc).  Anchoring on the largest continuous c-region keeps the label on
-            # the prominent stretch rather than on a sliver -- a phase stable only in
-            # the dilute corners would otherwise pull its label into a corner.  Line
-            # phases sit on the lower hull, so their labels go below the dot.  T is
-            # constant within a facet, so cluster_T_c splits regions by c alone.
-            # Placement is deferred until refline/limits settle below.
-            entries = []
+            # Label each solution phase above its largest continuous region: a
+            # free-energy curve is convex, so the space above it is open whether the
+            # phase is stable (lower-hull) or metastable (upper arc).  Anchoring on
+            # the largest continuous c-region keeps the label on the prominent stretch
+            # rather than a sliver (a phase stable only in the dilute corners would
+            # otherwise pull its label into a corner).  Within that arc the x-anchor
+            # is fanned out by the phase's rank instead of always sitting at the arc
+            # centre, so phases whose arcs all span the range don't pile their labels
+            # in the middle.  Line phases sit on the lower hull, so their labels go
+            # below the dot.  T is constant within a facet, so cluster_T_c splits
+            # regions by c alone.  Placement is deferred until refline/limits settle.
+            arcs = []
             for pname in sol_hue_order:
                 pg = sub_sol[sub_sol["phase"] == pname].dropna(subset=["f_excess"])
                 if pg.empty:
@@ -1326,13 +1328,19 @@ def plot_excess_free_energy(
                     seg = cluster_T_c(region, distance_threshold=0.1)
                     extent = region.groupby(seg)["c"].agg(lambda c: c.max() - c.min())
                     region = region.loc[seg == extent.idxmax()]
-                region = region.sort_values("c")
-                # Centre of the region's c-span (not the density-weighted mean, which
-                # mu-uniform sampling pulls into the dilute corners).
-                cs = region["c"].to_numpy()
-                x = 0.5 * (cs[0] + cs[-1])
-                y = np.interp(x, cs, region["f_excess"].to_numpy())
-                entries.append((pname, x, y, sol_palette.get(pname, "k"), "above"))
+                cs = region.sort_values("c")["c"].to_numpy()
+                fs = region.sort_values("c")["f_excess"].to_numpy()
+                arcs.append((pname, cs, fs, sol_palette.get(pname, "k")))
+            # Spread the anchors left-to-right: order the arcs by their centre, then
+            # place each phase's label at the rank-derived fraction of its own arc.
+            arcs.sort(key=lambda a: (0.5 * (a[1][0] + a[1][-1]), a[0]))
+            n = len(arcs)
+            entries = []
+            for i, (pname, cs, fs, color) in enumerate(arcs):
+                frac = (i + 0.5) / n
+                x = cs[0] + frac * (cs[-1] - cs[0])
+                y = np.interp(x, cs, fs)
+                entries.append((pname, x, y, color, "above"))
             for _, row in sub_lp.drop_duplicates("phase").iterrows():
                 entries.append((row["phase"], row["c"], row["f_excess"], palette.get(row["phase"], "k"), "below"))
             facet_entries.append((ax, entries))
