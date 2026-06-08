@@ -5,8 +5,42 @@ from scipy.constants import Boltzmann, eV
 from landau.interpolate import SGTE
 from landau.interpolate.basic import G_calphad
 from landau.phases import IdealSolution, LinePhase, TemperatureDependentLinePhase
+from landau.phases import _scalarize
 
 kB = Boltzmann / eV
+
+
+# --- _scalarize tests ---
+
+
+def test_scalarize_zero_d_float_array_returns_python_float():
+    out = _scalarize(np.array(3.5))
+    assert type(out) is float
+    assert out == 3.5
+
+
+def test_scalarize_zero_d_int_array_returns_python_int():
+    out = _scalarize(np.array(7))
+    assert type(out) is int
+    assert out == 7
+
+
+def test_scalarize_one_d_array_passes_through_unchanged():
+    arr = np.array([1.0, 2.0, 3.0])
+    out = _scalarize(arr)
+    assert out is arr
+
+
+def test_scalarize_python_float_passes_through_unchanged():
+    out = _scalarize(2.5)
+    assert type(out) is float
+    assert out == 2.5
+
+
+def test_scalarize_non_array_with_no_ndim_passes_through():
+    payload = [1, 2, 3]
+    out = _scalarize(payload)
+    assert out is payload
 
 
 def _make_line_phase(c=0.25, energy=-1.0, entropy=0.01):
