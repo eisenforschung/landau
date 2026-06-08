@@ -849,7 +849,7 @@ def plot_1d_mu_phase_diagram(
 
             _text_with_outline(ax, mt - .05 * dfm, 0.02, rf"$\Delta\mu = {mt:.03f}\,\mathrm{{eV}}$",
                                transform=ax.get_xaxis_transform(),
-                               rotation='vertical', ha='center', va='bottom')
+                               rotation='vertical', ha='center', va='bottom', zorder=100)
     ax.set_xlabel("Chemical Potential Difference [eV]")
     ylabel = "Semi-grandcanonical Potential [eV/atom]"
     if reference_phase is not None:
@@ -941,7 +941,7 @@ def plot_1d_T_phase_diagram(
 
             _text_with_outline(ax, Tt + .05 * dft, 0.02, rf"$T = {Tt:.0f}\,\mathrm{{K}}$",
                                transform=ax.get_xaxis_transform(),
-                               rotation='vertical', ha='center', va='bottom')
+                               rotation='vertical', ha='center', va='bottom', zorder=100)
 
     ax.set_xlabel("Temperature [K]")
     ylabel = "Semi-grandcanonical potential [eV/atom]"
