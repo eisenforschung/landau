@@ -3,6 +3,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.colors import to_rgba
 import pandas as pd
 import pytest
 import seaborn as sns
@@ -150,16 +151,58 @@ def test_all_line_phases_no_crash():
 
 
 def test_all_line_phases_legend_present():
-    """When only line phases are stable the figure legend must list all phase names."""
+    """With inline_legend=False and only line phases the figure legend lists all names."""
     from landau.calculate import calc_phase_diagram
 
     e0 = LinePhase("A", fixed_concentration=0, line_energy=-2.0, line_entropy=1.0 * kB)
     e1 = LinePhase("B", fixed_concentration=1, line_energy=-3.0, line_entropy=1.5 * kB)
     inter = LinePhase("AB", fixed_concentration=0.5, line_energy=-2.8, line_entropy=1.3 * kB)
     df = calc_phase_diagram([e0, e1, inter], Ts=1000, mu=50, keep_unstable=True)
-    g = plot_excess_free_energy(df, convex_hull=True)
+    g = plot_excess_free_energy(df, convex_hull=True, inline_legend=False)
     legend = g.figure.legends
     assert legend, "figure legend is missing when only line phases are stable"
     legend_labels = {t.get_text() for t in legend[0].texts}
     assert {"A", "B", "AB"} <= legend_labels
+    plt.close(g.fig)
+
+
+# ---------------------------------------------------------------------------
+# Inline labels
+# ---------------------------------------------------------------------------
+
+
+def test_inline_legend_default_drops_figure_legend():
+    """Inline labels are on by default and replace the figure legend box."""
+    g = plot_excess_free_energy(_minimal_df([1000]))
+    assert not g.figure.legends
+    plt.close(g.fig)
+
+
+def test_inline_legend_labels_every_phase_on_each_facet():
+    """Each facet carries one inline text label per phase (solution + line)."""
+    g = plot_excess_free_energy(_minimal_df([500, 1000]))
+    for ax in g.axes.flat:
+        labels = {t.get_text() for t in ax.texts}
+        # 'solid' is a solution curve, 'AB' a line-phase dot; both must be labelled.
+        assert {"solid", "AB"} <= labels
+    plt.close(g.fig)
+
+
+def test_inline_label_colors_match_curves():
+    """Inline label colours match the phase palette, not a default black."""
+    df = _minimal_df([1000])
+    override = {"solid": "#123456"}
+    g = plot_excess_free_energy(df, color_override=override)
+    ax = g.axes.flat[0]
+    solid_label = next(t for t in ax.texts if t.get_text() == "solid")
+    assert to_rgba(solid_label.get_color()) == to_rgba("#123456")
+    plt.close(g.fig)
+
+
+def test_inline_legend_false_keeps_figure_legend():
+    """inline_legend=False keeps the right-hand figure legend and adds no inline text."""
+    g = plot_excess_free_energy(_minimal_df([1000]), inline_legend=False)
+    assert g.figure.legends
+    for ax in g.axes.flat:
+        assert not ax.texts
     plt.close(g.fig)
