@@ -52,6 +52,18 @@ def c_from_dmu(dmu, T, e_defect):
     return 1 / (1 + np.exp(-(dmu - e_defect) / kB / T))
 
 
+def _scalarize(x):
+    """Collapse a 0-d numpy result to a Python scalar; pass everything else through.
+
+    Phase methods promise a Python scalar out when both ``T`` and ``dmu`` are
+    scalars in; broadcasting through ``np.asarray`` / ``np.vectorize`` otherwise
+    leaves them as 0-d arrays. This is the central place to undo that.
+    """
+    if isinstance(x, np.ndarray) and x.ndim == 0:
+        return x.item()
+    return x
+
+
 @dataclass(frozen=True)
 class Phase(ABC):
     """
@@ -101,8 +113,7 @@ class AbstractLinePhase(Phase):
         return self.line_free_energy(T)
 
     def concentration(self, T, dmu):
-        result = np.full(np.broadcast(T, dmu).shape, self.line_concentration)
-        return result.item() if result.ndim == 0 else result
+        return _scalarize(np.full(np.broadcast(T, dmu).shape, self.line_concentration))
 
     def semigrand_potential(self, T, dmu):
         f = self.line_free_energy(T)
@@ -235,9 +246,7 @@ class IdealSolution(Phase):
                     phi = f2 - dmu
                 else:
                     phi[I] = f2 - dmu[I]
-        if phi.shape == ():
-            phi = phi.item()
-        return phi
+        return _scalarize(phi)
 
     def concentration(self, T, dmu):
         p1 = self.phase1
@@ -368,10 +377,7 @@ class RegularSolution(Phase):
         if not isinstance(dmu, np.ndarray):
             if np.isnan(pi):
                 pi = np.inf
-            x = min(pi, pl, f0)
-            if isinstance(x, np.ndarray):
-                x = x.item()
-            return x
+            return _scalarize(min(pi, pl, f0))
         pl[pl > f0] = f0
         I = np.isnan(pi)
         pi[I] = pl[I]
@@ -498,11 +504,7 @@ class InterpolatingPhase(Phase):
         c = c.reshape(output_shape)
         phi = phi.reshape(output_shape)
 
-        if c.ndim == 0:
-            c = c.item()
-        if phi.ndim == 0:
-            phi = phi.item()
-        return phi, c
+        return _scalarize(phi), _scalarize(c)
 
     def semigrand_potential(self, T, dmu):
         return self._find_phi_c(T, dmu)[0]
@@ -600,11 +602,7 @@ class SlowInterpolatingPhase(Phase):
 
     def _find_phi_c(self, T, dmu):
         phi, c = np.squeeze(np.vectorize(self._find_phi_c_scalar)(T, dmu))
-        if c.ndim == 0:
-            c = c.item()
-        if phi.ndim == 0:
-            phi = phi.item()
-        return phi, c
+        return _scalarize(phi), _scalarize(c)
 
     def semigrand_potential(self, T, dmu):
         return self._find_phi_c(T, dmu)[0]
