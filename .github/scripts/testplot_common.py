@@ -6,38 +6,64 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 POLY_METHODS = ["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"]
 
 
-def _read_plot_names() -> list[str]:
-    """Read available plot names from tests/integration/testplots.py via AST.
+_FALLBACK_PLOTS = [
+    ("1d_T_three_stable", "1D temperature diagram"),
+    ("1d_mu_three_stable", "1D chemical-potential diagram"),
+    ("2d_basics", "2D c-T diagram (ideal solutions)"),
+    ("2d_basics_mu", "2D T-mu diagram (ideal solutions)"),
+    ("2d_toy", "2D c-T diagram (regular solution)"),
+    ("2d_toy_mu", "2D T-mu diagram (regular solution)"),
+    ("excess_free_energy", "excess free energy vs concentration"),
+]
 
-    Parses the PLOTS dict keys without importing landau, so it works in
-    the trusted parse/select job before the package is installed. Always stays
-    in sync with whatever is on the main checkout.
+
+def _read_plots() -> list[tuple[str, str]]:
+    """Read (plot name, one-line description) pairs from testplots.py via AST.
+
+    Parses the PLOTS dict keys and the first docstring line of each mapped
+    plot function, without importing landau, so it works in the trusted
+    parse/select job before the package is installed. The list always stays
+    in sync with whatever plots exist on the main checkout, so the Haiku
+    prompts never reference a renamed or removed plot.
     """
     script = Path(__file__).parents[2] / "tests" / "integration" / "testplots.py"
     try:
         tree = ast.parse(script.read_text())
+        summaries = {
+            node.name: next(iter((ast.get_docstring(node) or "").strip().splitlines()), "").strip()
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
         for node in ast.walk(tree):
             if (
                 isinstance(node, ast.Assign)
                 and any(isinstance(t, ast.Name) and t.id == "PLOTS" for t in node.targets)
                 and isinstance(node.value, ast.Dict)
             ):
-                return [
-                    k.value
-                    for k in node.value.keys
-                    if isinstance(k, ast.Constant) and isinstance(k.value, str)
-                ]
+                plots = []
+                for key, value in zip(node.value.keys, node.value.values):
+                    if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+                        continue
+                    fn = value.elts[0] if isinstance(value, ast.Tuple) and value.elts else None
+                    summary = summaries.get(fn.id, "") if isinstance(fn, ast.Name) else ""
+                    plots.append((key.value, summary))
+                if plots:
+                    return plots
     except Exception as exc:
         print(f"warning: could not read PLOTS from testplots.py ({exc}); using fallback list", file=sys.stderr)
-    return ["1d_T_three_stable", "1d_mu", "2d_basics", "2d_basics_mu", "2d_toy", "2d_toy_mu", "excess_free_energy"]
+    return list(_FALLBACK_PLOTS)
 
 
-PLOT_NAMES = _read_plot_names()
+PLOTS = _read_plots()
+PLOT_NAMES = [name for name, _ in PLOTS]
+# Markdown bullet list of "  name : description" lines for the Haiku prompts.
+PLOT_LIST = "\n".join(f"  {name:<22}: {desc}" if desc else f"  {name}" for name, desc in PLOTS)
 
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
@@ -76,20 +102,32 @@ def _validate(payload: dict) -> dict:
 
 
 def _call_claude(prompt: str, system: str) -> str:
-    result = subprocess.run(
-        [
-            "claude",
-            "--model", "claude-haiku-4-5-20251001",
-            "--append-system-prompt", system,
-            "--output-format", "text",
-            "--permission-mode", "plan",
-            "-p", prompt,
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=120,
-    )
+    # Run Haiku as a pure text->JSON transform, not an interactive agent:
+    #   --system-prompt   replaces the default agentic prompt (instead of
+    #                     appending to it), so the model follows our JSON
+    #                     instructions rather than asking the user what to do;
+    #   --tools ""        disables every tool, so there is no plan-mode dance
+    #                     and the model can only emit text;
+    #   cwd=<tmp>         isolates the call from the repo so CLAUDE.md is not
+    #                     auto-discovered and read as a PR-review task.
+    # Without these, Haiku loaded the landau CLAUDE.md and replied with prose
+    # like "What would you like me to do with these changes?" instead of JSON.
+    with tempfile.TemporaryDirectory() as workdir:
+        result = subprocess.run(
+            [
+                "claude",
+                "--model", "claude-haiku-4-5-20251001",
+                "--system-prompt", system,
+                "--tools", "",
+                "--output-format", "text",
+                "-p", prompt,
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=120,
+            cwd=workdir,
+        )
     return result.stdout
 
 

@@ -21,7 +21,7 @@ import argparse
 import json
 import os
 
-from testplot_common import PLOT_NAMES, POLY_METHODS, run_haiku
+from testplot_common import PLOT_LIST, PLOT_NAMES, POLY_METHODS, run_haiku
 
 # ---------------------------------------------------------------------------
 # parse subcommand
@@ -38,15 +38,10 @@ every matching value rather than picking one.
 
 Flags:
 
-  --only {{{','.join(PLOT_NAMES)}}} [...]
-        restrict to a subset of plots. Plot keys:
-          1d_T_three_stable : 1D temperature diagram (pure-A fcc/hcp/liquid line phases)
-          1d_mu             : 1D chemical-potential diagram (hcp vs fcc isothermal)
-          2d_basics         : 2D c-T diagram (ideal-solution hcp/fcc/liquid)
-          2d_basics_mu      : 2D T-mu diagram (same phases as 2d_basics)
-          2d_toy            : 2D c-T diagram (regular-solution liquid + intermediate solid)
-          2d_toy_mu         : 2D T-mu diagram (same phases as 2d_toy)
-          excess_free_energy: excess free energy vs concentration (Intermetallics example)
+  --only <plot> [...]
+        restrict to a subset of plots. Available plot keys (the ONLY valid
+        values for --only — never invent or guess a key that is not listed):
+{PLOT_LIST}
 
   --poly-method {{{','.join(POLY_METHODS)}}} [...]
         one or more polygon-construction methods, cross-producted over the
@@ -54,16 +49,17 @@ Flags:
 
   --tielines {{on,off}} [...]
         one or more tieline modes, cross-producted over 2D c-T plots
-        (only affects 2d_basics / 2d_toy). Default: on.
+        (only affects 2d_* c-T plots). Default: on.
 
-Mapping conventions:
-  - "1d T" / "1D temperature" -> --only 1d_T_three_stable
-  - "1d mu" / "1D chemical potential" -> --only 1d_mu
-  - "1d" alone -> --only 1d_T_three_stable 1d_mu
-  - "2d" alone -> all four 2D c-T/mu plots
-  - "2d basics" -> 2d_basics 2d_basics_mu ; "2d basics c" -> 2d_basics
-  - "2d toy" -> 2d_toy 2d_toy_mu ; "2d toy mu" -> 2d_toy_mu
-  - "excess" / "excess free energy" -> --only excess_free_energy
+Mapping conventions (match against the plot keys listed above; if several
+keys share a prefix, e.g. multiple `1d_mu_*`, include all of them):
+  - "1d T" / "1D temperature" -> every 1d_T_* key
+  - "1d mu" / "1D chemical potential" -> every 1d_mu_* key
+  - "1d" alone -> every 1d_* key
+  - "2d" alone -> every 2d_* key
+  - "2d basics" -> every 2d_basics* key ; "2d basics c" -> 2d_basics
+  - "2d toy" -> every 2d_toy* key ; "2d toy mu" -> 2d_toy_mu
+  - "excess" / "excess free energy" -> every excess_free_energy* key
   - "fasttsp" / "fast tsp" -> --poly-method fasttsp
   - "all tsp methods" / "tsp methods" -> --poly-method tsp fasttsp segment-tsp segment-fasttsp
   - "segment methods" / "segment tsp methods" -> --poly-method segment-tsp segment-fasttsp
@@ -105,14 +101,9 @@ def _cmd_parse() -> None:
 
 _SELECT_SYSTEM = f"""You pick which phase-diagram tests to render for a PR.
 
-The script tests/integration/testplots.py renders these plots:
-  1d_T_three_stable : 1D temperature diagram (pure-A line phases)
-  1d_mu             : 1D chemical-potential diagram (ideal solutions)
-  2d_basics         : 2D c-T diagram (ideal-solution hcp/fcc/liquid)
-  2d_basics_mu      : 2D T-mu diagram (same phases as 2d_basics)
-  2d_toy            : 2D c-T diagram (regular-solution liquid + intermediate solid)
-  2d_toy_mu         : 2D T-mu diagram (same phases as 2d_toy)
-  excess_free_energy: excess free energy vs concentration (Intermetallics example)
+The script tests/integration/testplots.py renders these plots. These keys are
+the ONLY valid values for --only; never invent or guess a key not listed here:
+{PLOT_LIST}
 
 Flags you can emit:
   --only <plot> [...]                     subset of plots (omit = all {len(PLOT_NAMES)})
