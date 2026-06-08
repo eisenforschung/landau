@@ -644,6 +644,7 @@ def test_transition_labels_have_white_outline(plot_func, fixture, request):
             effects = t.get_path_effects()
             assert len(effects) == 1, f"{t.get_text()!r} has no path effect"
             assert to_rgba(effects[0]._gc["foreground"]) == to_rgba("white")
+            assert t.get_zorder() >= 100, f"{t.get_text()!r} zorder too low"
     finally:
         plt.close(fig)
 
