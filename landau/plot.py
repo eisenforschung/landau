@@ -705,7 +705,7 @@ def _place_transition_labels(ax, positions, labels, *, side, **text_kw):
     texts = [
         _text_with_outline(
             ax, x, 0.02, s, transform=xform,
-            rotation="vertical", ha="center", va="bottom", zorder=100, **text_kw,
+            rotation="vertical", ha="center", va="bottom", fontsize="small", zorder=100, **text_kw,
         )
         for x, s in zip(positions, labels)
     ]

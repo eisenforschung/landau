@@ -23,6 +23,7 @@ from collections import Counter
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from matplotlib.colors import to_rgba
+from matplotlib.font_manager import FontProperties
 
 import landau.calculate as ldc
 import landau.phases as ldp
@@ -647,6 +648,28 @@ def test_transition_labels_have_white_outline(plot_func, fixture, request):
             assert len(effects) == 1, f"{t.get_text()!r} has no path effect"
             assert to_rgba(effects[0]._gc["foreground"]) == to_rgba("white")
             assert t.get_zorder() >= 100, f"{t.get_text()!r} zorder too low"
+    finally:
+        plt.close(fig)
+
+
+@pytest.mark.parametrize(
+    "plot_func, fixture",
+    [
+        (plot_1d_T_phase_diagram, "df_T_three_stable"),
+        (plot_1d_mu_phase_diagram, "df_mu_three_stable"),
+    ],
+)
+def test_transition_labels_use_small_fontsize(plot_func, fixture, request):
+    """Transition-marker labels render at the 'small' size, matching the side labels."""
+    df = request.getfixturevalue(fixture)
+    expected = FontProperties(size="small").get_size_in_points()
+    fig, ax = plt.subplots()
+    try:
+        plot_func(df, ax=ax)
+        labels = _transition_text_artists(ax)
+        assert labels, "no transition-marker labels found"
+        for t in labels:
+            assert t.get_fontsize() == pytest.approx(expected), t.get_text()
     finally:
         plt.close(fig)
 
