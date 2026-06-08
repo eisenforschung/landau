@@ -1027,18 +1027,22 @@ def plot_1d_T_phase_diagram(
 # ---------------------------------------------------------------------------
 
 def _add_inline_curve_labels(ax, entries):
-    """Label curves/points on the data instead of via a legend box.
+    """Label curves/points just off the data line instead of via a legend box.
 
-    Each entry ``(label, x, y, color)`` is drawn at its anchor on the curve with a
-    white outline in the phase colour (mathtext subscripts bolded by
-    :func:`_bold_math`).  The whole set is then nudged apart along ``y`` in display
-    pixels by :func:`_spread_labels` so labels never overlap, while ``x`` stays
-    anchored to the curve.  Mirrors the inline labelling used by the 2d
+    Each entry ``(label, x, y, color, side)`` is anchored at ``(x, y)`` on the
+    curve (or dot) and drawn one label-height clear of it rather than on top of it:
+    ``side="above"`` lifts the label into the open (convex) side of a free-energy
+    curve, ``side="below"`` drops it under a lower-hull line-phase dot.  Labels are
+    white-outlined in the phase colour with mathtext subscripts bolded by
+    :func:`_bold_math`, then nudged apart along ``y`` in display pixels by
+    :func:`_spread_labels` so they never overlap, while ``x`` stays anchored to the
+    curve.  Mirrors the inline labelling used by the 2d
     (:func:`_add_inline_polygon_labels`) and 1d (:func:`_place_side_labels`) plots.
 
     Args:
         ax: matplotlib Axes the curves were drawn on.
-        entries: iterable of ``(label, x, y, color)`` anchors, one per phase.
+        entries: iterable of ``(label, x, y, color, side)`` anchors, one per phase,
+            with ``side`` one of ``"above"`` / ``"below"``.
 
     Returns the created :class:`~matplotlib.text.Text` artists.
     """
@@ -1053,13 +1057,17 @@ def _add_inline_curve_labels(ax, entries):
             ha="center", va="center", fontsize="small", fontweight="bold",
             color=color, zorder=10,
         )
-        for label, x, y, color in entries
+        for label, x, y, color, _side in entries
     ]
     heights = [t.get_window_extent(renderer).height for t in texts]
-    target_px = [ax.transData.transform((x, y))[1] for _, x, y, _ in entries]
+    pad = 0.01 * axbb.height  # clearance kept between a label box and the line
+    target_px = [
+        ax.transData.transform((x, y))[1] + (h / 2 + pad) * (1 if side == "above" else -1)
+        for (_label, x, y, _color, side), h in zip(entries, heights)
+    ]
     placed_px = _spread_labels(target_px, heights, axbb.y0, axbb.y1)
     inv = ax.transData.inverted()
-    for t, (_, x, _y, _c), py in zip(texts, entries, placed_px):
+    for t, (_label, x, *_rest), py in zip(texts, entries, placed_px):
         t.set_position((x, inv.transform((axbb.x0, py))[1]))
     return texts
 
@@ -1098,8 +1106,9 @@ def plot_excess_free_energy(
             (faded lines) and overlay the common-tangent segments in black.
             If False, all solution phases render as plain solid curves.
         inline_legend: If True (default), drop the figure legend and label each
-            phase on its curve (line phases at their dot), white-outlined and
-            colour-matched, with overlapping labels spread apart vertically. If
+            phase just off its line -- solution curves above the centre of their
+            largest continuous region, line phases below their dot -- white-outlined
+            and colour-matched, with overlapping labels spread apart vertically. If
             False, keep the figure legend box on the right.
 
     Returns:
@@ -1225,20 +1234,34 @@ def plot_excess_free_energy(
                 )
 
         if inline_legend:
-            # Anchor each phase's label on the body of its curve (the mid-c point of
-            # all its drawn rows) so it sits on the visible line rather than in a
-            # cramped corner -- a phase stable only in slivers near the pure elements
-            # is still the prominent faded arc across the middle.  Line phases anchor
-            # at their dot.  Placement is deferred until refline/limits settle below.
+            # Anchor each solution-phase label above the centre of its largest
+            # continuous region: a free-energy curve is convex, so the space above it
+            # is open whether the phase is stable (lower-hull) or metastable (upper
+            # arc).  Anchoring on the largest continuous c-region keeps the label on
+            # the prominent stretch rather than on a sliver -- a phase stable only in
+            # the dilute corners would otherwise pull its label into a corner.  Line
+            # phases sit on the lower hull, so their labels go below the dot.  T is
+            # constant within a facet, so cluster_T_c splits regions by c alone.
+            # Placement is deferred until refline/limits settle below.
             entries = []
             for pname in sol_hue_order:
-                pg = sub_sol[sub_sol["phase"] == pname].dropna(subset=["f_excess"]).sort_values("c")
+                pg = sub_sol[sub_sol["phase"] == pname].dropna(subset=["f_excess"])
                 if pg.empty:
                     continue
-                row = pg.iloc[len(pg) // 2]
-                entries.append((pname, row["c"], row["f_excess"], sol_palette.get(pname, "k")))
+                region = pg
+                if len(region) > 1:
+                    seg = cluster_T_c(region, distance_threshold=0.1)
+                    extent = region.groupby(seg)["c"].agg(lambda c: c.max() - c.min())
+                    region = region.loc[seg == extent.idxmax()]
+                region = region.sort_values("c")
+                # Centre of the region's c-span (not the density-weighted mean, which
+                # mu-uniform sampling pulls into the dilute corners).
+                cs = region["c"].to_numpy()
+                x = 0.5 * (cs[0] + cs[-1])
+                y = np.interp(x, cs, region["f_excess"].to_numpy())
+                entries.append((pname, x, y, sol_palette.get(pname, "k"), "above"))
             for _, row in sub_lp.drop_duplicates("phase").iterrows():
-                entries.append((row["phase"], row["c"], row["f_excess"], palette.get(row["phase"], "k")))
+                entries.append((row["phase"], row["c"], row["f_excess"], palette.get(row["phase"], "k"), "below"))
             facet_entries.append((ax, entries))
 
     if inline_legend:
