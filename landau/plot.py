@@ -847,9 +847,9 @@ def plot_1d_mu_phase_diagram(
             ax.axvline(mt, color='k', linestyle='dotted', alpha=.5)
             ax.scatter(mt, ft, marker='o', c='k', zorder=10)
 
-            ax.text(mt - .05 * dfm, 0.02, rf"$\Delta\mu = {mt:.03f}\,\mathrm{{eV}}$",
-                    transform=ax.get_xaxis_transform(),
-                    rotation='vertical', ha='center', va='bottom')
+            _text_with_outline(ax, mt - .05 * dfm, 0.02, rf"$\Delta\mu = {mt:.03f}\,\mathrm{{eV}}$",
+                               transform=ax.get_xaxis_transform(),
+                               rotation='vertical', ha='center', va='bottom')
     ax.set_xlabel("Chemical Potential Difference [eV]")
     ylabel = "Semi-grandcanonical Potential [eV/atom]"
     if reference_phase is not None:
@@ -939,9 +939,9 @@ def plot_1d_T_phase_diagram(
             ax.axvline(Tt, color='k', linestyle='dotted', alpha=.5)
             ax.scatter(Tt, ft, marker='o', c='k', zorder=10)
 
-            ax.text(Tt + .05 * dft, 0.02, rf"$T = {Tt:.0f}\,\mathrm{{K}}$",
-                    transform=ax.get_xaxis_transform(),
-                    rotation='vertical', ha='center', va='bottom')
+            _text_with_outline(ax, Tt + .05 * dft, 0.02, rf"$T = {Tt:.0f}\,\mathrm{{K}}$",
+                               transform=ax.get_xaxis_transform(),
+                               rotation='vertical', ha='center', va='bottom')
 
     ax.set_xlabel("Temperature [K]")
     ylabel = "Semi-grandcanonical potential [eV/atom]"

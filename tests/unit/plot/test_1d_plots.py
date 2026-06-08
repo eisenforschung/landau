@@ -625,6 +625,29 @@ def test_transition_labels_stay_inside_axis_under_ylim(plot_func, fixture, ylim,
         plt.close(fig)
 
 
+@pytest.mark.parametrize(
+    "plot_func, fixture",
+    [
+        (plot_1d_T_phase_diagram, "df_T_three_stable"),
+        (plot_1d_mu_phase_diagram, "df_mu_three_stable"),
+    ],
+)
+def test_transition_labels_have_white_outline(plot_func, fixture, request):
+    """Transition-marker labels are stroked with a white outline (legible over tielines)."""
+    df = request.getfixturevalue(fixture)
+    fig, ax = plt.subplots()
+    try:
+        plot_func(df, ax=ax)
+        labels = _transition_text_artists(ax)
+        assert labels, "no transition-marker labels found"
+        for t in labels:
+            effects = t.get_path_effects()
+            assert len(effects) == 1, f"{t.get_text()!r} has no path effect"
+            assert to_rgba(effects[0]._gc["foreground"]) == to_rgba("white")
+    finally:
+        plt.close(fig)
+
+
 # ---------------------------------------------------------------------------
 # Custom phase legend (_add_1d_phase_legend)
 # ---------------------------------------------------------------------------
