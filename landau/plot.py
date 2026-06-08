@@ -673,6 +673,80 @@ def _place_side_labels(ax, df, scan_col, phase_colors, top_texts=()):
     place(left_texts, left, h_left, f_left + margin_frac)
 
 
+def _place_transition_labels(ax, positions, labels, *, side, **text_kw):
+    """Label transition lines with vertical text, spread to avoid overlaps.
+
+    Each transition at ``positions[i]`` is annotated with ``labels[i]`` as rotated
+    (vertical) text just inside the bottom of the axes.  Each label is first offset
+    to one side of its line, then the whole row is fanned apart along x by the same
+    :func:`_spread_labels` routine that stacks the side labels vertically -- this
+    removes every mutual overlap while preserving the labels' left-to-right order.
+    A final best-effort pass shifts any label that still straddles a dotted
+    transition line clear of it, but only within the slack its neighbours leave, so
+    it never re-introduces an overlap; lines packed closer than a label is wide
+    cannot all be avoided and are left as they fall.
+
+    ``side`` ('left' or 'right') biases the initial offset of each label relative
+    to its own line.
+
+    Returns the created :class:`~matplotlib.text.Text` artists.
+    """
+    if len(positions) == 0:
+        return []
+    order = np.argsort(positions)
+    positions = [positions[i] for i in order]
+    labels = [labels[i] for i in order]
+
+    renderer = _get_renderer(ax.figure)
+    axbb = ax.get_window_extent(renderer)
+    # y in axes fraction (blended transform) so a zoomed ylim can't fling the text
+    # out of view; only the x position is spread.
+    xform = ax.get_xaxis_transform()
+    texts = [
+        _text_with_outline(
+            ax, x, 0.02, s, transform=xform,
+            rotation="vertical", ha="center", va="bottom", zorder=100, **text_kw,
+        )
+        for x, s in zip(positions, labels)
+    ]
+    widths = [t.get_window_extent(renderer).width for t in texts]
+
+    # Spreading is done in display pixels (a rendered width is constant there), then
+    # mapped back to the data x the blended transform expects.
+    lines_px = [ax.transData.transform((x, 0.0))[0] for x in positions]
+    pad = 0.004 * axbb.width  # clearance kept between a label box and a line
+    half = [w / 2 for w in widths]
+    offset = -1 if side == "left" else 1
+
+    # Offset each label to one side of its line, then fan them apart (order- and
+    # bound-preserving) so no two boxes overlap.
+    centers = [lines_px[i] + offset * (half[i] + pad) for i in range(len(texts))]
+    centers = _spread_labels(centers, widths, axbb.x0, axbb.x1, gap=pad)
+
+    # Best-effort: shift any label that still covers a transition line off it,
+    # clamped to the slack between its neighbours (and the axes) so the no-overlap
+    # guarantee from the spread survives.
+    def covered(c, i):
+        return sum(c - half[i] - pad < L < c + half[i] + pad for L in lines_px)
+
+    for i, c in enumerate(centers):
+        lo = axbb.x0 + half[i] if i == 0 else centers[i - 1] + half[i - 1] + half[i] + pad
+        hi = axbb.x1 - half[i] if i == len(centers) - 1 else centers[i + 1] - half[i + 1] - half[i] - pad
+        if lo > hi or covered(c, i) == 0:
+            continue
+        # Candidate slots sit the box just left or right of each line; clamp to the
+        # neighbour slack and keep the reachable one that covers the fewest lines.
+        slots = [L + s * (half[i] + pad) for L in lines_px for s in (-1, 1)]
+        cands = [c] + [min(max(s, lo), hi) for s in slots]
+        centers[i] = min(cands, key=lambda cc: (covered(cc, i), abs(cc - c)))
+
+    inv = ax.transData.inverted()
+    for t, c in zip(texts, centers):
+        t.set_position((inv.transform((c, 0.0))[0], 0.02))
+
+    return texts
+
+
 def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True, ylim=None):
     """Annotate a 1d phase diagram with inline phase labels.
 
@@ -836,20 +910,18 @@ def plot_1d_mu_phase_diagram(
     if 'border' not in df.columns:
         return ax
 
-    dfm = np.ptp(df['mu'].dropna())
-
     if mark_transitions:
-        # Label y in axes fraction (blended transform) so a zoomed ylim can't fling the
-        # text out of view; the marker dot stays in data coords and is simply clipped if
-        # the crossing lies outside the window.
+        # The marker dot stays in data coords and is simply clipped if the crossing
+        # lies outside the window; the labels are placed (and spread) by
+        # _place_transition_labels.
+        positions, labels = [], []
         for mt, dd in df.query("mu.min()<mu<mu.max() and border").groupby("mu"):
             ft = dd['phi'].iloc[0]
             ax.axvline(mt, color='k', linestyle='dotted', alpha=.5)
             ax.scatter(mt, ft, marker='o', c='k', zorder=10)
-
-            _text_with_outline(ax, mt - .05 * dfm, 0.02, rf"$\Delta\mu = {mt:.03f}\,\mathrm{{eV}}$",
-                               transform=ax.get_xaxis_transform(),
-                               rotation='vertical', ha='center', va='bottom', zorder=100)
+            positions.append(mt)
+            labels.append(rf"$\Delta\mu = {mt:.03f}\,\mathrm{{eV}}$")
+        _place_transition_labels(ax, positions, labels, side="left")
     ax.set_xlabel("Chemical Potential Difference [eV]")
     ylabel = "Semi-grandcanonical Potential [eV/atom]"
     if reference_phase is not None:
@@ -928,20 +1000,18 @@ def plot_1d_T_phase_diagram(
     if 'border' not in df.columns:
         return ax
 
-    dft = np.ptp(df['T'].dropna())
-
     if mark_transitions:
-        # Label y in axes fraction (blended transform) so a zoomed ylim can't fling the
-        # text out of view; the marker dot stays in data coords and is simply clipped if
-        # the crossing lies outside the window.
+        # The marker dot stays in data coords and is simply clipped if the crossing
+        # lies outside the window; the labels are placed (and spread) by
+        # _place_transition_labels.
+        positions, labels = [], []
         for Tt, dd in df.query("T.min()<T<T.max() and border").groupby("T"):
             ft = dd['phi'].iloc[0]
             ax.axvline(Tt, color='k', linestyle='dotted', alpha=.5)
             ax.scatter(Tt, ft, marker='o', c='k', zorder=10)
-
-            _text_with_outline(ax, Tt + .05 * dft, 0.02, rf"$T = {Tt:.0f}\,\mathrm{{K}}$",
-                               transform=ax.get_xaxis_transform(),
-                               rotation='vertical', ha='center', va='bottom', zorder=100)
+            positions.append(Tt)
+            labels.append(rf"$T = {Tt:.0f}\,\mathrm{{K}}$")
+        _place_transition_labels(ax, positions, labels, side="right")
 
     ax.set_xlabel("Temperature [K]")
     ylabel = "Semi-grandcanonical potential [eV/atom]"
