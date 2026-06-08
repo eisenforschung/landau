@@ -1026,6 +1026,44 @@ def plot_1d_T_phase_diagram(
 # Excess free energy plot
 # ---------------------------------------------------------------------------
 
+def _add_inline_curve_labels(ax, entries):
+    """Label curves/points on the data instead of via a legend box.
+
+    Each entry ``(label, x, y, color)`` is drawn at its anchor on the curve with a
+    white outline in the phase colour (mathtext subscripts bolded by
+    :func:`_bold_math`).  The whole set is then nudged apart along ``y`` in display
+    pixels by :func:`_spread_labels` so labels never overlap, while ``x`` stays
+    anchored to the curve.  Mirrors the inline labelling used by the 2d
+    (:func:`_add_inline_polygon_labels`) and 1d (:func:`_place_side_labels`) plots.
+
+    Args:
+        ax: matplotlib Axes the curves were drawn on.
+        entries: iterable of ``(label, x, y, color)`` anchors, one per phase.
+
+    Returns the created :class:`~matplotlib.text.Text` artists.
+    """
+    entries = list(entries)
+    if not entries:
+        return []
+    renderer = _get_renderer(ax.figure)
+    axbb = ax.get_window_extent(renderer)
+    texts = [
+        _text_with_outline(
+            ax, x, y, _bold_math(label),
+            ha="center", va="center", fontsize="small", fontweight="bold",
+            color=color, zorder=10,
+        )
+        for label, x, y, color in entries
+    ]
+    heights = [t.get_window_extent(renderer).height for t in texts]
+    target_px = [ax.transData.transform((x, y))[1] for _, x, y, _ in entries]
+    placed_px = _spread_labels(target_px, heights, axbb.y0, axbb.y1)
+    inv = ax.transData.inverted()
+    for t, (_, x, _y, _c), py in zip(texts, entries, placed_px):
+        t.set_position((x, inv.transform((axbb.x0, py))[1]))
+    return texts
+
+
 def plot_excess_free_energy(
     df,
     col_wrap=3,
@@ -1033,6 +1071,7 @@ def plot_excess_free_energy(
     aspect=1.3,
     color_override=None,
     convex_hull=True,
+    inline_legend=True,
 ):
     """Plot excess free energy vs concentration for competing phases.
 
@@ -1058,6 +1097,10 @@ def plot_excess_free_energy(
         convex_hull: If True, distinguish stable (solid curves) from metastable
             (faded lines) and overlay the common-tangent segments in black.
             If False, all solution phases render as plain solid curves.
+        inline_legend: If True (default), drop the figure legend and label each
+            phase on its curve (line phases at their dot), white-outlined and
+            colour-matched, with overlapping labels spread apart vertically. If
+            False, keep the figure legend box on the right.
 
     Returns:
         seaborn.FacetGrid: FacetGrid with one column per temperature.
@@ -1132,6 +1175,7 @@ def plot_excess_free_energy(
             linewidth=2.5,
         )
 
+    facet_entries = []  # (ax, [(label, x, y, color), ...]) for inline labelling
     for ax, T_val in zip(g.axes.flat, temperatures):
         sub_all = df[df["T"] == T_val]
         sub_sol = df_sol[df_sol["T"] == T_val]
@@ -1180,8 +1224,29 @@ def plot_excess_free_energy(
                     color="k", s=25, zorder=7,
                 )
 
+        if inline_legend:
+            # Anchor each phase's label on the body of its curve (the mid-c point of
+            # all its drawn rows) so it sits on the visible line rather than in a
+            # cramped corner -- a phase stable only in slivers near the pure elements
+            # is still the prominent faded arc across the middle.  Line phases anchor
+            # at their dot.  Placement is deferred until refline/limits settle below.
+            entries = []
+            for pname in sol_hue_order:
+                pg = sub_sol[sub_sol["phase"] == pname].dropna(subset=["f_excess"]).sort_values("c")
+                if pg.empty:
+                    continue
+                row = pg.iloc[len(pg) // 2]
+                entries.append((pname, row["c"], row["f_excess"], sol_palette.get(pname, "k")))
+            for _, row in sub_lp.drop_duplicates("phase").iterrows():
+                entries.append((row["phase"], row["c"], row["f_excess"], palette.get(row["phase"], "k")))
+            facet_entries.append((ax, entries))
+
+    if inline_legend:
+        # Inline labels replace the legend box; drop seaborn's figure legend.
+        if g._legend is not None:
+            g._legend.remove()
     # Add line phases to the figure legend.
-    if not df_lp.empty:
+    elif not df_lp.empty:
         lp_handles = [
             mlines.Line2D(
                 [0], [0], marker="o", color="w",
@@ -1208,5 +1273,9 @@ def plot_excess_free_energy(
     g.refline(y=0)
     g.set_titles("T = {col_name:.0f} K")
     g.set(xlabel="Concentration", ylabel="Free Energy of Formation")
+
+    # Place inline labels last so they see the final axis limits (refline/relplot).
+    for ax, entries in facet_entries:
+        _add_inline_curve_labels(ax, entries)
 
     return g
