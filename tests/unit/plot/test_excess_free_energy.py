@@ -199,6 +199,25 @@ def test_inline_label_colors_match_curves():
     plt.close(g.fig)
 
 
+def test_inline_labels_clear_of_curves_and_markers():
+    """Every inline label box must clear the drawn curves and scatter markers."""
+    import shapely
+
+    from landau.plot import _curve_obstacles
+
+    g = plot_excess_free_energy(_minimal_df([1000]))
+    g.fig.canvas.draw()
+    renderer = g.fig.canvas.get_renderer()
+    for ax in g.axes.flat:
+        obstacles = _curve_obstacles(ax)
+        assert obstacles is not None, "expected curves/markers to build obstacles"
+        for t in ax.texts:
+            e = t.get_window_extent(renderer)
+            box = shapely.box(e.x0, e.y0, e.x1, e.y1)
+            assert not box.intersects(obstacles), f"label {t.get_text()!r} overlaps a curve/marker"
+    plt.close(g.fig)
+
+
 def test_inline_legend_false_keeps_figure_legend():
     """inline_legend=False keeps the right-hand figure legend and adds no inline text."""
     g = plot_excess_free_energy(_minimal_df([1000]), inline_legend=False)

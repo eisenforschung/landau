@@ -1026,6 +1026,40 @@ def plot_1d_T_phase_diagram(
 # Excess free energy plot
 # ---------------------------------------------------------------------------
 
+def _curve_obstacles(ax):
+    """Drawn curves and scatter markers of *ax* as one shapely geometry in pixels.
+
+    Phase curves become :class:`shapely.LineString`\\ s and scatter dots (line-phase
+    markers, hull vertices) become :class:`shapely.Point`\\ s buffered by their
+    marker radius, all in display coordinates so a label's pixel bounding box can be
+    tested against them directly.  The horizontal reference line (a blended-transform
+    ``axhline``) is skipped so labels are not pushed off the zero line.  Returns the
+    unioned geometry, or ``None`` when nothing is drawn yet.
+    """
+    geoms = []
+    for line in ax.lines:
+        if line.get_transform() is not ax.transData:  # skip refline / blended artists
+            continue
+        disp = line.get_transform().transform(line.get_xydata())
+        disp = disp[np.isfinite(disp).all(axis=1)]
+        if len(disp) >= 2:
+            geoms.append(shapely.LineString(disp))
+    dpi = ax.figure.dpi
+    for coll in ax.collections:
+        offsets = np.asarray(coll.get_offsets(), dtype=float)
+        if offsets.size == 0:
+            continue
+        disp = coll.get_offset_transform().transform(offsets)
+        sizes = coll.get_sizes()
+        for i, (px, py) in enumerate(disp):
+            if not (np.isfinite(px) and np.isfinite(py)):
+                continue
+            s = sizes[i % len(sizes)] if len(sizes) else 36.0
+            radius = max((np.sqrt(s) / 2.0) * dpi / 72.0, 1.0)  # points^2 -> pixel radius
+            geoms.append(shapely.Point(px, py).buffer(radius))
+    return shapely.union_all(geoms) if geoms else None
+
+
 def _add_inline_curve_labels(ax, entries):
     """Label curves/points just off the data line instead of via a legend box.
 
@@ -1036,8 +1070,12 @@ def _add_inline_curve_labels(ax, entries):
     white-outlined in the phase colour with mathtext subscripts bolded by
     :func:`_bold_math`, then nudged apart along ``y`` in display pixels by
     :func:`_spread_labels` so they never overlap, while ``x`` stays anchored to the
-    curve.  Mirrors the inline labelling used by the 2d
-    (:func:`_add_inline_polygon_labels`) and 1d (:func:`_place_side_labels`) plots.
+    curve.  A final pass tests each label's pixel box (via shapely) against the
+    drawn curves, scatter markers (:func:`_curve_obstacles`) and the
+    already-placed labels, pushing it further in its ``side`` direction until it no
+    longer overlaps any of them or it reaches the axes edge.  Mirrors the inline
+    labelling used by the 2d (:func:`_add_inline_polygon_labels`) and 1d
+    (:func:`_place_side_labels`) plots.
 
     Args:
         ax: matplotlib Axes the curves were drawn on.
@@ -1069,6 +1107,41 @@ def _add_inline_curve_labels(ax, entries):
     inv = ax.transData.inverted()
     for t, (_label, x, *_rest), py in zip(texts, entries, placed_px):
         t.set_position((x, inv.transform((axbb.x0, py))[1]))
+
+    # Final pass: push any label still overlapping a curve, a marker or an earlier
+    # label further out until its pixel box clears them.  The box only translates in
+    # y, so candidate positions are tested by shifting its bounds rather than moving
+    # and re-measuring the text.  The preferred side is scanned first; if it is
+    # blocked all the way to the axes edge (e.g. a dot pinned against the floor) the
+    # opposite side is tried.
+    obstacles = _curve_obstacles(ax)
+
+    def _box(t):
+        e = t.get_window_extent(renderer)
+        return shapely.box(e.x0, e.y0, e.x1, e.y1)
+
+    step = 2.0  # px
+    for t, (_label, _x, _y, _color, side) in zip(texts, entries):
+        base = _box(t)
+        x0, y0, x1, y1 = base.bounds
+        base_cy, half = (y0 + y1) / 2, (y1 - y0) / 2
+        lo_c, hi_c = axbb.y0 + half, axbb.y1 - half
+        if obstacles is not None and base.intersects(obstacles):
+            sign = 1 if side == "above" else -1
+            best = None
+            for direction in (sign, -sign):
+                cy = base_cy + direction * step
+                while lo_c <= cy <= hi_c:
+                    if not shapely.box(x0, cy - half, x1, cy + half).intersects(obstacles):
+                        best = cy
+                        break
+                    cy += direction * step
+                if best is not None:
+                    break
+            if best is not None:
+                x_pos, _y_pos = t.get_position()
+                t.set_position((x_pos, inv.transform((axbb.x0, best))[1]))
+        obstacles = _box(t) if obstacles is None else shapely.union_all([obstacles, _box(t)])
     return texts
 
 
