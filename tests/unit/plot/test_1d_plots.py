@@ -15,6 +15,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import itertools
 import numpy as np
 import pandas as pd
 import pytest
@@ -30,6 +31,7 @@ from landau.plot import (
     _bold_math,
     _bridge_unstable_segments,
     _phase_visible_in_band,
+    _place_transition_labels,
     _spread_labels,
     plot_1d_mu_phase_diagram,
     plot_1d_T_phase_diagram,
@@ -645,6 +647,93 @@ def test_transition_labels_have_white_outline(plot_func, fixture, request):
             assert len(effects) == 1, f"{t.get_text()!r} has no path effect"
             assert to_rgba(effects[0]._gc["foreground"]) == to_rgba("white")
             assert t.get_zorder() >= 100, f"{t.get_text()!r} zorder too low"
+    finally:
+        plt.close(fig)
+
+
+def _boxes_overlap_x(a, b, tol=0.5):
+    """True when two pixel bounding boxes overlap along x (beyond ``tol`` slack)."""
+    return not (a.x1 <= b.x0 + tol or b.x1 <= a.x0 + tol)
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_place_transition_labels_spread_and_avoid_lines(side):
+    """Crowded transition labels are fanned apart and kept off the dotted lines.
+
+    Two transitions a hair apart would otherwise stack their vertical labels on top
+    of one another and on the lines; the placement spreads them horizontally (via the
+    same routine that stacks the side labels) and confines them to the free gaps.
+    """
+    fig, ax = plt.subplots()
+    try:
+        ax.plot([0.0, 1.0], [0.0, 1.0])
+        ax.set_xlim(0.0, 1.0)
+        positions = [0.50, 0.515]
+        for p in positions:
+            ax.axvline(p)
+        labels = [rf"$\Delta\mu = {p:.03f}$" for p in positions]
+        texts = _place_transition_labels(ax, positions, labels, side=side)
+        r = _renderer(fig)
+        boxes = [t.get_window_extent(r) for t in texts]
+        lines_px = [ax.transData.transform((p, 0.0))[0] for p in positions]
+
+        for a, b in itertools.combinations(boxes, 2):
+            assert not _boxes_overlap_x(a, b), "transition labels overlap horizontally"
+        for bb in boxes:
+            for L in lines_px:
+                assert not (bb.x0 + 0.5 < L < bb.x1 - 0.5), "label box sits on a transition line"
+        axbb = ax.get_window_extent(r)
+        for bb in boxes:
+            assert axbb.x0 - 0.5 <= bb.x0 and bb.x1 <= axbb.x1 + 0.5, "label pushed outside the axes"
+    finally:
+        plt.close(fig)
+
+
+@pytest.mark.parametrize(
+    "plot_func, fixture",
+    [
+        (plot_1d_T_phase_diagram, "df_T_three_stable"),
+        (plot_1d_mu_phase_diagram, "df_mu_three_stable"),
+    ],
+)
+def test_transition_labels_never_overlap(plot_func, fixture, request):
+    """On the physics fixtures no two transition labels overlap horizontally."""
+    df = request.getfixturevalue(fixture)
+    fig, ax = plt.subplots()
+    try:
+        plot_func(df, ax=ax)
+        r = _renderer(fig)
+        boxes = [t.get_window_extent(r) for t in _transition_text_artists(ax)]
+        assert len(boxes) >= 2, "fixture must have at least two transition labels"
+        for a, b in itertools.combinations(boxes, 2):
+            assert not _boxes_overlap_x(a, b), "transition labels overlap horizontally"
+    finally:
+        plt.close(fig)
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_place_transition_labels_dense_keep_order_no_overlap(side):
+    """Three transitions tighter than a label is wide still never overlap and keep order.
+
+    Confining each label to a free gap is impossible here; the guarantee is the
+    weaker pair (no mutual overlap, preserved left-to-right order), line avoidance
+    being best effort only.
+    """
+    fig, ax = plt.subplots()
+    try:
+        ax.plot([0.0, 1.0], [0.0, 1.0])
+        ax.set_xlim(0.0, 1.0)
+        positions = [0.50, 0.51, 0.52]
+        for p in positions:
+            ax.axvline(p)
+        labels = [rf"$\Delta\mu = {p:.03f}$" for p in positions]
+        texts = _place_transition_labels(ax, positions, labels, side=side)
+        r = _renderer(fig)
+        boxes = [t.get_window_extent(r) for t in texts]
+        for a, b in itertools.combinations(boxes, 2):
+            assert not _boxes_overlap_x(a, b), "transition labels overlap horizontally"
+        centers = [0.5 * (b.x0 + b.x1) for b in boxes]
+        assert centers == sorted(centers), "label order not preserved"
     finally:
         plt.close(fig)
 
