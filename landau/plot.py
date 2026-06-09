@@ -1253,6 +1253,7 @@ def plot_excess_free_energy(
             estimator=None,
             errorbar=None,
             linewidth=2.5,
+            legend=False if inline_legend else "auto",
         )
 
     facet_entries = []  # (ax, [(label, x, y, color), ...]) for inline labelling
@@ -1348,12 +1349,9 @@ def plot_excess_free_energy(
                 entries.append((row["phase"], row["c"], row["f_excess"], palette.get(row["phase"], "k"), "below"))
             facet_entries.append((ax, entries))
 
-    if inline_legend:
-        # Inline labels replace the legend box; drop seaborn's figure legend.
-        if g._legend is not None:
-            g._legend.remove()
-    # Add line phases to the figure legend.
-    elif not df_lp.empty:
+    # Inline labels replace the legend box, so seaborn's legend is suppressed at
+    # the relplot call.  Otherwise add the line phases to the figure legend.
+    if not inline_legend and not df_lp.empty:
         lp_handles = [
             mlines.Line2D(
                 [0], [0], marker="o", color="w",
