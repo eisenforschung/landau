@@ -1183,8 +1183,9 @@ def plot_excess_free_energy(
             False, keep the figure legend box on the right.
 
     Returns:
-        seaborn.FacetGrid: FacetGrid with one column per temperature.
-        Access the figure via ``.fig`` and individual axes via ``.axes``.
+        For a single temperature, the :class:`matplotlib.axes.Axes` holding the
+        plain lineplot.  For multiple temperatures, a :class:`seaborn.FacetGrid`
+        with one column per temperature (figure via ``.fig``, axes via ``.axes``).
     """
     import matplotlib.lines as mlines
 
@@ -1224,7 +1225,28 @@ def plot_excess_free_energy(
         base_data = df_sol
         units_col = None
 
-    if base_data.empty:
+    # A single temperature does not need a facet grid; draw a plain lineplot on one
+    # axes and return that axes.  Multiple temperatures fan out into a FacetGrid.
+    single = len(temperatures) == 1
+    if single:
+        fig, single_ax = plt.subplots(figsize=(height * aspect, height))
+        if not base_data.empty:
+            sns.lineplot(
+                data=base_data,
+                x="c",
+                y="f_excess",
+                hue="phase",
+                hue_order=sol_hue_order,
+                units=units_col,
+                palette=sol_palette,
+                estimator=None,
+                errorbar=None,
+                linewidth=2.5,
+                ax=single_ax,
+            )
+        g = None
+        axes = [single_ax]
+    elif base_data.empty:
         # No solution-phase rows (e.g. all phases are line phases, or all solution rows are
         # unstable).  sns.relplot cannot create facets from an empty DataFrame, so build
         # the grid structure directly and skip the line-drawing step.
@@ -1236,6 +1258,7 @@ def plot_excess_free_energy(
             height=height,
             aspect=aspect,
         )
+        axes = list(g.axes.flat)
     else:
         g = sns.relplot(
             data=base_data,
@@ -1254,9 +1277,10 @@ def plot_excess_free_energy(
             errorbar=None,
             linewidth=2.5,
         )
+        axes = list(g.axes.flat)
 
     facet_entries = []  # (ax, [(label, x, y, color), ...]) for inline labelling
-    for ax, T_val in zip(g.axes.flat, temperatures):
+    for ax, T_val in zip(axes, temperatures):
         sub_all = df[df["T"] == T_val]
         sub_sol = df_sol[df_sol["T"] == T_val]
         sub_lp = df_lp[df_lp["T"] == T_val]
@@ -1348,10 +1372,15 @@ def plot_excess_free_energy(
                 entries.append((row["phase"], row["c"], row["f_excess"], palette.get(row["phase"], "k"), "below"))
             facet_entries.append((ax, entries))
 
+    # The single-temperature path draws onto one axes whose legend lives on the axes
+    # itself; the FacetGrid path keeps its legend on ``g._legend``.  Resolve both here.
+    legend = g._legend if g is not None else axes[0].get_legend()
+    figure = g.figure if g is not None else fig
+
     if inline_legend:
-        # Inline labels replace the legend box; drop seaborn's figure legend.
-        if g._legend is not None:
-            g._legend.remove()
+        # Inline labels replace the legend box; drop seaborn's legend.
+        if legend is not None:
+            legend.remove()
     # Add line phases to the figure legend.
     elif not df_lp.empty:
         lp_handles = [
@@ -1361,14 +1390,14 @@ def plot_excess_free_energy(
             )
             for n in sorted(line_phase_names)
         ]
-        if g._legend is not None:
-            existing_handles = list(g._legend.legend_handles)
-            existing_labels = [t.get_text() for t in g._legend.texts]
-            g._legend.remove()
+        if legend is not None:
+            existing_handles = list(legend.legend_handles)
+            existing_labels = [t.get_text() for t in legend.texts]
+            legend.remove()
         else:
             existing_handles = []
             existing_labels = []
-        g.figure.legend(
+        figure.legend(
             existing_handles + lp_handles,
             existing_labels + [h.get_label() for h in lp_handles],
             title="phase",
@@ -1377,12 +1406,18 @@ def plot_excess_free_energy(
             borderaxespad=0,
         )
 
-    g.refline(y=0)
-    g.set_titles("T = {col_name:.0f} K")
-    g.set(xlabel="Concentration", ylabel="Free Energy of Formation")
+    if g is not None:
+        g.refline(y=0)
+        g.set_titles("T = {col_name:.0f} K")
+        g.set(xlabel="Concentration", ylabel="Free Energy of Formation")
+    else:
+        ax = axes[0]
+        ax.axhline(0, color=".5", linestyle="--")
+        ax.set_title(f"T = {temperatures[0]:.0f} K")
+        ax.set(xlabel="Concentration", ylabel="Free Energy of Formation")
 
     # Place inline labels last so they see the final axis limits (refline/relplot).
     for ax, entries in facet_entries:
         _add_inline_curve_labels(ax, entries)
 
-    return g
+    return g if g is not None else axes[0]
