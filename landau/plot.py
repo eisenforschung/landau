@@ -1333,11 +1333,14 @@ def plot_excess_free_energy(
                 arcs.append((pname, cs, fs, sol_palette.get(pname, "k")))
             # Spread the anchors left-to-right: order the arcs by their centre, then
             # place each phase's label at the rank-derived fraction of its own arc.
+            # The fraction is mapped into the arc's inner 60% so a label never lands
+            # on the curve's edge where it turns up.
             arcs.sort(key=lambda a: (0.5 * (a[1][0] + a[1][-1]), a[0]))
             n = len(arcs)
+            margin = 0.2  # keep anchors clear of each arc's turning-up ends
             entries = []
             for i, (pname, cs, fs, color) in enumerate(arcs):
-                frac = (i + 0.5) / n
+                frac = margin + (1 - 2 * margin) * (i + 0.5) / n
                 x = cs[0] + frac * (cs[-1] - cs[0])
                 y = np.interp(x, cs, fs)
                 entries.append((pname, x, y, color, "above"))
