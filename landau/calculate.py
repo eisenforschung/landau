@@ -229,11 +229,10 @@ def calc_phase_diagram(
         return dd.f - (f0 * (1 - dd.c) + f1 * dd.c)
 
     fex = pdf.groupby("T", group_keys=False).apply(sub, include_groups=False)
-    if len(Ts) > 1:
-        pdf["f_excess"] = fex
-    else:
-        # thank you pandas, this saved me -10min of my life.
-        pdf["f_excess"] = fex.T
+    if isinstance(fex, pd.DataFrame):
+        # pandas 3 returns a DataFrame for single-group groupby.apply; undo that.
+        fex = fex.stack().reset_index(level=0, drop=True)
+    pdf["f_excess"] = fex
     if not keep_unstable:
         pdf = pdf.query("stable")
     return pdf
