@@ -1121,18 +1121,23 @@ def _add_inline_curve_labels(ax, entries):
         return shapely.box(e.x0, e.y0, e.x1, e.y1)
 
     step = 2.0  # px
+    clearance = 0.012 * axbb.height  # small gap kept between a label box and a line
     for t, (_label, _x, _y, _color, side) in zip(texts, entries):
         base = _box(t)
         x0, y0, x1, y1 = base.bounds
         base_cy, half = (y0 + y1) / 2, (y1 - y0) / 2
         lo_c, hi_c = axbb.y0 + half, axbb.y1 - half
-        if obstacles is not None and base.intersects(obstacles):
+        # Test boxes are inflated by ``clearance`` so a label stops a hair short of
+        # touching a curve, marker or neighbour rather than flush against it.
+        if obstacles is not None and shapely.box(x0 - clearance, y0 - clearance,
+                                                 x1 + clearance, y1 + clearance).intersects(obstacles):
             sign = 1 if side == "above" else -1
             best = None
             for direction in (sign, -sign):
                 cy = base_cy + direction * step
                 while lo_c <= cy <= hi_c:
-                    if not shapely.box(x0, cy - half, x1, cy + half).intersects(obstacles):
+                    if not shapely.box(x0 - clearance, cy - half - clearance,
+                                       x1 + clearance, cy + half + clearance).intersects(obstacles):
                         best = cy
                         break
                     cy += direction * step
