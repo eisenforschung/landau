@@ -246,9 +246,6 @@ class Segments(AbstractPolyMethod):
         if not segments:
             return pd.DataFrame(columns=df.columns)
 
-        # _greedy_stitch fixes the order: it picks the min-x_col segment as head and
-        # nearest-neighbour stitches the rest, so the segment order on entry here does
-        # not matter.
         ordered = _greedy_stitch(segments, norm, x_col, y_col)
         return pd.concat(ordered, ignore_index=True)
 
