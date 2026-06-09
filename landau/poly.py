@@ -226,7 +226,6 @@ class Segments(AbstractPolyMethod):
         if df.empty:
             return pd.DataFrame(columns=df.columns)
 
-        com = df[[x_col, y_col]].mean()
         norm = np.ptp(df[[x_col, y_col]], axis=0).values
         norm = np.where(norm == 0, 1, norm)
 
@@ -247,13 +246,9 @@ class Segments(AbstractPolyMethod):
         if not segments:
             return pd.DataFrame(columns=df.columns)
 
-        # initial sorting by center of mass angle
-        segments = sorted(
-                segments,
-                key=lambda s: np.arctan2( (s[y_col].mean() - com[y_col]) / norm[1],
-                                          (s[x_col].mean() - com[x_col]) / norm[0])
-        )
-
+        # _greedy_stitch fixes the order: it picks the min-x_col segment as head and
+        # nearest-neighbour stitches the rest, so the segment order on entry here does
+        # not matter.
         ordered = _greedy_stitch(segments, norm, x_col, y_col)
         return pd.concat(ordered, ignore_index=True)
 
