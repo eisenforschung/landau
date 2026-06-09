@@ -319,6 +319,39 @@ def test_greedy_stitch_custom_columns(unit_norm):
     assert out[1].iloc[0]["x"] == pytest.approx(2.0)
 
 
+# --- Segments._sort_segments tests ---
+
+
+def test_sort_segments_orders_by_min_x_not_com_angle():
+    # Three segments in a "^" arrangement (low-left, high-mid, low-right). Their
+    # order around the joint centre of mass differs from their min(c) order, so a
+    # COM-angle pre-sort would lead with a different segment than min(c). The order
+    # of the output is fixed solely by _greedy_stitch's min(c) head heuristic, so it
+    # must follow min(c). Pins that the removed arctan2 pre-sort had no effect.
+    df = pd.DataFrame({
+        "c": [0.0, 0.0, 0.5, 0.5, 1.0, 1.0],
+        "T": [0.0, 0.3, 0.6, 0.9, 0.0, 0.3],
+        "border_segment": [0, 0, 1, 1, 2, 2],
+    })
+
+    com = df[["c", "T"]].mean()
+    norm = np.ptp(df[["c", "T"]], axis=0).values
+    com_angle = {
+        lab: np.arctan2((g["T"].mean() - com["T"]) / norm[1],
+                        (g["c"].mean() - com["c"]) / norm[0])
+        for lab, g in df.groupby("border_segment")
+    }
+    com_order = sorted(com_angle, key=com_angle.get)
+    min_x_order = sorted(com_angle, key=lambda lab: df.loc[df["border_segment"] == lab, "c"].min())
+    # premise: the two orderings disagree, so the test can distinguish them
+    assert com_order != min_x_order
+
+    out = Segments._sort_segments(df)
+    # order in which each segment's c-level first appears in the stitched output
+    first_appearance = list(dict.fromkeys(out["c"].round(6)))
+    assert first_appearance == [0.0, 0.5, 1.0]
+
+
 # --- _pca_sort_segment tests ---
 
 
