@@ -1110,43 +1110,36 @@ def _add_inline_curve_labels(ax, entries):
 
     # Final pass: push any label still overlapping a curve, a marker or an earlier
     # label further out until its pixel box clears them.  The box only translates in
-    # y, so candidate positions are tested by shifting its bounds rather than moving
-    # and re-measuring the text.  The preferred side is scanned first; if it is
-    # blocked all the way to the axes edge (e.g. a dot pinned against the floor) the
-    # opposite side is tried.
+    # y, so candidates are tested by shifting its bounds rather than re-measuring text.
     obstacles = _curve_obstacles(ax)
-
-    def _box(t):
-        e = t.get_window_extent(renderer)
-        return shapely.box(e.x0, e.y0, e.x1, e.y1)
-
     step = 2.0  # px
     clearance = 0.012 * axbb.height  # small gap kept between a label box and a line
     for t, (_label, _x, _y, _color, side) in zip(texts, entries):
-        base = _box(t)
-        x0, y0, x1, y1 = base.bounds
-        base_cy, half = (y0 + y1) / 2, (y1 - y0) / 2
+        e = t.get_window_extent(renderer)
+        half = e.height / 2
+        base_cy = (e.y0 + e.y1) / 2
         lo_c, hi_c = axbb.y0 + half, axbb.y1 - half
-        # Test boxes are inflated by ``clearance`` so a label stops a hair short of
-        # touching a curve, marker or neighbour rather than flush against it.
-        if obstacles is not None and shapely.box(x0 - clearance, y0 - clearance,
-                                                 x1 + clearance, y1 + clearance).intersects(obstacles):
+        # Label box at vertical centre ``cy``, inflated by ``clearance`` so a label
+        # stops a hair short of a curve, marker or neighbour rather than flush against
+        # it.  Only y moves, so the x bounds stay fixed.
+        def _clear_box(cy, e=e):
+            return shapely.box(e.x0 - clearance, cy - half - clearance,
+                               e.x1 + clearance, cy + half + clearance)
+
+        if obstacles is not None and _clear_box(base_cy).intersects(obstacles):
+            # Scan the preferred side first; if it is blocked to the axes edge (e.g. a
+            # dot pinned against the floor) try the opposite side.
             sign = 1 if side == "above" else -1
-            best = None
             for direction in (sign, -sign):
                 cy = base_cy + direction * step
-                while lo_c <= cy <= hi_c:
-                    if not shapely.box(x0 - clearance, cy - half - clearance,
-                                       x1 + clearance, cy + half + clearance).intersects(obstacles):
-                        best = cy
-                        break
+                while lo_c <= cy <= hi_c and _clear_box(cy).intersects(obstacles):
                     cy += direction * step
-                if best is not None:
+                if lo_c <= cy <= hi_c:
+                    t.set_position((t.get_position()[0], inv.transform((axbb.x0, cy))[1]))
                     break
-            if best is not None:
-                x_pos, _y_pos = t.get_position()
-                t.set_position((x_pos, inv.transform((axbb.x0, best))[1]))
-        obstacles = _box(t) if obstacles is None else shapely.union_all([obstacles, _box(t)])
+        e = t.get_window_extent(renderer)
+        box = shapely.box(e.x0, e.y0, e.x1, e.y1)
+        obstacles = box if obstacles is None else shapely.union_all([obstacles, box])
     return texts
 
 
@@ -1333,9 +1326,11 @@ def plot_excess_free_energy(
                     seg = cluster_T_c(region, distance_threshold=0.1)
                     extent = region.groupby(seg)["c"].agg(lambda c: c.max() - c.min())
                     region = region.loc[seg == extent.idxmax()]
-                cs = region.sort_values("c")["c"].to_numpy()
-                fs = region.sort_values("c")["f_excess"].to_numpy()
-                arcs.append((pname, cs, fs, sol_palette.get(pname, "k")))
+                region = region.sort_values("c")
+                arcs.append((
+                    pname, region["c"].to_numpy(), region["f_excess"].to_numpy(),
+                    sol_palette.get(pname, "k"),
+                ))
             # Spread the anchors left-to-right: order the arcs by their centre, then
             # place each phase's label at the rank-derived fraction of its own arc.
             # The fraction is mapped into the arc's inner 60% so a label never lands
