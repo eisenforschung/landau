@@ -41,11 +41,18 @@ def _minimal_df(temperatures, n_points=50):
 # ---------------------------------------------------------------------------
 
 
-def test_returns_facetgrid():
-    g = plot_excess_free_energy(_minimal_df([1000]))
+def test_multi_temperature_returns_facetgrid():
+    g = plot_excess_free_energy(_minimal_df([500, 1000, 1500]))
     assert isinstance(g, sns.FacetGrid)
     assert isinstance(g.fig, plt.Figure)
     plt.close(g.fig)
+
+
+def test_single_temperature_returns_axes():
+    ax = plot_excess_free_energy(_minimal_df([1000]))
+    assert isinstance(ax, plt.Axes)
+    assert not isinstance(ax, sns.FacetGrid)
+    plt.close(ax.figure)
 
 
 def test_axes_has_one_entry_per_temperature():
@@ -61,9 +68,9 @@ def test_empty_df_raises():
 
 
 def test_scalar_temperature_accepted():
-    g = plot_excess_free_energy(_minimal_df(1000))
-    assert g.axes.size == 1
-    plt.close(g.fig)
+    ax = plot_excess_free_energy(_minimal_df(1000))
+    assert isinstance(ax, plt.Axes)
+    plt.close(ax.figure)
 
 
 # ---------------------------------------------------------------------------
@@ -72,31 +79,29 @@ def test_scalar_temperature_accepted():
 
 
 def test_convex_hull_true_adds_hull_line():
-    g = plot_excess_free_energy(_minimal_df([1000]), convex_hull=True)
-    ax = g.axes.flat[0]
+    ax = plot_excess_free_energy(_minimal_df([1000]), convex_hull=True)
     black_dotted = [l for l in ax.lines if l.get_color() == "k" and l.get_linestyle() == ":"]
     assert len(black_dotted) >= 1
-    plt.close(g.fig)
+    plt.close(ax.figure)
 
 
 def test_convex_hull_false_has_no_hull_line():
-    g = plot_excess_free_energy(_minimal_df([1000]), convex_hull=False)
-    ax = g.axes.flat[0]
+    ax = plot_excess_free_energy(_minimal_df([1000]), convex_hull=False)
     black_dotted = [l for l in ax.lines if l.get_color() == "k" and l.get_linestyle() == ":"]
     assert len(black_dotted) == 0
-    plt.close(g.fig)
+    plt.close(ax.figure)
 
 
 def test_convex_hull_true_adds_extra_scatter():
     """convex_hull=True should add hull vertex scatter on top of line-phase scatter."""
     df = _minimal_df([1000])
-    g_no = plot_excess_free_energy(df, convex_hull=False)
-    n_no = len(list(g_no.axes.flat[0].collections))
-    plt.close(g_no.fig)
+    ax_no = plot_excess_free_energy(df, convex_hull=False)
+    n_no = len(list(ax_no.collections))
+    plt.close(ax_no.figure)
 
-    g_yes = plot_excess_free_energy(df, convex_hull=True)
-    n_yes = len(list(g_yes.axes.flat[0].collections))
-    plt.close(g_yes.fig)
+    ax_yes = plot_excess_free_energy(df, convex_hull=True)
+    n_yes = len(list(ax_yes.collections))
+    plt.close(ax_yes.figure)
 
     assert n_yes > n_no
 
@@ -108,10 +113,9 @@ def test_convex_hull_true_adds_extra_scatter():
 
 def test_line_phase_renders_as_scatter():
     """Line phase (AB at c=0.5) must appear as a scatter dot, not as a curve."""
-    g = plot_excess_free_energy(_minimal_df([1000]), convex_hull=False)
-    ax = g.axes.flat[0]
+    ax = plot_excess_free_energy(_minimal_df([1000]), convex_hull=False)
     assert len(ax.collections) >= 1
-    plt.close(g.fig)
+    plt.close(ax.figure)
 
 
 # ---------------------------------------------------------------------------
@@ -121,20 +125,19 @@ def test_line_phase_renders_as_scatter():
 
 def test_single_temperature_convex_hull_true():
     """Single-T DataFrame: hull line and vertex scatter must be present."""
-    g = plot_excess_free_energy(_minimal_df([1000]), convex_hull=True)
-    ax = g.axes.flat[0]
+    ax = plot_excess_free_energy(_minimal_df([1000]), convex_hull=True)
     black_dotted = [l for l in ax.lines if l.get_color() == "k" and l.get_linestyle() == ":"]
     assert len(black_dotted) >= 1, "hull tangent line missing for single temperature"
     assert len(ax.collections) >= 1, "hull vertex scatter missing for single temperature"
-    plt.close(g.fig)
+    plt.close(ax.figure)
 
 
 def test_single_temperature_figure_not_wide():
     """Figure width for one temperature must not span more than one column."""
     # default height=3.0, aspect=1.3 → one column ≈ 3.9 in; col_wrap=3 would give 11.7 in.
-    g = plot_excess_free_energy(_minimal_df([1000]))
-    assert g.fig.get_figwidth() < 2 * 3.0 * 1.3
-    plt.close(g.fig)
+    ax = plot_excess_free_energy(_minimal_df([1000]))
+    assert ax.figure.get_figwidth() < 2 * 3.0 * 1.3
+    plt.close(ax.figure)
 
 
 def test_all_line_phases_no_crash():
@@ -145,9 +148,9 @@ def test_all_line_phases_no_crash():
     e1 = LinePhase("B", fixed_concentration=1, line_energy=-3.0, line_entropy=1.5 * kB)
     inter = LinePhase("AB", fixed_concentration=0.5, line_energy=-2.8, line_entropy=1.3 * kB)
     df = calc_phase_diagram([e0, e1, inter], Ts=1000, mu=50, keep_unstable=True)
-    g = plot_excess_free_energy(df, convex_hull=True)
-    assert g.axes.size == 1
-    plt.close(g.fig)
+    ax = plot_excess_free_energy(df, convex_hull=True)
+    assert isinstance(ax, plt.Axes)
+    plt.close(ax.figure)
 
 
 def test_all_line_phases_legend_present():
@@ -158,12 +161,12 @@ def test_all_line_phases_legend_present():
     e1 = LinePhase("B", fixed_concentration=1, line_energy=-3.0, line_entropy=1.5 * kB)
     inter = LinePhase("AB", fixed_concentration=0.5, line_energy=-2.8, line_entropy=1.3 * kB)
     df = calc_phase_diagram([e0, e1, inter], Ts=1000, mu=50, keep_unstable=True)
-    g = plot_excess_free_energy(df, convex_hull=True, inline_legend=False)
-    legend = g.figure.legends
+    ax = plot_excess_free_energy(df, convex_hull=True, inline_legend=False)
+    legend = ax.figure.legends
     assert legend, "figure legend is missing when only line phases are stable"
     legend_labels = {t.get_text() for t in legend[0].texts}
     assert {"A", "B", "AB"} <= legend_labels
-    plt.close(g.fig)
+    plt.close(ax.figure)
 
 
 # ---------------------------------------------------------------------------
@@ -173,9 +176,10 @@ def test_all_line_phases_legend_present():
 
 def test_inline_legend_default_drops_figure_legend():
     """Inline labels are on by default and replace the figure legend box."""
-    g = plot_excess_free_energy(_minimal_df([1000]))
-    assert not g.figure.legends
-    plt.close(g.fig)
+    ax = plot_excess_free_energy(_minimal_df([1000]))
+    assert not ax.figure.legends
+    assert ax.get_legend() is None
+    plt.close(ax.figure)
 
 
 def test_inline_legend_labels_every_phase_on_each_facet():
@@ -192,11 +196,10 @@ def test_inline_label_colors_match_curves():
     """Inline label colours match the phase palette, not a default black."""
     df = _minimal_df([1000])
     override = {"solid": "#123456"}
-    g = plot_excess_free_energy(df, color_override=override)
-    ax = g.axes.flat[0]
+    ax = plot_excess_free_energy(df, color_override=override)
     solid_label = next(t for t in ax.texts if t.get_text() == "solid")
     assert to_rgba(solid_label.get_color()) == to_rgba("#123456")
-    plt.close(g.fig)
+    plt.close(ax.figure)
 
 
 def test_inline_labels_clear_of_curves_and_markers():
@@ -205,7 +208,7 @@ def test_inline_labels_clear_of_curves_and_markers():
 
     from landau.plot import _curve_obstacles
 
-    g = plot_excess_free_energy(_minimal_df([1000]))
+    g = plot_excess_free_energy(_minimal_df([500, 1000]))
     g.fig.canvas.draw()
     renderer = g.fig.canvas.get_renderer()
     for ax in g.axes.flat:
@@ -220,8 +223,7 @@ def test_inline_labels_clear_of_curves_and_markers():
 
 def test_inline_legend_false_keeps_figure_legend():
     """inline_legend=False keeps the right-hand figure legend and adds no inline text."""
-    g = plot_excess_free_energy(_minimal_df([1000]), inline_legend=False)
-    assert g.figure.legends
-    for ax in g.axes.flat:
-        assert not ax.texts
-    plt.close(g.fig)
+    ax = plot_excess_free_energy(_minimal_df([1000]), inline_legend=False)
+    assert ax.figure.legends
+    assert not ax.texts
+    plt.close(ax.figure)
