@@ -234,10 +234,11 @@ def test_handle_poly_method():
 
 def test_make_repairs_ring_self_intersection():
     # A ring that retraces a zero-width spike is invalid ("Ring
-    # Self-intersection") and shapely.make_valid returns a GeometryCollection
-    # of the polygon plus zero-area line artifacts. make() must recover the
-    # polygon instead of dropping the phase region (the solid phase vanished
-    # from the Intermetallics c-T diagram this way).
+    # Self-intersection"). make() must repair it to the enclosed polygon
+    # instead of dropping the phase region (the solid phase vanished from
+    # the Intermetallics c-T diagram this way: make_valid's default linework
+    # algorithm returned a GeometryCollection that fell through the repair
+    # branch, which is why the structure algorithm is used).
     points = np.array([
         (0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0),  # square
         (0.0, 2.0), (2.0, 2.0),                          # spike vertices
