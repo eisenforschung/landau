@@ -132,12 +132,12 @@ def test_single_temperature_convex_hull_true():
     plt.close(ax.figure)
 
 
-def test_single_temperature_figure_not_wide():
-    """Figure width for one temperature must not span more than one column."""
-    # default height=3.0, aspect=1.3 → one column ≈ 3.9 in; col_wrap=3 would give 11.7 in.
-    ax = plot_excess_free_energy(_minimal_df([1000]))
-    assert ax.figure.get_figwidth() < 2 * 3.0 * 1.3
-    plt.close(ax.figure)
+def test_single_temperature_draws_on_current_axes():
+    """One temperature draws on the caller's current axes instead of a new figure."""
+    fig, ax = plt.subplots()
+    ret = plot_excess_free_energy(_minimal_df([1000]))
+    assert ret is ax
+    plt.close(fig)
 
 
 def test_all_line_phases_no_crash():

@@ -1170,8 +1170,8 @@ def plot_excess_free_energy(
             columns ``c``, ``f_excess``, ``phase``, ``T``, ``stable``, and
             optionally ``border`` and ``mu``.
         col_wrap: Maximum subplot columns per row.
-        height: Height of each facet in inches.
-        aspect: Width-to-height ratio of each facet.
+        height: Height of each facet in inches (multiple temperatures only).
+        aspect: Width-to-height ratio of each facet (multiple temperatures only).
         color_override: Optional ``dict[name -> color]`` overriding phase colours.
         convex_hull: If True, distinguish stable (solid curves) from metastable
             (faded lines) and overlay the common-tangent segments in black.
@@ -1183,9 +1183,11 @@ def plot_excess_free_energy(
             False, keep the figure legend box on the right.
 
     Returns:
-        For a single temperature, the :class:`matplotlib.axes.Axes` holding the
-        plain lineplot.  For multiple temperatures, a :class:`seaborn.FacetGrid`
-        with one column per temperature (figure via ``.fig``, axes via ``.axes``).
+        For a single temperature, the current :class:`matplotlib.axes.Axes`
+        holding the plain lineplot; no figure is allocated, so pre-create one
+        to control its size.  For multiple temperatures, a
+        :class:`seaborn.FacetGrid` with one column per temperature (figure via
+        ``.fig``, axes via ``.axes``).
     """
     import matplotlib.lines as mlines
 
@@ -1225,11 +1227,12 @@ def plot_excess_free_energy(
         base_data = df_sol
         units_col = None
 
-    # A single temperature does not need a facet grid; draw a plain lineplot on one
-    # axes and return that axes.  Multiple temperatures fan out into a FacetGrid.
+    # A single temperature does not need a facet grid; draw a plain lineplot onto
+    # the current axes (the caller controls figure allocation) and return that axes.
+    # Multiple temperatures fan out into a FacetGrid.
     single = len(temperatures) == 1
     if single:
-        fig, single_ax = plt.subplots(figsize=(height * aspect, height))
+        single_ax = plt.gca()
         if not base_data.empty:
             sns.lineplot(
                 data=base_data,
@@ -1375,7 +1378,7 @@ def plot_excess_free_energy(
     # The single-temperature path draws onto one axes whose legend lives on the axes
     # itself; the FacetGrid path keeps its legend on ``g._legend``.  Resolve both here.
     legend = g._legend if g is not None else axes[0].get_legend()
-    figure = g.figure if g is not None else fig
+    figure = g.figure if g is not None else axes[0].figure
 
     if inline_legend:
         # Inline labels replace the legend box; drop seaborn's legend.
