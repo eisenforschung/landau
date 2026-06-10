@@ -90,6 +90,26 @@ def _label_fits(poly_px, text, renderer):
     return poly_px.contains(shapely.box(*text.get_window_extent(renderer).extents))
 
 
+def _group_overlapping_intervals(intervals, gap=0.0):
+    """Group 1-d intervals that overlap, transitively, closer than ``gap``.
+
+    Returns lists of indices into ``intervals``; within a group every interval
+    overlaps (or comes within ``gap`` of) another one, so the members have to be
+    laid out together along the other axis.
+    """
+    order = sorted(range(len(intervals)), key=lambda i: intervals[i][0])
+    groups, hi = [], None
+    for i in order:
+        lo_i, hi_i = intervals[i]
+        if hi is None or lo_i > hi + gap:
+            groups.append([])
+            hi = hi_i
+        else:
+            hi = max(hi, hi_i)
+        groups[-1].append(i)
+    return groups
+
+
 def _add_inline_polygon_labels(ax, polys):
     """Label each phase polygon in place instead of drawing a legend box.
 
@@ -110,6 +130,12 @@ def _add_inline_polygon_labels(ax, polys):
        edge), in which case it sits to the left; it is clamped into the axes
        both ways, vertically too.
 
+    Offset labels are no longer anchored inside their own polygon, so two close
+    line phases can land on top of each other; a final pass fans labels with
+    overlapping horizontal extents apart vertically (via :func:`_spread_labels`,
+    within the axes), so each one slides along its line instead of covering its
+    neighbour.
+
     Args:
         ax: matplotlib Axes the polygons were drawn on.
         polys: Series of matplotlib Polygons indexed as in :func:`get_polygons`.
@@ -117,6 +143,7 @@ def _add_inline_polygon_labels(ax, polys):
     renderer = _get_renderer(ax.figure)
     axbb = ax.get_window_extent(renderer)
     pad = 0.004 * axbb.width  # clearance between an offset label box and its polygon
+    moved = []  # (text, cx, cy, width, height) of off-polygon labels, in pixels
     for key, p in polys.items():
         if isinstance(key, tuple):
             phase, rep = key
@@ -139,15 +166,29 @@ def _add_inline_polygon_labels(ax, polys):
         # Too thin even for a rotated label (a line phase): move it beside the
         # polygon, keeping the rotation.
         bbox = text.get_window_extent(renderer)
-        half_w, half_h = bbox.width / 2, bbox.height / 2
+        half_w = bbox.width / 2
         minx, _, maxx, _ = poly_px.bounds
         cx = maxx + pad + half_w
         if cx + half_w > axbb.x1:
             cx = minx - pad - half_w
         cx = min(max(cx, axbb.x0 + half_w), axbb.x1 - half_w)
         cy = ax.transData.transform(center)[1]
-        cy = min(max(cy, axbb.y0 + half_h), axbb.y1 - half_h)
-        text.set_position(ax.transData.inverted().transform((cx, cy)))
+        moved.append((text, cx, cy, bbox.width, bbox.height))
+
+    # Vertical overlap pass: spread offset labels whose horizontal extents
+    # collide.  _spread_labels also clamps every stack — singletons included —
+    # into the axes vertically.
+    inv = ax.transData.inverted()
+    intervals = [(cx - w / 2, cx + w / 2) for _, cx, _, w, _ in moved]
+    for group in _group_overlapping_intervals(intervals, gap=pad):
+        spread = _spread_labels(
+            [moved[i][2] for i in group],
+            [moved[i][4] for i in group],
+            axbb.y0, axbb.y1, gap=pad,
+        )
+        for i, cy in zip(group, spread):
+            text, cx = moved[i][0], moved[i][1]
+            text.set_position(inv.transform((cx, cy)))
 
 
 def cluster_phase(df, distance_threshold=0.5):  # 0.5 hand-tuned

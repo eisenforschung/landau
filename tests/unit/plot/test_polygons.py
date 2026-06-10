@@ -355,14 +355,22 @@ def _rect_patch(x0, x1, y0, y1):
     return Polygon(np.array([(x0, y0), (x1, y0), (x1, y1), (x0, y1)]), closed=True)
 
 
-def _label_rect(ax, phase, x0, x1, y0, y1):
-    """Run `_add_inline_polygon_labels` on one rectangle and return its text artist."""
+def _label_rects(ax, items):
+    """Run `_add_inline_polygon_labels` on `(phase, x0, x1, y0, y1)` rectangles.
+
+    Returns the created text artists, one per rectangle, in input order.
+    """
     polys = pd.Series(
-        [_rect_patch(x0, x1, y0, y1)],
-        index=pd.MultiIndex.from_tuples([(phase, 0)], names=["phase", "phase_unit"]),
+        [_rect_patch(x0, x1, y0, y1) for _, x0, x1, y0, y1 in items],
+        index=pd.MultiIndex.from_tuples([(p, 0) for p, *_ in items], names=["phase", "phase_unit"]),
     )
     _add_inline_polygon_labels(ax, polys)
-    (text,) = ax.texts
+    return list(ax.texts)
+
+
+def _label_rect(ax, phase, x0, x1, y0, y1):
+    """Run `_add_inline_polygon_labels` on one rectangle and return its text artist."""
+    (text,) = _label_rects(ax, [(phase, x0, x1, y0, y1)])
     return text
 
 
@@ -446,6 +454,36 @@ def test_inline_label_off_polygon_clamped_vertically():
     text = _label_rect(ax, "ABCDEFGH", 0.499, 0.501, 0, 60)
     assert text.get_rotation() == 90
     _assert_inside_axes(ax, _extent_px(ax, text))
+    plt.close(fig)
+
+
+def test_inline_offset_labels_spread_apart_vertically():
+    """Coinciding line phases get offset labels fanned apart instead of stacked."""
+    fig, ax = _wide_axes()
+    t1, t2 = _label_rects(
+        ax,
+        [("ABCDEFGH", 0.499, 0.501, 50, 950), ("HGFEDCBA", 0.499, 0.501, 50, 950)],
+    )
+    assert t1.get_rotation() == 90 and t2.get_rotation() == 90
+    b1, b2 = _extent_px(ax, t1), _extent_px(ax, t2)
+    # Both polygons share the pole, so the boxes would coincide without the
+    # overlap pass; now they must be vertically disjoint and stay in the axes.
+    assert b1.y1 <= b2.y0 or b2.y1 <= b1.y0
+    _assert_inside_axes(ax, b1)
+    _assert_inside_axes(ax, b2)
+    plt.close(fig)
+
+
+def test_inline_offset_labels_far_apart_keep_pole_anchor():
+    """Offset labels whose horizontal extents are clear of each other do not move."""
+    fig, ax = _wide_axes()
+    t1, t2 = _label_rects(
+        ax,
+        [("ABCDEFGH", 0.199, 0.201, 50, 950), ("HGFEDCBA", 0.799, 0.801, 50, 950)],
+    )
+    for t in (t1, t2):
+        assert t.get_rotation() == 90
+        assert t.get_position()[1] == pytest.approx(500, abs=2)
     plt.close(fig)
 
 
