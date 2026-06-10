@@ -42,6 +42,24 @@ def _text_with_outline(ax, x, y, s, *, outline_width=3, **kwargs):
     return ax.text(x, y, s, **kwargs)
 
 
+def _shapely_polygon(coords):
+    """Valid shapely polygon from an (N, 2) coordinate array, or ``None``.
+
+    A self-intersecting outline (as the TSP-based poly methods can produce) is
+    repaired with :func:`shapely.make_valid`; if the repair splits it into
+    several pieces, the largest one is kept.  Degenerate (empty or zero-area)
+    input gives ``None``.
+    """
+    poly = shapely.Polygon(coords)
+    if not poly.is_valid:
+        poly = shapely.make_valid(poly)
+        if isinstance(poly, shapely.MultiPolygon):
+            poly = max(poly.geoms, key=lambda g: g.area)
+    if not isinstance(poly, shapely.Polygon) or poly.is_empty or poly.area == 0:
+        return None
+    return poly
+
+
 def _largest_inscribed_circle_center(polygon_xy, ax):
     """Centre of the largest circle inscribable in a polygon, in data units.
 
@@ -60,30 +78,45 @@ def _largest_inscribed_circle_center(polygon_xy, ax):
     sx = (x1 - x0) or 1.0
     sy = (y1 - y0) or 1.0
     coords = np.asarray(polygon_xy, dtype=float)
-    poly = shapely.Polygon(np.column_stack([coords[:, 0] / sx, coords[:, 1] / sy]))
-    if not poly.is_valid:
-        poly = shapely.make_valid(poly)
-        if isinstance(poly, shapely.MultiPolygon):
-            poly = max(poly.geoms, key=lambda g: g.area)
-    if not isinstance(poly, shapely.Polygon) or poly.is_empty or poly.area == 0:
+    poly = _shapely_polygon(np.column_stack([coords[:, 0] / sx, coords[:, 1] / sy]))
+    if poly is None:
         return None
     point = polylabel(poly, tolerance=1e-3)
     return point.x * sx, point.y * sy
+
+
+def _label_fits(poly_px, text, renderer):
+    """Whether ``text``'s rendered bounding box lies inside a pixel-space polygon."""
+    return poly_px.contains(shapely.box(*text.get_window_extent(renderer).extents))
 
 
 def _add_inline_polygon_labels(ax, polys):
     """Label each phase polygon in place instead of drawing a legend box.
 
     Every polygon is annotated with its phase name (with trailing apostrophes
-    for repeated stability regions, matching :func:`plot_polygons`) at the
-    centre of its largest inscribed circle, with a white outline.  The text is
-    black: the polygon fill already carries the phase colour, and black with a
-    white stroke stays legible even over the pale pastel fills.
+    for repeated stability regions, matching :func:`plot_polygons`), with a
+    white outline.  The text is black: the polygon fill already carries the
+    phase colour, and black with a white stroke stays legible even over the
+    pale pastel fills.
+
+    Placement tries three positions in turn, keeping the first whose rendered
+    bounding box fits inside the polygon:
+
+    1. horizontal at the centre of the largest inscribed circle,
+    2. rotated by 90° at the same point — for tall, narrow regions,
+    3. still rotated, but moved horizontally off the polygon — for line phases
+       too thin to hold any label.  The label sits just right of the polygon
+       unless that would leave the axes (a terminal line phase at the right
+       edge), in which case it sits to the left; it is clamped into the axes
+       both ways, vertically too.
 
     Args:
         ax: matplotlib Axes the polygons were drawn on.
         polys: Series of matplotlib Polygons indexed as in :func:`get_polygons`.
     """
+    renderer = _get_renderer(ax.figure)
+    axbb = ax.get_window_extent(renderer)
+    pad = 0.004 * axbb.width  # clearance between an offset label box and its polygon
     for key, p in polys.items():
         if isinstance(key, tuple):
             phase, rep = key
@@ -92,11 +125,29 @@ def _add_inline_polygon_labels(ax, polys):
         center = _largest_inscribed_circle_center(p.get_xy(), ax)
         if center is None:
             continue
-        _text_with_outline(
+        text = _text_with_outline(
             ax, center[0], center[1], phase + "'" * rep,
             ha="center", va="center", fontsize="small", fontweight="bold",
             color="black",
         )
+        poly_px = _shapely_polygon(ax.transData.transform(p.get_xy()))
+        if poly_px is None or _label_fits(poly_px, text, renderer):
+            continue
+        text.set_rotation(90)
+        if _label_fits(poly_px, text, renderer):
+            continue
+        # Too thin even for a rotated label (a line phase): move it beside the
+        # polygon, keeping the rotation.
+        bbox = text.get_window_extent(renderer)
+        half_w, half_h = bbox.width / 2, bbox.height / 2
+        minx, _, maxx, _ = poly_px.bounds
+        cx = maxx + pad + half_w
+        if cx + half_w > axbb.x1:
+            cx = minx - pad - half_w
+        cx = min(max(cx, axbb.x0 + half_w), axbb.x1 - half_w)
+        cy = ax.transData.transform(center)[1]
+        cy = min(max(cy, axbb.y0 + half_h), axbb.y1 - half_h)
+        text.set_position(ax.transData.inverted().transform((cx, cy)))
 
 
 def cluster_phase(df, distance_threshold=0.5):  # 0.5 hand-tuned

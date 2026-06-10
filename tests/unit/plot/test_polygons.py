@@ -351,6 +351,104 @@ def test_add_inline_polygon_labels_one_text_per_polygon():
     plt.close(fig)
 
 
+def _rect_patch(x0, x1, y0, y1):
+    return Polygon(np.array([(x0, y0), (x1, y0), (x1, y1), (x0, y1)]), closed=True)
+
+
+def _label_rect(ax, phase, x0, x1, y0, y1):
+    """Run `_add_inline_polygon_labels` on one rectangle and return its text artist."""
+    polys = pd.Series(
+        [_rect_patch(x0, x1, y0, y1)],
+        index=pd.MultiIndex.from_tuples([(phase, 0)], names=["phase", "phase_unit"]),
+    )
+    _add_inline_polygon_labels(ax, polys)
+    (text,) = ax.texts
+    return text
+
+
+def _wide_axes():
+    """Axes mimicking a c-T diagram: x in [0, 1], T in [0, 1000]."""
+    fig, ax = plt.subplots()
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1000)
+    return fig, ax
+
+
+def _extent_px(ax, text):
+    return text.get_window_extent(plot_mod._get_renderer(ax.figure))
+
+
+# Label placement is clamped in pixel space but stored in data coordinates, so
+# round-tripping through the transform can wobble the bbox by float epsilon.
+PX_TOL = 1e-6
+
+
+def _assert_inside_axes(ax, bbox, vertical=True):
+    axbb = ax.get_window_extent(plot_mod._get_renderer(ax.figure))
+    assert axbb.x0 - PX_TOL <= bbox.x0 and bbox.x1 <= axbb.x1 + PX_TOL
+    if vertical:
+        assert axbb.y0 - PX_TOL <= bbox.y0 and bbox.y1 <= axbb.y1 + PX_TOL
+
+
+def test_inline_label_horizontal_when_it_fits():
+    fig, ax = _wide_axes()
+    text = _label_rect(ax, "A", 0.1, 0.9, 100, 900)
+    assert text.get_rotation() == 0
+    x, y = text.get_position()
+    assert x == pytest.approx(0.5, abs=2e-3)
+    assert y == pytest.approx(500, abs=2)
+    plt.close(fig)
+
+
+def test_inline_label_rotates_in_tall_narrow_polygon():
+    """A region narrower than the label but tall enough for it rotated keeps the pole anchor."""
+    fig, ax = _wide_axes()
+    text = _label_rect(ax, "ABCDEFGH", 0.47, 0.53, 50, 950)
+    assert text.get_rotation() == 90
+    x, y = text.get_position()
+    assert x == pytest.approx(0.5, abs=2e-3)
+    assert y == pytest.approx(500, abs=2)
+    # The rotated box really is inside the polygon.
+    bbox = _extent_px(ax, text)
+    px0 = ax.transData.transform((0.47, 0.0))[0]
+    px1 = ax.transData.transform((0.53, 0.0))[0]
+    assert px0 < bbox.x0 and bbox.x1 < px1
+    plt.close(fig)
+
+
+def test_inline_label_moves_off_thin_polygon():
+    """A line phase too thin for even a rotated label gets it placed beside, inside the axes."""
+    fig, ax = _wide_axes()
+    text = _label_rect(ax, "ABCDEFGH", 0.499, 0.501, 50, 950)
+    assert text.get_rotation() == 90
+    bbox = _extent_px(ax, text)
+    px1 = ax.transData.transform((0.501, 0.0))[0]
+    assert bbox.x0 > px1  # clear of the polygon, to its right
+    _assert_inside_axes(ax, bbox)
+    plt.close(fig)
+
+
+def test_inline_label_off_polygon_flips_left_at_right_edge():
+    """A terminal line phase at c=1 gets its label to the left, not outside the axes."""
+    fig, ax = _wide_axes()
+    text = _label_rect(ax, "ABCDEFGH", 0.998, 1.0, 50, 950)
+    assert text.get_rotation() == 90
+    bbox = _extent_px(ax, text)
+    px0 = ax.transData.transform((0.998, 0.0))[0]
+    assert bbox.x1 < px0  # clear of the polygon, to its left
+    _assert_inside_axes(ax, bbox, vertical=False)
+    plt.close(fig)
+
+
+def test_inline_label_off_polygon_clamped_vertically():
+    """A short line phase near the bottom edge keeps its label inside the axes."""
+    fig, ax = _wide_axes()
+    text = _label_rect(ax, "ABCDEFGH", 0.499, 0.501, 0, 60)
+    assert text.get_rotation() == 90
+    _assert_inside_axes(ax, _extent_px(ax, text))
+    plt.close(fig)
+
+
 def test_plot_phase_diagram_inline_legend_default_labels_in_place():
     fig, ax = plt.subplots()
     plot_phase_diagram(_stable_df(), ax=ax, poly_method=Concave(drop_interior=False))
