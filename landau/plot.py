@@ -876,6 +876,13 @@ def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True, yl
             mask = (df[scan_col] > lo) & (df[scan_col] < hi) & df["stable"]
             stable_phases = df.loc[mask, "phase"].unique()
             if len(stable_phases) != 1:
+                # A stable window narrower than the grid spacing has no sample
+                # strictly inside its two borders; the phase marked stable on
+                # both enclosing rows is the one stable throughout.
+                at_lo = set(df.loc[(df[scan_col] == lo) & df["stable"], "phase"])
+                at_hi = set(df.loc[(df[scan_col] == hi) & df["stable"], "phase"])
+                stable_phases = sorted(at_lo & at_hi)
+            if len(stable_phases) != 1:
                 raise RuntimeError(
                     f"expected exactly one stable phase in [{lo}, {hi}], "
                     f"got {list(stable_phases)}"

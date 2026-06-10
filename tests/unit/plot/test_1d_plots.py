@@ -990,6 +990,41 @@ def test_top_spine_labels_bold_with_white_outline(df_T_three_stable):
         plt.close(fig)
 
 
+@pytest.fixture(scope="module")
+def df_mu_narrow_window():
+    """Isothermal mu scan where B's stable window (2.4, 2.6) is narrower than
+    the grid spacing of 1, so B is stable only on its two refined border rows
+    and no sample lies strictly between them."""
+    a = ldp.LinePhase("A", fixed_concentration=0.0, line_energy=0.0)
+    b = ldp.LinePhase("B", fixed_concentration=0.5, line_energy=1.2)
+    c = ldp.LinePhase("C", fixed_concentration=1.0, line_energy=2.5)
+    return ldc.calc_phase_diagram([a, b, c], 300.0, mu=np.linspace(0.0, 4.0, 5), keep_unstable=True)
+
+
+def test_top_labels_narrow_stable_window(df_mu_narrow_window):
+    """A phase with no sample strictly inside its borders still gets its top label."""
+    df = df_mu_narrow_window
+    inside = (df["mu"] > 2.4) & (df["mu"] < 2.6)
+    assert not inside.any(), "fixture must have no sample strictly inside B's window"
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_mu_phase_diagram(df, ax=ax)
+        assert _top_labels(ax) == ["A", "B", "C"]
+    finally:
+        plt.close(fig)
+
+
+def test_top_labels_missing_border_raises(df_mu_narrow_window):
+    """A stable-phase change with no border row anywhere is still an error."""
+    df = df_mu_narrow_window[~df_mu_narrow_window["border"]]
+    fig, ax = plt.subplots()
+    try:
+        with pytest.raises(RuntimeError, match="expected exactly one stable phase"):
+            plot_1d_mu_phase_diagram(df, ax=ax)
+    finally:
+        plt.close(fig)
+
+
 @pytest.mark.parametrize(
     "label, expected",
     [
