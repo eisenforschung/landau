@@ -387,7 +387,15 @@ def _segment_tsp_polygon(
         return shapely.convex_hull(shapely.MultiPoint(np.vstack(segments)))
     dm_int = (dm / pos.min()).round().astype(int)
 
-    tour = solve_tour(dm_int)
+    tour = list(solve_tour(dm_int))
+
+    # The tour is cyclic, so the solver is free to return a rotation whose
+    # ends fall inside a segment (the zero-cost intra-segment edge being the
+    # wrap-around). The first-encounter rule below would then walk that
+    # segment in the wrong direction relative to its neighbours and produce a
+    # self-intersecting ring, so rotate off the intra-segment edge first.
+    while tour[0] // 2 == tour[-1] // 2:
+        tour.append(tour.pop(0))
 
     seen = set()
     chunks = []
@@ -410,7 +418,6 @@ __all__ = ["Concave", "Segments"]
 
 
 with ImportAlarm("'python_tsp' package required for PythonTsp.  Install from conda or pip.") as python_tsp_alarm:
-    from python_tsp.exact import solve_tsp_dynamic_programming
     from python_tsp.heuristics import solve_tsp_record_to_record
 
     @dataclass
@@ -463,35 +470,16 @@ with ImportAlarm("'python_tsp' package required for PythonTsp.  Install from con
         formulation with zero-cost intra-segment edges.
         """
         max_iterations: int = 10
-        retries: int = 2
-        """How often to re-solve with a 10x larger iteration budget when the tour self-intersects."""
-        exact_node_limit: int = 16
-        """Solve the endpoint TSP exactly instead of retrying when it has at most this many nodes.
-
-        The record-to-record heuristic restarts from a random tour and frequently keeps
-        self-intersecting solutions on these small instances regardless of iteration budget,
-        while dynamic programming is exact and still fast up to about this size."""
 
         def _make(self, pp, border, segment_label):
             if np.all(segment_label == 1):
                 raise ValueError("SegmentPythonTsp requires refined phase boundaries (segment_label must be provided)!")
             segments = _segments_from_labels(pp, segment_label)
 
-            iterations = self.max_iterations
-            for _ in range(self.retries + 1):
-                def solve(dm_int, iterations=iterations):
-                    return solve_tsp_record_to_record(dm_int, max_iterations=iterations)[0]
+            def solve(dm_int):
+                return solve_tsp_record_to_record(dm_int, max_iterations=self.max_iterations)[0]
 
-                shape = _segment_tsp_polygon(segments, solve)
-                if not isinstance(shape, shapely.Polygon) or shape.is_valid:
-                    return shape
-                if 2 * len(segments) <= self.exact_node_limit:
-                    def solve_exact(dm_int):
-                        return solve_tsp_dynamic_programming(dm_int)[0]
-
-                    return _segment_tsp_polygon(segments, solve_exact)
-                iterations *= 10
-            return shape
+            return _segment_tsp_polygon(segments, solve)
 
     __all__ += ["PythonTsp", "SegmentPythonTsp"]
 
