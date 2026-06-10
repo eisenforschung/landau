@@ -69,6 +69,15 @@ class AbstractPolyMethod(abc.ABC):
                 warn(f"{type(self).__name__}._make produced an invalid polygon "
                      f"({shapely.is_valid_reason(shape)}); repairing it.")
                 shape = shapely.make_valid(shape)
+                if isinstance(shape, shapely.GeometryCollection):
+                    # make_valid returns a collection when the repair leaves
+                    # zero-area line/point artifacts next to the polygons;
+                    # only the polygonal parts matter for plotting.
+                    polygons = [g for g in shape.geoms
+                                if isinstance(g, (shapely.Polygon, shapely.MultiPolygon))]
+                    if not polygons:
+                        return None
+                    shape = shapely.union_all(polygons)
                 if isinstance(shape, shapely.MultiPolygon):
                     shape = max(shape.geoms, key=shapely.area)
                 elif not isinstance(shape, shapely.Polygon):
