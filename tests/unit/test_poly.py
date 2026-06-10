@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import shapely
 from hypothesis import given, strategies as st, settings
+import landau.poly as poly_module
 from landau.poly import (
     AbstractPolyMethod,
     Concave,
@@ -227,6 +228,30 @@ def test_handle_poly_method():
 
     with pytest.raises(TypeError):
         handle_poly_method(123)
+
+
+@pytest.mark.skipif(not HAS_FAST_TSP, reason="fast-tsp not installed")
+def test_handle_poly_method_default_chain_both_tsp():
+    # segment-fasttsp heads the chain when fast-tsp is available.
+    assert isinstance(handle_poly_method(None), SegmentFastTsp)
+
+
+@pytest.mark.skipif(not HAS_PYTHON_TSP, reason="python-tsp not installed")
+def test_handle_poly_method_default_chain_no_fasttsp(monkeypatch):
+    # Without fast-tsp, segment-tsp is next in the chain.
+    stripped = [x for x in poly_module.__all__ if x not in ("FastTsp", "SegmentFastTsp")]
+    monkeypatch.setattr(poly_module, "__all__", stripped)
+    assert isinstance(handle_poly_method(None), SegmentPythonTsp)
+
+
+def test_handle_poly_method_default_chain_no_tsp(monkeypatch):
+    # Without any TSP, concave is the fallback.
+    stripped = [
+        x for x in poly_module.__all__
+        if x not in ("FastTsp", "SegmentFastTsp", "PythonTsp", "SegmentPythonTsp")
+    ]
+    monkeypatch.setattr(poly_module, "__all__", stripped)
+    assert isinstance(handle_poly_method(None), Concave)
 
 
 # --- AbstractPolyMethod.make repair tests ---
