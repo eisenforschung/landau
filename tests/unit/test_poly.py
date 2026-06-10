@@ -556,3 +556,17 @@ class TestSegmentTspPolygonTraversalDirection:
         coords = np.array(result.exterior.coords)[:-1]
         np.testing.assert_allclose(coords[:2], seg0[::-1])
         np.testing.assert_allclose(coords[2:], seg1[::-1])
+
+
+def test_segment_tsp_polygon_rotated_tour_cut_inside_segment():
+    # A cyclic tour may be returned in a rotation whose ends fall inside a
+    # segment: [1, 2, 3, 0] is the same cycle as [0, 1, 2, 3], cut through
+    # seg0's zero-cost intra edge. Reconstructing it naively walks seg0
+    # backward (first encounter at node 1) while keeping its position in the
+    # sequence, yielding a self-intersecting bow-tie instead of the square.
+    seg0 = np.array([[0.0, 0.0], [1.0, 0.0]])
+    seg1 = np.array([[1.0, 1.0], [0.0, 1.0]])
+    result = _segment_tsp_polygon([seg0, seg1], lambda dm: [1, 2, 3, 0])
+    assert isinstance(result, shapely.Polygon)
+    assert result.is_valid
+    assert result.equals(shapely.Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]))
