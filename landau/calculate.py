@@ -217,11 +217,21 @@ def calc_phase_diagram(
         lo_thr = c_min + 0.01 * c_span
         hi_thr = c_max - 0.01 * c_span
         f0, f1 = np.inf, np.inf
+        # Compare candidate reference phases by the value of their tangent
+        # line at the pure concentrations, not by f at their extreme sample:
+        # f has slope mu in c, so phi is the tangent value at c=0 and phi+mu
+        # the one at c=1.  For a phase sampled only up to c=1-eps, f lies
+        # below its own tangent value at c=1 by ~mu*eps, which would let it
+        # steal the reference from a line phase sitting exactly at c=1 and
+        # lift that phase's f_excess off zero.  For line phases located
+        # exactly at an endpoint both expressions reduce to f.
+        tangent0 = dd["phi"]
+        tangent1 = dd["phi"] + dd["mu"]
         for _, g in dd.groupby("phase"):
             if g["c"].min() <= lo_thr:
-                f0 = min(f0, g.loc[g["c"].idxmin(), "f"])
+                f0 = min(f0, tangent0[g["c"].idxmin()])
             if g["c"].max() >= hi_thr:
-                f1 = min(f1, g.loc[g["c"].idxmax(), "f"])
+                f1 = min(f1, tangent1[g["c"].idxmax()])
         if not np.isfinite(f0):
             f0 = dd.loc[dd["c"].idxmin(), "f"]
         if not np.isfinite(f1):
