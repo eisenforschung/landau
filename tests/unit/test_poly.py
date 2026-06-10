@@ -3,6 +3,7 @@ import pandas as pd
 import shapely
 from hypothesis import given, strategies as st, settings
 from landau.poly import (
+    AbstractPolyMethod,
     Concave,
     Segments,
     _greedy_stitch,
@@ -14,6 +15,7 @@ from landau.poly import (
 import pytest
 from matplotlib.patches import Polygon
 from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
 
 # Check if optional dependencies are available
 try:
@@ -225,6 +227,40 @@ def test_handle_poly_method():
 
     with pytest.raises(TypeError):
         handle_poly_method(123)
+
+
+# --- AbstractPolyMethod.make repair tests ---
+
+
+def test_make_repairs_ring_self_intersection():
+    # A ring that retraces a zero-width spike is invalid ("Ring
+    # Self-intersection"). make() must repair it to the enclosed polygon
+    # instead of dropping the phase region (the solid phase vanished from
+    # the Intermetallics c-T diagram this way: make_valid's default linework
+    # algorithm returned a GeometryCollection that fell through the repair
+    # branch, which is why the structure algorithm is used).
+    points = np.array([
+        (0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0),  # square
+        (0.0, 2.0), (2.0, 2.0),                          # spike vertices
+    ])
+    ring = np.array([
+        (0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0),
+        (0.0, 2.0), (2.0, 2.0), (0.0, 2.0),              # out and back
+    ])
+
+    class SpikedRing(AbstractPolyMethod):
+        def _make(self, pp, border, segment_label):
+            # make() hands _make scaled coordinates and inverse-transforms
+            # the result, so emit the ring in the same scaled space
+            return shapely.Polygon(StandardScaler().fit(points).transform(ring))
+
+    df = pd.DataFrame(points, columns=["c", "T"])
+    with pytest.warns(UserWarning, match="invalid polygon"):
+        shape = SpikedRing(min_c_width=0).make(df)
+    assert isinstance(shape, shapely.Polygon)
+    assert shape.is_valid
+    # the zero-area spike is gone, only the square remains
+    assert shape.area == pytest.approx(16.0)
 
 
 # --- _greedy_stitch tests ---

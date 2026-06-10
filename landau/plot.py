@@ -1413,7 +1413,6 @@ def plot_excess_free_energy(
     else:
         ax = axes[0]
         ax.axhline(0, color=".5", linestyle="--")
-        ax.set_title(f"T = {temperatures[0]:.0f} K")
         ax.set(xlabel="Concentration", ylabel="Free Energy of Formation")
 
     # Place inline labels last so they see the final axis limits (refline/relplot).

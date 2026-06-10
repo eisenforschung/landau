@@ -68,7 +68,7 @@ class AbstractPolyMethod(abc.ABC):
             if isinstance(shape, shapely.Polygon) and not shape.is_valid:
                 warn(f"{type(self).__name__}._make produced an invalid polygon "
                      f"({shapely.is_valid_reason(shape)}); repairing it.")
-                shape = shapely.make_valid(shape)
+                shape = shapely.make_valid(shape, method="structure", keep_collapsed=False)
                 if isinstance(shape, shapely.MultiPolygon):
                     shape = max(shape.geoms, key=shapely.area)
                 elif not isinstance(shape, shapely.Polygon):
@@ -410,6 +410,7 @@ __all__ = ["Concave", "Segments"]
 
 
 with ImportAlarm("'python_tsp' package required for PythonTsp.  Install from conda or pip.") as python_tsp_alarm:
+    from python_tsp.exact import solve_tsp_dynamic_programming
     from python_tsp.heuristics import solve_tsp_record_to_record
 
     @dataclass
@@ -420,6 +421,11 @@ with ImportAlarm("'python_tsp' package required for PythonTsp.  Install from con
         phase boundaries should be well-behaved.
         """
         max_iterations: int = 10
+        retries: int = 2
+        """How often to re-solve with a 10x larger iteration budget when the tour self-intersects.
+
+        A self-intersecting tour survives only repaired, which can cut off parts of the phase region,
+        so spending more solver effort first is worth it."""
 
         def prepare(self, df: pd.DataFrame) -> pd.DataFrame:
             if df.shape[0] > 50_000:
@@ -435,10 +441,17 @@ with ImportAlarm("'python_tsp' package required for PythonTsp.  Install from con
             if not (dm > 0).any():
                 return shapely.convex_hull(shapely.MultiPoint(pp))
             dm = (dm / dm[dm > 0].min()).round().astype(int)
-            tour = solve_tsp_record_to_record(
-                    dm, x0=np.argsort(np.arctan2(pp[:, 1], pp[:, 0])).tolist(),
-                    max_iterations=self.max_iterations)[0]
-            return shapely.Polygon(pp[tour]) if len(tour) > 2 else None
+            x0 = np.argsort(np.arctan2(pp[:, 1], pp[:, 0])).tolist()
+            iterations = self.max_iterations
+            for _ in range(self.retries + 1):
+                tour = solve_tsp_record_to_record(dm, x0=x0, max_iterations=iterations)[0]
+                if len(tour) <= 2:
+                    return None
+                shape = shapely.Polygon(pp[tour])
+                if shape.is_valid:
+                    break
+                iterations *= 10
+            return shape
 
     @dataclass
     class SegmentPythonTsp(Segments):
@@ -450,16 +463,35 @@ with ImportAlarm("'python_tsp' package required for PythonTsp.  Install from con
         formulation with zero-cost intra-segment edges.
         """
         max_iterations: int = 10
+        retries: int = 2
+        """How often to re-solve with a 10x larger iteration budget when the tour self-intersects."""
+        exact_node_limit: int = 16
+        """Solve the endpoint TSP exactly instead of retrying when it has at most this many nodes.
+
+        The record-to-record heuristic restarts from a random tour and frequently keeps
+        self-intersecting solutions on these small instances regardless of iteration budget,
+        while dynamic programming is exact and still fast up to about this size."""
 
         def _make(self, pp, border, segment_label):
             if np.all(segment_label == 1):
                 raise ValueError("SegmentPythonTsp requires refined phase boundaries (segment_label must be provided)!")
             segments = _segments_from_labels(pp, segment_label)
 
-            def solve(dm_int):
-                return solve_tsp_record_to_record(dm_int, max_iterations=self.max_iterations)[0]
+            iterations = self.max_iterations
+            for _ in range(self.retries + 1):
+                def solve(dm_int, iterations=iterations):
+                    return solve_tsp_record_to_record(dm_int, max_iterations=iterations)[0]
 
-            return _segment_tsp_polygon(segments, solve)
+                shape = _segment_tsp_polygon(segments, solve)
+                if not isinstance(shape, shapely.Polygon) or shape.is_valid:
+                    return shape
+                if 2 * len(segments) <= self.exact_node_limit:
+                    def solve_exact(dm_int):
+                        return solve_tsp_dynamic_programming(dm_int)[0]
+
+                    return _segment_tsp_polygon(segments, solve_exact)
+                iterations *= 10
+            return shape
 
     __all__ += ["PythonTsp", "SegmentPythonTsp"]
 
