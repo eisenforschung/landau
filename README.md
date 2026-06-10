@@ -21,32 +21,27 @@ pip install landau
 
 ## Quickstart
 
-Phases are defined by their free energies.  Combining end member phases into
-(ideal) solutions and scanning over temperature and chemical potential
-difference gives a full binary phase diagram in a few lines:
+Phases are defined by their free energies.  Two ideal solutions — a solid and
+a liquid — already give a full binary phase diagram:
 
 ```python
 import numpy as np
-from landau import LinePhase, IdealSolution
-from landau.phases import kB
+from landau import LinePhase, IdealSolution, plot_phase_diagram
 from landau.calculate import calc_phase_diagram
-from landau.plot import plot_phase_diagram
+from landau.phases import kB
 
-hcp = IdealSolution("hcp",
-    LinePhase("hcpA", fixed_concentration=0, line_energy=-2.975, line_entropy=1.8 * kB),
-    LinePhase("hcpB", fixed_concentration=1, line_energy=-1.95,  line_entropy=1.1 * kB))
-fcc = IdealSolution("fcc",
-    LinePhase("fccA", fixed_concentration=0, line_energy=-3.00, line_entropy=1.0 * kB),
-    LinePhase("fccB", fixed_concentration=1, line_energy=-2.00, line_entropy=1.1 * kB))
+solid = IdealSolution("solid",
+    LinePhase("A",    fixed_concentration=0, line_energy=-2.0, line_entropy=1.0 * kB),
+    LinePhase("B",    fixed_concentration=1, line_energy=-3.0, line_entropy=1.5 * kB))
 liquid = IdealSolution("liquid",
-    LinePhase("liquidA", fixed_concentration=0, line_energy=-2.75, line_entropy=5.0 * kB),
-    LinePhase("liquidB", fixed_concentration=1, line_energy=-1.75, line_entropy=4.4 * kB))
+    LinePhase("A(l)", fixed_concentration=0, line_energy=-1.9, line_entropy=2.5 * kB),
+    LinePhase("B(l)", fixed_concentration=1, line_energy=-2.9, line_entropy=2.2 * kB))
 
-df = calc_phase_diagram([hcp, fcc, liquid], Ts=np.linspace(100, 1000, 100), mu=100)
-plot_phase_diagram(df, tielines=True)
+df = calc_phase_diagram([solid, liquid], Ts=np.linspace(400, 1800, 100), mu=100)
+plot_phase_diagram(df)
 ```
 
-![Concentration-temperature phase diagram of three ideal solution phases](https://raw.githubusercontent.com/eisenforschung/landau/main/docs/images/quickstart_phase_diagram.png)
+![Concentration-temperature phase diagram of a solid and a liquid ideal solution](https://raw.githubusercontent.com/eisenforschung/landau/main/docs/images/quickstart_phase_diagram.png)
 
 `calc_phase_diagram` returns a plain pandas dataframe of `(T, mu, phase, c, phi)`
 samples that the plotting functions consume, so intermediate results stay easy
