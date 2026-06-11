@@ -459,6 +459,31 @@ def _coarse_df(phases, Ts, mus):
     return pd.DataFrame(rows)
 
 
+def test_delaunay_triple_solve_is_pure():
+    """solve() returns a result every time it is called; dedup is run()'s job."""
+    phases = _three_phase_system()
+    Ts = np.linspace(220.0, 480.0, 6)
+    mus = np.linspace(-0.05, 0.55, 7)
+    df = _coarse_df(phases, Ts, mus)
+
+    from landau.refine import _SimplexCandidate, _delaunay_simplices
+    triple_cands = [
+        _SimplexCandidate(simplex=s)
+        for s, n in _delaunay_simplices(df)
+        if n == 3
+    ]
+    assert len(triple_cands) >= 1
+
+    refiner = DelaunayTripleRefiner()
+    cand = triple_cands[0]
+    result1 = refiner.solve(cand, phases)
+    result2 = refiner.solve(cand, phases)
+    assert len(result1) == 1
+    assert len(result2) == 1
+    assert result1[0].T == result2[0].T
+    assert result1[0].mu == result2[0].mu
+
+
 def test_delaunay_triple_refiner_deduplicates():
     """Triple refiner emits each triple point exactly once even when
     multiple three-phase Delaunay simplices independently detect it."""
