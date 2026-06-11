@@ -13,6 +13,7 @@ from landau.refine import (
     DelaunayTripleRefiner,
     RefinedPoint,
     RefinedMiscibilityGap,
+    ScanRefiner,
 )
 from landau.refine import (
     _point_on_line,
@@ -571,3 +572,70 @@ def test_boundary_id_delaunay_triple_rows_share_id():
     assert "boundary_id" in out.columns
     # One triple point (3 rows) → all rows share the same boundary_id.
     assert out["boundary_id"].nunique() == 1
+
+
+# -- ScanRefiner --------------------------------------------------------------
+
+SCAN_ATOL = 1e-6  # xtol of _find_one_point
+
+
+def _narrow_window_system():
+    """Three LinePhases where B is stable only in mu = (2.4, 2.6).
+
+    With phi = E - mu*c the stable phase along mu at any T is A below 2.4,
+    B inside (2.4, 2.6), and C above 2.6.  On an integer mu grid no sample
+    ever sees B stable, so a scan only shows an A→C change between mu=2 and
+    mu=3 while the metastable A-C crossing at mu=2.5 is dominated by B.
+    """
+    ph_a = LinePhase(name="A", fixed_concentration=0.0, line_energy=0.0)
+    ph_b = LinePhase(name="B", fixed_concentration=0.5, line_energy=1.2)
+    ph_c = LinePhase(name="C", fixed_concentration=1.0, line_energy=2.5)
+    return {"A": ph_a, "B": ph_b, "C": ph_c}
+
+
+def test_scan_refiner_locates_pairwise_transition():
+    """Two-phase scan: the exact crossing is found within root-finder tolerance."""
+    phases = _narrow_window_system()
+    del phases["B"]
+    df = _coarse_df(phases, [300.0], np.linspace(0.0, 4.0, 5))
+    out = ScanRefiner("mu").run(df, phases)
+    # A-C crossing at phi_A = phi_C: mu = 2.5; one point, one row per phase.
+    assert sorted(out["phase"]) == ["A", "C"]
+    np.testing.assert_allclose(out["mu"], 2.5, atol=SCAN_ATOL)
+    assert out["stable"].all() and out["border"].all()
+
+
+def test_scan_refiner_splits_dominated_crossing():
+    """A stable window narrower than the grid spacing yields both real transitions.
+
+    The A-C crossing at mu=2.5 is dominated by B, so the refiner must recurse
+    and return the A-B and B-C transitions instead of dropping the candidate
+    (which left no border row at all between two stably-sampled phases).
+    """
+    phases = _narrow_window_system()
+    df = _coarse_df(phases, [300.0], np.linspace(0.0, 4.0, 5))
+    assert set(df["phase"]) == {"A", "C"}, "grid must not sample B stable"
+    out = ScanRefiner("mu").run(df, phases)
+    by_mu = out.groupby("mu")["phase"].agg(lambda s: tuple(sorted(s)))
+    assert len(by_mu) == 2
+    # phi_A = phi_B at mu = 2*1.2; phi_B = phi_C at mu = 2*(2.5 - 1.2).
+    np.testing.assert_allclose(by_mu.index, [2.4, 2.6], atol=SCAN_ATOL)
+    assert by_mu.tolist() == [("A", "B"), ("B", "C")]
+
+
+def test_scan_refiner_splits_dominated_crossing_T_scan():
+    """Same recursion along the T axis: entropy opens a narrow B window in T."""
+    # phi_A = 0, phi_B = 0.49 - 0.001*T, phi_C = 1 - 0.002*T at mu=0:
+    # B is stable only for T in (490, 510), inside the (350, 550) grid gap.
+    phases = {
+        "A": LinePhase(name="A", fixed_concentration=0.0, line_energy=0.0),
+        "B": LinePhase(name="B", fixed_concentration=0.5, line_energy=0.49, line_entropy=0.001),
+        "C": LinePhase(name="C", fixed_concentration=1.0, line_energy=1.0, line_entropy=0.002),
+    }
+    df = _coarse_df(phases, np.linspace(150.0, 950.0, 5), [0.0])
+    assert set(df["phase"]) == {"A", "C"}, "grid must not sample B stable"
+    out = ScanRefiner("T").run(df, phases)
+    by_T = out.groupby("T")["phase"].agg(lambda s: tuple(sorted(s)))
+    assert len(by_T) == 2
+    np.testing.assert_allclose(by_T.index, [490.0, 510.0], atol=SCAN_ATOL)
+    assert by_T.tolist() == [("A", "B"), ("B", "C")]
