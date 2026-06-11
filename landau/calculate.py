@@ -11,6 +11,7 @@ from scipy.constants import Boltzmann, eV
 from sklearn.cluster import AgglomerativeClustering
 
 
+from .features import Locus
 from .phases import Phase, AbstractLinePhase
 from .refine import Refiner, default_refiners, _find_one_point as find_one_point  # noqa: F401
 
@@ -45,14 +46,21 @@ def _split_phase_unit(combined: pd.Series) -> tuple[pd.Series, pd.Series]:
 def _split_stable(df):
     udf = df.query("not stable").reset_index(drop=True)
     udf["border"] = False
+    udf["locus"] = Locus.INTERIOR
     sdf = df.query("stable").reset_index(drop=True)
     sdf["border"] = False
     sdf["refined"] = "no"
+    sdf["locus"] = Locus.INTERIOR
     return sdf, udf
 
 
 def _border_edges(df, min_c, max_c):
-    """Mark T extremes as border and emit synthetic +-inf mu edges (2D only)."""
+    """Mark T extremes as border and emit synthetic +-inf mu edges (2D only).
+
+    The synthetic edge points only close the sampling window for polygon
+    construction, they are no thermodynamic transitions, so they keep
+    ``locus = Locus.INTERIOR`` despite ``border = True``.
+    """
     df.loc[df["T"] == df["T"].min(), "border"] = True
     df.loc[df["T"] == df["T"].max(), "border"] = True
     left = df.loc[df["mu"] == df["mu"].min()][["phase", "T"]].copy()
@@ -60,11 +68,13 @@ def _border_edges(df, min_c, max_c):
     left["c"] = min_c
     left["border"] = True
     left["stable"] = True
+    left["locus"] = Locus.INTERIOR
     right = df.loc[df["mu"] == df["mu"].max()][["phase", "T"]].copy()
     right["mu"] = +np.inf
     right["c"] = max_c
     right["border"] = True
     right["stable"] = True
+    right["locus"] = Locus.INTERIOR
     return left, right
 
 
@@ -174,7 +184,9 @@ def calc_phase_diagram(
         keep_unstable (bool): only keep entries of stable phases, otherwise keep entries of all phases at all sampling points
 
     Returns:
-        dataframe of phase points
+        dataframe of phase points; the ``locus`` column classifies each row
+        as a :class:`~landau.features.Locus` value (``"interior"``,
+        ``"boundary"`` or ``"triple"``)
     """
     if not isinstance(Ts, Iterable):
         Ts = [Ts]
@@ -201,6 +213,7 @@ def calc_phase_diagram(
     pdf = pdf.explode(["mu", "phi", "c"]).infer_objects().reset_index(drop=True)
     pdf["stable"] = False
     pdf.loc[pdf.groupby(["T", "mu"], group_keys=False).phi.idxmin(), "stable"] = True
+    pdf["locus"] = Locus.INTERIOR
     if refine:
         min_c = pdf.c.min()
         max_c = pdf.c.max()

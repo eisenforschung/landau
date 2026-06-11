@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from hypothesis import given, strategies as st
 from landau.calculate import (
+    calc_phase_diagram,
     find_one_point,
     cluster,
     cluster_T_c,
@@ -14,6 +15,7 @@ from landau.calculate import (
     _split_stable,
     guess_mu_range,
 )
+from landau.features import Locus
 from unittest.mock import MagicMock
 
 def test_find_one_point_success():
@@ -268,6 +270,9 @@ def test_split_stable_adds_border_and_refined_columns(stable_unstable_frame):
     # only the stable half gets refined="no"
     assert (sdf["refined"] == "no").all()
     assert "refined" not in udf.columns
+    # plain samples in both halves are interior points
+    assert (sdf["locus"] == Locus.INTERIOR).all()
+    assert (udf["locus"] == Locus.INTERIOR).all()
 
 
 def test_split_stable_does_not_mutate_input(stable_unstable_frame):
@@ -315,6 +320,9 @@ def test_border_edges_left_right_use_extreme_mu_rows(grid_frame):
     assert (right["border"] == True).all()  # noqa: E712
     assert (left["stable"] == True).all()  # noqa: E712
     assert (right["stable"] == True).all()  # noqa: E712
+    # frame edges only close the sampling window, they are no transitions
+    assert (left["locus"] == Locus.INTERIOR).all()
+    assert (right["locus"] == Locus.INTERIOR).all()
 
 
 def test_border_edges_preserves_T_and_phase_from_source(grid_frame):
@@ -367,3 +375,49 @@ def test_cluster_use_mu_false_dispatches_to_cluster_T_c():
     labels = cluster(dd, use_mu=False, distance_threshold=0.5)
     assert labels.nunique() == 1
     assert len(labels) == len(dd)
+
+
+# --- locus column tests ---
+
+
+def _triple_point_phases():
+    """Three LinePhases with a single triple point at (T=300 K, mu=0.2 eV)."""
+    return [
+        LinePhase("A", 0.0, -1.0, 0.004),
+        LinePhase("B", 0.5, -1.2, 0.003),
+        LinePhase("C", 1.0, -1.7, 0.001),
+    ]
+
+
+def test_calc_phase_diagram_unrefined_locus_all_interior(two_phase_ideal):
+    df = calc_phase_diagram(two_phase_ideal, Ts=np.linspace(300, 1000, 5),
+                            mu=np.linspace(-0.5, 0.5, 5), refine=False, keep_unstable=True)
+    assert (df["locus"] == Locus.INTERIOR).all()
+
+
+def test_calc_phase_diagram_refined_locus():
+    df = calc_phase_diagram(_triple_point_phases(), Ts=np.linspace(220, 480, 12),
+                            mu=np.linspace(-0.05, 0.55, 15), keep_unstable=True)
+    assert not df["locus"].isna().any()
+    assert set(map(str, df["locus"])) <= {"interior", "boundary", "triple"}
+    assert (df["locus"] == Locus.BOUNDARY).any()
+    # refined rows are exactly the non-interior ones
+    refined = df["refined"].fillna("no") != "no"
+    assert (df.loc[refined, "locus"] != Locus.INTERIOR).all()
+    assert (df.loc[~refined, "locus"] == Locus.INTERIOR).all()
+    # frame edges are border=True but still interior
+    edges = df["mu"].abs() == np.inf
+    assert edges.any()
+    assert df.loc[edges, "border"].all()
+    assert (df.loc[edges, "locus"] == Locus.INTERIOR).all()
+
+
+def test_calc_phase_diagram_locus_triple():
+    df = calc_phase_diagram(_triple_point_phases(), Ts=np.linspace(220, 480, 12),
+                            mu=np.linspace(-0.05, 0.55, 15))
+    triple = df[df["locus"] == Locus.TRIPLE]
+    assert not triple.empty
+    # every triple point consists of three coexisting phases at one (T, mu)
+    assert (triple.groupby(["T", "mu"])["phase"].nunique() == 3).all()
+    assert np.allclose(triple["T"], 300.0, atol=10.0)
+    assert np.allclose(triple["mu"], 0.2, atol=0.05)
