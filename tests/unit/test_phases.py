@@ -4,7 +4,7 @@ from scipy.constants import Boltzmann, eV
 
 from landau.interpolate import SGTE
 from landau.interpolate.basic import G_calphad
-from landau.phases import IdealSolution, LinePhase, TemperatureDependentLinePhase
+from landau.phases import IdealSolution, LinePhase, RegularSolution, TemperatureDependentLinePhase
 from landau.phases import _scalarize
 
 kB = Boltzmann / eV
@@ -362,3 +362,71 @@ def test_ideal_concentration_from_semigrand_potential():
     c_numeric = -np.gradient(phi, dmu)
     c_direct = sol.concentration(T, dmu)
     assert_allclose(c_numeric, c_direct, atol=1e-3)
+
+
+# --- RegularSolution tests ---
+
+_RS_ATOL = 1e-8
+
+
+def _make_regular_solution():
+    """Symmetric three-phase RegularSolution with attractive interaction (num_coeffs=1)."""
+    p0 = LinePhase("A", 0, 0.0)
+    pm = LinePhase("mid", 0.5, -0.5)
+    p1 = LinePhase("B", 1, 0.0)
+    return RegularSolution("sol", [p0, pm, p1])
+
+
+def test_regular_solution_semigrand_potential_scalar():
+    sol = _make_regular_solution()
+    result = sol.semigrand_potential(1000.0, 0.0)
+    assert np.isscalar(result) or not isinstance(result, np.ndarray)
+
+
+def test_regular_solution_semigrand_potential_array_dmu():
+    sol = _make_regular_solution()
+    dmu = np.linspace(-1.0, 1.0, 15)
+    result = sol.semigrand_potential(1000.0, dmu)
+    assert isinstance(result, np.ndarray)
+    assert result.shape == (15,)
+
+
+def test_regular_solution_concentration_scalar():
+    sol = _make_regular_solution()
+    result = sol.concentration(1000.0, 0.0)
+    assert np.isscalar(result) or not isinstance(result, np.ndarray)
+    assert 0.0 <= float(result) <= 1.0
+
+
+def test_regular_solution_concentration_array_dmu():
+    sol = _make_regular_solution()
+    dmu = np.linspace(-1.0, 1.0, 15)
+    result = sol.concentration(1000.0, dmu)
+    assert isinstance(result, np.ndarray)
+    assert result.shape == (15,)
+    assert np.all((result >= 0) & (result <= 1))
+
+
+def test_regular_solution_concentration_symmetric_at_zero():
+    """At dmu=0 with equal terminal energies, concentration = 0.5 by symmetry."""
+    sol = _make_regular_solution()  # f0 = f1 = 0
+    result = sol.concentration(1000.0, 0.0)
+    assert_allclose(result, 0.5, atol=_RS_ATOL)
+
+
+def test_regular_solution_concentration_midpoint_asymmetric():
+    """At dmu = f1 - f0, the free-energy landscape is symmetric and concentration = 0.5."""
+    p0 = LinePhase("A", 0, 0.3)
+    pm = LinePhase("mid", 0.5, -0.5)
+    p1 = LinePhase("B", 1, 0.0)
+    sol = RegularSolution("sol", [p0, pm, p1])
+    result = sol.concentration(1000.0, 0.0 - 0.3)  # dmu = f1 - f0 = -0.3
+    assert_allclose(result, 0.5, atol=_RS_ATOL)
+
+
+def test_regular_solution_concentration_monotone():
+    """Concentration increases strictly with dmu; fails for constant implementations."""
+    sol = _make_regular_solution()
+    dmu = np.linspace(-1.0, 1.0, 20)
+    c = sol.concentration(1000.0, dmu)
+    assert np.all(np.diff(c) > 0)
