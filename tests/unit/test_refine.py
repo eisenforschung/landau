@@ -19,6 +19,7 @@ from landau.refine import (
     _point_on_line,
     _simplex_straddles,
     _InterCandidate,
+    _SimplexCandidate,
     _delaunay_simplices,
 )
 
@@ -482,6 +483,48 @@ def test_delaunay_triple_refiner_deduplicates():
     assert set(out["phase"]) == {"A", "B", "C"}
     assert np.allclose(out["T"], 300.0, atol=10.0)
     assert np.allclose(out["mu"], 0.2, atol=0.05)
+
+
+def test_delaunay_triple_refiner_solve_is_pure():
+    """solve() is stateless: calling it twice on the same candidate returns
+    the same RefinedPoint both times, not [] on the second call."""
+    phases = _three_phase_system()
+    Ts = np.linspace(220.0, 480.0, 6)
+    mus = np.linspace(-0.05, 0.55, 7)
+    df = _coarse_df(phases, Ts, mus)
+
+    triple_simplices = [s for s, n in _delaunay_simplices(df) if n == 3]
+    assert triple_simplices, "need at least one three-phase simplex"
+    cand = _SimplexCandidate(simplex=triple_simplices[0])
+
+    refiner = DelaunayTripleRefiner()
+    pts1 = refiner.solve(cand, phases)
+    pts2 = refiner.solve(cand, phases)
+    assert len(pts1) == 1
+    assert len(pts2) == 1, "second call must not return [] (solve must be pure)"
+    assert np.isclose(pts1[0].T, pts2[0].T, atol=1.0)
+    assert np.isclose(pts1[0].mu, pts2[0].mu, atol=0.01)
+
+
+def test_delaunay_triple_refiner_run_deduplicates_adjacent_simplices():
+    """run() emits exactly one triple point even when multiple adjacent
+    three-phase simplices all converge to the same (T, mu)."""
+    phases = _three_phase_system()
+    Ts = np.linspace(220.0, 480.0, 6)
+    mus = np.linspace(-0.05, 0.55, 7)
+    df = _coarse_df(phases, Ts, mus)
+
+    n_triple = sum(1 for _, n in _delaunay_simplices(df) if n == 3)
+    assert n_triple >= 2, "grid must produce at least two three-phase simplices"
+
+    out = DelaunayTripleRefiner().run(df, phases)
+
+    # One triple point → 3 rows (one per phase); all rows share one boundary_id.
+    assert len(out) == 3
+    assert set(out["phase"]) == {"A", "B", "C"}
+    assert out["boundary_id"].nunique() == 1
+    np.testing.assert_allclose(out["T"], 300.0, atol=10.0)
+    np.testing.assert_allclose(out["mu"], 0.2, atol=0.05)
 
 
 def test_boundary_id_cc_refiner_single_line(two_phase_system):
