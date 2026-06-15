@@ -12,7 +12,8 @@ import shapely
 from shapely.ops import polylabel
 from matplotlib.colors import to_rgba
 
-from .calculate import calc_phase_diagram, get_transitions, cluster, cluster_T_c, _join_phase_unit
+from .calculate import calc_phase_diagram, cluster, cluster_T_c, _join_phase_unit
+from .features import Locus
 import landau.poly as poly
 
 
@@ -282,54 +283,29 @@ def plot_polygons(polys, color_map, ax=None):
         ax.add_patch(p)
 
 
-def _plot_tielines(df, ax=None):
-    """Plot tielines for a concentration-based phase diagram.
+def _plot_triplepoint(df, ax=None):
+    """Draw the isothermal three-phase line through each triple point.
+
+    A three-phase invariant in a concentration-temperature diagram shows up as a
+    horizontal line joining the three coexisting compositions. Triple points are
+    tagged :attr:`~landau.features.Locus.TRIPLE` in the ``locus`` column of a
+    refined :func:`~landau.calculate.calc_phase_diagram` frame, so each invariant
+    line is just the concentration span of one ``(T, mu)`` group of those rows.
 
     Args:
         df (pandas.DataFrame):
-            Input data.
+            Phase-diagram frame carrying a ``locus`` column. Unrefined frames
+            have no triple points and draw nothing.
         ax (matplotlib.axes.Axes, optional):
             The axis to plot on.
     """
     if ax is None:
         ax = plt.gca()
-    # TODO: quite buggy and not nice; can benefit a lot from
-    # get_transitions
-    if "refined" in df.columns:
-        tdf = get_transitions(df)
-
-        def plot_tie(dd):
-            Tmin = dd["T"].min()
-            Tmax = dd["T"].max()
-            di = dd.query("T==@Tmin")
-            da = dd.query("T==@Tmax")
-            # "artificial" segment at the border of diagram
-            # we just want to plot triple lines? so #phases==3
-            if len(dd.phase.unique()) in [1, 2]:
-                return
-            ax.hlines(Tmin, di.c.min(), di.c.max(), color="k", zorder=-2, alpha=0.5, lw=4)
-            # current marvin to past marvin: Why is that even necessary?
-            if Tmin != Tmax:
-                ax.hlines(Tmax, da.c.min(), da.c.max(), color="k", zorder=-2, alpha=0.5, lw=4)
-
-        # FIXME: WARNING reuses local var define in if branch
-        tdf.groupby("border_segment").apply(plot_tie, include_groups=False)
-    else:
-        # count the numbers of distinct phases per T, it changes there *must* be a triple
-        # point, draw tie lines only there
-        # TODO: figure out how to only draw them between the involved phases not over the whole conc range
-        # the refined data points mess this up, because the phases are no longer on
-        # the same grid
-        chg = df.groupby("T").size().diff()
-        T_tie = chg.loc[chg != 0].index[1:]  # skip first temp
-
-        for (T_val, _mu_val), dd in df.groupby(["T", "mu"]):
-            if round(T_val, 3) not in T_tie.round(3):
-                continue
-            if len(dd) != 2:
-                continue
-            cl, cr = sorted(dd["c"])
-            ax.plot([cl, cr], [T_val, T_val], color="k", zorder=-2, alpha=0.5, lw=4)
+    if "locus" not in df.columns:
+        return
+    triple = df[df["locus"] == Locus.TRIPLE]
+    for (_mu, T), grp in triple.groupby(["mu", "T"], sort=False)[["c"]]:
+        ax.hlines(T, grp["c"].min(), grp["c"].max(), color="k", zorder=-2, alpha=0.5, lw=4)
 
 
 def _set_axis_for(axis_var: str, df_stable, element: str | None, ax) -> None:
@@ -373,7 +349,7 @@ def _plot_phase_diagram(
     element=None,
     min_c_width=1e-2,
     color_override: dict[str, str] = {},
-    tielines=False,
+    plot_triplepoint=False,
     poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
     variables: list[str] | None = None,
     inline_legend=True,
@@ -391,8 +367,8 @@ def _plot_phase_diagram(
 
     plot_polygons(polys, color_map, ax=ax)
 
-    if tielines and variables[0] == "c":
-        _plot_tielines(df, ax=ax)
+    if plot_triplepoint and variables[0] == "c":
+        _plot_triplepoint(df, ax=ax)
 
     _set_axis_for(variables[0], df_stable, element, ax)
 
@@ -410,6 +386,7 @@ def _plot_phase_diagram(
 @deprecate(
     alpha="Pass a poly method from landau.poly to poly_method",
     min_c_width="Pass a poly method from landau.poly to poly_method",
+    tielines="Use plot_triplepoint instead",
 )
 def plot_phase_diagram(
     df,
@@ -417,20 +394,23 @@ def plot_phase_diagram(
     element=None,
     min_c_width=1e-2,
     color_override: dict[str, str] = {},
-    tielines=False,
+    plot_triplepoint=False,
     poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
     variables: list[str] | None = None,
     inline_legend=True,
     legend=True,
     ax=None,
+    tielines=None,
 ):
+    if tielines is not None:
+        plot_triplepoint = tielines
     return _plot_phase_diagram(
         df,
         alpha=alpha,
         element=element,
         min_c_width=min_c_width,
         color_override=color_override,
-        tielines=tielines,
+        plot_triplepoint=plot_triplepoint,
         poly_method=poly_method,
         variables=variables,
         inline_legend=inline_legend,

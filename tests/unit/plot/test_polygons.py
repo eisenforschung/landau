@@ -523,6 +523,105 @@ def test_plot_phase_diagram_legend_false_draws_no_labels():
     plt.close(fig)
 
 
+# --- triple-point (invariant) line tests -------------------------------------
+#
+# `_plot_triplepoint` reads the `locus` column straight off the diagram frame
+# (PR #235): every row tagged `Locus.TRIPLE` belongs to one of the isothermal
+# three-phase lines, grouped by `(mu, T)`.
+
+
+def _triple_df():
+    """Frame with one triple point at T=300 (three phases) plus distractor rows.
+
+    The boundary and interior rows must be ignored; only the three TRIPLE rows
+    define the isothermal line, which spans their concentration range.
+    """
+    from landau.features import Locus
+
+    return pd.DataFrame(
+        {
+            "mu": [0.2, 0.2, 0.2, 0.1, -np.inf],
+            "T": [300.0, 300.0, 300.0, 250.0, 400.0],
+            "c": [0.1, 0.5, 0.9, 0.3, 0.0],
+            "phase": ["A", "B", "C", "A", "A"],
+            "locus": [
+                Locus.TRIPLE, Locus.TRIPLE, Locus.TRIPLE,
+                Locus.BOUNDARY, Locus.INTERIOR,
+            ],
+        }
+    )
+
+
+def _hlines(ax):
+    """(y, xmin, xmax) of every horizontal segment drawn on `ax`."""
+    out = []
+    for coll in ax.collections:
+        for seg in coll.get_segments():
+            (x0, y0), (x1, y1) = seg
+            if y0 == y1:
+                out.append((y0, min(x0, x1), max(x0, x1)))
+    return out
+
+
+def test_plot_triplepoint_draws_isothermal_line():
+    fig, ax = plt.subplots()
+    plot_mod._plot_triplepoint(_triple_df(), ax=ax)
+    lines = _hlines(ax)
+    assert len(lines) == 1
+    (y, xmin, xmax) = lines[0]
+    assert y == pytest.approx(300.0)
+    # spans the concentration range of the three coexisting phases only
+    assert (xmin, xmax) == pytest.approx((0.1, 0.9))
+    plt.close(fig)
+
+
+def test_plot_triplepoint_one_line_per_invariant():
+    from landau.features import Locus
+
+    df = pd.DataFrame(
+        {
+            "mu": [0.2, 0.2, 0.2, -0.1, -0.1, -0.1],
+            "T": [300.0, 300.0, 300.0, 450.0, 450.0, 450.0],
+            "c": [0.1, 0.5, 0.9, 0.2, 0.4, 0.7],
+            "phase": ["A", "B", "C", "A", "B", "C"],
+            "locus": [Locus.TRIPLE] * 6,
+        }
+    )
+    fig, ax = plt.subplots()
+    plot_mod._plot_triplepoint(df, ax=ax)
+    lines = sorted(_hlines(ax))
+    assert len(lines) == 2
+    assert lines[0] == pytest.approx((300.0, 0.1, 0.9))
+    assert lines[1] == pytest.approx((450.0, 0.2, 0.7))
+    plt.close(fig)
+
+
+def test_plot_triplepoint_no_locus_column_is_noop():
+    fig, ax = plt.subplots()
+    plot_mod._plot_triplepoint(_triple_df().drop(columns="locus"), ax=ax)
+    assert _hlines(ax) == []
+    plt.close(fig)
+
+
+def test_plot_triplepoint_no_triple_rows_is_noop():
+    fig, ax = plt.subplots()
+    plot_mod._plot_triplepoint(_triple_df().query("locus != 'triple'"), ax=ax)
+    assert _hlines(ax) == []
+    plt.close(fig)
+
+
+def test_plot_phase_diagram_tielines_deprecated_routes_to_triplepoint():
+    """The old `tielines=` keyword still works but warns and maps onto
+    `plot_triplepoint=`."""
+    df = _stable_df()
+    with pytest.warns(DeprecationWarning, match="tielines"):
+        fig, ax = plt.subplots()
+        plot_phase_diagram(
+            df, ax=ax, tielines=False, poly_method=Concave(drop_interior=False)
+        )
+        plt.close(fig)
+
+
 def _point(xy):
     from shapely import Point
 
