@@ -1,11 +1,12 @@
-"""Integration tests for _plot_triplepoint against real refined diagrams.
+"""Integration tests for _plot_triplepoints against real refined diagrams.
 
-_plot_triplepoint is called from plot_phase_diagram(plot_triplepoint=True) and
-draws one isothermal line per three-phase invariant, reading the `locus` column
-(landau.features.Locus.TRIPLE) of a refined calc_phase_diagram frame. These
-tests check the end-to-end chain on real systems: a two-phase diagram has no
-triple point and draws nothing, a three-phase diagram draws a line at the
-eutectic temperature. The synthetic per-row behaviour is pinned in
+_plot_triplepoints is called from plot_phase_diagram(triplepoints=True) (c-T,
+isothermal line) and plot_mu_phase_diagram(triplepoints=True) (mu-T, point
+marker), reading the `locus` column (landau.features.Locus.TRIPLE) of a refined
+calc_phase_diagram frame. These tests check the end-to-end chain on real
+systems: a two-phase diagram has no triple point and draws nothing, a
+three-phase diagram draws a line at the eutectic temperature in c-T and a marker
+at the invariant (mu, T) in mu-T. The synthetic per-row behaviour is pinned in
 test_polygons.py.
 """
 import matplotlib
@@ -19,7 +20,7 @@ import pytest
 import landau.calculate as ldc
 import landau.phases as ldp
 from landau.features import Locus
-from landau.plot import _plot_triplepoint
+from landau.plot import _plot_triplepoints
 
 
 def _hline_collections(ax):
@@ -60,7 +61,7 @@ def test_triplepoint_two_phase_draws_nothing(df_two_phase_refined):
     assert (df["locus"] != Locus.TRIPLE).all(), "fixture must have no triple point"
     fig, ax = plt.subplots()
     try:
-        _plot_triplepoint(df, ax=ax)
+        _plot_triplepoints(df, ax=ax)
         assert _hline_collections(ax) == []
     finally:
         plt.close(fig)
@@ -81,12 +82,35 @@ def test_triplepoint_three_phase_draws_line_at_eutectic(df_triple_point_refined)
 
     fig, ax = plt.subplots()
     try:
-        _plot_triplepoint(df, ax=ax)
+        _plot_triplepoints(df, ax=ax)
         lcs = _hline_collections(ax)
         assert len(lcs) == 1, "expected exactly one invariant line"
         seg = lcs[0].get_segments()[0]
         (x0, y0), (x1, y1) = seg
         assert y0 == y1 == pytest.approx(T_triple)
         assert (min(x0, x1), max(x0, x1)) == pytest.approx((cmin, cmax))
+    finally:
+        plt.close(fig)
+
+
+def test_triplepoint_muT_draws_marker_at_invariant(df_triple_point_refined):
+    """In mu-T the eutectic collapses to one black marker at its (mu, T)."""
+    df = df_triple_point_refined
+    triple = df[df["locus"] == Locus.TRIPLE]
+    assert not triple.empty, "fixture must contain a triple point"
+    mu_triple = triple["mu"].mean()
+    T_triple = triple["T"].mean()
+
+    fig, ax = plt.subplots()
+    try:
+        _plot_triplepoints(df, ax=ax, variables=["mu", "T"])
+        assert _hline_collections(ax) == [], "no isothermal lines in mu-T"
+        markers = [
+            line for line in ax.lines
+            if len(line.get_xdata()) == 1 and line.get_marker() not in ("", "None", None)
+        ]
+        assert len(markers) == 1, "expected one marker at the invariant"
+        assert markers[0].get_xdata()[0] == pytest.approx(mu_triple)
+        assert markers[0].get_ydata()[0] == pytest.approx(T_triple)
     finally:
         plt.close(fig)

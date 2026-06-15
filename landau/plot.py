@@ -283,14 +283,22 @@ def plot_polygons(polys, color_map, ax=None):
         ax.add_patch(p)
 
 
-def _plot_triplepoint(df, ax=None):
-    """Draw the isothermal three-phase line through each triple point.
+def _plot_triplepoints(df, ax=None, variables=None):
+    """Mark the three-phase invariants of a phase diagram.
 
-    A three-phase invariant in a concentration-temperature diagram shows up as a
-    horizontal line joining the three coexisting compositions. Triple points are
-    tagged :attr:`~landau.features.Locus.TRIPLE` in the ``locus`` column of a
-    refined :func:`~landau.calculate.calc_phase_diagram` frame, so each invariant
-    line is just the concentration span of one ``(T, mu)`` group of those rows.
+    Triple points are tagged :attr:`~landau.features.Locus.TRIPLE` in the
+    ``locus`` column of a refined :func:`~landau.calculate.calc_phase_diagram`
+    frame; the three coexisting phases share one ``(mu, T)``.
+
+    The mark depends on the axes:
+
+    * In a concentration-temperature diagram (``variables[0] == "c"``) a triple
+      point is an isothermal line joining the three coexisting compositions, so
+      one horizontal line is drawn across the concentration span of each
+      ``(mu, T)`` group.
+    * In a chemical-potential-temperature diagram (``variables[0] == "mu"``) the
+      three phases collapse onto a single ``(mu, T)`` point, so a black marker is
+      drawn there.
 
     Args:
         df (pandas.DataFrame):
@@ -298,14 +306,22 @@ def _plot_triplepoint(df, ax=None):
             have no triple points and draw nothing.
         ax (matplotlib.axes.Axes, optional):
             The axis to plot on.
+        variables (list[str], optional):
+            The ``[x, y]`` axis variables; defaults to ``["c", "T"]``.
     """
+    if variables is None:
+        variables = ["c", "T"]
     if ax is None:
         ax = plt.gca()
     if "locus" not in df.columns:
         return
     triple = df[df["locus"] == Locus.TRIPLE]
-    for (_mu, T), grp in triple.groupby(["mu", "T"], sort=False)[["c"]]:
-        ax.hlines(T, grp["c"].min(), grp["c"].max(), color="k", zorder=-2, alpha=0.5, lw=4)
+    if variables[0] == "c":
+        for (_mu, T), grp in triple.groupby(["mu", "T"], sort=False)[["c"]]:
+            ax.hlines(T, grp["c"].min(), grp["c"].max(), color="k", zorder=-2, alpha=0.5, lw=4)
+    elif variables[0] == "mu":
+        for (mu, T), _grp in triple.groupby(["mu", "T"], sort=False):
+            ax.plot(mu, T, marker="o", color="k", zorder=3)
 
 
 def _set_axis_for(axis_var: str, df_stable, element: str | None, ax) -> None:
@@ -349,7 +365,7 @@ def _plot_phase_diagram(
     element=None,
     min_c_width=1e-2,
     color_override: dict[str, str] = {},
-    plot_triplepoint=False,
+    triplepoints=False,
     poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
     variables: list[str] | None = None,
     inline_legend=True,
@@ -367,8 +383,8 @@ def _plot_phase_diagram(
 
     plot_polygons(polys, color_map, ax=ax)
 
-    if plot_triplepoint and variables[0] == "c":
-        _plot_triplepoint(df, ax=ax)
+    if triplepoints:
+        _plot_triplepoints(df, ax=ax, variables=variables)
 
     _set_axis_for(variables[0], df_stable, element, ax)
 
@@ -386,7 +402,7 @@ def _plot_phase_diagram(
 @deprecate(
     alpha="Pass a poly method from landau.poly to poly_method",
     min_c_width="Pass a poly method from landau.poly to poly_method",
-    tielines="Use plot_triplepoint instead",
+    tielines="Use triplepoints instead",
 )
 def plot_phase_diagram(
     df,
@@ -394,7 +410,7 @@ def plot_phase_diagram(
     element=None,
     min_c_width=1e-2,
     color_override: dict[str, str] = {},
-    plot_triplepoint=False,
+    triplepoints=False,
     poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
     variables: list[str] | None = None,
     inline_legend=True,
@@ -403,14 +419,14 @@ def plot_phase_diagram(
     tielines=None,
 ):
     if tielines is not None:
-        plot_triplepoint = tielines
+        triplepoints = tielines
     return _plot_phase_diagram(
         df,
         alpha=alpha,
         element=element,
         min_c_width=min_c_width,
         color_override=color_override,
-        plot_triplepoint=plot_triplepoint,
+        triplepoints=triplepoints,
         poly_method=poly_method,
         variables=variables,
         inline_legend=inline_legend,
@@ -441,6 +457,7 @@ def plot_mu_phase_diagram(
     alpha=0.1,
     element=None,
     color_override: dict[str, str] = {},
+    triplepoints=False,
     poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
     inline_legend=True,
     legend=True,
@@ -451,6 +468,7 @@ def plot_mu_phase_diagram(
         alpha=alpha,
         element=element,
         color_override=color_override,
+        triplepoints=triplepoints,
         poly_method=poly_method,
         variables=["mu", "T"],
         inline_legend=inline_legend,

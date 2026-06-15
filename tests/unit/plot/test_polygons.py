@@ -523,18 +523,19 @@ def test_plot_phase_diagram_legend_false_draws_no_labels():
     plt.close(fig)
 
 
-# --- triple-point (invariant) line tests -------------------------------------
+# --- triple-point marker tests -----------------------------------------------
 #
-# `_plot_triplepoint` reads the `locus` column straight off the diagram frame
-# (PR #235): every row tagged `Locus.TRIPLE` belongs to one of the isothermal
-# three-phase lines, grouped by `(mu, T)`.
+# `_plot_triplepoints` reads the `locus` column straight off the diagram frame
+# (PR #235): every row tagged `Locus.TRIPLE` belongs to one three-phase
+# invariant, grouped by `(mu, T)`.  In c-T it draws an isothermal line across
+# the coexisting compositions; in mu-T it drops a black marker on the point.
 
 
 def _triple_df():
     """Frame with one triple point at T=300 (three phases) plus distractor rows.
 
     The boundary and interior rows must be ignored; only the three TRIPLE rows
-    define the isothermal line, which spans their concentration range.
+    define the invariant, at (mu=0.2, T=300) spanning c = 0.1..0.9.
     """
     from landau.features import Locus
 
@@ -563,9 +564,18 @@ def _hlines(ax):
     return out
 
 
-def test_plot_triplepoint_draws_isothermal_line():
+def _markers(ax):
+    """(x, y) of every single-point marker drawn on `ax`."""
+    return [
+        (line.get_xdata()[0], line.get_ydata()[0])
+        for line in ax.lines
+        if len(line.get_xdata()) == 1 and line.get_marker() not in ("", "None", None)
+    ]
+
+
+def test_plot_triplepoints_cT_draws_isothermal_line():
     fig, ax = plt.subplots()
-    plot_mod._plot_triplepoint(_triple_df(), ax=ax)
+    plot_mod._plot_triplepoints(_triple_df(), ax=ax, variables=["c", "T"])
     lines = _hlines(ax)
     assert len(lines) == 1
     (y, xmin, xmax) = lines[0]
@@ -575,7 +585,27 @@ def test_plot_triplepoint_draws_isothermal_line():
     plt.close(fig)
 
 
-def test_plot_triplepoint_one_line_per_invariant():
+def test_plot_triplepoints_cT_defaults_to_c_T():
+    """Variables default to c-T, so the bare call draws the isothermal line."""
+    fig, ax = plt.subplots()
+    plot_mod._plot_triplepoints(_triple_df(), ax=ax)
+    assert len(_hlines(ax)) == 1
+    plt.close(fig)
+
+
+def test_plot_triplepoints_muT_draws_point_marker():
+    fig, ax = plt.subplots()
+    plot_mod._plot_triplepoints(_triple_df(), ax=ax, variables=["mu", "T"])
+    # no isothermal lines in mu-T; one black marker at the (mu, T) of the invariant
+    assert _hlines(ax) == []
+    markers = _markers(ax)
+    assert len(markers) == 1
+    assert markers[0] == pytest.approx((0.2, 300.0))
+    assert ax.lines[0].get_color() in ("k", "black", (0.0, 0.0, 0.0, 1.0))
+    plt.close(fig)
+
+
+def test_plot_triplepoints_one_per_invariant():
     from landau.features import Locus
 
     df = pd.DataFrame(
@@ -588,31 +618,36 @@ def test_plot_triplepoint_one_line_per_invariant():
         }
     )
     fig, ax = plt.subplots()
-    plot_mod._plot_triplepoint(df, ax=ax)
+    plot_mod._plot_triplepoints(df, ax=ax, variables=["c", "T"])
     lines = sorted(_hlines(ax))
     assert len(lines) == 2
     assert lines[0] == pytest.approx((300.0, 0.1, 0.9))
     assert lines[1] == pytest.approx((450.0, 0.2, 0.7))
+    # the same two invariants become two markers in mu-T
+    fig2, ax2 = plt.subplots()
+    plot_mod._plot_triplepoints(df, ax=ax2, variables=["mu", "T"])
+    assert sorted(_markers(ax2)) == pytest.approx([(-0.1, 450.0), (0.2, 300.0)])
     plt.close(fig)
+    plt.close(fig2)
 
 
-def test_plot_triplepoint_no_locus_column_is_noop():
+def test_plot_triplepoints_no_locus_column_is_noop():
     fig, ax = plt.subplots()
-    plot_mod._plot_triplepoint(_triple_df().drop(columns="locus"), ax=ax)
+    plot_mod._plot_triplepoints(_triple_df().drop(columns="locus"), ax=ax)
     assert _hlines(ax) == []
     plt.close(fig)
 
 
-def test_plot_triplepoint_no_triple_rows_is_noop():
+def test_plot_triplepoints_no_triple_rows_is_noop():
     fig, ax = plt.subplots()
-    plot_mod._plot_triplepoint(_triple_df().query("locus != 'triple'"), ax=ax)
+    plot_mod._plot_triplepoints(_triple_df().query("locus != 'triple'"), ax=ax)
     assert _hlines(ax) == []
     plt.close(fig)
 
 
-def test_plot_phase_diagram_tielines_deprecated_routes_to_triplepoint(monkeypatch):
+def test_plot_phase_diagram_tielines_deprecated_routes_to_triplepoints(monkeypatch):
     """The old `tielines=` keyword still works but warns and maps onto
-    `plot_triplepoint=`.
+    `triplepoints=`.
 
     The warning message text is not asserted: older `pyiron_snippets`
     releases (exercised by the minimum-deps CI) emit the argument-deprecation
@@ -620,14 +655,16 @@ def test_plot_phase_diagram_tielines_deprecated_routes_to_triplepoint(monkeypatc
     category is reliable across versions.
     """
     calls = []
-    monkeypatch.setattr(plot_mod, "_plot_triplepoint", lambda df, ax=None: calls.append(True))
+    monkeypatch.setattr(
+        plot_mod, "_plot_triplepoints", lambda df, ax=None, variables=None: calls.append(True)
+    )
     df = _stable_df()
     fig, ax = plt.subplots()
     with pytest.warns(DeprecationWarning):
         plot_phase_diagram(
             df, ax=ax, tielines=True, poly_method=Concave(drop_interior=False)
         )
-    # tielines=True is routed through to plot_triplepoint
+    # tielines=True is routed through to triplepoints
     assert calls == [True]
     plt.close(fig)
 
