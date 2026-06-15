@@ -56,6 +56,7 @@ import scipy.optimize as so
 import shapely
 from scipy.spatial import Delaunay
 
+from .features import Locus
 from .phases import Phase
 
 
@@ -104,6 +105,10 @@ class RefinedPoint:
     boundary_id : int
         Identifier shared by all rows that belong to the same coexistence
         line (assigned by the refiner's ``run()``).
+
+    :meth:`to_rows` tags each emitted row with ``locus``:
+    :attr:`~landau.features.Locus.TRIPLE` for three coexisting phases,
+    :attr:`~landau.features.Locus.BOUNDARY` otherwise.
     """
 
     T: float
@@ -116,8 +121,10 @@ class RefinedPoint:
 
     def to_rows(self, phases: Mapping[str, Phase]) -> list[dict]:
         rows = [_state_row(phases[name], self.T, self.mu) for name in self.phases]
+        locus = Locus.TRIPLE if len(self.phases) == 3 else Locus.BOUNDARY
         for row in rows:
             row["boundary_id"] = self.boundary_id
+            row["locus"] = locus
         return rows
 
 
@@ -130,7 +137,8 @@ class RefinedMiscibilityGap:
     share that exact ``mu`` value but carry the pre-computed
     branch concentrations ``c_left`` and ``c_right`` directly — so
     the two branches show up as distinct ``(c, T)`` points while
-    still sitting on the exact coexistence chemical potential.
+    still sitting on the exact coexistence chemical potential. Both
+    rows are tagged ``locus = Locus.BOUNDARY``.
 
     Attributes
     ----------
@@ -164,9 +172,11 @@ class RefinedMiscibilityGap:
         phi = float(ph.semigrand_potential(self.T, self.mu))
         return [
             {"T": self.T, "mu": self.mu, "phi": phi,
-             "c": self.c_left,  "phase": ph.name, "boundary_id": self.boundary_id},
+             "c": self.c_left,  "phase": ph.name, "boundary_id": self.boundary_id,
+             "locus": Locus.BOUNDARY},
             {"T": self.T, "mu": self.mu, "phi": phi,
-             "c": self.c_right, "phase": ph.name, "boundary_id": self.boundary_id},
+             "c": self.c_right, "phase": ph.name, "boundary_id": self.boundary_id,
+             "locus": Locus.BOUNDARY},
         ]
 
 

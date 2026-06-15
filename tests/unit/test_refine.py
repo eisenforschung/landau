@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from landau.features import Locus
 from landau.phases import LinePhase, TemperatureDependentLinePhase
 from landau.interpolate import SGTE
 from landau.interpolate.basic import G_calphad
@@ -69,6 +70,9 @@ def test_clausius_clapeyron_refiner_traces_coexistence(two_phase_system):
     assert not out.empty
     assert (out["refined"] == "clausius-clapeyron").all()
     assert out["stable"].all() and out["border"].all()
+    # locus is comparable both by enum member and by plain string value.
+    assert (out["locus"] == Locus.BOUNDARY).all()
+    assert (out["locus"] == "boundary").all()
 
     # Pair up coexistence rows by (T, mu); each unique location should carry
     # both phase names.
@@ -477,6 +481,7 @@ def test_delaunay_triple_refiner_deduplicates():
 
     assert not out.empty
     assert (out["refined"] == "delaunay-triple").all()
+    assert (out["locus"] == Locus.TRIPLE).all()
     # Exactly one triple point → 3 rows (one per phase).
     assert len(out) == 3
     assert set(out["phase"]) == {"A", "B", "C"}
@@ -536,6 +541,8 @@ def test_boundary_id_miscibility_gap_refiner():
     assert "boundary_id" in cc.columns
     # One miscibility gap → one boundary_id.
     assert cc["boundary_id"].nunique() == 1
+    # Gap branches are coexistence points, not triple points.
+    assert (cc["locus"] == Locus.BOUNDARY).all()
 
 
 def test_boundary_id_refined_point_to_rows():
@@ -559,6 +566,32 @@ def test_boundary_id_refined_miscibility_gap_to_rows():
     rows = pt.to_rows({"p": _Phase()})
     assert len(rows) == 2
     assert all(row["boundary_id"] == 3 for row in rows)
+
+
+def test_locus_refined_point_to_rows():
+    """RefinedPoint.to_rows tags rows by phase count: two coexisting phases
+    make a boundary point, three a triple point."""
+    mapping = {
+        n: LinePhase(name=n, fixed_concentration=c, line_energy=-1.0, line_entropy=0.0)
+        for n, c in [("x", 0.1), ("y", 0.5), ("z", 0.9)]
+    }
+    pair = RefinedPoint(T=500.0, mu=0.05, phases=("x", "y"))
+    assert all(row["locus"] is Locus.BOUNDARY for row in pair.to_rows(mapping))
+    triple = RefinedPoint(T=500.0, mu=0.05, phases=("x", "y", "z"))
+    assert all(row["locus"] is Locus.TRIPLE for row in triple.to_rows(mapping))
+
+
+def test_locus_refined_miscibility_gap_to_rows():
+    """RefinedMiscibilityGap.to_rows tags both branch rows as boundary."""
+    class _Phase:
+        name = "p"
+
+        def semigrand_potential(self, T, mu):
+            return 0.0
+
+    pt = RefinedMiscibilityGap(T=400.0, mu=0.0, phase="p", c_left=0.1, c_right=0.9)
+    rows = pt.to_rows({"p": _Phase()})
+    assert all(row["locus"] is Locus.BOUNDARY for row in rows)
 
 
 def test_boundary_id_delaunay_triple_rows_share_id():
