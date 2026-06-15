@@ -318,7 +318,7 @@ def _plot_triplepoints(df, ax=None, variables=None):
     triple = df[df["locus"] == Locus.TRIPLE]
     if variables[0] == "c":
         for (_mu, T), grp in triple.groupby(["mu", "T"], sort=False)[["c"]]:
-            ax.hlines(T, grp["c"].min(), grp["c"].max(), color="k", zorder=-2, alpha=0.5, lw=4)
+            ax.hlines(T, grp["c"].min(), grp["c"].max(), color="k", zorder=-2, alpha=0.5, lw=2)
     elif variables[0] == "mu":
         for (mu, T), _grp in triple.groupby(["mu", "T"], sort=False):
             ax.plot(mu, T, marker="o", color="k", zorder=3)
