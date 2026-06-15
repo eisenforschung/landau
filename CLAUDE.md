@@ -14,6 +14,7 @@ These are project-specific preferences distilled from past PR/issue feedback. So
 - Match a terse, imperative tone. No "Happy to...", no apologies, no enthusiasm filler. (Restates the harness default — keep it in mind anyway.)
 - PR bodies are plain technical reports. No **bold** "headline numbers", no "Conclusion" sections, no `[Fix this →]` action links, no marketing claims ("dramatic speedup", "significantly improves").
 - Do not invoke the maintainer's name or authority in PR bodies or comments (PR #94: "don't use my name in vain").
+- Keep the PR description (the OP) in sync with the diff. When review feedback or later commits invalidate something in the body, edit the body — never leave a stale claim standing (e.g. a dropped export still described as exported, an outdated test count).
 
 ### Comments and docstrings
 - Reflect only the current state of the code. Historical motivation is acceptable (why a threshold exists, why an approach was chosen), but never narrate the intermediate steps, rejected alternatives, or "old 10% vs new 1%" comparisons that arose during a PR. Those belong in the PR description, not in the source.
