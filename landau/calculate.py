@@ -25,6 +25,20 @@ __all__ = ["calc_phase_diagram", "get_transitions", "cluster_T_c", "cluster_T_c_
 _PHASE_UNIT_SEP = "_"
 
 
+def _apply_series(grouped, fn, name: str) -> pd.Series:
+    """Run ``fn`` per group, return a row-indexed :class:`pd.Series`.
+
+    Wraps :meth:`pandas.core.groupby.DataFrameGroupBy.apply` so that the result
+    has the same shape across pandas 2 and 3.  In pandas 3 a single-group
+    ``groupby.apply`` whose callable returns a Series collapses to a one-row
+    DataFrame indexed by the group key; returning a DataFrame from the callable
+    is the documented workaround that combines consistently across both
+    versions (pandas user guide, "Flexible apply").  ``include_groups=False``
+    is passed through.
+    """
+    return grouped.apply(lambda g: fn(g).to_frame(name), include_groups=False)[name]
+
+
 def _join_phase_unit(phase: pd.Series, unit: pd.Series) -> pd.Series:
     """Encode ``(phase, unit)`` pairs as ``f"{phase}{_PHASE_UNIT_SEP}{unit}"`` strings.
 
@@ -251,11 +265,7 @@ def calc_phase_diagram(
             f1 = dd.loc[dd["c"].idxmax(), "f"]
         return dd.f - (f0 * (1 - dd.c) + f1 * dd.c)
 
-    fex = pdf.groupby("T", group_keys=False).apply(sub, include_groups=False)
-    if isinstance(fex, pd.DataFrame):
-        # pandas 3 returns a DataFrame for single-group groupby.apply; undo that.
-        fex = fex.stack().reset_index(level=0, drop=True)
-    pdf["f_excess"] = fex
+    pdf["f_excess"] = _apply_series(pdf.groupby("T", group_keys=False), sub, "f_excess")
     if not keep_unstable:
         pdf = pdf.query("stable")
     return pdf
@@ -355,14 +365,11 @@ def get_transitions(df):
     # cluster points that are assigned as one transition, because the same transition can appear multiple times in "disconnected" manner in a phase
     # diagram, e.g. a solid solution in contact with the melt interrupted by a higher melting intermetallic
     if not tdf.empty:
-        res = tdf.groupby("transition", group_keys=False).apply(
+        tdf["transition_unit"] = _apply_series(
+            tdf.groupby("transition", group_keys=False),
             lambda g: cluster_T_c_mu(g, distance_threshold=0.5),  # 0.5 hand-tuned
-            include_groups=False,
+            "transition_unit",
         )
-        if isinstance(res, pd.DataFrame):
-             # sometimes pandas returns a DataFrame instead of a Series when only one group exists
-             res = res.stack().reset_index(level=0, drop=True)
-        tdf["transition_unit"] = res
         tdf["border_segment"] = _join_phase_unit(tdf["transition"], tdf["transition_unit"])
     else:
         tdf["transition_unit"] = []

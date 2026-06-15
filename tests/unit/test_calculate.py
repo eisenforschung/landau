@@ -9,6 +9,7 @@ from landau.calculate import (
     cluster_T_c,
     cluster_T_c_mu,
     reduce,
+    _apply_series,
     _border_edges,
     _join_phase_unit,
     _split_phase_unit,
@@ -121,6 +122,61 @@ def test_cluster_T_c_mu_empty():
     labels = cluster_T_c_mu(dd, distance_threshold=0.5)
     assert len(labels) == 0
     assert labels.dtype.kind == "i"
+
+
+# --- _apply_series tests ---
+
+
+def test_apply_series_multi_group_returns_row_indexed_series():
+    df = pd.DataFrame({"g": ["a", "a", "b", "b"], "x": [1.0, 2.0, 10.0, 20.0]})
+    out = _apply_series(df.groupby("g", group_keys=False), lambda d: d["x"] * 2, "y")
+    assert isinstance(out, pd.Series)
+    pd.testing.assert_series_equal(
+        out.sort_index(),
+        pd.Series([2.0, 4.0, 20.0, 40.0], name="y"),
+        check_dtype=False,
+    )
+
+
+def test_apply_series_single_group_returns_row_indexed_series():
+    # The whole point of the helper: pandas 3 returns a one-row DataFrame
+    # from groupby.apply when only one group exists and the callable returns
+    # a Series.  The helper must yield a row-aligned Series regardless.
+    df = pd.DataFrame({"g": ["a", "a", "a"], "x": [1.0, 2.0, 3.0]})
+    out = _apply_series(df.groupby("g", group_keys=False), lambda d: d["x"] + 1, "y")
+    assert isinstance(out, pd.Series)
+    pd.testing.assert_series_equal(
+        out.sort_index(),
+        pd.Series([2.0, 3.0, 4.0], name="y"),
+        check_dtype=False,
+    )
+
+
+def test_apply_series_aligns_to_assignment():
+    # Round-trip via DataFrame column assignment is the primary call shape in
+    # calc_phase_diagram / get_transitions; the returned Series must align by
+    # the original row index.
+    df = pd.DataFrame({"g": ["a", "b", "a", "b"], "x": [1, 2, 3, 4]}, index=[10, 20, 30, 40])
+    df["y"] = _apply_series(df.groupby("g", group_keys=False), lambda d: d["x"] * 10, "y")
+    assert df.loc[10, "y"] == 10
+    assert df.loc[20, "y"] == 20
+    assert df.loc[30, "y"] == 30
+    assert df.loc[40, "y"] == 40
+
+
+def test_apply_series_callable_does_not_see_group_column():
+    # include_groups=False contract: the callable must not receive the group
+    # key column.  Asserting this here is what lets the call sites stay terse.
+    seen_columns = []
+
+    def fn(d):
+        seen_columns.append(list(d.columns))
+        return d["x"]
+
+    df = pd.DataFrame({"g": ["a", "a", "b"], "x": [1, 2, 3]})
+    _apply_series(df.groupby("g", group_keys=False), fn, "y")
+    for cols in seen_columns:
+        assert "g" not in cols
 
 
 # --- _join_phase_unit / _split_phase_unit tests ---
