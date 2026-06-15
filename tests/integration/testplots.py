@@ -42,7 +42,7 @@ import landau.interpolate as ldi
 import landau.phases as ldp
 import landau.plot as lpl
 
-POLY_METHODS = ["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"]
+POLY_METHODS = ["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp", "buffered-segments"]
 TIELINE_VALUES = ["on", "off"]
 
 
