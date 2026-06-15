@@ -5,6 +5,7 @@ from hypothesis import given, strategies as st, settings
 import landau.poly as poly_module
 from landau.poly import (
     AbstractPolyMethod,
+    BufferedSegments,
     Concave,
     Segments,
     _greedy_stitch,
@@ -121,6 +122,51 @@ def test_segments(df):
     if isinstance(res, pd.Series):
         for p in res:
             assert isinstance(p, Polygon)
+
+
+@settings(deadline=None)
+@given(df=poly_dataframe())
+def test_buffered_segments(df):
+    method = BufferedSegments()
+    res = method.apply(df)
+    assert isinstance(res, (pd.Series, pd.DataFrame))
+    if isinstance(res, pd.Series):
+        for p in res:
+            assert isinstance(p, Polygon)
+
+
+def test_buffered_segments_unions_bands_thickness():
+    # Two parallel border segments a distance 1 apart in standardised space.
+    # Buffering each by thickness 0.6 makes the two bands overlap into a single
+    # polygon spanning both lines; the result must be one valid Polygon whose
+    # bounds straddle both y-levels by at least the thickness on each side.
+    pp = np.array([
+        [0.0, 0.0], [1.0, 0.0],   # segment 0 along y=0
+        [0.0, 1.0], [1.0, 1.0],   # segment 1 along y=1
+    ])
+    border = np.ones(len(pp), dtype=bool)
+    segment_label = np.array([0, 0, 1, 1])
+
+    thickness = 0.6
+    shape = BufferedSegments(thickness=thickness)._make(pp, border, segment_label)
+    assert isinstance(shape, shapely.Polygon)
+    assert shape.is_valid
+    minx, miny, maxx, maxy = shape.bounds
+    np.testing.assert_allclose([minx, miny, maxx, maxy],
+                               [-thickness, -thickness, 1 + thickness, 1 + thickness],
+                               atol=1e-6)
+
+
+def test_buffered_segments_requires_refined():
+    pp = np.array([[0.0, 0.0], [1.0, 0.0]])
+    border = np.ones(len(pp), dtype=bool)
+    segment_label = np.ones(len(pp), dtype=int)  # all 1 == unrefined
+    with pytest.raises(ValueError, match="refined phase boundaries"):
+        BufferedSegments()._make(pp, border, segment_label)
+
+
+def test_handle_poly_method_buffered_segments():
+    assert isinstance(handle_poly_method("buffered-segments"), BufferedSegments)
 
 
 @pytest.mark.skipif(not HAS_PYTHON_TSP, reason="python-tsp not installed")

@@ -414,7 +414,46 @@ def _segment_tsp_polygon(
     return shapely.Polygon(coords)
 
 
-__all__ = ["Concave", "Segments"]
+@dataclass
+class BufferedSegments(Segments):
+    """Build a phase region by buffering its border lines.
+
+    Like :class:`Segments` this works off refined phase boundaries, but instead
+    of stitching the border segments into a single ring it buffers each
+    (PCA-sorted) segment by ``thickness`` and returns their union.  No ordering
+    heuristic or TSP is involved, so it cannot self-intersect and is robust for
+    phases stable at the edges of the diagram where :class:`Segments` struggles.
+
+    The buffer is applied in the internally standardised coordinate space (both
+    axes scaled to unit variance before :meth:`AbstractPolyMethod.make` calls
+    ``_make``), so ``thickness`` is an axis-agnostic fraction of the data spread
+    rather than a width in ``c`` or ``T`` units.
+
+    Requires that phase diagram data was generated with `refine=True`.
+    """
+    thickness: float = 0.05
+    """Half-width of the band drawn around each border segment, in standardised units."""
+
+    def _make(self, pp: np.ndarray, border: np.ndarray, segment_label: np.ndarray) -> shapely.Geometry | None:
+        if np.all(segment_label == 1):
+            raise ValueError("BufferedSegments requires refined phase boundaries (segment_label must be provided)!")
+        segments = _segments_from_labels(pp, segment_label)
+        bands = [
+            (shapely.LineString(seg) if len(seg) > 1 else shapely.Point(seg[0])).buffer(self.thickness)
+            for seg in segments
+        ]
+        if not bands:
+            return None
+        shape = shapely.union_all(bands)
+        if isinstance(shape, shapely.MultiPolygon):
+            shape = max(shape.geoms, key=shapely.area)
+            warn("BufferedSegments produced disjoint bands, returning largest.")
+        if not isinstance(shape, shapely.Polygon) or shape.is_empty:
+            return None
+        return shape
+
+
+__all__ = ["Concave", "Segments", "BufferedSegments"]
 
 
 with ImportAlarm("'python_tsp' package required for PythonTsp.  Install from conda or pip.") as python_tsp_alarm:
@@ -540,6 +579,7 @@ def handle_poly_method(poly_method, **kwargs):
     allowed = {
                 'concave': Concave(**kwargs, ratio=ratio),
                 'segments': Segments(**kwargs),
+                'buffered-segments': BufferedSegments(**kwargs),
     }
     if 'PythonTsp' in __all__:
         allowed['tsp'] = PythonTsp(**kwargs)
