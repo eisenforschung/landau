@@ -610,16 +610,26 @@ def test_plot_triplepoint_no_triple_rows_is_noop():
     plt.close(fig)
 
 
-def test_plot_phase_diagram_tielines_deprecated_routes_to_triplepoint():
+def test_plot_phase_diagram_tielines_deprecated_routes_to_triplepoint(monkeypatch):
     """The old `tielines=` keyword still works but warns and maps onto
-    `plot_triplepoint=`."""
+    `plot_triplepoint=`.
+
+    The warning message text is not asserted: older `pyiron_snippets`
+    releases (exercised by the minimum-deps CI) emit the argument-deprecation
+    message as an unformatted template, so only the `DeprecationWarning`
+    category is reliable across versions.
+    """
+    calls = []
+    monkeypatch.setattr(plot_mod, "_plot_triplepoint", lambda df, ax=None: calls.append(True))
     df = _stable_df()
-    with pytest.warns(DeprecationWarning, match="tielines"):
-        fig, ax = plt.subplots()
+    fig, ax = plt.subplots()
+    with pytest.warns(DeprecationWarning):
         plot_phase_diagram(
-            df, ax=ax, tielines=False, poly_method=Concave(drop_interior=False)
+            df, ax=ax, tielines=True, poly_method=Concave(drop_interior=False)
         )
-        plt.close(fig)
+    # tielines=True is routed through to plot_triplepoint
+    assert calls == [True]
+    plt.close(fig)
 
 
 def _point(xy):
