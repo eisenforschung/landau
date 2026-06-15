@@ -323,15 +323,13 @@ def _plot_tielines(df, ax=None):
         chg = df.groupby("T").size().diff()
         T_tie = chg.loc[chg != 0].index[1:]  # skip first temp
 
-        def plot_tie(dd):
-            if dd["T"].iloc[0].round(3) not in T_tie.round(3):
-                return
+        for (T_val, _mu_val), dd in df.groupby(["T", "mu"]):
+            if round(T_val, 3) not in T_tie.round(3):
+                continue
             if len(dd) != 2:
-                return
-            cl, cr = sorted(dd.c)
-            ax.plot([cl, cr], dd["T"], color="k", zorder=-2, alpha=0.5, lw=4)
-
-        df.groupby(["T", "mu"]).apply(plot_tie, include_groups=False)
+                continue
+            cl, cr = sorted(dd["c"])
+            ax.plot([cl, cr], [T_val, T_val], color="k", zorder=-2, alpha=0.5, lw=4)
 
 
 def _set_axis_for(axis_var: str, df_stable, element: str | None, ax) -> None:
