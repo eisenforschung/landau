@@ -380,7 +380,8 @@ def test_cluster_use_mu_false_dispatches_to_cluster_T_c():
 # --- locus column tests ---
 
 
-def _triple_point_phases():
+@pytest.fixture
+def triple_point_phases():
     """Three LinePhases with a single triple point at (T=300 K, mu=0.2 eV)."""
     return [
         LinePhase("A", 0.0, -1.0, 0.004),
@@ -395,8 +396,8 @@ def test_calc_phase_diagram_unrefined_locus_all_interior(two_phase_ideal):
     assert (df["locus"] == Locus.INTERIOR).all()
 
 
-def test_calc_phase_diagram_refined_locus():
-    df = calc_phase_diagram(_triple_point_phases(), Ts=np.linspace(220, 480, 12),
+def test_calc_phase_diagram_refined_locus(triple_point_phases):
+    df = calc_phase_diagram(triple_point_phases, Ts=np.linspace(220, 480, 12),
                             mu=np.linspace(-0.05, 0.55, 15), keep_unstable=True)
     assert not df["locus"].isna().any()
     assert set(map(str, df["locus"])) <= {"interior", "boundary", "triple"}
@@ -412,8 +413,8 @@ def test_calc_phase_diagram_refined_locus():
     assert (df.loc[edges, "locus"] == Locus.INTERIOR).all()
 
 
-def test_calc_phase_diagram_locus_triple():
-    df = calc_phase_diagram(_triple_point_phases(), Ts=np.linspace(220, 480, 12),
+def test_calc_phase_diagram_locus_triple(triple_point_phases):
+    df = calc_phase_diagram(triple_point_phases, Ts=np.linspace(220, 480, 12),
                             mu=np.linspace(-0.05, 0.55, 15))
     triple = df[df["locus"] == Locus.TRIPLE]
     assert not triple.empty

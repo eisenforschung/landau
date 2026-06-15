@@ -1,5 +1,3 @@
-from .features import Locus
-
 from .phases import (
     LinePhase,
     TemperatureDepandantLinePhase,
