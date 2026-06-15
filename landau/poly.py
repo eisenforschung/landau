@@ -9,7 +9,8 @@ from pyiron_snippets.import_alarm import ImportAlarm
 import shapely
 import numpy as np
 import pandas as pd
-from matplotlib.patches import Polygon
+from matplotlib.patches import Polygon, PathPatch
+from matplotlib.path import Path
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import pairwise_distances
 from sklearn.decomposition import PCA
@@ -27,10 +28,13 @@ class AbstractPolyMethod(abc.ABC):
         over groups of columns `phase` and `phase_unit`."""
         return df
 
-    def make(self, dd: pd.DataFrame, variables: list[str] = ["c", "T"]) -> shapely.Polygon | None:
-        """Turn the subset of the full data belonging to one phase region into
-        a buffered shapely polygon.  Conversion to matplotlib happens in
-        :meth:`apply`."""
+    def _prepare_points(
+            self, dd: pd.DataFrame, variables: list[str]
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, StandardScaler] | None:
+        """Sort, finite-filter, dedupe and standardise the per-phase point
+        cloud.  Returns the scaled coordinates together with the parallel
+        ``border`` / ``segment_label`` arrays and the fitted scaler, or ``None``
+        when nothing is left."""
         border = dd["border"].to_numpy() if "border" in dd.columns else np.zeros(len(dd), dtype=bool)
         segment_label = dd["border_segment"].to_numpy() if "border_segment" in dd.columns else np.ones(len(dd), dtype=int)
 
@@ -57,6 +61,16 @@ class AbstractPolyMethod(abc.ABC):
 
         scaler = StandardScaler()
         pp_scaled = scaler.fit_transform(pp)
+        return pp_scaled, border, segment_label, scaler
+
+    def make(self, dd: pd.DataFrame, variables: list[str] = ["c", "T"]) -> shapely.Polygon | None:
+        """Turn the subset of the full data belonging to one phase region into
+        a buffered shapely polygon.  Conversion to matplotlib happens in
+        :meth:`apply`."""
+        prepared = self._prepare_points(dd, variables)
+        if prepared is None:
+            return None
+        pp_scaled, border, segment_label, scaler = prepared
 
         # check for c-degenerate line phase
         points = shapely.MultiPoint(pp_scaled)
@@ -416,23 +430,38 @@ def _segment_tsp_polygon(
 
 @dataclass
 class BufferedSegments(Segments):
-    """Build a phase region by buffering its border lines.
+    """Draw a thin border tracing a phase region instead of filling it.
 
     Like :class:`Segments` this works off refined phase boundaries, but instead
     of stitching the border segments into a single ring it buffers each
-    (PCA-sorted) segment by ``thickness`` and returns their union.  No ordering
-    heuristic or TSP is involved, so it cannot self-intersect and is robust for
-    phases stable at the edges of the diagram where :class:`Segments` struggles.
+    (PCA-sorted) segment by ``thickness`` and returns their union.  The union is
+    what avoids the brittle stitching: no ordering heuristic or TSP is involved,
+    so the result cannot self-intersect and stays robust for phases stable at
+    the edges of the diagram where :class:`Segments` struggles.
 
-    The buffer is applied in the internally standardised coordinate space (both
-    axes scaled to unit variance before :meth:`AbstractPolyMethod.make` calls
-    ``_make``), so ``thickness`` is an axis-agnostic fraction of the data spread
+    The output is the band itself, not the enclosed region: a closed boundary
+    buffers into a thin ring (a polygon with a hole) and renders as a hollow
+    outline, while disjoint border pieces are all kept.  The buffer is applied
+    in the internally standardised coordinate space (both axes scaled to unit
+    variance), so ``thickness`` is an axis-agnostic fraction of the data spread
     rather than a width in ``c`` or ``T`` units.
 
     Requires that phase diagram data was generated with `refine=True`.
     """
     thickness: float = 0.05
     """Half-width of the band drawn around each border segment, in standardised units."""
+
+    def make(self, dd: pd.DataFrame, variables: list[str] = ["c", "T"]) -> shapely.Geometry | None:
+        prepared = self._prepare_points(dd, variables)
+        if prepared is None:
+            return None
+        pp_scaled, border, segment_label, scaler = prepared
+        band = self._make(pp_scaled, border, segment_label)
+        if band is None or band.is_empty:
+            return None
+        # Inverse-transform the whole geometry (holes and disjoint parts kept,
+        # unlike the exterior-only path the base class uses for filled regions).
+        return shapely.transform(band, scaler.inverse_transform)
 
     def _make(self, pp: np.ndarray, border: np.ndarray, segment_label: np.ndarray) -> shapely.Geometry | None:
         if np.all(segment_label == 1):
@@ -444,13 +473,32 @@ class BufferedSegments(Segments):
         ]
         if not bands:
             return None
-        shape = shapely.union_all(bands)
-        if isinstance(shape, shapely.MultiPolygon):
-            shape = max(shape.geoms, key=shapely.area)
-            warn("BufferedSegments produced disjoint bands, returning largest.")
-        if not isinstance(shape, shapely.Polygon) or shape.is_empty:
+        return shapely.union_all(bands)
+
+    def _trim_overlaps(self, shapes: pd.Series) -> pd.Series:
+        # Adjacent phases share a boundary, so their border bands coincide
+        # there by design; trimming would erode the shared edge.
+        return shapes
+
+    @staticmethod
+    def _to_mpl_polygon(shape: shapely.Geometry) -> PathPatch | None:
+        if not isinstance(shape, (shapely.Polygon, shapely.MultiPolygon)) or shape.is_empty:
             return None
-        return shape
+        polys = shape.geoms if isinstance(shape, shapely.MultiPolygon) else [shape]
+        vertices: list[np.ndarray] = []
+        codes: list[int] = []
+        for poly in polys:
+            for ring in (poly.exterior, *poly.interiors):
+                coords = np.asarray(ring.coords)
+                if len(coords) < 4:
+                    continue
+                vertices.append(coords)
+                codes.extend([Path.MOVETO] + [Path.LINETO] * (len(coords) - 2) + [Path.CLOSEPOLY])
+        if not vertices:
+            return None
+        # Shapely orients exteriors CCW and holes CW; the opposite winding makes
+        # matplotlib render the interiors as holes for a hollow border.
+        return PathPatch(Path(np.concatenate(vertices), codes))
 
 
 __all__ = ["Concave", "Segments", "BufferedSegments"]

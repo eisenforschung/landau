@@ -60,6 +60,25 @@ def _shapely_polygon(coords):
     return poly
 
 
+def _patch_outline_xy(p):
+    """Outline vertices of a polygon patch, for label placement.
+
+    :func:`get_polygons` returns a :class:`matplotlib.patches.Polygon` (filled
+    region) for most poly methods and a :class:`matplotlib.patches.PathPatch`
+    (hollow border, possibly with holes or several parts) for
+    :class:`~landau.poly.BufferedSegments`.  Either way the label belongs at the
+    enclosed region's centre, so return the largest closed sub-path treated as
+    filled.  ``None`` if the patch has no usable ring.
+    """
+    if hasattr(p, "get_xy"):
+        return np.asarray(p.get_xy(), dtype=float)
+    rings = [np.asarray(v, dtype=float) for v in p.get_path().to_polygons()]
+    rings = [v for v in rings if len(v) >= 4]
+    if not rings:
+        return None
+    return max(rings, key=lambda v: shapely.Polygon(v).area)
+
+
 def _largest_inscribed_circle_center(polygon_xy, ax):
     """Centre of the largest circle inscribable in a polygon, in data units.
 
@@ -149,7 +168,10 @@ def _add_inline_polygon_labels(ax, polys):
             phase, rep = key
         else:
             phase, rep = key, 0
-        center = _largest_inscribed_circle_center(p.get_xy(), ax)
+        outline = _patch_outline_xy(p)
+        if outline is None:
+            continue
+        center = _largest_inscribed_circle_center(outline, ax)
         if center is None:
             continue
         text = _text_with_outline(
@@ -157,7 +179,7 @@ def _add_inline_polygon_labels(ax, polys):
             ha="center", va="center", fontsize="small", fontweight="bold",
             color="black",
         )
-        poly_px = _shapely_polygon(ax.transData.transform(p.get_xy()))
+        poly_px = _shapely_polygon(ax.transData.transform(outline))
         if poly_px is None or _label_fits(poly_px, text, renderer):
             continue
         text.set_rotation(90)

@@ -15,7 +15,8 @@ from landau.poly import (
     handle_poly_method,
 )
 import pytest
-from matplotlib.patches import Polygon
+from matplotlib.patches import Polygon, PathPatch
+from matplotlib.path import Path
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
@@ -131,8 +132,9 @@ def test_buffered_segments(df):
     res = method.apply(df)
     assert isinstance(res, (pd.Series, pd.DataFrame))
     if isinstance(res, pd.Series):
+        # Output is a hollow border, rendered as a holes-preserving PathPatch.
         for p in res:
-            assert isinstance(p, Polygon)
+            assert isinstance(p, PathPatch)
 
 
 def test_buffered_segments_unions_bands_thickness():
@@ -155,6 +157,36 @@ def test_buffered_segments_unions_bands_thickness():
     np.testing.assert_allclose([minx, miny, maxx, maxy],
                                [-thickness, -thickness, 1 + thickness, 1 + thickness],
                                atol=1e-6)
+
+
+def test_buffered_segments_closed_border_has_hole():
+    # Four segments forming a unit square loop. Buffered by a thickness small
+    # relative to the square, the union is a ring enclosing a hole — the hollow
+    # border. Keeps the interior open instead of filling the region.
+    pp = np.array([
+        [0.0, 0.0], [1.0, 0.0],   # bottom
+        [1.0, 0.0], [1.0, 1.0],   # right
+        [1.0, 1.0], [0.0, 1.0],   # top
+        [0.0, 1.0], [0.0, 0.0],   # left
+    ])
+    border = np.ones(len(pp), dtype=bool)
+    segment_label = np.array([0, 0, 1, 1, 2, 2, 3, 3])
+
+    shape = BufferedSegments(thickness=0.1)._make(pp, border, segment_label)
+    assert isinstance(shape, shapely.Polygon)
+    assert len(shape.interiors) == 1
+
+
+def test_buffered_segments_to_patch_preserves_hole():
+    # A polygon with a hole must map to a PathPatch with two subpaths (one
+    # MOVETO per ring), so matplotlib renders the hole.
+    outer = shapely.Polygon([(0, 0), (4, 0), (4, 4), (0, 4)])
+    hole = shapely.Polygon([(1, 1), (3, 1), (3, 3), (1, 3)])
+    ring = outer.difference(hole)
+    patch = BufferedSegments._to_mpl_polygon(ring)
+    assert isinstance(patch, PathPatch)
+    codes = patch.get_path().codes
+    assert (codes == Path.MOVETO).sum() == 2
 
 
 def test_buffered_segments_requires_refined():
