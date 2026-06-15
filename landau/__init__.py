@@ -20,6 +20,8 @@ from .interpolate import (
 
 from .plot import plot_phase_diagram, plot_excess_free_energy
 
+from .features import Locus, Domain, Coexistence, PhaseDiagram
+
 try:
     from ._version import __version__
 except ImportError:
