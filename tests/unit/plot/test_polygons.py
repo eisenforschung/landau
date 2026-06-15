@@ -511,6 +511,18 @@ def test_plot_phase_diagram_inline_legend_false_draws_legend():
     plt.close(fig)
 
 
+def test_plot_phase_diagram_legend_false_draws_no_labels():
+    fig, ax = plt.subplots()
+    plot_phase_diagram(
+        _stable_df(), ax=ax, poly_method=Concave(drop_interior=False), legend=False
+    )
+    assert ax.get_legend() is None
+    assert len(ax.texts) == 0
+    # Polygons are still drawn, only the labelling is suppressed.
+    assert len(ax.patches) > 0
+    plt.close(fig)
+
+
 def _point(xy):
     from shapely import Point
 

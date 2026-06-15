@@ -377,6 +377,7 @@ def _plot_phase_diagram(
     poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
     variables: list[str] | None = None,
     inline_legend=True,
+    legend=True,
     ax=None,
 ):
     if variables is None:
@@ -398,10 +399,11 @@ def _plot_phase_diagram(
     ax.set_ylim(df_stable["T"].min(), df_stable["T"].max())
     # Inline labels need the final axis limits to place each label at the centre
     # of its polygon, so this runs after the limits above are set.
-    if inline_legend:
-        _add_inline_polygon_labels(ax, polys)
-    else:
-        ax.legend(ncols=2)
+    if legend:
+        if inline_legend:
+            _add_inline_polygon_labels(ax, polys)
+        else:
+            ax.legend(ncols=2)
     ax.set_ylabel("$T$ [K]")
 
 
@@ -419,6 +421,7 @@ def plot_phase_diagram(
     poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
     variables: list[str] | None = None,
     inline_legend=True,
+    legend=True,
     ax=None,
 ):
     return _plot_phase_diagram(
@@ -431,6 +434,7 @@ def plot_phase_diagram(
         poly_method=poly_method,
         variables=variables,
         inline_legend=inline_legend,
+        legend=legend,
         ax=ax,
     )
 
@@ -459,6 +463,7 @@ def plot_mu_phase_diagram(
     color_override: dict[str, str] = {},
     poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
     inline_legend=True,
+    legend=True,
     ax=None,
 ):
     return _plot_phase_diagram(
@@ -469,6 +474,7 @@ def plot_mu_phase_diagram(
         poly_method=poly_method,
         variables=["mu", "T"],
         inline_legend=inline_legend,
+        legend=legend,
         ax=ax,
     )
 
