@@ -21,6 +21,7 @@ from landau.refine import (
     _simplex_straddles,
     _InterCandidate,
     _delaunay_simplices,
+    _SimplexCandidate,
 )
 
 
@@ -487,6 +488,32 @@ def test_delaunay_triple_refiner_deduplicates():
     assert set(out["phase"]) == {"A", "B", "C"}
     assert np.allclose(out["T"], 300.0, atol=10.0)
     assert np.allclose(out["mu"], 0.2, atol=0.05)
+
+
+def test_delaunay_triple_solve_is_pure_and_simplex_owned():
+    """``solve`` only emits from the simplex that geometrically owns the
+    triple point, and is a pure function of its candidate (no dedup state)."""
+    phases = _three_phase_system()
+    Ts = np.linspace(220.0, 480.0, 6)
+    mus = np.linspace(-0.05, 0.55, 7)
+    df = _coarse_df(phases, Ts, mus)
+
+    cands = [_SimplexCandidate(simplex=s)
+             for s, n in _delaunay_simplices(df) if n == 3]
+    assert len(cands) > 1, "grid should produce multiple three-phase simplices"
+
+    refiner = DelaunayTripleRefiner()
+    emitting = [c for c in cands if refiner.solve(c, phases)]
+    # Exactly one simplex contains the located triple point.
+    assert len(emitting) == 1
+
+    # Pure: re-solving the same candidates yields the same partition; the
+    # previously-emitting simplex still emits (old self._found would mute it).
+    assert [c for c in cands if refiner.solve(c, phases)] == emitting
+
+    pt = refiner.solve(emitting[0], phases)[0]
+    assert np.isclose(pt.T, 300.0, atol=10.0)
+    assert np.isclose(pt.mu, 0.2, atol=0.05)
 
 
 def test_boundary_id_cc_refiner_single_line(two_phase_system):
