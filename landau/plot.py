@@ -77,10 +77,19 @@ def _patch_outline_xy(p):
     rings = [v for v in rings if len(v) >= 4]
     if rings:
         return max(rings, key=lambda v: shapely.Polygon(v).area)
-    # Open stroke (a border that does not close into a ring): fall back to all
-    # path vertices; _shapely_polygon repairs the outline for label placement.
+    # Open stroke (a border that does not close into a ring, as
+    # BufferedSegments produces): the disjoint segments enclose no single face,
+    # and threading them into one ring self-intersects and throws the label
+    # off.  Stand in their convex hull, whose pole of inaccessibility lands
+    # inside the traced region.
     verts = np.asarray(path.vertices, dtype=float)
-    return verts if len(verts) >= 3 else None
+    verts = verts[np.isfinite(verts).all(axis=1)]
+    if len(verts) < 3:
+        return None
+    hull = shapely.convex_hull(shapely.MultiPoint(verts))
+    if not isinstance(hull, shapely.Polygon) or hull.is_empty:
+        return None
+    return np.asarray(hull.exterior.coords)
 
 
 def _largest_inscribed_circle_center(polygon_xy, ax):

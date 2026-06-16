@@ -23,13 +23,14 @@ from landau import plot as plot_mod
 from landau.plot import (
     _add_inline_polygon_labels,
     _largest_inscribed_circle_center,
+    _patch_outline_xy,
     _text_with_outline,
     get_phase_colors,
     get_polygons,
     plot_phase_diagram,
     plot_polygons,
 )
-from landau.poly import AbstractPolyMethod, Concave
+from landau.poly import AbstractPolyMethod, BufferedSegments, Concave
 
 
 # --- shared fixtures ---------------------------------------------------------
@@ -324,6 +325,35 @@ def test_inscribed_circle_center_is_inside_polygon():
     xy = np.array([(0, 0), (4, 0), (4, 1), (1, 1), (1, 4), (0, 4)], dtype=float)
     center = _largest_inscribed_circle_center(xy, ax)
     assert ShapelyPolygon(xy).contains(_point(center))
+    plt.close(fig)
+
+
+def test_patch_outline_xy_open_stroke_uses_convex_hull():
+    """An open BufferedSegments stroke labels at the region centre, not a
+    self-intersecting concatenation of its disjoint border segments."""
+    import shapely
+
+    # Four disjoint border pieces roughly tracing a unit square, ordered so a
+    # naive vertex concatenation would self-intersect (top before right).
+    border = shapely.MultiLineString([
+        [(0.0, 0.0), (1.0, 0.0)],   # bottom
+        [(0.0, 1.0), (1.0, 1.0)],   # top
+        [(1.0, 0.0), (1.0, 1.0)],   # right
+        [(0.0, 0.0), (0.0, 1.0)],   # left
+    ])
+    patch = BufferedSegments()._to_mpl_polygon(border)
+    outline = _patch_outline_xy(patch)
+    # The outline is the convex hull of the border (the unit square), so its
+    # pole of inaccessibility is the centre.
+    hull = shapely.convex_hull(shapely.MultiPoint(outline))
+    assert hull.equals(shapely.Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]))
+
+    fig, ax = plt.subplots()
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    cx, cy = _largest_inscribed_circle_center(outline, ax)
+    assert cx == pytest.approx(0.5, abs=2e-3)
+    assert cy == pytest.approx(0.5, abs=2e-3)
     plt.close(fig)
 
 
