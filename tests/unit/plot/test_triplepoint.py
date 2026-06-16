@@ -1,32 +1,137 @@
-"""Integration tests for _plot_triplepoints against real refined diagrams.
+"""Tests for _plot_triplepoints, the triple-point marker for phase diagrams.
 
 _plot_triplepoints is called from plot_phase_diagram(triplepoints=True) (c-T,
 isothermal line) and plot_mu_phase_diagram(triplepoints=True) (mu-T, point
-marker), reading the `locus` column (landau.features.Locus.TRIPLE) of a refined
-calc_phase_diagram frame. These tests check the end-to-end chain on real
-systems: a two-phase diagram has no triple point and draws nothing, a
-three-phase diagram draws a line at the eutectic temperature in c-T and a marker
-at the invariant (mu, T) in mu-T. The synthetic per-row behaviour is pinned in
-test_polygons.py.
+marker). It reads the `locus` column (landau.features.Locus.TRIPLE) of a refined
+calc_phase_diagram frame: rows sharing one (mu, T) form a three-phase invariant,
+drawn as a horizontal line across the coexisting concentrations in c-T and as a
+black marker at the (mu, T) in mu-T.
+
+The synthetic tests pin the exact geometry; one end-to-end test confirms a real
+refined diagram drives both branches.
 """
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.collections import LineCollection
 import numpy as np
+import pandas as pd
 import pytest
 
 import landau.calculate as ldc
 import landau.phases as ldp
+from landau import plot as plot_mod
 from landau.features import Locus
-from landau.plot import _plot_triplepoints
+from landau.plot import _plot_triplepoints, plot_phase_diagram
+from landau.poly import Concave
 
 
-def _hline_collections(ax):
-    """LineCollection objects added by ax.hlines."""
-    return [c for c in ax.collections if isinstance(c, LineCollection)]
+def _hlines(ax):
+    """(y, xmin, xmax) of every horizontal segment drawn on `ax`."""
+    out = []
+    for coll in ax.collections:
+        for seg in coll.get_segments():
+            (x0, y0), (x1, y1) = seg
+            if y0 == y1:
+                out.append((y0, min(x0, x1), max(x0, x1)))
+    return out
 
+
+def _markers(ax):
+    """(x, y) of every single-point marker drawn on `ax`."""
+    return [
+        (line.get_xdata()[0], line.get_ydata()[0])
+        for line in ax.lines
+        if len(line.get_xdata()) == 1 and line.get_marker() not in ("", "None", None)
+    ]
+
+
+def _triple_df():
+    """Frame with two triple points plus boundary/interior distractor rows.
+
+    Invariants at (mu=0.2, T=300) spanning c = 0.1..0.9 and (mu=-0.1, T=450)
+    spanning c = 0.2..0.7. The non-TRIPLE rows must be ignored.
+    """
+    return pd.DataFrame(
+        {
+            "mu": [0.2, 0.2, 0.2, -0.1, -0.1, -0.1, 0.0, 0.0],
+            "T": [300.0, 300.0, 300.0, 450.0, 450.0, 450.0, 250.0, 500.0],
+            "c": [0.1, 0.5, 0.9, 0.2, 0.4, 0.7, 0.3, 0.0],
+            "phase": ["A", "B", "C", "A", "B", "C", "A", "A"],
+            "locus": [Locus.TRIPLE] * 6 + [Locus.BOUNDARY, Locus.INTERIOR],
+        }
+    )
+
+
+# --- synthetic geometry ------------------------------------------------------
+
+
+def test_cT_draws_isothermal_line_per_invariant():
+    """c-T (the default axes): one horizontal line per invariant, spanning the
+    coexisting concentrations and ignoring non-TRIPLE rows."""
+    fig, ax = plt.subplots()
+    _plot_triplepoints(_triple_df(), ax=ax)  # variables default to ["c", "T"]
+    assert sorted(_hlines(ax)) == pytest.approx([(300.0, 0.1, 0.9), (450.0, 0.2, 0.7)])
+    assert _markers(ax) == []
+    plt.close(fig)
+
+
+def test_muT_draws_black_marker_per_invariant():
+    """mu-T: one black marker at each invariant (mu, T), no isothermal lines."""
+    fig, ax = plt.subplots()
+    _plot_triplepoints(_triple_df(), ax=ax, variables=["mu", "T"])
+    assert _hlines(ax) == []
+    assert sorted(_markers(ax)) == pytest.approx([(-0.1, 450.0), (0.2, 300.0)])
+    assert ax.lines[0].get_color() in ("k", "black", (0.0, 0.0, 0.0, 1.0))
+    plt.close(fig)
+
+
+def test_noop_without_locus_column():
+    fig, ax = plt.subplots()
+    _plot_triplepoints(_triple_df().drop(columns="locus"), ax=ax)
+    assert _hlines(ax) == [] and _markers(ax) == []
+    plt.close(fig)
+
+
+def test_noop_without_triple_rows():
+    fig, ax = plt.subplots()
+    _plot_triplepoints(_triple_df().query("locus != 'triple'"), ax=ax)
+    assert _hlines(ax) == [] and _markers(ax) == []
+    plt.close(fig)
+
+
+def test_tielines_deprecated_routes_to_triplepoints(monkeypatch):
+    """The old `tielines=` keyword still works but warns and maps onto
+    `triplepoints=`.
+
+    The warning message text is not asserted: older `pyiron_snippets` releases
+    (exercised by the minimum-deps CI) emit the argument-deprecation message as
+    an unformatted template, so only the `DeprecationWarning` category is
+    reliable across versions.
+    """
+    rng = np.random.default_rng(0)
+    blob_a = rng.uniform([0.0, 200.0], [0.2, 800.0], size=(20, 2))
+    blob_b = rng.uniform([0.8, 200.0], [1.0, 800.0], size=(20, 2))
+    df = pd.DataFrame(
+        {
+            "phase": ["A"] * 20 + ["B"] * 20,
+            "c": np.concatenate([blob_a[:, 0], blob_b[:, 0]]),
+            "T": np.concatenate([blob_a[:, 1], blob_b[:, 1]]),
+            "stable": True,
+        }
+    )
+    calls = []
+    monkeypatch.setattr(
+        plot_mod, "_plot_triplepoints", lambda df, ax=None, variables=None: calls.append(True)
+    )
+    fig, ax = plt.subplots()
+    with pytest.warns(DeprecationWarning):
+        plot_phase_diagram(df, ax=ax, tielines=True, poly_method=Concave(drop_interior=False))
+    assert calls == [True]  # tielines=True routed to triplepoints
+    plt.close(fig)
+
+
+# --- end-to-end on a real refined diagram ------------------------------------
 
 # hcp / fcc / liquid ideal-solution system from Basics.ipynb, with a eutectic
 # triple point where hcp, fcc, and liquid coexist.
@@ -41,76 +146,25 @@ _HCP = ldp.IdealSolution("hcp", _HCPA, _HCPB)
 _LQD = ldp.IdealSolution("liquid", _LQDA, _LQDB)
 
 
-@pytest.fixture(scope="module")
-def df_two_phase_refined():
-    """Refined c-T diagram for hcp + liquid only — no triple point exists."""
-    Ts = np.linspace(200.0, 1000.0, 20)
-    return ldc.calc_phase_diagram([_HCP, _LQD], Ts, mu=30, refine=True)
-
-
-@pytest.fixture(scope="module")
-def df_triple_point_refined():
-    """Refined c-T diagram for hcp + fcc + liquid with a eutectic triple point."""
+def test_real_diagram_draws_line_in_cT_and_marker_in_muT():
+    """A real refined eutectic diagram drives both branches: an isothermal line
+    at the invariant in c-T and a black marker at the same (mu, T) in mu-T."""
     Ts = np.linspace(200.0, 1000.0, 25)
-    return ldc.calc_phase_diagram([_HCP, _FCC, _LQD], Ts, mu=50, refine=True)
-
-
-def test_triplepoint_two_phase_draws_nothing(df_two_phase_refined):
-    """A two-phase diagram has no Locus.TRIPLE rows, so no line is drawn."""
-    df = df_two_phase_refined
-    assert (df["locus"] != Locus.TRIPLE).all(), "fixture must have no triple point"
-    fig, ax = plt.subplots()
-    try:
-        _plot_triplepoints(df, ax=ax)
-        assert _hline_collections(ax) == []
-    finally:
-        plt.close(fig)
-
-
-def test_triplepoint_three_phase_draws_line_at_eutectic(df_triple_point_refined):
-    """A eutectic triple point draws an isothermal line at its temperature.
-
-    The line spans the concentrations of the three coexisting phases and sits at
-    the temperature shared by the Locus.TRIPLE rows.
-    """
-    df = df_triple_point_refined
+    df = ldc.calc_phase_diagram([_HCP, _FCC, _LQD], Ts, mu=50, refine=True)
     triple = df[df["locus"] == Locus.TRIPLE]
     assert not triple.empty, "fixture must contain a triple point"
-    # All triple rows share one invariant (T, mu).
-    T_triple = triple["T"].mean()
+    mu_t, T_t = triple["mu"].mean(), triple["T"].mean()
     cmin, cmax = triple["c"].min(), triple["c"].max()
 
     fig, ax = plt.subplots()
-    try:
-        _plot_triplepoints(df, ax=ax)
-        lcs = _hline_collections(ax)
-        assert len(lcs) == 1, "expected exactly one invariant line"
-        seg = lcs[0].get_segments()[0]
-        (x0, y0), (x1, y1) = seg
-        assert y0 == y1 == pytest.approx(T_triple)
-        assert (min(x0, x1), max(x0, x1)) == pytest.approx((cmin, cmax))
-    finally:
-        plt.close(fig)
-
-
-def test_triplepoint_muT_draws_marker_at_invariant(df_triple_point_refined):
-    """In mu-T the eutectic collapses to one black marker at its (mu, T)."""
-    df = df_triple_point_refined
-    triple = df[df["locus"] == Locus.TRIPLE]
-    assert not triple.empty, "fixture must contain a triple point"
-    mu_triple = triple["mu"].mean()
-    T_triple = triple["T"].mean()
+    _plot_triplepoints(df, ax=ax, variables=["c", "T"])
+    assert _markers(ax) == []
+    (line,) = _hlines(ax)
+    assert line == pytest.approx((T_t, cmin, cmax))
+    plt.close(fig)
 
     fig, ax = plt.subplots()
-    try:
-        _plot_triplepoints(df, ax=ax, variables=["mu", "T"])
-        assert _hline_collections(ax) == [], "no isothermal lines in mu-T"
-        markers = [
-            line for line in ax.lines
-            if len(line.get_xdata()) == 1 and line.get_marker() not in ("", "None", None)
-        ]
-        assert len(markers) == 1, "expected one marker at the invariant"
-        assert markers[0].get_xdata()[0] == pytest.approx(mu_triple)
-        assert markers[0].get_ydata()[0] == pytest.approx(T_triple)
-    finally:
-        plt.close(fig)
+    _plot_triplepoints(df, ax=ax, variables=["mu", "T"])
+    assert _hlines(ax) == []
+    assert _markers(ax) == pytest.approx([(mu_t, T_t)])
+    plt.close(fig)
