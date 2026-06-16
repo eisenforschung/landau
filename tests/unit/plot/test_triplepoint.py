@@ -133,24 +133,35 @@ def test_tielines_deprecated_routes_to_triplepoints(monkeypatch):
 
 # --- end-to-end on a real refined diagram ------------------------------------
 
-# hcp / fcc / liquid ideal-solution system from Basics.ipynb, with a eutectic
-# triple point where hcp, fcc, and liquid coexist.
-_FCCA = ldp.LinePhase("fccA", fixed_concentration=0, line_energy=-3.00, line_entropy=1.0 * ldp.kB)
-_FCCB = ldp.LinePhase("fccB", fixed_concentration=1, line_energy=-2.00, line_entropy=1.1 * ldp.kB)
-_HCPA = ldp.LinePhase("hcpA", fixed_concentration=0, line_energy=-2.975, line_entropy=1.8 * ldp.kB)
-_HCPB = ldp.LinePhase("hcpB", fixed_concentration=1, line_energy=-1.95, line_entropy=1.1 * ldp.kB)
-_LQDA = ldp.LinePhase("liquidA", fixed_concentration=0, line_energy=-2.75, line_entropy=5.0 * ldp.kB)
-_LQDB = ldp.LinePhase("liquidB", fixed_concentration=1, line_energy=-1.75, line_entropy=4.4 * ldp.kB)
-_FCC = ldp.IdealSolution("fcc", _FCCA, _FCCB)
-_HCP = ldp.IdealSolution("hcp", _HCPA, _HCPB)
-_LQD = ldp.IdealSolution("liquid", _LQDA, _LQDB)
+
+@pytest.fixture(scope="module")
+def eutectic_diagram():
+    """Refined diagram for an hcp / fcc / liquid ideal-solution system
+    (Basics.ipynb parameters) with a eutectic triple point where the three
+    phases coexist."""
+    fcc = ldp.IdealSolution(
+        "fcc",
+        ldp.LinePhase("fccA", fixed_concentration=0, line_energy=-3.00, line_entropy=1.0 * ldp.kB),
+        ldp.LinePhase("fccB", fixed_concentration=1, line_energy=-2.00, line_entropy=1.1 * ldp.kB),
+    )
+    hcp = ldp.IdealSolution(
+        "hcp",
+        ldp.LinePhase("hcpA", fixed_concentration=0, line_energy=-2.975, line_entropy=1.8 * ldp.kB),
+        ldp.LinePhase("hcpB", fixed_concentration=1, line_energy=-1.95, line_entropy=1.1 * ldp.kB),
+    )
+    liquid = ldp.IdealSolution(
+        "liquid",
+        ldp.LinePhase("liquidA", fixed_concentration=0, line_energy=-2.75, line_entropy=5.0 * ldp.kB),
+        ldp.LinePhase("liquidB", fixed_concentration=1, line_energy=-1.75, line_entropy=4.4 * ldp.kB),
+    )
+    Ts = np.linspace(200.0, 1000.0, 25)
+    return ldc.calc_phase_diagram([hcp, fcc, liquid], Ts, mu=50, refine=True)
 
 
-def test_real_diagram_draws_line_in_cT_and_marker_in_muT():
+def test_real_diagram_draws_line_in_cT_and_marker_in_muT(eutectic_diagram):
     """A real refined eutectic diagram drives both branches: an isothermal line
     at the invariant in c-T and a black marker at the same (mu, T) in mu-T."""
-    Ts = np.linspace(200.0, 1000.0, 25)
-    df = ldc.calc_phase_diagram([_HCP, _FCC, _LQD], Ts, mu=50, refine=True)
+    df = eutectic_diagram
     triple = df[df["locus"] == Locus.TRIPLE]
     assert not triple.empty, "fixture must contain a triple point"
     mu_t, T_t = triple["mu"].mean(), triple["T"].mean()
