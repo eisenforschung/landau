@@ -46,7 +46,16 @@ def _markers(ax):
     ]
 
 
-def _triple_df():
+@pytest.fixture
+def ax():
+    """A fresh axes; its figure is closed on teardown."""
+    fig, ax = plt.subplots()
+    yield ax
+    plt.close(fig)
+
+
+@pytest.fixture
+def triple_df():
     """Frame with two triple points plus boundary/interior distractor rows.
 
     Invariants at (mu=0.2, T=300) spanning c = 0.1..0.9 and (mu=-0.1, T=450)
@@ -66,41 +75,33 @@ def _triple_df():
 # --- synthetic geometry ------------------------------------------------------
 
 
-def test_cT_draws_isothermal_line_per_invariant():
+def test_cT_draws_isothermal_line_per_invariant(ax, triple_df):
     """c-T (the default axes): one horizontal line per invariant, spanning the
     coexisting concentrations and ignoring non-TRIPLE rows."""
-    fig, ax = plt.subplots()
-    _plot_triplepoints(_triple_df(), ax=ax)  # variables default to ["c", "T"]
+    _plot_triplepoints(triple_df, ax=ax)  # variables default to ["c", "T"]
     assert sorted(_hlines(ax)) == pytest.approx([(300.0, 0.1, 0.9), (450.0, 0.2, 0.7)])
     assert _markers(ax) == []
-    plt.close(fig)
 
 
-def test_muT_draws_black_marker_per_invariant():
+def test_muT_draws_black_marker_per_invariant(ax, triple_df):
     """mu-T: one black marker at each invariant (mu, T), no isothermal lines."""
-    fig, ax = plt.subplots()
-    _plot_triplepoints(_triple_df(), ax=ax, variables=["mu", "T"])
+    _plot_triplepoints(triple_df, ax=ax, variables=["mu", "T"])
     assert _hlines(ax) == []
     assert sorted(_markers(ax)) == pytest.approx([(-0.1, 450.0), (0.2, 300.0)])
     assert ax.lines[0].get_color() in ("k", "black", (0.0, 0.0, 0.0, 1.0))
-    plt.close(fig)
 
 
-def test_noop_without_locus_column():
-    fig, ax = plt.subplots()
-    _plot_triplepoints(_triple_df().drop(columns="locus"), ax=ax)
+def test_noop_without_locus_column(ax, triple_df):
+    _plot_triplepoints(triple_df.drop(columns="locus"), ax=ax)
     assert _hlines(ax) == [] and _markers(ax) == []
-    plt.close(fig)
 
 
-def test_noop_without_triple_rows():
-    fig, ax = plt.subplots()
-    _plot_triplepoints(_triple_df().query("locus != 'triple'"), ax=ax)
+def test_noop_without_triple_rows(ax, triple_df):
+    _plot_triplepoints(triple_df.query("locus != 'triple'"), ax=ax)
     assert _hlines(ax) == [] and _markers(ax) == []
-    plt.close(fig)
 
 
-def test_tielines_deprecated_routes_to_triplepoints(monkeypatch):
+def test_tielines_deprecated_routes_to_triplepoints(ax, monkeypatch):
     """The old `tielines=` keyword still works but warns and maps onto
     `triplepoints=`.
 
@@ -124,11 +125,9 @@ def test_tielines_deprecated_routes_to_triplepoints(monkeypatch):
     monkeypatch.setattr(
         plot_mod, "_plot_triplepoints", lambda df, ax=None, variables=None: calls.append(True)
     )
-    fig, ax = plt.subplots()
     with pytest.warns(DeprecationWarning):
         plot_phase_diagram(df, ax=ax, tielines=True, poly_method=Concave(drop_interior=False))
     assert calls == [True]  # tielines=True routed to triplepoints
-    plt.close(fig)
 
 
 # --- end-to-end on a real refined diagram ------------------------------------
@@ -158,24 +157,26 @@ def eutectic_diagram():
     return ldc.calc_phase_diagram([hcp, fcc, liquid], Ts, mu=50, refine=True)
 
 
-def test_real_diagram_draws_line_in_cT_and_marker_in_muT(eutectic_diagram):
-    """A real refined eutectic diagram drives both branches: an isothermal line
-    at the invariant in c-T and a black marker at the same (mu, T) in mu-T."""
-    df = eutectic_diagram
-    triple = df[df["locus"] == Locus.TRIPLE]
+def test_real_diagram_cT_draws_isothermal_line(ax, eutectic_diagram):
+    """A real refined eutectic diagram draws one isothermal line at the
+    invariant, spanning the coexisting concentrations."""
+    triple = eutectic_diagram[eutectic_diagram["locus"] == Locus.TRIPLE]
     assert not triple.empty, "fixture must contain a triple point"
-    mu_t, T_t = triple["mu"].mean(), triple["T"].mean()
+    T_t = triple["T"].mean()
     cmin, cmax = triple["c"].min(), triple["c"].max()
 
-    fig, ax = plt.subplots()
-    _plot_triplepoints(df, ax=ax, variables=["c", "T"])
+    _plot_triplepoints(eutectic_diagram, ax=ax, variables=["c", "T"])
     assert _markers(ax) == []
     (line,) = _hlines(ax)
     assert line == pytest.approx((T_t, cmin, cmax))
-    plt.close(fig)
 
-    fig, ax = plt.subplots()
-    _plot_triplepoints(df, ax=ax, variables=["mu", "T"])
+
+def test_real_diagram_muT_draws_marker(ax, eutectic_diagram):
+    """The same diagram draws a black marker at the invariant (mu, T) in mu-T."""
+    triple = eutectic_diagram[eutectic_diagram["locus"] == Locus.TRIPLE]
+    assert not triple.empty, "fixture must contain a triple point"
+    mu_t, T_t = triple["mu"].mean(), triple["T"].mean()
+
+    _plot_triplepoints(eutectic_diagram, ax=ax, variables=["mu", "T"])
     assert _hlines(ax) == []
     assert _markers(ax) == pytest.approx([(mu_t, T_t)])
-    plt.close(fig)
