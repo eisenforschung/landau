@@ -72,11 +72,15 @@ def _patch_outline_xy(p):
     """
     if hasattr(p, "get_xy"):
         return np.asarray(p.get_xy(), dtype=float)
-    rings = [np.asarray(v, dtype=float) for v in p.get_path().to_polygons()]
+    path = p.get_path()
+    rings = [np.asarray(v, dtype=float) for v in path.to_polygons()]
     rings = [v for v in rings if len(v) >= 4]
-    if not rings:
-        return None
-    return max(rings, key=lambda v: shapely.Polygon(v).area)
+    if rings:
+        return max(rings, key=lambda v: shapely.Polygon(v).area)
+    # Open stroke (a border that does not close into a ring): fall back to all
+    # path vertices; _shapely_polygon repairs the outline for label placement.
+    verts = np.asarray(path.vertices, dtype=float)
+    return verts if len(verts) >= 3 else None
 
 
 def _largest_inscribed_circle_center(polygon_xy, ax):
@@ -298,8 +302,13 @@ def plot_polygons(polys, color_map, ax=None):
             phase, rep = phase
         else:
             rep = 0
-        p.set_color(color_map[phase])
-        p.set_edgecolor("k")
+        if p.get_fill():
+            p.set_color(color_map[phase])
+            p.set_edgecolor("k")
+        else:
+            # Unfilled stroke (a BufferedSegments border): the line itself
+            # carries the phase colour instead of outlining a fill in black.
+            p.set_edgecolor(color_map[phase])
         p.set_label(phase + "'" * rep)
         ax.add_patch(p)
 

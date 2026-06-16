@@ -132,16 +132,16 @@ def test_buffered_segments(df):
     res = method.apply(df)
     assert isinstance(res, (pd.Series, pd.DataFrame))
     if isinstance(res, pd.Series):
-        # Output is a hollow border, rendered as a holes-preserving PathPatch.
+        # Output is a fixed-width stroke: an unfilled PathPatch.
         for p in res:
             assert isinstance(p, PathPatch)
+            assert p.get_fill() is False
 
 
-def test_buffered_segments_unions_bands_thickness():
-    # Two parallel border segments a distance 1 apart in standardised space.
-    # Buffering each by thickness 0.6 makes the two bands overlap into a single
-    # polygon spanning both lines; the result must be one valid Polygon whose
-    # bounds straddle both y-levels by at least the thickness on each side.
+def test_buffered_segments_unions_border_lines():
+    # Two disjoint unit border segments. The result is the union of the lines
+    # themselves (not a buffered band): a line geometry whose total length is
+    # the sum of the segment lengths.
     pp = np.array([
         [0.0, 0.0], [1.0, 0.0],   # segment 0 along y=0
         [0.0, 1.0], [1.0, 1.0],   # segment 1 along y=1
@@ -149,42 +149,19 @@ def test_buffered_segments_unions_bands_thickness():
     border = np.ones(len(pp), dtype=bool)
     segment_label = np.array([0, 0, 1, 1])
 
-    thickness = 0.6
-    shape = BufferedSegments(thickness=thickness)._make(pp, border, segment_label)
-    assert isinstance(shape, shapely.Polygon)
-    assert shape.is_valid
-    minx, miny, maxx, maxy = shape.bounds
-    np.testing.assert_allclose([minx, miny, maxx, maxy],
-                               [-thickness, -thickness, 1 + thickness, 1 + thickness],
-                               atol=1e-6)
+    geom = BufferedSegments()._make(pp, border, segment_label)
+    assert isinstance(geom, (shapely.LineString, shapely.MultiLineString))
+    np.testing.assert_allclose(geom.length, 2.0, atol=1e-9)
 
 
-def test_buffered_segments_closed_border_has_hole():
-    # Four segments forming a unit square loop. Buffered by a thickness small
-    # relative to the square, the union is a ring enclosing a hole — the hollow
-    # border. Keeps the interior open instead of filling the region.
-    pp = np.array([
-        [0.0, 0.0], [1.0, 0.0],   # bottom
-        [1.0, 0.0], [1.0, 1.0],   # right
-        [1.0, 1.0], [0.0, 1.0],   # top
-        [0.0, 1.0], [0.0, 0.0],   # left
-    ])
-    border = np.ones(len(pp), dtype=bool)
-    segment_label = np.array([0, 0, 1, 1, 2, 2, 3, 3])
-
-    shape = BufferedSegments(thickness=0.1)._make(pp, border, segment_label)
-    assert isinstance(shape, shapely.Polygon)
-    assert len(shape.interiors) == 1
-
-
-def test_buffered_segments_to_patch_preserves_hole():
-    # A polygon with a hole must map to a PathPatch with two subpaths (one
-    # MOVETO per ring), so matplotlib renders the hole.
-    outer = shapely.Polygon([(0, 0), (4, 0), (4, 4), (0, 4)])
-    hole = shapely.Polygon([(1, 1), (3, 1), (3, 3), (1, 3)])
-    ring = outer.difference(hole)
-    patch = BufferedSegments._to_mpl_polygon(ring)
+def test_buffered_segments_patch_is_open_stroke():
+    # A MultiLineString maps to an unfilled PathPatch carrying the configured
+    # line width, with one MOVETO subpath per line.
+    geom = shapely.MultiLineString([[(0, 0), (1, 0)], [(0, 1), (1, 1)]])
+    patch = BufferedSegments(thickness=3.0)._to_mpl_polygon(geom)
     assert isinstance(patch, PathPatch)
+    assert patch.get_fill() is False
+    assert patch.get_linewidth() == 3.0
     codes = patch.get_path().codes
     assert (codes == Path.MOVETO).sum() == 2
 

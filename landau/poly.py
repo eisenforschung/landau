@@ -430,75 +430,68 @@ def _segment_tsp_polygon(
 
 @dataclass
 class BufferedSegments(Segments):
-    """Draw a thin border tracing a phase region instead of filling it.
+    """Draw a thin, uniformly thick border tracing a phase region.
 
     Like :class:`Segments` this works off refined phase boundaries, but instead
-    of stitching the border segments into a single ring it buffers each
-    (PCA-sorted) segment by ``thickness`` and returns their union.  The union is
-    what avoids the brittle stitching: no ordering heuristic or TSP is involved,
-    so the result cannot self-intersect and stays robust for phases stable at
-    the edges of the diagram where :class:`Segments` struggles.
+    of stitching the border segments into a single ring it unions them and
+    strokes the result as a fixed-width line.  The union is what avoids the
+    brittle stitching: no ordering heuristic or TSP is involved, so the border
+    cannot self-intersect and stays robust for phases stable at the edges of the
+    diagram where :class:`Segments` struggles.
 
-    The output is the band itself, not the enclosed region: a closed boundary
-    buffers into a thin ring (a polygon with a hole) and renders as a hollow
-    outline, while disjoint border pieces are all kept.  The buffer is applied
-    in the internally standardised coordinate space (both axes scaled to unit
-    variance), so ``thickness`` is an axis-agnostic fraction of the data spread
-    rather than a width in ``c`` or ``T`` units.
+    The border is stroked with a line width in points, so it stays uniformly
+    thick everywhere irrespective of boundary orientation, axis aspect or phase
+    -- unlike a buffered band, whose on-screen width varies with all three.
 
     Requires that phase diagram data was generated with `refine=True`.
     """
-    thickness: float = 0.05
-    """Half-width of the band drawn around each border segment, in standardised units."""
+    thickness: float = 2.0
+    """Width of the border line, in points."""
 
     def make(self, dd: pd.DataFrame, variables: list[str] = ["c", "T"]) -> shapely.Geometry | None:
         prepared = self._prepare_points(dd, variables)
         if prepared is None:
             return None
         pp_scaled, border, segment_label, scaler = prepared
-        band = self._make(pp_scaled, border, segment_label)
-        if band is None or band.is_empty:
+        geom = self._make(pp_scaled, border, segment_label)
+        if geom is None or geom.is_empty:
             return None
-        # Inverse-transform the whole geometry (holes and disjoint parts kept,
-        # unlike the exterior-only path the base class uses for filled regions).
-        return shapely.transform(band, scaler.inverse_transform)
+        return shapely.transform(geom, scaler.inverse_transform)
 
     def _make(self, pp: np.ndarray, border: np.ndarray, segment_label: np.ndarray) -> shapely.Geometry | None:
         if np.all(segment_label == 1):
             raise ValueError("BufferedSegments requires refined phase boundaries (segment_label must be provided)!")
         segments = _segments_from_labels(pp, segment_label)
-        bands = [
-            (shapely.LineString(seg) if len(seg) > 1 else shapely.Point(seg[0])).buffer(self.thickness)
-            for seg in segments
-        ]
-        if not bands:
+        lines = [shapely.LineString(seg) for seg in segments if len(seg) >= 2]
+        if not lines:
             return None
-        return shapely.union_all(bands)
+        return shapely.union_all(lines)
 
     def _trim_overlaps(self, shapes: pd.Series) -> pd.Series:
-        # Adjacent phases share a boundary, so their border bands coincide
-        # there by design; trimming would erode the shared edge.
+        # Adjacent phases share a boundary, so their borders coincide there by
+        # design; there is nothing to trim between strokes.
         return shapes
 
-    @staticmethod
-    def _to_mpl_polygon(shape: shapely.Geometry) -> PathPatch | None:
-        if not isinstance(shape, (shapely.Polygon, shapely.MultiPolygon)) or shape.is_empty:
+    def _to_mpl_polygon(self, shape: shapely.Geometry) -> PathPatch | None:
+        if shape is None or shape.is_empty:
             return None
-        polys = shape.geoms if isinstance(shape, shapely.MultiPolygon) else [shape]
+        if isinstance(shape, shapely.MultiLineString):
+            lines = list(shape.geoms)
+        elif isinstance(shape, shapely.LineString):
+            lines = [shape]
+        else:
+            return None
         vertices: list[np.ndarray] = []
         codes: list[int] = []
-        for poly in polys:
-            for ring in (poly.exterior, *poly.interiors):
-                coords = np.asarray(ring.coords)
-                if len(coords) < 4:
-                    continue
-                vertices.append(coords)
-                codes.extend([Path.MOVETO] + [Path.LINETO] * (len(coords) - 2) + [Path.CLOSEPOLY])
+        for line in lines:
+            coords = np.asarray(line.coords)
+            if len(coords) < 2:
+                continue
+            vertices.append(coords)
+            codes.extend([Path.MOVETO] + [Path.LINETO] * (len(coords) - 1))
         if not vertices:
             return None
-        # Shapely orients exteriors CCW and holes CW; the opposite winding makes
-        # matplotlib render the interiors as holes for a hollow border.
-        return PathPatch(Path(np.concatenate(vertices), codes))
+        return PathPatch(Path(np.concatenate(vertices), codes), fill=False, linewidth=self.thickness)
 
 
 __all__ = ["Concave", "Segments", "BufferedSegments"]
