@@ -179,6 +179,46 @@ def test_apply_series_callable_does_not_see_group_column():
         assert "g" not in cols
 
 
+def test_cluster_T_c_mu_zero_finite_rows():
+    # 0 finite rows: F.sum() == 0, clustering skipped entirely.
+    # ids initialises to 0; +inf → m+1 = 1, -inf → m+2 = 2.
+    dd = pd.DataFrame({"T": [300.0, 400.0], "c": [0.0, 1.0], "mu": [+np.inf, -np.inf]})
+    labels = cluster_T_c_mu(dd, distance_threshold=0.5)
+    assert labels.dtype.kind == "i"
+    assert labels.loc[dd["mu"] == +np.inf].iloc[0] != labels.loc[dd["mu"] == -np.inf].iloc[0]
+
+
+def test_cluster_T_c_mu_one_finite_row():
+    # 1 finite row: F.sum() == 1 < 2, clustering still skipped.
+    # finite row keeps label 0; +inf → 1, -inf → 2 — all three distinct.
+    dd = pd.DataFrame({
+        "T": [300.0, 400.0, 500.0],
+        "c": [0.5, 0.0, 1.0],
+        "mu": [0.0, +np.inf, -np.inf],
+    })
+    labels = cluster_T_c_mu(dd, distance_threshold=0.5)
+    assert labels.dtype.kind == "i"
+    assert labels.nunique() == 3
+
+
+def test_cluster_T_c_mu_only_plus_inf_rows():
+    # No -inf rows: the ids.loc[mu == -inf] = m+2 assignment is a no-op and must not raise.
+    # All +inf rows share the same label (m+1 off the all-zero base).
+    dd = pd.DataFrame({"T": [300.0, 400.0], "c": [0.0, 0.0], "mu": [+np.inf, +np.inf]})
+    labels = cluster_T_c_mu(dd, distance_threshold=0.5)
+    assert labels.dtype.kind == "i"
+    assert labels.nunique() == 1
+
+
+def test_cluster_T_c_mu_two_finite_rows():
+    # F.sum() == 2: the clustering branch executes (the >= 2 guard is met).
+    # Two far-apart points produce two distinct labels.
+    dd = pd.DataFrame({"T": [300.0, 400.0], "c": [0.0, 1.0], "mu": [-1.0, 1.0]})
+    labels = cluster_T_c_mu(dd, distance_threshold=0.5)
+    assert labels.dtype.kind == "i"
+    assert labels.nunique() == 2
+
+
 # --- _join_phase_unit / _split_phase_unit tests ---
 
 
