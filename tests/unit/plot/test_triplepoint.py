@@ -75,29 +75,33 @@ def triple_df():
 # --- synthetic geometry ------------------------------------------------------
 
 
-def test_cT_draws_isothermal_line_per_invariant(ax, triple_df):
-    """c-T (the default axes): one horizontal line per invariant, spanning the
-    coexisting concentrations and ignoring non-TRIPLE rows."""
-    _plot_triplepoints(triple_df, ax=ax)  # variables default to ["c", "T"]
-    assert sorted(_hlines(ax)) == pytest.approx([(300.0, 0.1, 0.9), (450.0, 0.2, 0.7)])
-    assert _markers(ax) == []
+@pytest.mark.parametrize(
+    "variables, lines, markers",
+    [
+        # c-T (the default axes): one horizontal line per invariant, spanning
+        # the coexisting concentrations; no markers.
+        (["c", "T"], [(300.0, 0.1, 0.9), (450.0, 0.2, 0.7)], []),
+        # mu-T: one marker per invariant (mu, T); no lines.
+        (["mu", "T"], [], [(-0.1, 450.0), (0.2, 300.0)]),
+    ],
+    ids=["c-T", "mu-T"],
+)
+def test_draws_one_mark_per_invariant(ax, triple_df, variables, lines, markers):
+    """Each three-phase invariant is marked once, ignoring non-TRIPLE rows."""
+    _plot_triplepoints(triple_df, ax=ax, variables=variables)
+    assert sorted(_hlines(ax)) == pytest.approx(lines)
+    assert sorted(_markers(ax)) == pytest.approx(markers)
+    if markers:  # markers are black
+        assert all(line.get_color() in ("k", "black", (0.0, 0.0, 0.0, 1.0)) for line in ax.lines)
 
 
-def test_muT_draws_black_marker_per_invariant(ax, triple_df):
-    """mu-T: one black marker at each invariant (mu, T), no isothermal lines."""
-    _plot_triplepoints(triple_df, ax=ax, variables=["mu", "T"])
-    assert _hlines(ax) == []
-    assert sorted(_markers(ax)) == pytest.approx([(-0.1, 450.0), (0.2, 300.0)])
-    assert ax.lines[0].get_color() in ("k", "black", (0.0, 0.0, 0.0, 1.0))
-
-
-def test_noop_without_locus_column(ax, triple_df):
-    _plot_triplepoints(triple_df.drop(columns="locus"), ax=ax)
-    assert _hlines(ax) == [] and _markers(ax) == []
-
-
-def test_noop_without_triple_rows(ax, triple_df):
-    _plot_triplepoints(triple_df.query("locus != 'triple'"), ax=ax)
+@pytest.mark.parametrize(
+    "transform",
+    [lambda df: df.drop(columns="locus"), lambda df: df.query("locus != 'triple'")],
+    ids=["no-locus-column", "no-triple-rows"],
+)
+def test_noop_without_triple_points(ax, triple_df, transform):
+    _plot_triplepoints(transform(triple_df), ax=ax)
     assert _hlines(ax) == [] and _markers(ax) == []
 
 
@@ -157,26 +161,19 @@ def eutectic_diagram():
     return ldc.calc_phase_diagram([hcp, fcc, liquid], Ts, mu=50, refine=True)
 
 
-def test_real_diagram_cT_draws_isothermal_line(ax, eutectic_diagram):
-    """A real refined eutectic diagram draws one isothermal line at the
-    invariant, spanning the coexisting concentrations."""
+@pytest.mark.parametrize("variables", [["c", "T"], ["mu", "T"]], ids=["c-T", "mu-T"])
+def test_real_diagram_marks_the_invariant(ax, eutectic_diagram, variables):
+    """A real refined eutectic diagram drives both branches: an isothermal line
+    spanning the coexisting concentrations in c-T, a marker at the same (mu, T)
+    in mu-T."""
     triple = eutectic_diagram[eutectic_diagram["locus"] == Locus.TRIPLE]
     assert not triple.empty, "fixture must contain a triple point"
     T_t = triple["T"].mean()
-    cmin, cmax = triple["c"].min(), triple["c"].max()
 
-    _plot_triplepoints(eutectic_diagram, ax=ax, variables=["c", "T"])
-    assert _markers(ax) == []
-    (line,) = _hlines(ax)
-    assert line == pytest.approx((T_t, cmin, cmax))
-
-
-def test_real_diagram_muT_draws_marker(ax, eutectic_diagram):
-    """The same diagram draws a black marker at the invariant (mu, T) in mu-T."""
-    triple = eutectic_diagram[eutectic_diagram["locus"] == Locus.TRIPLE]
-    assert not triple.empty, "fixture must contain a triple point"
-    mu_t, T_t = triple["mu"].mean(), triple["T"].mean()
-
-    _plot_triplepoints(eutectic_diagram, ax=ax, variables=["mu", "T"])
-    assert _hlines(ax) == []
-    assert _markers(ax) == pytest.approx([(mu_t, T_t)])
+    _plot_triplepoints(eutectic_diagram, ax=ax, variables=variables)
+    if variables[0] == "c":
+        assert _markers(ax) == []
+        assert _hlines(ax) == pytest.approx([(T_t, triple["c"].min(), triple["c"].max())])
+    else:
+        assert _hlines(ax) == []
+        assert _markers(ax) == pytest.approx([(triple["mu"].mean(), T_t)])
