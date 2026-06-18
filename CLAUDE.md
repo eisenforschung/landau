@@ -86,7 +86,7 @@ Layout:
 
 ### Module layout
 
-**`landau/phases/`** — phase definitions (subpackage; split from `phases.py` per PR #111). Re-exported from `landau/__init__.py`.
+**`landau/phases/`** — phase definitions (subpackage; split from `phases.py` per PR #111). The user-facing concrete classes (`LinePhase`, `TemperatureDep[ae]ndantLinePhase`, `IdealSolution`, `RegularSolution`, `(Slow)InterpolatingPhase`, `AsePhase`) are re-exported from `landau/__init__.py`; the `Phase` / `AbstractLinePhase` bases and the `AbstractPointDefect` / `ConstantPointDefect` / `PointDefectSublattice` / `PointDefectedPhase` family stay under `landau.phases`.
 - `phases/__init__.py` — `Phase` (ABC), `AbstractLinePhase`, `LinePhase`, `TemperatureDependentLinePhase` (alias `TemperatureDepandantLinePhase` kept for back-compat), `IdealSolution`, `RegularSolution`, `InterpolatingPhase`, `SlowInterpolatingPhase`, `AbstractPointDefect`, `ConstantPointDefect`, `PointDefectSublattice`, `PointDefectedPhase`. Private `_scalarize(x)` helper (PR #208) is the single site that collapses 0-d numpy results back to Python scalars so the scalar-in/scalar-out contract holds across `AbstractLinePhase.concentration`, `IdealSolution.semigrand_potential`, `RegularSolution.semigrand_potential`, and `(Slow)InterpolatingPhase._find_phi_c` — five sites that previously hand-rolled the same `if ndim == 0` / `if shape == ()` / `isinstance(x, np.ndarray)` check and had drifted.
 - `phases/asewrapper.py` — `AsePhase(AbstractLinePhase)` wrapping `ase.thermochemistry.ThermoChem`. Compares/hashes by `pickle.dumps(thermochem)` so two instances from equivalent inputs are equal. Falls back from `get_helmholtz_energy` to `get_gibbs_energy` (1 atm default). `atoms_per_formula` divides ASE's energy so the result is per atom. Splitting this further is open (#137).
 
@@ -137,7 +137,7 @@ Layout:
 
 ## Documentation
 
-Sphinx in `docs/` (`api/`, `notebooks/`, `index.md`, `installation.md`). Built by ReadTheDocs on Python 3.12. Extensions: `myst-nb`, `sphinx-autodoc-typehints`, `furo`. Notebooks under `notebooks/` (`Basics`, `IdealSolution`, `Intermetallics`, `ClausiusClapeyron`, `ExcessFreeEnergy`, `PointDefects`, `Toy`, `ASE/{EMT_CuAg,FCC_BCC_Fe,Hydrate}`, `MgCa/...`); commit notebooks **with executed outputs only**.
+Sphinx in `docs/` (`api/`, `notebooks/`, `index.md`, `installation.md`). Built by ReadTheDocs on Python 3.12. Extensions: `myst-nb`, `sphinx-autodoc-typehints`, `furo`. Notebooks under `notebooks/` (`Basics`, `PlotGallery`, `IdealSolution`, `Intermetallics`, `ClausiusClapeyron`, `ExcessFreeEnergy`, `PointDefects`, `Toy`, `ASE/{EMT_CuAg,FCC_BCC_Fe,Hydrate}`, `MgCa/...`); commit notebooks **with executed outputs only**.
 
 Local build:
 ```bash
