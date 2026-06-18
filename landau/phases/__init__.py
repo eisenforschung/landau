@@ -683,133 +683,33 @@ def check_concentration_interpolation(
         plt.scatter(cline, line_free_energy)
 
 
-class AbstractPointDefect(ABC):
-    @abstractmethod
-    def excess_free_energy(self, T):
-        pass
+# The point-defect classes now live in landau.phases.pointdefects. The pre-split
+# public names are re-exported here for back-compat and removed at the 2.0 release:
+# AbstractPointDefect (an ABC, kept subclassable) as a plain alias, the concrete
+# classes behind a deprecation shim pointing at the new module. The classes added
+# with this split -- AbstractPointDefectSublattice and
+# LowTemperatureExpansionSublattice -- are *not* re-exported; import them from
+# landau.phases.pointdefects.
+from . import pointdefects as _pointdefects
 
-    # @property
-    # @abstractmethod
-    # def excess_solutes(self):
-    #     pass
-
-
-@dataclass(frozen=True)
-class ConstantPointDefect(AbstractPointDefect):
-    """
-    A point defect that adds a contribution to the free energy of a host
-    lattice.
-
-    Excess energy and entropy are assumed to be
-    """
-
-    name: str
-    excess_energy: float
-    # [E]_N
-    excess_entropy: float
-    # [S]_N
-    excess_solutes: float
-    # # [n]_N / N = c_defect - c_reference
-
-    # def __init__(self, name,
-    #              excess_energy, excess_solutes,
-    #              sublattice, sublattice_fraction,
-    #              excess_entropy=0,
-    #              # unused
-    #              excess_concentration=None,
-    # ):
-    #     super().__init__()
-    #     self.storage.name = name
-    #     self.storage.excess_energy = excess_energy
-    #     self.storage.excess_entropy = excess_entropy
-    #     # self.storage.excess_concentration = excess_concentration
-    #     # [n]_N
-    #     self.storage.excess_solutes = excess_solutes
-    #     # sublattice index; on which sublattice in the host lattice this defect lives
-    #     # just to avoid accidental overlap when combining multiple point defects
-    #     self.storage.sublattice = sublattice
-    #     # the fraction of sites this sub lattice makes up of the host lattice
-    #     self.storage.sublattice_fraction = sublattice_fraction
-
-    def excess_free_energy(self, T):
-        return self.excess_energy - T * self.excess_entropy
-
-    # For diagnostics only; Sublattice classes only uses excess_free_energy method
-
-    def semigrand_potential_contribution(self, T, dmu):
-        fe = self.excess_free_energy(T)
-        ne = self.excess_solutes
-        return -kB * T * np.log(1 + np.exp(-(fe - ne * dmu) / kB / T))
-
-    def concentration_contribution(self, T, dmu):
-        ne = self.excess_solutes
-        return ne * self.defect_concentration(T, dmu)
-
-    def defect_concentration(self, T, dmu):
-        # analytical derivative of the semigrand potential above
-        # c = -dphi/dmu
-        # c = [n]_N eta x
-        # we want to return x
-        fe = self.storage.excess_energy
-        ne = self.storage.excess_solutes
-        return 1 / (1 + np.exp(+(fe - ne * dmu) / kB / T))
+# AbstractPointDefect predates the split, so it is re-exported unchanged and stays
+# usable as a base class.
+AbstractPointDefect = _pointdefects.AbstractPointDefect
 
 
-@dataclass(frozen=True)
-class PointDefectSublattice:
-    """
-    Groups together PointDefect that live on the same sublattice within a host
-    structure.
-    """
-
-    name: str
-    sublattice: int
-    sublattice_fraction: float
-    defects: list[AbstractPointDefect]
-
-    def _get_zes(self, T, dmu):
-        fes = [d.excess_free_energy(T) for d in self.defects]
-        nes = [d.excess_solutes for d in self.defects]
-        return np.array([np.exp(-(fe - ne * dmu) / kB / T) for fe, ne in zip(fes, nes)])
-
-    def semigrand_potential_contribution(self, T, dmu):
-        zes = self._get_zes(T, dmu).sum(axis=0)
-        dphi = -kB * T * np.log(1 + zes)
-        return self.sublattice_fraction * dphi
-
-    def concentration_contribution(self, T, dmu):
-        zes = self._get_zes(T, dmu)
-        nes = np.array([p.excess_solutes for p in self.defects])
-        eta = self.sublattice_fraction
-        return eta * sum(ne * ze for ne, ze in zip(nes, zes)) / (1 + zes.sum(axis=0))
+@deprecate("import it from landau.phases.pointdefects instead", version="2.0")
+def ConstantPointDefect(*args, **kwargs):
+    return _pointdefects.ConstantPointDefect(*args, **kwargs)
 
 
-@dataclass(frozen=True)
-class PointDefectedPhase(Phase):
-    """
-    Phase that combines any host phase and any number of point defects in it.
-    """
+@deprecate("import it from landau.phases.pointdefects instead", version="2.0")
+def PointDefectSublattice(*args, **kwargs):
+    return _pointdefects.PointDefectSublattice(*args, **kwargs)
 
-    line_phase: AbstractLinePhase
-    """Underlying phase object of the host lattice."""
-    sublattices: list[PointDefectSublattice]
-    """Sublattices and their point defects."""
 
-    def __post_init__(self, *args, **kwargs):
-        # TODO check unique sublattice indices on sublattice objects (or maybe not)
-        pass
-
-    def semigrand_potential(self, T, dmu):
-        phi = self.line_phase.semigrand_potential(T, dmu)
-        for l in self.sublattices:
-            phi += l.semigrand_potential_contribution(T, dmu)
-        return phi
-
-    def concentration(self, T, dmu):
-        c = self.line_phase.line_concentration
-        for d in self.sublattices:
-            c += d.concentration_contribution(T, dmu)
-        return c
+@deprecate("import it from landau.phases.pointdefects instead", version="2.0")
+def PointDefectedPhase(*args, **kwargs):
+    return _pointdefects.PointDefectedPhase(*args, **kwargs)
 
 
 from .asewrapper import AsePhase
