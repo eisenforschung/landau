@@ -464,6 +464,32 @@ def _coarse_df(phases, Ts, mus):
     return pd.DataFrame(rows)
 
 
+def test_delaunay_triple_refiner_solve_is_pure():
+    """solve() returns a point for every candidate; dedup is run()'s job.
+
+    Before #210, solve() maintained _found state and returned [] on the second
+    call with an adjacent simplex, making a repeated call silently a no-op.
+    Now solve() is stateless: every three-phase candidate produces exactly one
+    RefinedPoint regardless of call order.
+    """
+    phases = _three_phase_system()
+    Ts = np.linspace(220.0, 480.0, 6)
+    mus = np.linspace(-0.05, 0.55, 7)
+    df = _coarse_df(phases, Ts, mus)
+
+    refiner = DelaunayTripleRefiner()
+    cands = list(refiner.propose(df))
+    assert len(cands) > 1, "test requires multiple three-phase simplices"
+
+    for cand in cands:
+        result = refiner.solve(cand, phases)
+        assert len(result) == 1, "solve() must return one point per candidate"
+
+    # run() still deduplicates: one triple point → 3 rows (one per phase).
+    out = refiner.run(df, phases)
+    assert len(out) == 3
+
+
 def test_delaunay_triple_refiner_deduplicates():
     """Triple refiner emits each triple point exactly once even when
     multiple three-phase Delaunay simplices independently detect it."""

@@ -439,12 +439,15 @@ class DelaunayTripleRefiner(Refiner):
     For every Delaunay simplex containing three distinct phases, locate the
     triple point by minimizing the sum of pairwise potential differences,
     starting from the simplex centroid.
+
+    ``solve`` is a pure function of its candidate: it returns a refined point
+    for every three-phase simplex without tracking cross-call state.
+    ``run`` deduplicates across candidates using each simplex's own extent as
+    the tolerance, so adjacent simplices that converge to the same triple point
+    emit exactly one result.
     """
 
     label = "delaunay-triple"
-
-    def __init__(self):
-        self._found: list[TMuPoint] = []
 
     def propose(self, df: pd.DataFrame) -> Iterator[_SimplexCandidate]:
         for simplex, n in _delaunay_simplices(df):
@@ -456,8 +459,6 @@ class DelaunayTripleRefiner(Refiner):
         T0, mu0 = tr[["T", "mu"]].mean()
         names = tuple(tr.phase.unique())
         p1, p2, p3 = (phases[n] for n in names)
-        T_tol = float(tr["T"].max() - tr["T"].min())
-        mu_tol = float(tr["mu"].max() - tr["mu"].min())
 
         def triplemin(x):
             T, mu = x
@@ -467,11 +468,34 @@ class DelaunayTripleRefiner(Refiner):
             return abs(phi1 - phi2) + abs(phi2 - phi3) + abs(phi3 - phi1)
 
         T, mu = so.fmin(triplemin, (T0, mu0), disp=False)
-        if any(abs(T - fT) <= T_tol and abs(mu - fmu) <= mu_tol
-               for fT, fmu in self._found):
-            return []
-        self._found.append((T, mu))
         return [RefinedPoint(T=T, mu=mu, phases=names)]
+
+    def run(self, df: pd.DataFrame, phases: Mapping[str, Phase]) -> pd.DataFrame:
+        """propose → solve → deduplicate by simplex extents → dataframe."""
+        rows: list[dict] = []
+        found: list[TMuPoint] = []
+        boundary_id = 0
+        for cand in self.propose(df):
+            tr = cand.simplex
+            T_tol = float(tr["T"].max() - tr["T"].min())
+            mu_tol = float(tr["mu"].max() - tr["mu"].min())
+            pts = [pt for pt in self.solve(cand, phases)
+                   if pt.T >= 0
+                   and not _dominated(pt, phases)
+                   and not any(abs(pt.T - fT) <= T_tol and abs(pt.mu - fmu) <= mu_tol
+                               for fT, fmu in found)]
+            for pt in pts:
+                found.append((pt.T, pt.mu))
+                rows.extend(replace(pt, boundary_id=boundary_id).to_rows(phases))
+            if pts:
+                boundary_id += 1
+        out = pd.DataFrame(rows)
+        if out.empty:
+            return out
+        out["stable"] = True
+        out["border"] = True
+        out["refined"] = self.label
+        return out
 
 
 # -- Clausius-Clapeyron tracers ----------------------------------------------
