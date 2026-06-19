@@ -197,7 +197,7 @@ def plot_2d_basics(out_dir: Path, poly_method: str | None = None, tielines: bool
     df = ldc.calc_phase_diagram([hcp, fcc, lqd], Ts, mu=100)
 
     fig, ax = plt.subplots(figsize=(6, 5))
-    lpl.plot_phase_diagram(df, ax=ax, tielines=tielines, poly_method=poly_method)
+    lpl.plot_phase_diagram(df, ax=ax, triplepoints=tielines, poly_method=poly_method)
     ax.set_title(f"2D c-T diagram (hcp / fcc / liquid ideal solutions){_title_suffix(poly_method, tielines)}")
     return _save(fig, out_dir, "2d_basics_phase_diagram", _file_suffix(poly_method, tielines))
 
@@ -258,7 +258,7 @@ def plot_2d_toy(out_dir: Path, poly_method: str | None = None, tielines: bool = 
     df = ldc.calc_phase_diagram([rliq, sol, s3], np.linspace(500, 1000, 40), mu, refine=True)
 
     fig, ax = plt.subplots(figsize=(6, 5))
-    lpl.plot_phase_diagram(df, ax=ax, tielines=tielines, poly_method=poly_method)
+    lpl.plot_phase_diagram(df, ax=ax, triplepoints=tielines, poly_method=poly_method)
     ax.set_title(f"2D c-T diagram (regular-solution liquid + intermediate solid){_title_suffix(poly_method, tielines)}")
     return _save(fig, out_dir, "2d_toy_phase_diagram", _file_suffix(poly_method, tielines))
 
