@@ -63,33 +63,22 @@ def _shapely_polygon(coords):
 def _patch_outline_xy(p):
     """Outline vertices of a polygon patch, for label placement.
 
-    :func:`get_polygons` returns a :class:`matplotlib.patches.Polygon` (filled
-    region) for most poly methods and a :class:`matplotlib.patches.PathPatch`
-    (hollow border, possibly with holes or several parts) for
-    :class:`~landau.poly.BufferedSegments`.  Either way the label belongs at the
-    enclosed region's centre, so return the largest closed sub-path treated as
-    filled.  ``None`` if the patch has no usable ring.
+    For the filled poly methods the drawn :class:`matplotlib.patches.Polygon`
+    *is* the region, so its ring is used directly.  A method that draws only a
+    border (:class:`~landau.poly.BufferedSegments`) instead attaches a stand-in
+    region polygon as ``_label_region``; the label belongs at that region's
+    centre.  ``None`` if the patch exposes no usable ring.
     """
+    region = getattr(p, "_label_region", None)
+    if region is not None and not region.is_empty:
+        return np.asarray(region.exterior.coords, dtype=float)
     if hasattr(p, "get_xy"):
         return np.asarray(p.get_xy(), dtype=float)
-    path = p.get_path()
-    rings = [np.asarray(v, dtype=float) for v in path.to_polygons()]
+    rings = [np.asarray(v, dtype=float) for v in p.get_path().to_polygons()]
     rings = [v for v in rings if len(v) >= 4]
-    if rings:
-        return max(rings, key=lambda v: shapely.Polygon(v).area)
-    # Open stroke (a border that does not close into a ring, as
-    # BufferedSegments produces): the disjoint segments enclose no single face,
-    # and threading them into one ring self-intersects and throws the label
-    # off.  Stand in their convex hull, whose pole of inaccessibility lands
-    # inside the traced region.
-    verts = np.asarray(path.vertices, dtype=float)
-    verts = verts[np.isfinite(verts).all(axis=1)]
-    if len(verts) < 3:
+    if not rings:
         return None
-    hull = shapely.convex_hull(shapely.MultiPoint(verts))
-    if not isinstance(hull, shapely.Polygon) or hull.is_empty:
-        return None
-    return np.asarray(hull.exterior.coords)
+    return max(rings, key=lambda v: shapely.Polygon(v).area)
 
 
 def _largest_inscribed_circle_center(polygon_xy, ax):

@@ -328,26 +328,20 @@ def test_inscribed_circle_center_is_inside_polygon():
     plt.close(fig)
 
 
-def test_patch_outline_xy_open_stroke_uses_convex_hull():
-    """An open BufferedSegments stroke labels at the region centre, not a
-    self-intersecting concatenation of its disjoint border segments."""
+def test_patch_outline_xy_prefers_label_region():
+    """A border stroke labels at its attached `_label_region`, not its path."""
     import shapely
 
-    # Four disjoint border pieces roughly tracing a unit square, ordered so a
-    # naive vertex concatenation would self-intersect (top before right).
     border = shapely.MultiLineString([
-        [(0.0, 0.0), (1.0, 0.0)],   # bottom
-        [(0.0, 1.0), (1.0, 1.0)],   # top
-        [(1.0, 0.0), (1.0, 1.0)],   # right
-        [(0.0, 0.0), (0.0, 1.0)],   # left
+        [(0.0, 0.0), (1.0, 0.0)],
+        [(0.0, 1.0), (1.0, 1.0)],
     ])
     patch = BufferedSegments()._to_mpl_polygon(border)
-    outline = _patch_outline_xy(patch)
-    # The outline is the convex hull of the border (the unit square), so its
-    # pole of inaccessibility is the centre.
-    hull = shapely.convex_hull(shapely.MultiPoint(outline))
-    assert hull.equals(shapely.Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]))
+    # No region attached yet: an open stroke has no closed ring to anchor.
+    assert _patch_outline_xy(patch) is None
 
+    patch._label_region = shapely.Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+    outline = _patch_outline_xy(patch)
     fig, ax = plt.subplots()
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
@@ -355,6 +349,38 @@ def test_patch_outline_xy_open_stroke_uses_convex_hull():
     assert cx == pytest.approx(0.5, abs=2e-3)
     assert cy == pytest.approx(0.5, abs=2e-3)
     plt.close(fig)
+
+
+def test_buffered_segments_apply_attaches_label_region():
+    """apply() attaches the convex hull of each phase's stable points as the
+    label region, keyed to match the drawn patches."""
+    import shapely
+
+    # A square block of stable 'A' points plus a transition border so the
+    # Segments pipeline produces a patch; 'refined' marks the border rows.
+    xs, ys = np.meshgrid(np.linspace(0.1, 0.4, 4), np.linspace(100, 400, 4))
+    block = pd.DataFrame({"c": xs.ravel(), "T": ys.ravel()})
+    block["mu"] = 0.0
+    block["phase"] = "A"
+    block["phase_id"] = "A_0"
+    block["phase_unit"] = 0
+    block["stable"] = True
+    block["border"] = False
+    block["refined"] = False
+    block["border_segment"] = 1
+    # Two refined border segments so make() yields a stroke for phase A.
+    border = pd.DataFrame({
+        "c": [0.4, 0.4, 0.1, 0.1], "T": [100.0, 400.0, 100.0, 400.0], "mu": 0.0,
+        "phase": "A", "phase_id": "A_0", "phase_unit": 0, "stable": True,
+        "border": True, "refined": True, "border_segment": [1, 1, 2, 2],
+    })
+    df = pd.concat([block, border], ignore_index=True)
+
+    polys = BufferedSegments().apply(df)
+    (key, patch), = polys.items()
+    region = patch._label_region
+    expected = shapely.convex_hull(shapely.MultiPoint(df[["c", "T"]].to_numpy()))
+    assert region.equals(expected)
 
 
 def test_inscribed_circle_center_returns_none_for_degenerate():

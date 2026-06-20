@@ -114,13 +114,33 @@ class AbstractPolyMethod(abc.ABC):
         pass
 
     def apply(self, df: pd.DataFrame, variables: list[str] = ["c", "T"]) -> pd.Series:
+        # Capture label regions before prepare(), which some methods mutate df in.
+        regions = self._label_regions(df, variables)
         shapes = self.prepare(df).groupby(['phase', 'phase_unit']).apply(
                 self.make, variables=variables, include_groups=False
 
         ).dropna()
         shapes = shapes[~shapes.map(lambda s: s.is_empty)]
         trimmed = self._trim_overlaps(shapes)
-        return trimmed.map(self._to_mpl_polygon).dropna()
+        polys = trimmed.map(self._to_mpl_polygon).dropna()
+        if regions is not None:
+            for key, patch in polys.items():
+                region = regions.get(key)
+                if region is not None:
+                    patch._label_region = region
+        return polys
+
+    def _label_regions(self, df: pd.DataFrame, variables: list[str]) -> dict | None:
+        """Filled regions used only for inline-label placement, keyed by
+        ``(phase, phase_unit)``.
+
+        ``None`` (the default) means the drawn polygon is used for label
+        placement -- its pole of inaccessibility -- which is what every filled
+        poly method wants.  A method that draws something other than the region
+        itself (e.g. :class:`BufferedSegments`, which strokes only the border)
+        overrides this to supply a stand-in region.
+        """
+        return None
 
     def _trim_overlaps(self, shapes: pd.Series) -> pd.Series:
         """Symmetrically subtract pairwise overlap between buffered polygons.
@@ -471,6 +491,25 @@ class BufferedSegments(Segments):
         # Adjacent phases share a boundary, so their borders coincide there by
         # design; there is nothing to trim between strokes.
         return shapes
+
+    def _label_regions(self, df: pd.DataFrame, variables: list[str]) -> dict:
+        """Stand-in region per ``(phase, phase_unit)`` for label placement.
+
+        The stroke draws only the border, so there is no filled polygon for the
+        label code to anchor in.  Use the convex hull of the phase's stable
+        sample points: approximate (a wrapping region's hull bulges past it) but
+        robust, and close enough to seat the label inside the region.
+        """
+        regions = {}
+        for key, g in df.groupby(["phase", "phase_unit"]):
+            pts = g[variables].to_numpy()
+            pts = pts[np.isfinite(pts).all(axis=1)]
+            if len(pts) < 3:
+                continue
+            hull = shapely.convex_hull(shapely.MultiPoint(pts))
+            if isinstance(hull, shapely.Polygon) and not hull.is_empty:
+                regions[key] = hull
+        return regions
 
     def _to_mpl_polygon(self, shape: shapely.Geometry) -> PathPatch | None:
         if shape is None or shape.is_empty:
