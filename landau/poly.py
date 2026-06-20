@@ -504,11 +504,18 @@ class BufferedSegments(Segments):
         for key, g in df.groupby(["phase", "phase_unit"]):
             pts = g[variables].to_numpy()
             pts = pts[np.isfinite(pts).all(axis=1)]
-            if len(pts) < 3:
+            if len(pts) == 0:
                 continue
             hull = shapely.convex_hull(shapely.MultiPoint(pts))
             if isinstance(hull, shapely.Polygon) and not hull.is_empty:
                 regions[key] = hull
+            elif not hull.is_empty:
+                # Line phase: collinear (or single) stable points have no 2-D
+                # hull.  Thicken to a thin sliver so the label still seats at
+                # the line's midpoint instead of being dropped.
+                sliver = hull.buffer(self.min_c_width / 2)
+                if isinstance(sliver, shapely.Polygon) and not sliver.is_empty:
+                    regions[key] = sliver
         return regions
 
     def _to_mpl_polygon(self, shape: shapely.Geometry) -> PathPatch | None:

@@ -383,6 +383,23 @@ def test_buffered_segments_apply_attaches_label_region():
     assert region.equals(expected)
 
 
+def test_buffered_segments_label_region_line_phase_sliver():
+    """A line phase's stable points are collinear (no 2-D hull); the region must
+    still be a thin polygon centred on the line so the label is kept."""
+    import shapely
+
+    df = pd.DataFrame({
+        "c": [0.4, 0.4, 0.4], "T": [100.0, 250.0, 400.0],
+        "phase": "L", "phase_unit": 0,
+    })
+    regions = BufferedSegments()._label_regions(df, ["c", "T"])
+    region = regions[("L", 0)]
+    assert isinstance(region, shapely.Polygon)
+    assert region.area > 0
+    assert region.centroid.x == pytest.approx(0.4, abs=1e-6)
+    assert region.centroid.y == pytest.approx(250.0, abs=1.0)
+
+
 def test_inscribed_circle_center_returns_none_for_degenerate():
     fig, ax = plt.subplots()
     ax.set_xlim(0, 1)
