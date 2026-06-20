@@ -21,6 +21,7 @@ from landau.refine import (
     _simplex_straddles,
     _InterCandidate,
     _delaunay_simplices,
+    _point_in_simplex,
 )
 
 
@@ -487,6 +488,41 @@ def test_delaunay_triple_refiner_deduplicates():
     assert set(out["phase"]) == {"A", "B", "C"}
     assert np.allclose(out["T"], 300.0, atol=10.0)
     assert np.allclose(out["mu"], 0.2, atol=0.05)
+
+
+def test_delaunay_triple_solve_is_pure_and_simplex_owned():
+    """solve() is a pure function and exactly one simplex owns the triple point.
+
+    The Delaunay tessellation partitions space, so the located minimum lies
+    inside exactly one three-phase simplex.  Non-owning simplices return [].
+    Re-invoking solve() on the owning simplex returns the same point.
+    """
+    phases = _three_phase_system()
+    Ts = np.linspace(220.0, 480.0, 6)
+    mus = np.linspace(-0.05, 0.55, 7)
+    df = _coarse_df(phases, Ts, mus)
+
+    refiner = DelaunayTripleRefiner()
+    candidates = list(refiner.propose(df))
+    assert len(candidates) > 1, "grid should produce multiple three-phase simplices"
+
+    owning = []
+    for cand in candidates:
+        result = refiner.solve(cand, phases)
+        if result:
+            owning.append((cand, result[0]))
+
+    assert len(owning) == 1, f"expected 1 owning simplex, got {len(owning)}"
+    cand, pt = owning[0]
+
+    # purity: re-invoking on the owner still emits the same point
+    second = refiner.solve(cand, phases)
+    assert len(second) == 1
+    assert np.isclose(second[0].T, pt.T, atol=1e-6)
+    assert np.isclose(second[0].mu, pt.mu, atol=1e-6)
+
+    # the located point is geometrically inside the owning simplex
+    assert _point_in_simplex(pt.T, pt.mu, cand.simplex)
 
 
 def test_boundary_id_cc_refiner_single_line(two_phase_system):
