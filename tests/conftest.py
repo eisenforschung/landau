@@ -1,5 +1,30 @@
+import os
+
 import pytest
+from hypothesis import settings
+from hypothesis.database import (
+    DirectoryBasedExampleDatabase,
+    GitHubArtifactDatabase,
+    MultiplexedDatabase,
+    ReadOnlyDatabase,
+)
+
 from landau.phases import LinePhase, IdealSolution, RegularSolution
+
+
+if os.environ.get("GITHUB_ACTIONS") == "true":
+    _local = DirectoryBasedExampleDatabase(".hypothesis/examples")
+    _shared = ReadOnlyDatabase(
+        GitHubArtifactDatabase(
+            "eisenforschung",
+            "landau",
+            artifact_name=os.environ.get(
+                "HYPOTHESIS_ARTIFACT_NAME", "hypothesis-example-db"
+            ),
+        )
+    )
+    settings.register_profile("ci", database=MultiplexedDatabase(_local, _shared))
+    settings.load_profile("ci")
 
 
 @pytest.fixture
