@@ -12,7 +12,7 @@ import shapely
 from shapely.ops import polylabel
 from matplotlib.colors import to_rgba
 
-from .calculate import calc_phase_diagram, cluster, cluster_T_c, _join_phase_unit
+from .calculate import calc_phase_diagram, cluster, cluster_T_c, _join_phase_unit, _apply_series
 from .features import Locus
 import landau.poly as poly
 
@@ -206,17 +206,11 @@ def cluster_phase(df, distance_threshold=0.5):  # 0.5 hand-tuned
             (e.g. 0.1) split more aggressively and are needed when two stable segments of
             the same phase are close in concentration space.
     """
-    # In pandas 3, ``groupby.apply`` collapses inconsistently when the callable returns a
-    # ``Series``: with multiple groups the per-group Series get concatenated into one long
-    # row-aligned Series, but with a *single* group the same Series becomes a one-row
-    # DataFrame indexed by the group key (columns = original row indices), and the
-    # downstream ``df['phase_unit'] = ...`` assignment fails.  Returning a DataFrame from
-    # the callable instead is the documented path that combines consistently across
-    # pandas 2 and 3 (see "Flexible apply" in the pandas user guide).
-    df["phase_unit"] = df.groupby("phase", group_keys=False).apply(
-        lambda g: cluster_T_c(g, distance_threshold=distance_threshold).to_frame("phase_unit"),
-        include_groups=False,
-    )["phase_unit"]
+    df["phase_unit"] = _apply_series(
+        df.groupby("phase", group_keys=False),
+        lambda g: cluster_T_c(g, distance_threshold=distance_threshold),
+        "phase_unit",
+    )
     df["phase_id"] = _join_phase_unit(df["phase"], df["phase_unit"])
     return df
 
