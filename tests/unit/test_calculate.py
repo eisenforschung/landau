@@ -518,3 +518,50 @@ def test_calc_phase_diagram_locus_triple(triple_point_phases):
     assert (triple.groupby(["T", "mu"])["phase"].nunique() == 3).all()
     assert np.allclose(triple["T"], 300.0, atol=10.0)
     assert np.allclose(triple["mu"], 0.2, atol=0.05)
+
+
+# --- f_excess / sub tests (issue #245) ---
+
+_SUB_ATOL = 1e-12
+
+
+def test_sub_endpoint_line_phases_have_zero_f_excess():
+    """Terminal line phases at c=0 and c=1 are their own references; f_excess must be 0."""
+    a = LinePhase("A", fixed_concentration=0.0, line_energy=0.0)
+    b = LinePhase("B", fixed_concentration=1.0, line_energy=0.3)
+    df = calc_phase_diagram([a, b], Ts=np.array([300.0]), mu=np.array([0.3]), refine=False, keep_unstable=True)
+    np.testing.assert_allclose(df.loc[df.phase == "A", "f_excess"].values, 0.0, atol=_SUB_ATOL)
+    np.testing.assert_allclose(df.loc[df.phase == "B", "f_excess"].values, 0.0, atol=_SUB_ATOL)
+
+
+def test_sub_tangent_wins_over_f_at_near_endpoint():
+    """f_excess of line phase at c=1 is 0 even when a near-endpoint phase has lower raw f.
+
+    sol at c=0.99 has f=0.500; bcc at c=1.0 has f=0.505.
+    With mu=1.0:
+      tangent1_sol = phi_sol + mu = (0.500 - 0.99) + 1.0 = 0.510
+      tangent1_bcc = phi_bcc + mu = (0.505 - 1.00) + 1.0 = 0.505
+    Tangent logic picks bcc (0.505 < 0.510) so f_excess_bcc = 0.
+    f-based logic would pick sol (0.500 < 0.505), giving f_excess_bcc = 0.005.
+    """
+    a = LinePhase("A", fixed_concentration=0.0, line_energy=0.0)
+    sol = LinePhase("sol", fixed_concentration=0.99, line_energy=0.500)
+    bcc = LinePhase("bcc", fixed_concentration=1.0, line_energy=0.505)
+    df = calc_phase_diagram([a, sol, bcc], Ts=np.array([300.0]), mu=np.array([1.0]), refine=False, keep_unstable=True)
+    np.testing.assert_allclose(df.loc[df.phase == "bcc", "f_excess"].values, 0.0, atol=_SUB_ATOL)
+
+
+def test_sub_f_excess_is_deviation_from_tangent_chord():
+    """f_excess equals f minus the linear interpolation between tangent endpoint references.
+
+    A(c=0, f=0), B(c=1, f=1), mid(c=0.5, f=0.3) with mu=0.5.
+    References: f0 = tangent0[A] = phi_A = 0, f1 = tangent1[B] = phi_B + mu = 0.5 + 0.5 = 1.0.
+    f_excess_mid = 0.3 - (0*(1-0.5) + 1.0*0.5) = 0.3 - 0.5 = -0.2.
+    """
+    a = LinePhase("A", fixed_concentration=0.0, line_energy=0.0)
+    b = LinePhase("B", fixed_concentration=1.0, line_energy=1.0)
+    mid = LinePhase("mid", fixed_concentration=0.5, line_energy=0.3)
+    df = calc_phase_diagram([a, b, mid], Ts=np.array([300.0]), mu=np.array([0.5]), refine=False, keep_unstable=True)
+    np.testing.assert_allclose(
+        df.loc[df.phase == "mid", "f_excess"].values, 0.3 - 0.5, atol=_SUB_ATOL
+    )
