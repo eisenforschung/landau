@@ -124,6 +124,11 @@ class SplineFit(ConcentrationInterpolator):
     miss the samples by a total squared residual of ``smoothing`` in exchange
     for a smoother curve).  ``None`` defers to scipy's own default (``s`` equal
     to the number of samples).
+
+    Outside ``[min(x), max(x)]`` the fit continues the boundary spline segment
+    (scipy's default ``ext=0``): ``degree=1`` extends linearly, while higher
+    degrees follow the edge polynomial and can diverge quickly, so extrapolated
+    values should be treated with care.
     """
 
     degree: int = 3
