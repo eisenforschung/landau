@@ -57,6 +57,46 @@ def _split_phase_unit(combined: pd.Series) -> tuple[pd.Series, pd.Series]:
     return phase, unit
 
 
+def _f_excess_tangent_chord(dd: pd.DataFrame) -> pd.Series:
+    """Subtract from ``dd.f`` the chord between the endpoint reference tangents.
+
+    The reference for each endpoint (``c = 0`` and ``c = 1``) is the smallest
+    tangent value among phases whose sampled c-range reaches within 1% of the
+    span of that extreme — ``phi`` at ``c = 0``, ``phi + mu`` at ``c = 1``.
+    Comparing by the tangent value, rather than by ``f`` at the extreme sample,
+    keeps a phase sampled only up to ``c = 1 - eps`` from stealing the reference
+    from a line phase sitting exactly at ``c = 1`` (``f`` is convex with slope
+    ``mu`` in ``c``, so the partial-coverage phase sits below its own tangent
+    value at the endpoint).  For a line phase located exactly at an endpoint
+    both expressions reduce to ``f``.  Falls back to the raw ``f`` at the
+    extreme sample when no phase reaches the endpoint window.
+
+    Drops ``mu = +-inf`` rows before computing.  Designed to be applied per
+    temperature via :func:`_apply_series`.
+    """
+    dd = dd.query("-inf<mu<inf")
+    if dd.empty:
+        return dd.f
+    c_min = dd.c.min()
+    c_max = dd.c.max()
+    c_span = c_max - c_min
+    lo_thr = c_min + 0.01 * c_span
+    hi_thr = c_max - 0.01 * c_span
+    f0, f1 = np.inf, np.inf
+    tangent0 = dd["phi"]
+    tangent1 = dd["phi"] + dd["mu"]
+    for _, g in dd.groupby("phase"):
+        if g["c"].min() <= lo_thr:
+            f0 = min(f0, tangent0[g["c"].idxmin()])
+        if g["c"].max() >= hi_thr:
+            f1 = min(f1, tangent1[g["c"].idxmax()])
+    if not np.isfinite(f0):
+        f0 = dd.loc[dd["c"].idxmin(), "f"]
+    if not np.isfinite(f1):
+        f1 = dd.loc[dd["c"].idxmax(), "f"]
+    return dd.f - (f0 * (1 - dd.c) + f1 * dd.c)
+
+
 def _split_stable(df):
     udf = df.query("not stable").reset_index(drop=True)
     udf["border"] = False
@@ -233,39 +273,9 @@ def calc_phase_diagram(
         max_c = pdf.c.max()
         pdf = refine_phase_diagram(pdf, phases, min_c=min_c, max_c=max_c)
     pdf["f"] = pdf.phi + pdf.mu * pdf.c
-
-    def sub(dd):
-        dd = dd.query("-inf<mu<inf")
-        if dd.empty:
-            return dd.f
-        c_min = dd.c.min()
-        c_max = dd.c.max()
-        c_span = c_max - c_min
-        lo_thr = c_min + 0.01 * c_span
-        hi_thr = c_max - 0.01 * c_span
-        f0, f1 = np.inf, np.inf
-        # Compare candidate reference phases by the value of their tangent
-        # line at the pure concentrations, not by f at their extreme sample:
-        # f has slope mu in c, so phi is the tangent value at c=0 and phi+mu
-        # the one at c=1.  For a phase sampled only up to c=1-eps, f lies
-        # below its own tangent value at c=1 by ~mu*eps, which would let it
-        # steal the reference from a line phase sitting exactly at c=1 and
-        # lift that phase's f_excess off zero.  For line phases located
-        # exactly at an endpoint both expressions reduce to f.
-        tangent0 = dd["phi"]
-        tangent1 = dd["phi"] + dd["mu"]
-        for _, g in dd.groupby("phase"):
-            if g["c"].min() <= lo_thr:
-                f0 = min(f0, tangent0[g["c"].idxmin()])
-            if g["c"].max() >= hi_thr:
-                f1 = min(f1, tangent1[g["c"].idxmax()])
-        if not np.isfinite(f0):
-            f0 = dd.loc[dd["c"].idxmin(), "f"]
-        if not np.isfinite(f1):
-            f1 = dd.loc[dd["c"].idxmax(), "f"]
-        return dd.f - (f0 * (1 - dd.c) + f1 * dd.c)
-
-    pdf["f_excess"] = _apply_series(pdf.groupby("T", group_keys=False), sub, "f_excess")
+    pdf["f_excess"] = _apply_series(
+        pdf.groupby("T", group_keys=False), _f_excess_tangent_chord, "f_excess"
+    )
     if not keep_unstable:
         pdf = pdf.query("stable")
     return pdf

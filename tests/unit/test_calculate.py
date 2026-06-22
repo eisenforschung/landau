@@ -11,6 +11,7 @@ from landau.calculate import (
     reduce,
     _apply_series,
     _border_edges,
+    _f_excess_tangent_chord,
     _join_phase_unit,
     _split_phase_unit,
     _split_stable,
@@ -565,3 +566,95 @@ def test_sub_f_excess_is_deviation_from_tangent_chord():
     np.testing.assert_allclose(
         df.loc[df.phase == "mid", "f_excess"].values, 0.3 - 0.5, atol=_SUB_ATOL
     )
+
+
+# --- _f_excess_tangent_chord direct tests ---
+
+
+def _chord_input(rows):
+    """Helper: build a per-T slice with the columns the helper reads."""
+    df = pd.DataFrame(rows)
+    df["f"] = df["phi"] + df["mu"] * df["c"]
+    return df
+
+
+def test_f_excess_tangent_chord_empty_input_returns_empty_series():
+    """All rows drop out under the -inf<mu<inf filter: return an empty Series."""
+    dd = _chord_input([
+        {"phase": "A", "c": 0.0, "phi": 0.0, "mu": -np.inf},
+        {"phase": "B", "c": 1.0, "phi": 0.0, "mu": +np.inf},
+    ])
+    out = _f_excess_tangent_chord(dd)
+    assert isinstance(out, pd.Series)
+    assert out.empty
+
+
+def test_f_excess_tangent_chord_drops_infinite_mu_rows_from_output():
+    """The +-inf rows are excluded from both the references and the result."""
+    dd = _chord_input([
+        {"phase": "A", "c": 0.0, "phi": 0.0, "mu": 0.0},
+        {"phase": "B", "c": 1.0, "phi": 0.0, "mu": 0.0},
+        {"phase": "A", "c": 0.0, "phi": 9.9, "mu": -np.inf},
+    ])
+    out = _f_excess_tangent_chord(dd)
+    assert len(out) == 2
+    assert -np.inf not in out.index.map(lambda i: dd.loc[i, "mu"]).tolist()
+
+
+def test_f_excess_tangent_chord_zero_for_terminal_line_phases():
+    """Two terminals at c=0 and c=1 are their own references; f_excess is exactly 0."""
+    dd = _chord_input([
+        {"phase": "A", "c": 0.0, "phi": -0.1, "mu": 0.3},
+        {"phase": "B", "c": 1.0, "phi": +0.2, "mu": 0.3},
+    ])
+    out = _f_excess_tangent_chord(dd)
+    np.testing.assert_allclose(out.values, 0.0, atol=1e-12)
+
+
+def test_f_excess_tangent_chord_picks_lowest_endpoint_tangent():
+    """When two phases reach an endpoint window, the smaller tangent value wins."""
+    # Two phases reach c≈1 (within the 1% window of c_span=1):
+    #   sol at c=0.99: tangent1 = phi + mu = -0.49 + 0.5 = 0.01
+    #   bcc at c=1.00: tangent1 = phi + mu =  0.00 + 0.5 = 0.50
+    # The minimum (sol, 0.01) wins.  An A phase at c=0 anchors f0 = phi = 0.
+    dd = _chord_input([
+        {"phase": "A",   "c": 0.0,  "phi":  0.00, "mu": 0.5},
+        {"phase": "sol", "c": 0.99, "phi": -0.49, "mu": 0.5},
+        {"phase": "bcc", "c": 1.00, "phi":  0.00, "mu": 0.5},
+    ])
+    out = _f_excess_tangent_chord(dd)
+    chord = 0.00 * (1 - dd["c"]) + 0.01 * dd["c"]
+    np.testing.assert_allclose(out.values, (dd["f"] - chord).values, atol=1e-12)
+
+
+def test_f_excess_tangent_chord_endpoint_window_is_relative_to_sampled_extreme():
+    """A phase qualifies for the endpoint reference if its c reaches within
+    1% of the sampled c-span — not 1% of c=0 / c=1.
+
+    Sampled c range [0.0, 1.0] (span 1) ⇒ window for c=0 is [0, 0.01].
+    A phase whose minimum lands at c=0.02 is outside that window, so it cannot
+    set the c=0 reference even though it would have if c-span were measured
+    against the pure concentration.
+    """
+    dd = _chord_input([
+        {"phase": "A",   "c": 0.00, "phi":  0.0, "mu": 0.1},  # owns c=0 ref
+        {"phase": "sol", "c": 0.02, "phi": -0.5, "mu": 0.1},  # outside 1% window
+        {"phase": "B",   "c": 1.00, "phi":  0.0, "mu": 0.1},  # owns c=1 ref
+    ])
+    out = _f_excess_tangent_chord(dd)
+    # f0 = tangent0[A] = phi_A = 0.0 (sol does not qualify, so it does not lower f0)
+    # f1 = tangent1[B] = phi_B + mu = 0.1
+    chord = 0.0 * (1 - dd["c"]) + 0.1 * dd["c"]
+    np.testing.assert_allclose(out.values, (dd["f"] - chord).values, atol=1e-12)
+
+
+def test_f_excess_tangent_chord_preserves_input_index():
+    """The returned Series aligns to the input row index, not a positional one."""
+    dd = _chord_input([
+        {"phase": "A", "c": 0.0, "phi": 0.0, "mu": 0.1},
+        {"phase": "B", "c": 1.0, "phi": 0.0, "mu": 0.1},
+        {"phase": "M", "c": 0.5, "phi": 0.0, "mu": 0.1},
+    ])
+    dd.index = [100, 200, 300]
+    out = _f_excess_tangent_chord(dd)
+    assert list(out.index) == [100, 200, 300]
