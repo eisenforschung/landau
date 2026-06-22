@@ -384,29 +384,43 @@ def _phase_centroids_xy(simplex: pd.DataFrame) -> tuple[TMuPoint, TMuPoint]:
     return tuple(by_phase[0]), tuple(by_phase[1])
 
 
-def _point_in_simplex(point: TMuPoint, simplex: pd.DataFrame) -> bool:
-    """Whether ``(T, mu)`` lies inside the triangle spanned by ``simplex``.
+def _simplex_containment(point: TMuPoint, simplex: pd.DataFrame) -> float:
+    """Smallest barycentric coordinate of ``(T, mu)`` w.r.t. the triangle.
 
-    Uses barycentric coordinates, which are affine-invariant, so the
-    anisotropy between the T and mu axes does not matter. Edges count as
-    inside so a triple point landing exactly on a shared Delaunay edge is
-    never dropped by both neighbours.
+    ``>= 0`` iff the point lies inside (or on an edge of) the simplex; the
+    more negative the value the further outside it is. Barycentric
+    coordinates are affine-invariant, so the value does not depend on the
+    anisotropy between the T and mu axes, and it doubles as a "how nearly
+    contained" score: the simplex with the largest value owns the point.
+    Returns ``-inf`` for a degenerate (zero-area) simplex so it never wins.
     """
     (x1, y1), (x2, y2), (x3, y3) = simplex[["T", "mu"]].to_numpy()
     x, y = point
     det = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3)
     if det == 0:
-        return False
+        return float("-inf")
     a = ((y2 - y3) * (x - x3) + (x3 - x2) * (y - y3)) / det
     b = ((y3 - y1) * (x - x3) + (x1 - x3) * (y - y3)) / det
     c = 1.0 - a - b
-    tol = -1e-9
-    return a >= tol and b >= tol and c >= tol
+    return min(a, b, c)
 
 
 @dataclass(frozen=True)
 class _SimplexCandidate:
     simplex: pd.DataFrame  # 3 rows of the input df
+
+
+@dataclass(frozen=True)
+class _TripleCandidate:
+    """One three-phase simplex plus all of its siblings in the tessellation.
+
+    Carrying the sibling simplices lets :meth:`DelaunayTripleRefiner.solve`
+    decide, as a pure function of the candidate, which simplex owns the
+    located triple point without any cross-call dedup state.
+    """
+
+    simplex: pd.DataFrame  # 3 rows of the input df
+    siblings: tuple  # every three-phase simplex, including ``simplex``
 
 
 class DelaunayLineRefiner(Refiner):
@@ -461,22 +475,24 @@ class DelaunayTripleRefiner(Refiner):
     starting from the simplex centroid.
 
     Near a physical triple point the tessellation produces several adjacent
-    three-phase simplices, each of which seeds the same minimum. Because a
-    Delaunay triangulation partitions space, the located point lies inside
-    exactly one of them, so :meth:`solve` emits only when the minimum falls
-    within its own candidate simplex and stays silent otherwise. This keeps
-    :meth:`solve` a pure function of ``(cand, phases)`` — there is no
-    cross-candidate dedup state to reintroduce here or in a ``run`` override.
+    three-phase simplices, each of which seeds the same minimum. The point is
+    attributed to the single simplex that owns it — the one whose triangle
+    contains it, or, when the coarse grid leaves the minimum just past a shared
+    edge, the one it is least far outside of (largest :func:`_simplex_containment`
+    score over the sibling simplices). :meth:`solve` emits only when its own
+    simplex is that owner, so exactly one candidate fires. The siblings travel
+    in the candidate, keeping :meth:`solve` a pure function of ``(cand, phases)``
+    — no ``__init__``, no dedup state, no ``run`` override.
     """
 
     label = "delaunay-triple"
 
-    def propose(self, df: pd.DataFrame) -> Iterator[_SimplexCandidate]:
-        for simplex, n in _delaunay_simplices(df):
-            if n == 3:
-                yield _SimplexCandidate(simplex=simplex)
+    def propose(self, df: pd.DataFrame) -> Iterator[_TripleCandidate]:
+        siblings = tuple(simplex for simplex, n in _delaunay_simplices(df) if n == 3)
+        for simplex in siblings:
+            yield _TripleCandidate(simplex=simplex, siblings=siblings)
 
-    def solve(self, cand: _SimplexCandidate, phases) -> list[RefinedPoint]:
+    def solve(self, cand: _TripleCandidate, phases) -> list[RefinedPoint]:
         tr = cand.simplex
         T0, mu0 = tr[["T", "mu"]].mean()
         names = tuple(tr.phase.unique())
@@ -490,7 +506,8 @@ class DelaunayTripleRefiner(Refiner):
             return abs(phi1 - phi2) + abs(phi2 - phi3) + abs(phi3 - phi1)
 
         T, mu = so.fmin(triplemin, (T0, mu0), disp=False)
-        if not _point_in_simplex((T, mu), tr):
+        owner = max(cand.siblings, key=lambda s: _simplex_containment((T, mu), s))
+        if owner is not tr:
             return []
         return [RefinedPoint(T=T, mu=mu, phases=names)]
 
