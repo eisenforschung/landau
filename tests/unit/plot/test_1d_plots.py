@@ -34,6 +34,7 @@ from landau.plot import (
     _phase_visible_in_band,
     _place_transition_labels,
     _spread_labels,
+    _subtract_reference_phase,
     plot_1d_mu_phase_diagram,
     plot_1d_T_phase_diagram,
 )
@@ -534,6 +535,83 @@ def test_plot_1d_T_reference_phase_invalid_raises(df_T_three_stable):
             plot_1d_T_phase_diagram(df_T_three_stable, ax=ax, reference_phase="nonexistent")
     finally:
         plt.close(fig)
+
+
+@pytest.mark.parametrize(
+    "plot_func, fixture, ref",
+    [
+        (plot_1d_mu_phase_diagram, "df_mu_three_stable", "hcp"),
+        (plot_1d_T_phase_diagram, "df_T_three_stable", "bcc"),
+    ],
+)
+def test_plot_1d_reference_phase_stable_only_raises(plot_func, fixture, ref, request):
+    """reference_phase on a stable-only frame raises, pointing at keep_unstable=True.
+
+    Stripped to stable rows, the reference phase covers only its own stability
+    window; subtracting it then extrapolated/chorded the missing values and bent
+    every other phase's curve (the reported breakage).  It must refuse instead.
+    """
+    df = _stable_only_df(request.getfixturevalue(fixture))
+    fig, ax = plt.subplots()
+    try:
+        with pytest.raises(ValueError, match="keep_unstable=True"):
+            plot_func(df, ax=ax, reference_phase=ref)
+    finally:
+        plt.close(fig)
+
+
+def _ref_frame(scan_col, ref_positions, other_positions, border_positions=()):
+    """Synthetic frame: a 'ref' and an 'other' phase at the given scan positions.
+
+    ``border_positions`` are added as rows of 'other' tagged ``border=True``, mimicking
+    refined transition rows that the reference phase has no sample at.
+    """
+    rows = (
+        [(p, "ref", float(p), False) for p in ref_positions]
+        + [(p, "other", 10.0 + p, False) for p in other_positions]
+        + [(p, "other", 10.0 + p, True) for p in border_positions]
+    )
+    return pd.DataFrame(rows, columns=[scan_col, "phase", "phi", "border"])
+
+
+def test_subtract_reference_phase_full_coverage_zeroes_reference():
+    """With the reference at every grid point, its own phi is subtracted to zero."""
+    df = _ref_frame("mu", ref_positions=[0, 1, 2, 3], other_positions=[0, 1, 2, 3])
+    out = _subtract_reference_phase(df, "mu", "ref")
+    np.testing.assert_allclose(out.loc[out["phase"] == "ref", "phi"], 0.0, atol=1e-12)
+
+
+def test_subtract_reference_phase_interior_gap_raises():
+    """A reference missing at an interior grid point raises (no silent chord fill).
+
+    This is the split-stability-window case: the reference is present on both sides
+    of a grid point it is unstable at, so np.interp would bridge it with a chord.
+    """
+    df = _ref_frame("mu", ref_positions=[0, 1, 3, 4], other_positions=[0, 1, 2, 3, 4])
+    with pytest.raises(ValueError, match="1 of 5 grid points"):
+        _subtract_reference_phase(df, "mu", "ref")
+
+
+def test_subtract_reference_phase_trailing_gap_raises():
+    """A reference absent past its range raises (np.interp would clamp to a constant)."""
+    df = _ref_frame("mu", ref_positions=[0, 1, 2], other_positions=[0, 1, 2, 3, 4])
+    with pytest.raises(ValueError, match="keep_unstable=True"):
+        _subtract_reference_phase(df, "mu", "ref")
+
+
+def test_subtract_reference_phase_border_rows_allowed():
+    """A refined border row the reference lacks does not trip the coverage check.
+
+    Border rows are excluded from the grid; np.interp fills the reference's value
+    there from its neighbouring grid samples, the pre-existing keep_unstable behaviour.
+    """
+    df = _ref_frame(
+        "mu", ref_positions=[0, 1, 2], other_positions=[0, 1, 2], border_positions=[1.5]
+    )
+    out = _subtract_reference_phase(df, "mu", "ref")
+    # The border row of 'other' (phi = 11.5) gets the interpolated reference (1.5).
+    border_row = out[(out["phase"] == "other") & out["border"]]
+    np.testing.assert_allclose(border_row["phi"].to_numpy(), [10.0])
 
 
 # ---------------------------------------------------------------------------

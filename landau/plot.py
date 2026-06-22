@@ -563,12 +563,30 @@ def _bridge_unstable_segments(df: pd.DataFrame, scan_col: str) -> pd.DataFrame:
 
 
 def _subtract_reference_phase(df, scan_col, reference_phase):
-    """Subtract reference phase's phi from all phases along scan_col."""
+    """Subtract reference phase's phi from all phases along scan_col.
+
+    The reference phase must be sampled at every grid point of the scan. Otherwise
+    the ``np.interp`` below silently fabricates the missing reference values --
+    clamping to a constant beyond the reference's range, or bridging an interior
+    gap with a chord -- and corrupts every phase's curve. A frame keeping only
+    stable rows triggers this: the reference is then present only within its own
+    stability window(s), so recompute the diagram with ``keep_unstable=True``.
+    """
     if reference_phase not in df["phase"].values:
         raise ValueError(f"reference_phase {reference_phase!r} not found in data")
     ref = df.loc[df["phase"] == reference_phase, [scan_col, "phi"]].sort_values(scan_col)
-    # np.interp handles border points where the reference phase has no exact row
-    # (refinement adds rows only for the two transitioning phases, not all phases).
+    # Refined border rows are excluded: the reference legitimately has no row there
+    # (refinement adds rows only for the two transitioning phases), and np.interp
+    # interpolates them from the dense grid neighbours on either side.
+    grid = df.loc[~df["border"], scan_col] if "border" in df.columns else df[scan_col]
+    grid = np.unique(grid)
+    missing = np.setdiff1d(grid, ref[scan_col].to_numpy())
+    if missing.size:
+        raise ValueError(
+            f"reference_phase {reference_phase!r} is not sampled across the full "
+            f"{scan_col} range ({missing.size} of {grid.size} grid points have no "
+            f"reference row); recompute the diagram with keep_unstable=True."
+        )
     df["phi"] = df["phi"] - np.interp(df[scan_col], ref[scan_col], ref["phi"])
     return df
 
