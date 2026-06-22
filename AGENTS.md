@@ -27,7 +27,7 @@ Python `>=3.11,<3.14`. Extras: `test`, `constraints`, `fast-tsp`, `python-tsp`, 
 |------|--------------|
 | `landau/calculate.py` | `calc_phase_diagram`, `refine_phase_diagram`, `guess_mu_range`, `get_transitions`, clustering helpers |
 | `landau/phases/` | `Phase` ABC, `LinePhase`, `IdealSolution`, `RegularSolution`, `(Slow)InterpolatingPhase`; `pointdefects.py`, `asewrapper.py` siblings |
-| `landau/interpolate/` | `Interpolator` strategies: `PolyFit`, `SGTE`, `RedlichKister`, `StitchedFit`, `SoftplusFit`, `WhitneyRBFInterpolator` |
+| `landau/interpolate/` | `Interpolator` strategies: `PolyFit`, `SGTE`, `RedlichKister`, `StitchedFit`, `SoftplusFit`, `WhitneyTemperatureInterpolator` (the sklearn-style `WhitneyRBFInterpolator` it wraps is not re-exported) |
 | `landau/refine.py` | `Refiner` ABC + `ScanRefiner`, `DelaunayLineRefiner`, `DelaunayTripleRefiner`, `ClausiusClapeyronRefiner`, `MiscibilityGapRefiner` |
 | `landau/plot.py` | `plot_phase_diagram`, `plot_mu_phase_diagram`, 1d variants, `plot_excess_free_energy`, `get_polygons` |
 | `landau/poly.py` | Point-cloud → polygon: `Concave`, `Segments`, optional `PythonTsp` / `FastTsp` / segment variants |
