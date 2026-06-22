@@ -15,6 +15,7 @@ from landau.calculate import (
     _join_phase_unit,
     _split_phase_unit,
     _split_stable,
+    _semigrand_average_concentration,
     guess_mu_range,
 )
 from landau.features import Locus
@@ -272,7 +273,7 @@ def test_split_phase_unit_rejects_non_integer_unit():
 
 # --- guess_mu_range tests ---
 
-from landau.phases import LinePhase, IdealSolution
+from landau.phases import LinePhase, IdealSolution, RegularSolution
 
 
 _GMR_SAMPLES = 50
@@ -325,6 +326,30 @@ def test_guess_mu_range_degenerate_raises():
     b = LinePhase("B", 0.5, 0.1, 0)
     with pytest.raises(ValueError):
         guess_mu_range([a, b], T=1000, samples=_GMR_SAMPLES)
+
+
+def _solution_tail_phases():
+    """A solution phase whose c(mu) reaches 0/1 only asymptotically, plus a line
+    phase.  The asymptotic tails are what the old default ``so.brute`` fmin polish
+    walked along, escaping the (-10, 10) bracket and inflating the mu window."""
+    fcc = RegularSolution(
+        "fcc", phases=[LinePhase("A", 0, 0.0), LinePhase("M", 0.5, 0.05), LinePhase("B", 1, 0.0)]
+    )
+    return [fcc, LinePhase("im", 0.5, -0.03)]
+
+
+@pytest.mark.parametrize("T", [1500.0, 600.0])
+def test_guess_mu_range_endpoints_match_reported_concentrations(T):
+    # Round trip: the average concentration evaluated at the window edges must
+    # equal the reported (c0, c1).  The default so.brute fmin polish is
+    # unconstrained and walks off the (-10, 10) bracket along the asymptotic
+    # single-phase tails; the resulting coarse mm grid placed the inverted edges
+    # deep in the saturated tail (sitting at c=0/1, off from c0/c1 by ~tolerance)
+    # instead of at the concentrations the window claims to span.
+    phases = _solution_tail_phases()
+    mus, c0, c1 = guess_mu_range(phases, T=T, samples=100)
+    assert _semigrand_average_concentration(phases, T, mus.min()) == pytest.approx(c0, abs=3e-3)
+    assert _semigrand_average_concentration(phases, T, mus.max()) == pytest.approx(c1, abs=3e-3)
 
 
 # --- _split_stable tests ---
