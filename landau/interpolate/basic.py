@@ -21,6 +21,18 @@ from scipy.optimize import least_squares
 kB = Boltzmann / eV
 
 
+def _scalarize(x):
+    """Collapse a 0-d numpy result to a Python scalar; pass everything else through.
+
+    The interpolation callables and phase methods promise a Python scalar out
+    when given scalar input; broadcasting through ``np.asarray`` / ``np.vectorize``
+    otherwise leaves 0-d arrays. This is the central place to undo that.
+    """
+    if isinstance(x, np.ndarray) and x.ndim == 0:
+        return x.item()
+    return x
+
+
 def G_calphad(T, pl, *p):
     T_arr = np.asarray(T)
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -133,10 +145,7 @@ class SplineFit(ConcentrationInterpolator):
         spline = UnivariateSpline(x, y, k=k, s=self.smoothing)
 
         def interpolation(c):
-            f = spline(c)
-            if np.ndim(c) == 0:
-                return f.item()
-            return f
+            return _scalarize(spline(c))
 
         return interpolation
 
