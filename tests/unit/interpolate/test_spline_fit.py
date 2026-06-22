@@ -52,6 +52,15 @@ def test_SplineFit_scalar_and_array_shapes():
     assert fit(c).shape == c.shape
 
 
+def test_SplineFit_degree_one_is_piecewise_linear():
+    """degree=1 is plain piecewise-linear interpolation, matching np.interp."""
+    x = np.array([0.0, 0.2, 0.5, 0.7, 1.0])
+    y = np.array([1.0, -0.3, 0.8, 0.1, 2.0])
+    fit = SplineFit(degree=1, smoothing=0.0).fit(x, y)
+    xt = np.linspace(0, 1, 101)
+    assert np.allclose(fit(xt), np.interp(xt, x, y), atol=ATOL)
+
+
 def test_SplineFit_degree_clamped_to_data():
     """Fewer samples than degree+1 drop k to len(x)-1 (here two points -> linear)."""
     x = np.array([0.2, 0.8])
