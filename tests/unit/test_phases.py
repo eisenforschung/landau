@@ -7,7 +7,7 @@ from scipy.constants import Boltzmann, eV
 
 from landau.interpolate import SGTE
 from landau.interpolate.basic import G_calphad
-from landau.phases import IdealSolution, LinePhase, RegularSolution, TemperatureDependentLinePhase
+from landau.phases import IdealSolution, InterpolatingPhase, LinePhase, RegularSolution, SlowInterpolatingPhase, TemperatureDependentLinePhase
 from landau.phases.pointdefects import (
     AbstractPointDefectSublattice,
     ConstantPointDefect,
@@ -440,6 +440,126 @@ def test_regular_solution_concentration_monotone():
     dmu = np.linspace(-1.0, 1.0, 20)
     c = sol.concentration(1000.0, dmu)
     assert np.all(np.diff(c) > 0)
+
+
+# --- InterpolatingPhase / SlowInterpolatingPhase tests ---
+
+# InterpolatingPhase uses a 100-point grid + one Newton-Raphson refinement step.
+# SlowInterpolatingPhase uses scipy.optimize.brute with fmin finish — effectively exact.
+# The cross-validation tolerance reflects the grid error of the fast variant.
+_INTERP_ATOL = 5e-3
+
+
+def _make_interp_line_phases():
+    """Three line phases spanning [0, 1] with a concave-down midpoint."""
+    return [
+        LinePhase("A", fixed_concentration=0.0, line_energy=0.0),
+        LinePhase("mid", fixed_concentration=0.5, line_energy=-0.3),
+        LinePhase("B", fixed_concentration=1.0, line_energy=0.0),
+    ]
+
+
+def _make_interpolating_phase():
+    return InterpolatingPhase("sol", _make_interp_line_phases())
+
+
+def _make_slow_interpolating_phase():
+    return SlowInterpolatingPhase("sol", _make_interp_line_phases())
+
+
+def test_interpolating_phase_semigrand_potential_scalar():
+    result = _make_interpolating_phase().semigrand_potential(1000.0, 0.0)
+    assert np.isscalar(result) or not isinstance(result, np.ndarray)
+
+
+def test_interpolating_phase_semigrand_potential_array_dmu():
+    dmu = np.linspace(-0.5, 0.5, 11)
+    result = _make_interpolating_phase().semigrand_potential(1000.0, dmu)
+    assert isinstance(result, np.ndarray)
+    assert result.shape == (11,)
+
+
+def test_interpolating_phase_semigrand_potential_array_T():
+    T = np.array([500.0, 1000.0, 1500.0])
+    result = _make_interpolating_phase().semigrand_potential(T, 0.0)
+    assert isinstance(result, np.ndarray)
+    assert result.shape == (3,)
+
+
+def test_interpolating_phase_concentration_scalar():
+    result = _make_interpolating_phase().concentration(1000.0, 0.0)
+    assert np.isscalar(result) or not isinstance(result, np.ndarray)
+    assert 0.0 <= float(result) <= 1.0
+
+
+def test_interpolating_phase_concentration_array_dmu():
+    dmu = np.linspace(-0.5, 0.5, 11)
+    result = _make_interpolating_phase().concentration(1000.0, dmu)
+    assert isinstance(result, np.ndarray)
+    assert result.shape == (11,)
+    assert np.all((result >= 0.0) & (result <= 1.0))
+
+
+def test_interpolating_phase_concentration_monotone():
+    """Concentration is non-decreasing in dmu for a non-degenerate landscape."""
+    dmu = np.linspace(-0.5, 0.5, 25)
+    c = _make_interpolating_phase().concentration(1000.0, dmu)
+    assert np.all(np.diff(c) >= 0)
+
+
+def test_interpolating_phase_gibbs_duhem():
+    """c = -d(phi)/d(dmu) from the Legendre transform."""
+    phase = _make_interpolating_phase()
+    dmu = np.linspace(-0.4, 0.4, 400)
+    phi = phase.semigrand_potential(1000.0, dmu)
+    c_numeric = -np.gradient(phi, dmu)
+    c_direct = phase.concentration(1000.0, dmu)
+    assert_allclose(c_numeric[5:-5], c_direct[5:-5], atol=_INTERP_ATOL)
+
+
+def test_slow_interpolating_phase_semigrand_potential_scalar():
+    result = _make_slow_interpolating_phase().semigrand_potential(1000.0, 0.0)
+    assert np.isscalar(result) or not isinstance(result, np.ndarray)
+
+
+def test_slow_interpolating_phase_concentration_scalar():
+    result = _make_slow_interpolating_phase().concentration(1000.0, 0.0)
+    assert np.isscalar(result) or not isinstance(result, np.ndarray)
+    assert 0.0 <= float(result) <= 1.0
+
+
+def test_slow_interpolating_phase_concentration_array_dmu():
+    dmu = np.linspace(-0.5, 0.5, 7)
+    result = _make_slow_interpolating_phase().concentration(1000.0, dmu)
+    assert isinstance(result, np.ndarray)
+    assert result.shape == (7,)
+    assert np.all((result >= 0.0) & (result <= 1.0))
+
+
+def test_slow_interpolating_phase_gibbs_duhem():
+    """c = -d(phi)/d(dmu) from the Legendre transform."""
+    phase = _make_slow_interpolating_phase()
+    dmu = np.linspace(-0.4, 0.4, 200)
+    phi = phase.semigrand_potential(1000.0, dmu)
+    c_numeric = -np.gradient(phi, dmu)
+    c_direct = phase.concentration(1000.0, dmu)
+    assert_allclose(c_numeric[5:-5], c_direct[5:-5], atol=_INTERP_ATOL)
+
+
+def test_interpolating_vs_slow_semigrand_potential():
+    """InterpolatingPhase and SlowInterpolatingPhase agree on semigrand_potential."""
+    fast = _make_interpolating_phase()
+    slow = _make_slow_interpolating_phase()
+    dmu = np.linspace(-0.4, 0.4, 11)
+    assert_allclose(fast.semigrand_potential(1000.0, dmu), slow.semigrand_potential(1000.0, dmu), atol=_INTERP_ATOL)
+
+
+def test_interpolating_vs_slow_concentration():
+    """InterpolatingPhase and SlowInterpolatingPhase agree on concentration."""
+    fast = _make_interpolating_phase()
+    slow = _make_slow_interpolating_phase()
+    dmu = np.linspace(-0.4, 0.4, 11)
+    assert_allclose(fast.concentration(1000.0, dmu), slow.concentration(1000.0, dmu), atol=_INTERP_ATOL)
 
 
 # --- LowTemperatureExpansionSublattice tests ---
