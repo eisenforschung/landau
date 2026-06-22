@@ -434,33 +434,20 @@ class DelaunayLineRefiner(Refiner):
         return [RefinedPoint(T=T, mu=mu, phases=(name1, name2))]
 
 
-def _point_in_simplex(T: float, mu: float, simplex: pd.DataFrame) -> bool:
-    """Return True if ``(T, mu)`` lies inside or on the boundary of the triangle.
-
-    Uses barycentric coordinates: solve ``A @ lam = p - v0`` for ``lam``, then
-    check ``lam >= 0`` and ``sum(lam) <= 1``.  Shared edges are counted as
-    inside (``>=`` / ``<=`` rather than strict), so a triple point that lands
-    exactly on a Delaunay edge is claimed by both neighbours rather than
-    neither — a duplicate is safer than a miss.
-    """
-    v = simplex[["T", "mu"]].to_numpy()  # (3, 2)
-    A = np.array([v[1] - v[0], v[2] - v[0]]).T  # (2, 2)
-    lam = np.linalg.solve(A, np.array([T, mu]) - v[0])
-    return bool(lam[0] >= 0 and lam[1] >= 0 and lam[0] + lam[1] <= 1)
-
-
 class DelaunayTripleRefiner(Refiner):
     """
     For every Delaunay simplex containing three distinct phases, locate the
     triple point by minimizing the sum of pairwise potential differences,
     starting from the simplex centroid.
 
-    Attribution by containment: a Delaunay tessellation partitions space, so
-    the located triple point lies inside exactly one three-phase simplex.
-    ``solve`` emits only when the minimum falls within the candidate simplex
-    and returns an empty list otherwise — no cross-call state is needed.
-    Subclasses that override ``solve`` do not need to track previously found
-    points.
+    Several adjacent three-phase simplices bracket the same invariant, so
+    ``solve`` locates it once per simplex. ``solve`` is a pure function of
+    ``(cand, phases)`` — it always returns the located point and holds no
+    cross-call state. Deduplication happens in :meth:`run`, which keeps a
+    run-local list of points already emitted and drops a candidate whose
+    minimum coincides with an earlier one (within that candidate's own
+    ``(T, mu)`` extent). Subclasses that override only ``solve`` therefore
+    stay pure and need not track previously found points.
     """
 
     label = "delaunay-triple"
@@ -484,9 +471,44 @@ class DelaunayTripleRefiner(Refiner):
             return abs(phi1 - phi2) + abs(phi2 - phi3) + abs(phi3 - phi1)
 
         T, mu = so.fmin(triplemin, (T0, mu0), disp=False)
-        if not _point_in_simplex(T, mu, tr):
-            return []
         return [RefinedPoint(T=T, mu=mu, phases=names)]
+
+    def run(self, df: pd.DataFrame, phases: Mapping[str, Phase]) -> pd.DataFrame:
+        """propose → solve → dedup coincident invariants → dataframe.
+
+        The located triple point need not lie inside the three-phase simplex
+        that brackets it (it can fall on the shared corner where neighbouring
+        simplices meet), so dedup is by coincidence of the located minima, not
+        by simplex containment. State is a run-local list, leaving ``solve``
+        pure.
+        """
+        rows: list[dict] = []
+        boundary_id = 0
+        found: list[TMuPoint] = []
+        for cand in self.propose(df):
+            tr = cand.simplex
+            T_tol = float(tr["T"].max() - tr["T"].min())
+            mu_tol = float(tr["mu"].max() - tr["mu"].min())
+            kept = []
+            for pt in self.solve(cand, phases):
+                if pt.T < 0 or _dominated(pt, phases):
+                    continue
+                if any(abs(pt.T - fT) <= T_tol and abs(pt.mu - fmu) <= mu_tol
+                       for fT, fmu in found):
+                    continue
+                found.append((pt.T, pt.mu))
+                kept.append(pt)
+            for pt in kept:
+                rows.extend(replace(pt, boundary_id=boundary_id).to_rows(phases))
+            if kept:
+                boundary_id += 1
+        out = pd.DataFrame(rows)
+        if out.empty:
+            return out
+        out["stable"] = True
+        out["border"] = True
+        out["refined"] = self.label
+        return out
 
 
 # -- Clausius-Clapeyron tracers ----------------------------------------------

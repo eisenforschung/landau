@@ -21,7 +21,6 @@ from landau.refine import (
     _simplex_straddles,
     _InterCandidate,
     _delaunay_simplices,
-    _point_in_simplex,
 )
 
 
@@ -490,12 +489,12 @@ def test_delaunay_triple_refiner_deduplicates():
     assert np.allclose(out["mu"], 0.2, atol=0.05)
 
 
-def test_delaunay_triple_solve_is_pure_and_simplex_owned():
-    """solve() is a pure function and exactly one simplex owns the triple point.
+def test_delaunay_triple_solve_is_pure():
+    """solve() is a pure function: every bracketing simplex locates the same
+    invariant and re-invoking returns the identical point (no cross-call state).
 
-    The Delaunay tessellation partitions space, so the located minimum lies
-    inside exactly one three-phase simplex.  Non-owning simplices return [].
-    Re-invoking solve() on the owning simplex returns the same point.
+    Dedup is the job of run(), not solve() — see
+    test_delaunay_triple_refiner_deduplicates.
     """
     phases = _three_phase_system()
     Ts = np.linspace(220.0, 480.0, 6)
@@ -506,23 +505,21 @@ def test_delaunay_triple_solve_is_pure_and_simplex_owned():
     candidates = list(refiner.propose(df))
     assert len(candidates) > 1, "grid should produce multiple three-phase simplices"
 
-    owning = []
-    for cand in candidates:
-        result = refiner.solve(cand, phases)
-        if result:
-            owning.append((cand, result[0]))
+    # every candidate's solve() emits exactly one point, all at the same
+    # invariant, with no empty returns (no containment filtering)
+    located = [refiner.solve(cand, phases) for cand in candidates]
+    assert all(len(r) == 1 for r in located)
+    Ts_found = [r[0].T for r in located]
+    mus_found = [r[0].mu for r in located]
+    assert np.allclose(Ts_found, 300.0, atol=10.0)
+    assert np.allclose(mus_found, 0.2, atol=0.05)
 
-    assert len(owning) == 1, f"expected 1 owning simplex, got {len(owning)}"
-    cand, pt = owning[0]
-
-    # purity: re-invoking on the owner still emits the same point
-    second = refiner.solve(cand, phases)
-    assert len(second) == 1
-    assert np.isclose(second[0].T, pt.T, atol=1e-6)
-    assert np.isclose(second[0].mu, pt.mu, atol=1e-6)
-
-    # the located point is geometrically inside the owning simplex
-    assert _point_in_simplex(pt.T, pt.mu, cand.simplex)
+    # purity: re-invoking solve() on any candidate returns the same point
+    for cand, first in zip(candidates, located):
+        second = refiner.solve(cand, phases)
+        assert len(second) == 1
+        assert np.isclose(second[0].T, first[0].T, atol=1e-6)
+        assert np.isclose(second[0].mu, first[0].mu, atol=1e-6)
 
 
 def test_boundary_id_cc_refiner_single_line(two_phase_system):
