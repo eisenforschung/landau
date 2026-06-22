@@ -209,7 +209,7 @@ class TemperatureDependentLinePhase(AbstractLinePhase):
         (l,) = plt.plot(Ts, self.line_free_energy(Ts), label=self.name)
         # try to plot about 100 points
         n = max(int(len(self.temperatures) // 100), 1)
-        plt.scatter(self.temperatures[::n], self.free_energies[::n], c=l.get_color())
+        plt.scatter(self.temperatures[::n], self.free_energies[::n], color=l.get_color())
 
 
 @deprecate("use TemperatureDependentLinePhase instead", version="2.0")
