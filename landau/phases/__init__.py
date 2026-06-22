@@ -572,13 +572,19 @@ class SlowInterpolatingPhase(Phase):
     def __post_init__(self, *args, **kwargs):
         object.__setattr__(self, "phases", tuple(self.phases))
 
-        cs = [p.line_concentration for p in self.phases]
-        concentration_range = (
-            max(0, min(cs) - self.maximum_extrapolation),
-            min(1, max(cs) + self.maximum_extrapolation)
-        )
+        explicit_range = self.concentration_range != (0., 1.)
+        explicit_extrap = self.maximum_extrapolation != 0
 
-        object.__setattr__(self, "concentration_range", concentration_range)
+        if explicit_range and explicit_extrap:
+            raise ValueError("concentration_range and maximum_extrapolation are mutually exclusive")
+
+        if not explicit_range:
+            cs = [p.line_concentration for p in self.phases]
+            concentration_range = (
+                max(0, min(cs) - self.maximum_extrapolation),
+                min(1, max(cs) + self.maximum_extrapolation)
+            )
+            object.__setattr__(self, "concentration_range", concentration_range)
 
         if not (self.concentration_range[0] == 0 and self.concentration_range[1] == 1) and isinstance(self.interpolator, RedlichKister):
             raise ValueError("RedlichKister interpolation requires terminal phases at both c=0 and c=1")
