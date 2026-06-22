@@ -1,3 +1,7 @@
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 from hypothesis import given, settings
@@ -5,7 +9,7 @@ from hypothesis import strategies as st
 from numpy.testing import assert_allclose
 from scipy.constants import Boltzmann, eV
 
-from landau.interpolate import SGTE
+from landau.interpolate import PolyFit, SGTE
 from landau.interpolate.basic import G_calphad
 from landau.phases import IdealSolution, InterpolatingPhase, LinePhase, RegularSolution, SlowInterpolatingPhase, TemperatureDependentLinePhase
 from landau.phases.pointdefects import (
@@ -15,7 +19,7 @@ from landau.phases.pointdefects import (
     PointDefectSublattice,
     PointDefectedPhase,
 )
-from landau.phases import _scalarize
+from landau.phases import S, _scalarize
 
 kB = Boltzmann / eV
 
@@ -836,3 +840,115 @@ def test_new_pointdefect_classes_not_added_to_landau_phases(name):
     import landau.phases as phases
 
     assert not hasattr(phases, name)
+
+
+# --- check_interpolation / check_concentration_interpolation plot_error ---
+
+# residuals are recomputed with the same deterministic public methods the plot
+# uses, so the plotted markers must match to numerical noise
+ERR_ATOL = 1e-9
+
+
+def _under_parametrised_interpolating_phase(add_entropy=False):
+    """An InterpolatingPhase whose fit cannot pass through every sample, so the
+    per-sample residuals are genuinely nonzero at the interior points."""
+    cs = [0.0, 0.25, 0.5, 0.75, 1.0]
+    fe = [0.0, -0.3, -0.1, -0.35, 0.05]
+    lps = [LinePhase(n, c, f) for n, c, f in zip("ABCDE", cs, fe)]
+    return InterpolatingPhase(name="sol", phases=lps, num_coeffs=3, add_entropy=add_entropy), lps
+
+
+def test_check_interpolation_plot_error_plots_only_residuals():
+    """plot_error=True draws interp(T) - sample at each sample and nothing else."""
+    Ts = np.linspace(300, 1200, 40)
+    Fs = -1e-3 * Ts**2 + 2.0  # nonlinear, so a 2-parameter (linear) fit leaves real residuals
+    phase = TemperatureDependentLinePhase("L", 0.0, Ts, Fs, interpolator=PolyFit(2))
+
+    fig, ax = plt.subplots()
+    try:
+        phase.check_interpolation(plot_error=True)
+        assert len(ax.lines) == 0  # the free-energy curve is not drawn
+        assert len(ax.collections) == 1  # only the error scatter
+        n = max(int(len(Ts) // 100), 1)
+        ts, fs = Ts[::n], Fs[::n]
+        expected = phase.line_free_energy(ts) - fs
+        # non-degenerate: a constant or all-zero residual plot would fail these
+        assert np.abs(expected).max() > 1.0
+        assert not np.allclose(expected, expected[0])
+        off = np.asarray(ax.collections[0].get_offsets())
+        assert_allclose(off[:, 0], ts)
+        assert_allclose(off[:, 1], expected, atol=ERR_ATOL)
+    finally:
+        plt.close(fig)
+
+
+def test_check_interpolation_default_plots_curve_and_samples():
+    """Without plot_error the curve and its samples are drawn (the flag is opt-in)."""
+    Ts = np.linspace(300, 1200, 20)
+    phase = TemperatureDependentLinePhase("L", 0.0, Ts, np.sqrt(Ts), interpolator=PolyFit(2))
+    fig, ax = plt.subplots()
+    try:
+        phase.check_interpolation()
+        assert len(ax.lines) == 1  # the interpolation curve
+        assert len(ax.collections) == 1  # the samples
+    finally:
+        plt.close(fig)
+
+
+def test_check_concentration_interpolation_plot_error_plots_only_residuals():
+    """plot_error=True draws free_energy(c) - sample at each line phase and nothing else."""
+    phase, lps = _under_parametrised_interpolating_phase()
+    fig, ax = plt.subplots()
+    try:
+        phase.check_concentration_interpolation(T=1000, plot_error=True)
+        assert len(ax.lines) == 0  # the interpolation curve is not drawn
+        cs = np.array([p.line_concentration for p in lps])
+        expected = np.array([phase.free_energy(1000, p.line_concentration) - p.line_free_energy(1000) for p in lps])
+        order = np.argsort(cs)
+        assert np.abs(expected).max() > 1e-3  # the under-parametrised fit really misses the interior
+        off = np.asarray(ax.collections[-1].get_offsets())
+        off = off[np.argsort(off[:, 0])]
+        assert_allclose(off[:, 0], cs[order])
+        assert_allclose(off[:, 1], expected[order], atol=ERR_ATOL)
+    finally:
+        plt.close(fig)
+
+
+def test_check_concentration_interpolation_error_invariant_to_plot_excess():
+    """The excess shift moves curve and sample together, so the residuals are unchanged."""
+    phase, _ = _under_parametrised_interpolating_phase()
+
+    def errors(plot_excess):
+        fig, ax = plt.subplots()
+        try:
+            phase.check_concentration_interpolation(T=1000, plot_excess=plot_excess, plot_error=True)
+            off = np.asarray(ax.collections[-1].get_offsets())
+            return off[np.argsort(off[:, 0])][:, 1]
+        finally:
+            plt.close(fig)
+
+    assert_allclose(errors(False), errors(True), atol=ERR_ATOL)
+
+
+def test_check_concentration_interpolation_error_respects_add_entropy():
+    """With add_entropy the sample is the entropy-adjusted line value, against which the
+    residual is measured."""
+    phase, lps = _under_parametrised_interpolating_phase(add_entropy=True)
+    fig, ax = plt.subplots()
+    try:
+        phase.check_concentration_interpolation(T=1000, plot_error=True)
+        cs = np.array([p.line_concentration for p in lps])
+        expected = np.array(
+            [
+                phase.free_energy(1000, p.line_concentration)
+                - (p.line_free_energy(1000) - 1000 * S(p.line_concentration))
+                for p in lps
+            ]
+        )
+        order = np.argsort(cs)
+        assert np.abs(expected).max() > 1e-3
+        off = np.asarray(ax.collections[-1].get_offsets())
+        off = off[np.argsort(off[:, 0])]
+        assert_allclose(off[:, 1], expected[order], atol=ERR_ATOL)
+    finally:
+        plt.close(fig)
