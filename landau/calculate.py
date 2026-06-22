@@ -163,6 +163,23 @@ def refine_phase_diagram(
     return pd.concat(data, ignore_index=True)
 
 
+def _semigrand_average_concentration(phases: Iterable[Phase], T: float, mu):
+    """Boltzmann-weighted mean concentration across ``phases`` at ``(T, mu)``.
+
+    A smooth, phase-agnostic stand-in for the equilibrium concentration: every
+    phase contributes its concentration weighted by ``exp(-phi / kB T)``, so the
+    result varies continuously across phase boundaries instead of jumping with
+    the ``argmin`` phase.  :func:`guess_mu_range` inverts this c(mu) mapping.
+    ``mu`` may be a scalar or an array.
+    """
+    phis = np.array([p.semigrand_potential(T, mu) for p in phases])
+    conc = np.array([p.concentration(T, mu) for p in phases])
+    phis = phis - phis.min(axis=0)
+    prob = np.exp(-phis / (kB * T))
+    prob /= prob.sum(axis=0)
+    return (prob * conc).sum(axis=0)
+
+
 def guess_mu_range(phases: Iterable[Phase], T: float, samples: int, tolerance: float = 1e-2):
     """Guess chemical potential window from the ideal solution.
 
@@ -184,22 +201,17 @@ def guess_mu_range(phases: Iterable[Phase], T: float, samples: int, tolerance: f
     # calculation: keep track of which phase is the most likely
     import scipy.optimize as so
     import scipy.interpolate as si
-    import numpy as np
-    # semigrand canonical "average" concentration
-    # use this to avoid discontinuities and be phase agnostic
 
     def c(mu):
-        phis = np.array([p.semigrand_potential(T, mu) for p in phases])
-        conc = np.array([p.concentration(T, mu) for p in phases])
-        phis -= phis.min(axis=0)
-        beta = 1 / (kB * T)
-        prob = np.exp(-beta * phis)
-        prob /= prob.sum(axis=0)
-        ci = (prob * conc).sum(axis=0)
-        return ci
+        return _semigrand_average_concentration(phases, T, mu)
 
-    mu0 = so.brute(lambda x: +c(x[0]), ranges=[(-10, 10)], Ns=200)[0]
-    mu1 = so.brute(lambda x: -c(x[0]), ranges=[(-10, 10)], Ns=200)[0]
+    # finish=None keeps the result on the scanned grid.  The default fmin polish
+    # is unconstrained and, because c(mu) approaches 0 and 1 only asymptotically
+    # along the single-phase tails, walks far outside the (-10, 10) bracket.  That
+    # blows the mm grid spacing up and pushes the inverted mu window deep into the
+    # single-phase regions.
+    mu0 = float(np.atleast_1d(so.brute(lambda x: +c(x[0]), ranges=[(-10, 10)], Ns=200, finish=None))[0])
+    mu1 = float(np.atleast_1d(so.brute(lambda x: -c(x[0]), ranges=[(-10, 10)], Ns=200, finish=None))[0])
     if mu0 == mu1:
         if tolerance > 1e-7:
             return guess_mu_range(phases, T, samples, tolerance/10)

@@ -171,9 +171,16 @@ def test_real_diagram_marks_the_invariant(ax, eutectic_diagram, variables):
     T_t = triple["T"].mean()
 
     _plot_triplepoints(eutectic_diagram, ax=ax, variables=variables)
+    # Compare component-wise: pytest.approx does not apply a tolerance inside a
+    # nested [(x, y)] tuple, and the marker/line coordinates differ from their
+    # column means at the last bit.
     if variables[0] == "c":
         assert _markers(ax) == []
-        assert _hlines(ax) == pytest.approx([(T_t, triple["c"].min(), triple["c"].max())])
+        (y, xmin, xmax), = _hlines(ax)
+        assert y == pytest.approx(T_t)
+        assert (xmin, xmax) == pytest.approx((triple["c"].min(), triple["c"].max()))
     else:
         assert _hlines(ax) == []
-        assert _markers(ax) == pytest.approx([(triple["mu"].mean(), T_t)])
+        (mx, my), = _markers(ax)
+        assert mx == pytest.approx(triple["mu"].mean())
+        assert my == pytest.approx(T_t)
