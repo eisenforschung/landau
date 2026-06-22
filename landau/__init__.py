@@ -14,6 +14,7 @@ from .interpolate import (
     TemperatureInterpolator,
     SGTE,
     PolyFit,
+    SplineFit,
     RedlichKister,
     SoftplusFit,
 )
