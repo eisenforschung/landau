@@ -225,7 +225,11 @@ def plot_2d_basics_mu(out_dir: Path, poly_method: str | None = None, **_) -> Pat
 
 
 def plot_2d_toy(out_dir: Path, poly_method: str | None = None, tielines: bool = True, **_) -> Path:
-    """2D c-T diagram with a regular-solution liquid + intermediate solid, from Toy.ipynb."""
+    """2D c-T diagram with a regular-solution liquid + intermediate solid, from Toy.ipynb.
+
+    The liquid is a FastInterpolatingPhase (Redlich-Kister), exercising the
+    vectorized solver; the diagram matches the RegularSolution render.
+    """
     l1 = ldp.TemperatureDependentLinePhase(
         "l0", fixed_concentration=0, temperatures=[1, 750, 1000],
         free_energies=[2.00, 1.80, 1.00], interpolator=ldi.PolyFit(3),
@@ -250,7 +254,7 @@ def plot_2d_toy(out_dir: Path, poly_method: str | None = None, tielines: bool = 
         "s3", fixed_concentration=0.4, temperatures=[1, 750, 1000],
         free_energies=np.array([2.4, 1.85, 1.45]) - 0.05, interpolator=ldi.SGTE(3),
     )
-    rliq = ldp.RegularSolution("liquid", [l1, l3, l2])
+    rliq = ldp.FastInterpolatingPhase("liquid", [l1, l3, l2])
     sol = ldp.IdealSolution("solid", s1, s2)
 
     c = np.linspace(0, 1, 75)[1:-1]
@@ -314,7 +318,11 @@ def plot_excess_free_energy_line_phases(out_dir: Path, **_) -> Path:
 
 
 def plot_2d_toy_mu(out_dir: Path, poly_method: str | None = None, **_) -> Path:
-    """2D T-mu diagram with a regular-solution liquid + intermediate solid, from Toy.ipynb."""
+    """2D T-mu diagram with a regular-solution liquid + intermediate solid, from Toy.ipynb.
+
+    The liquid is a FastInterpolatingPhase (Redlich-Kister), exercising the
+    vectorized solver; the diagram matches the RegularSolution render.
+    """
     l1 = ldp.TemperatureDependentLinePhase(
         "l0", fixed_concentration=0, temperatures=[1, 750, 1000],
         free_energies=[2.00, 1.80, 1.00], interpolator=ldi.PolyFit(3),
@@ -339,7 +347,7 @@ def plot_2d_toy_mu(out_dir: Path, poly_method: str | None = None, **_) -> Path:
         "s3", fixed_concentration=0.4, temperatures=[1, 750, 1000],
         free_energies=np.array([2.4, 1.85, 1.45]) - 0.05, interpolator=ldi.SGTE(3),
     )
-    rliq = ldp.RegularSolution("liquid", [l1, l3, l2])
+    rliq = ldp.FastInterpolatingPhase("liquid", [l1, l3, l2])
     sol = ldp.IdealSolution("solid", s1, s2)
 
     c = np.linspace(0, 1, 75)[1:-1]
