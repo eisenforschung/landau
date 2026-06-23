@@ -6,6 +6,7 @@ import warnings
 
 import numpy as np
 import scipy.optimize as so
+from scipy.interpolate import UnivariateSpline
 try:
     import polyfit
 except ImportError:
@@ -18,6 +19,18 @@ from sklearn.linear_model import Ridge, Lasso, LinearRegression
 from scipy.optimize import least_squares
 
 kB = Boltzmann / eV
+
+
+def _scalarize(x):
+    """Collapse a 0-d numpy result to a Python scalar; pass everything else through.
+
+    The interpolation callables and phase methods promise a Python scalar out
+    when given scalar input; broadcasting through ``np.asarray`` / ``np.vectorize``
+    otherwise leaves 0-d arrays. This is the central place to undo that.
+    """
+    if isinstance(x, np.ndarray) and x.ndim == 0:
+        return x.item()
+    return x
 
 
 def G_calphad(T, pl, *p):
@@ -98,6 +111,48 @@ class PolyFit(TemperatureInterpolator, ConcentrationInterpolator):
             )
             coef = reg.coeffs_[::-1]
         return np.poly1d(coef)
+
+
+@dataclass(frozen=True, eq=True)
+class SplineFit(ConcentrationInterpolator):
+    """
+    Fits data with a univariate B-spline of degree ``degree``.
+
+    Wraps :class:`scipy.interpolate.UnivariateSpline`.  ``smoothing`` selects
+    between strict interpolation (``0.0``, the default — the spline passes
+    through every sample) and least-squares smoothing (``> 0`` — the spline may
+    miss the samples by a total squared residual of ``smoothing`` in exchange
+    for a smoother curve).  ``None`` defers to scipy's own default (``s`` equal
+    to the number of samples).
+
+    Outside ``[min(x), max(x)]`` the fit continues the boundary spline segment
+    (scipy's default ``ext=0``): ``degree=1`` extends linearly, while higher
+    degrees follow the edge polynomial and can diverge quickly, so extrapolated
+    values should be treated with care.
+    """
+
+    degree: int = 3
+    """Spline degree ``k`` (3 = cubic).  Clamped to ``len(x) - 1`` so a fit with
+    fewer samples than ``degree + 1`` drops to the highest degree the data
+    supports."""
+    smoothing: float | None = 0.0
+    """Smoothing factor ``s`` for :class:`~scipy.interpolate.UnivariateSpline`.
+    ``0.0`` interpolates strictly; larger values trade fidelity for smoothness;
+    ``None`` uses scipy's default."""
+
+    def fit(self, x, y):
+        x = np.asarray(x, float)
+        y = np.asarray(y, float)
+        order = np.argsort(x)
+        x = x[order]
+        y = y[order]
+        k = min(self.degree, len(x) - 1)
+        spline = UnivariateSpline(x, y, k=k, s=self.smoothing)
+
+        def interpolation(c):
+            return _scalarize(spline(c))
+
+        return interpolation
 
 
 @dataclass(frozen=True, eq=True)

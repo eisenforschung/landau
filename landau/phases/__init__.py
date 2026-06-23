@@ -13,6 +13,7 @@ import scipy.special as se
 import numpy as np
 
 from ..interpolate import ConcentrationInterpolator, TemperatureInterpolator, SGTE, PolyFit, RedlichKister, SoftplusFit
+from ..interpolate.basic import _scalarize
 
 from scipy.constants import Boltzmann, eV
 
@@ -38,18 +39,6 @@ __all__ = [
 
 def S(c):
     return kB * (se.entr(c) + se.entr(1 - c))
-
-
-def _scalarize(x):
-    """Collapse a 0-d numpy result to a Python scalar; pass everything else through.
-
-    Phase methods promise a Python scalar out when both ``T`` and ``dmu`` are
-    scalars in; broadcasting through ``np.asarray`` / ``np.vectorize`` otherwise
-    leaves them as 0-d arrays. This is the central place to undo that.
-    """
-    if isinstance(x, np.ndarray) and x.ndim == 0:
-        return x.item()
-    return x
 
 
 @dataclass(frozen=True)
