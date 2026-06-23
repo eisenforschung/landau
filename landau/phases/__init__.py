@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from functools import lru_cache, cache
-from typing import Iterable, Optional, Callable, ClassVar
+from typing import Iterable, Optional, ClassVar
 from pyiron_snippets.deprecate import deprecate
 
 import matplotlib.pyplot as plt
@@ -663,33 +663,15 @@ class FastInterpolatingPhase(SlowInterpolatingPhase):
     # solver tuning (ClassVar -> never treated as dataclass fields)
     _n_grid: ClassVar[int] = 201      # basin-locating grid resolution over the concentration range
     _n_newton: ClassVar[int] = 6      # logit-space Newton polish steps
-    _fd1: ClassVar[float] = 1e-6      # central difference step for a fallback fe'
     _fd2: ClassVar[float] = 1e-3      # wider difference step for fe'' (limits 1/h^2 round-off)
-
-    def _fe_derivative(self, fe: Callable) -> Callable[[np.ndarray], np.ndarray]:
-        """Return ``fe'`` as a vectorised callable, analytic where possible.
-
-        An exact first derivative makes the located concentration the *exact*
-        stationary point of ``f(c) - dmu*c``, so the returned ``c`` equals
-        ``-d(phi)/d(dmu)`` (Gibbs-Duhem) to machine precision. PolyFit yields a
-        ``numpy.poly1d`` (``.deriv``); RedlichKister yields an interpolation with
-        ``_eval_mix_derivative``. Anything else falls back to a central
-        difference.
-        """
-        deriv = getattr(fe, "deriv", None)
-        if callable(deriv):
-            return deriv()                       # poly1d derivative, built once
-        rk_parameters = getattr(fe, "rk_parameters", None)
-        if rk_parameters is not None:
-            df = fe.df
-            return lambda c: fe._eval_mix_derivative(c, *rk_parameters) + df
-        h1 = self._fd1
-        return lambda c: (fe(c + h1) - fe(c - h1)) / (2 * h1)
 
     def _solve_fixed_T(self, T: float, dmu: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         a, b = self.concentration_range
         fe = self._get_interpolation(T)
-        fe_prime = self._fe_derivative(fe)
+        # fe.deriv() is analytic for PolyFit/RedlichKister, so the located c is
+        # the exact stationary point and c = -d(phi)/d(dmu) holds to machine
+        # precision; a generic interpolator falls back to a numerical derivative.
+        fe_prime = fe.deriv()
         kT = kB * T
 
         conc = np.linspace(a, b, self._n_grid)
