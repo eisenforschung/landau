@@ -57,6 +57,46 @@ def test_scalarize_non_array_with_no_ndim_passes_through():
     assert out is payload
 
 
+# --- S(c) ideal-mixing entropy tests ---
+
+
+def test_S_endpoints_are_zero():
+    assert S(0.0) == 0.0
+    assert S(1.0) == 0.0
+
+
+def test_S_midpoint_is_kB_ln_two():
+    assert_allclose(S(0.5), kB * np.log(2), atol=1e-15)
+
+
+def test_S_symmetric_under_c_to_one_minus_c():
+    c = np.linspace(0.0, 1.0, 11)
+    assert_allclose(S(c), S(1 - c), atol=1e-15)
+
+
+def test_S_scalar_in_scalar_out():
+    out = S(0.3)
+    assert np.isscalar(out) or (isinstance(out, np.ndarray) and out.ndim == 0)
+
+
+def test_S_array_in_array_out():
+    c = np.linspace(0.0, 1.0, 5)
+    out = S(c)
+    assert isinstance(out, np.ndarray)
+    assert out.shape == c.shape
+
+
+def test_S_non_negative_on_unit_interval():
+    c = np.linspace(0.0, 1.0, 101)
+    assert np.all(S(c) >= 0.0)
+
+
+def test_S_agrees_with_closed_form_on_interior():
+    c = np.linspace(0.05, 0.95, 19)
+    closed_form = -kB * (c * np.log(c) + (1 - c) * np.log(1 - c))
+    assert_allclose(S(c), closed_form, atol=1e-15)
+
+
 def _make_line_phase(c=0.25, energy=-1.0, entropy=0.01):
     return LinePhase(name="test", fixed_concentration=c, line_energy=energy, line_entropy=entropy)
 
