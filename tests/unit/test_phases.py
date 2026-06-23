@@ -11,7 +11,7 @@ from scipy.constants import Boltzmann, eV
 
 from landau.interpolate import PolyFit, SGTE
 from landau.interpolate.basic import G_calphad
-from landau.phases import IdealSolution, InterpolatingPhase, LinePhase, RegularSolution, SlowInterpolatingPhase, TemperatureDependentLinePhase
+from landau.phases import IdealSolution, InterpolatingPhase, LinePhase, RegularSolution, SlowInterpolatingPhase, FastInterpolatingPhase, TemperatureDependentLinePhase
 from landau.phases.pointdefects import (
     AbstractPointDefectSublattice,
     ConstantPointDefect,
@@ -586,6 +586,177 @@ def test_slow_interpolating_phase_concentration_range_and_extrapolation_exclusiv
     ]
     with pytest.raises(ValueError, match="mutually exclusive"):
         SlowInterpolatingPhase("sol", phases, concentration_range=(0.1, 0.9), maximum_extrapolation=0.05)
+
+
+# --- FastInterpolatingPhase tests ---
+
+# FastInterpolatingPhase solves the same minimization as SlowInterpolatingPhase
+# (a vectorized logit-Newton polish replaces the per-scalar brute), so it is
+# validated against the true minimum on a dense grid, not against brute's coarse
+# 20-point output. The tolerance is tighter than the InterpolatingPhase grid
+# tolerance because the Newton polish converges to the true optimum.
+_FAST_ATOL = 1e-5
+
+
+def _fast_phases():
+    """A PolyFit interior phase and a RedlichKister full-range phase."""
+    poly = FastInterpolatingPhase("poly", [
+        LinePhase("a", 0.30, -2.30),
+        LinePhase("b", 0.40, -2.50),
+        LinePhase("c", 0.50, -2.60),
+        LinePhase("d", 0.60, -2.55),
+        LinePhase("e", 0.70, -2.40),
+    ])
+    rk = FastInterpolatingPhase("rk", [
+        LinePhase("A", 0.0, 0.0),
+        LinePhase("q1", 0.25, -0.20),
+        LinePhase("mid", 0.50, -0.30),
+        LinePhase("q3", 0.75, -0.18),
+        LinePhase("B", 1.0, 0.0),
+    ])
+    return poly, rk
+
+
+def _gold_min(phase, T, dmu):
+    """True (phi, c) at the global minimum of f(c) - dmu*c on a dense grid."""
+    fe = phase._get_interpolation(float(T))
+    a, b = phase.concentration_range
+    cs = np.linspace(a, b, 80001)
+    val = fe(cs)[:, None] - T * S(cs)[:, None] - np.atleast_1d(dmu)[None, :] * cs[:, None]
+    i = val.argmin(axis=0)
+    return val[i, np.arange(val.shape[1])], cs[i]
+
+
+def test_fast_interpolating_phase_scalar_contract():
+    poly, _ = _fast_phases()
+    phi = poly.semigrand_potential(1000.0, 0.1)
+    c = poly.concentration(1000.0, 0.1)
+    assert not isinstance(phi, np.ndarray)
+    assert not isinstance(c, np.ndarray)
+    assert 0.0 <= float(c) <= 1.0
+
+
+def test_fast_interpolating_phase_array_dmu_shape():
+    poly, _ = _fast_phases()
+    dmu = np.linspace(-3.0, 3.0, 17)
+    phi = poly.semigrand_potential(1000.0, dmu)
+    c = poly.concentration(1000.0, dmu)
+    assert phi.shape == (17,)
+    assert c.shape == (17,)
+    assert np.all((c >= 0.0) & (c <= 1.0))
+
+
+def test_fast_interpolating_phase_array_T_shape():
+    _, rk = _fast_phases()
+    T = np.array([500.0, 1000.0, 1500.0])
+    phi = rk.semigrand_potential(T, 0.2)
+    assert phi.shape == (3,)
+
+
+def test_fast_interpolating_phase_concentration_monotone():
+    """Concentration is non-decreasing in dmu."""
+    _, rk = _fast_phases()
+    dmu = np.linspace(-4.0, 4.0, 51)
+    c = rk.concentration(1000.0, dmu)
+    assert np.all(np.diff(c) >= -1e-9)
+
+
+@pytest.mark.parametrize("which", [0, 1])
+@pytest.mark.parametrize("T", [400.0, 1000.0, 1700.0])
+def test_fast_interpolating_phase_matches_true_minimum(which, T):
+    """phi and c reproduce the dense-grid global minimum, including saturation."""
+    phase = _fast_phases()[which]
+    dmu = np.linspace(-10.0, 10.0, 101)
+    gphi, gc = _gold_min(phase, T, dmu)
+    phi = np.asarray(phase.semigrand_potential(T, dmu))
+    c = np.asarray(phase.concentration(T, dmu))
+    assert not np.isnan(phi).any()
+    assert_allclose(phi, gphi, atol=_FAST_ATOL)
+    assert_allclose(c, gc, atol=1e-3)
+
+
+def test_fast_interpolating_phase_gibbs_duhem():
+    """c = -d(phi)/d(dmu) from the Legendre transform.
+
+    Tolerance is set by the finite-difference gradient over a smooth interior
+    window, not by Fast's own accuracy.
+    """
+    _, rk = _fast_phases()
+    dmu = np.linspace(-0.5, 0.5, 400)
+    phi = rk.semigrand_potential(1000.0, dmu)
+    c_numeric = -np.gradient(phi, dmu)
+    c_direct = rk.concentration(1000.0, dmu)
+    assert_allclose(c_numeric[5:-5], c_direct[5:-5], atol=_INTERP_ATOL)
+
+
+def test_fast_concentration_consistent_with_phi_gradient():
+    """On a convex (jump-free) phase, c equals -d(phi)/d(dmu) everywhere.
+
+    A convex free energy has no miscibility gap, so phi(dmu) is smooth and the
+    Legendre relation must hold across the whole window, not just within a
+    branch. The tolerance is the central-difference gradient error of the test.
+    """
+    convex = FastInterpolatingPhase("cvx", [
+        LinePhase("A", 0.0, 0.0),
+        LinePhase("mid", 0.5, -0.6),
+        LinePhase("B", 1.0, 0.0),
+    ])
+    dmu = np.linspace(-2.0, 2.0, 600)
+    phi = convex.semigrand_potential(1000.0, dmu)
+    c = convex.concentration(1000.0, dmu)
+    assert_allclose(-np.gradient(phi, dmu)[5:-5], c[5:-5], atol=1e-5)
+
+
+@pytest.mark.parametrize("T", [400.0, 1200.0])
+def test_fast_concentration_is_exact_stationary_point(T):
+    """f'(c) = dmu at every interior solution (so c = -d(phi)/d(dmu) exactly).
+
+    The analytic first derivative makes the located concentration the exact
+    stationary point; only points pinned to a range boundary are excluded.
+    """
+    poly = _fast_phases()[0]
+    a, b = poly.concentration_range
+    fe = poly._get_interpolation(T)
+    dmu = np.linspace(-3.0, 3.0, 200)
+    c = np.asarray(poly.concentration(T, dmu))
+    # f'(c) = fe'(c) - T*S'(c) = fe'(c) + kB*T*logit(c)
+    kB = Boltzmann / eV
+    fprime = fe.deriv()(c) + kB * T * (np.log(c) - np.log1p(-c))
+    interior = (c > a + 1e-9) & (c < b - 1e-9)
+    assert interior.any()
+    assert np.abs(fprime[interior] - dmu[interior]).max() < 1e-8
+
+
+def test_fast_matches_slow_where_brute_is_reliable():
+    """On the smooth symmetric fixture, Fast and Slow agree to brute's tolerance."""
+    pts = _make_interp_line_phases()
+    fast = FastInterpolatingPhase("sol", pts)
+    slow = SlowInterpolatingPhase("sol", pts)
+    dmu = np.linspace(-0.4, 0.4, 21)
+    assert_allclose(fast.semigrand_potential(1000.0, dmu),
+                    slow.semigrand_potential(1000.0, dmu), atol=1e-4)
+    assert_allclose(fast.concentration(1000.0, dmu),
+                    slow.concentration(1000.0, dmu), atol=1e-3)
+
+
+def test_fast_finds_deep_well_global_minimum():
+    """A deep off-centre well whose global minimum a coarse grid can miss.
+
+    Fast must still land in the true global basin (verified on a dense grid).
+    """
+    pts = [
+        LinePhase("A", 0.0, -2.221),
+        LinePhase("b", 0.551, -1.048),
+        LinePhase("c", 0.76, -2.957),
+        LinePhase("d", 0.845, -0.505),
+        LinePhase("B", 1.0, -0.491),
+    ]
+    phase = FastInterpolatingPhase("deep", pts)
+    dmu = np.linspace(-12.0, 12.0, 121)
+    for T in (300.0, 1500.0):
+        gphi, gc = _gold_min(phase, T, dmu)
+        assert_allclose(np.asarray(phase.semigrand_potential(T, dmu)), gphi, atol=_FAST_ATOL)
+        assert_allclose(np.asarray(phase.concentration(T, dmu)), gc, atol=1e-3)
 
 
 # --- LowTemperatureExpansionSublattice tests ---
