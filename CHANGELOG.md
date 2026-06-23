@@ -3,6 +3,19 @@
 Notable changes to **landau.py**, newest first. Per-PR detail lives in the
 [GitHub releases](https://github.com/eisenforschung/landau/releases).
 
+## [1.10.0](https://github.com/eisenforschung/landau/compare/1.9.0...1.10.0) (2026-06-23)
+
+
+### Features
+
+* FastInterpolatingPhase, a vectorized exact replacement for SlowInterpolatingPhase ([#281](https://github.com/eisenforschung/landau/issues/281)) ([2990231](https://github.com/eisenforschung/landau/commit/29902310e3fdde09dbcfb887b7241e412b4dd38c))
+* **interpolate:** add SplineFit concentration interpolator ([#274](https://github.com/eisenforschung/landau/issues/274)) ([edb5f35](https://github.com/eisenforschung/landau/commit/edb5f355761b296be578df70599a1085aa7c534c))
+
+
+### Bug Fixes
+
+* **calculate:** bound guess_mu_range brute scan to its search bracket ([#275](https://github.com/eisenforschung/landau/issues/275)) ([f0aac34](https://github.com/eisenforschung/landau/commit/f0aac34c93a4b8314d4cdb8168a724f9c4f488bf))
+
 ## 1.8.11 — 2026-06-11
 - `ScanRefiner` recovers the two transitions around a stable window narrower than the scan grid.
 - Off-polygon inline labels fan apart vertically when their horizontal extents overlap.
