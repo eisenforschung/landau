@@ -264,7 +264,11 @@ def plot_2d_toy(out_dir: Path, poly_method: str | None = None, tielines: bool = 
 
 
 def plot_excess_free_energy(out_dir: Path, **_) -> Path:
-    """Excess free energy vs concentration (Intermetallics example) from ExcessFreeEnergy.ipynb."""
+    """Excess free energy vs concentration (Intermetallics example) from ExcessFreeEnergy.ipynb.
+
+    The sigma phase uses FastInterpolatingPhase, so this exercises the vectorized
+    logit-Newton solver; the figure should match the SlowInterpolatingPhase render.
+    """
     solid_a = ldp.LinePhase("A",    fixed_concentration=0, line_energy=-2.0, line_entropy=1.0 * ldp.kB)
     solid_b = ldp.LinePhase("B",    fixed_concentration=1, line_energy=-3.0, line_entropy=1.5 * ldp.kB)
     solid   = ldp.IdealSolution("solid", solid_a, solid_b)
@@ -282,7 +286,7 @@ def plot_excess_free_energy(out_dir: Path, **_) -> Path:
         ldp.LinePhase("sig@0.60", fixed_concentration=0.60, line_energy=-2.55),
         ldp.LinePhase("sig@0.70", fixed_concentration=0.70, line_energy=-2.40),
     ]
-    sigma = ldp.SlowInterpolatingPhase(name="sigma", phases=sigma_pts)
+    sigma = ldp.FastInterpolatingPhase(name="sigma", phases=sigma_pts)
 
     import pandas as pd
     df = pd.concat(
