@@ -566,6 +566,28 @@ def test_interpolating_vs_slow_concentration():
     assert_allclose(fast.concentration(1000.0, dmu), slow.concentration(1000.0, dmu), atol=_INTERP_ATOL)
 
 
+def test_slow_interpolating_phase_explicit_concentration_range_honoured():
+    """Explicitly passed concentration_range is not overridden by maximum_extrapolation=0."""
+    phases = [
+        LinePhase("A", fixed_concentration=0.2, line_energy=0.0),
+        LinePhase("mid", fixed_concentration=0.5, line_energy=-0.3),
+        LinePhase("B", fixed_concentration=0.8, line_energy=0.0),
+    ]
+    explicit = (0.1, 0.9)
+    phase = SlowInterpolatingPhase("sol", phases, concentration_range=explicit)
+    assert phase.concentration_range == explicit
+
+
+def test_slow_interpolating_phase_concentration_range_and_extrapolation_exclusive():
+    """Passing both concentration_range and maximum_extrapolation raises ValueError."""
+    phases = [
+        LinePhase("A", fixed_concentration=0.2, line_energy=0.0),
+        LinePhase("B", fixed_concentration=0.8, line_energy=0.0),
+    ]
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        SlowInterpolatingPhase("sol", phases, concentration_range=(0.1, 0.9), maximum_extrapolation=0.05)
+
+
 # --- LowTemperatureExpansionSublattice tests ---
 
 _LTE_ATOL = 1e-12
