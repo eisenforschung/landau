@@ -5,6 +5,7 @@ from typing import Literal
 import warnings
 
 import numpy as np
+import numpy.typing as npt
 import scipy.optimize as so
 from scipy.interpolate import UnivariateSpline
 try:
@@ -43,8 +44,84 @@ def G_calphad(T, pl, *p):
     return g
 
 
-Interpolation = Callable[[float], float]
-"""Generic Interface for a 1D interpolation."""
+class Interpolation(ABC):
+    """A fitted 1-D interpolation ``f(x)``.
+
+    Subclasses must be callable. :meth:`deriv` returns ``f'`` as another
+    :class:`Interpolation`; the default is a vectorised central difference,
+    and subclasses with a closed form (polynomials, SGTE, Redlich-Kister)
+    override it with the exact derivative.
+    """
+
+    @abstractmethod
+    def __call__(self, x: npt.ArrayLike) -> np.ndarray | float:
+        """Evaluate the interpolation at ``x`` (scalar or array-like)."""
+        ...
+
+    def deriv(self) -> "Interpolation":
+        """Return ``f'`` as another :class:`Interpolation` (numerical by default)."""
+        return NumericalDerivative(self)
+
+
+class NumericalDerivative(Interpolation):
+    """``f'`` by a scale-aware central difference; the generic fallback derivative.
+
+    A single fixed-step central difference (vectorised, no Python-level loop)
+    rather than :func:`scipy.differentiate.derivative`, which only exists from
+    SciPy 1.15 and would lift the package's ``scipy>=1.11.2`` floor.
+
+    Args:
+        func: the interpolation to differentiate.
+        step: relative step; the absolute step is ``step * max(1, |x|)``.
+    """
+
+    def __init__(self, func: Callable, step: float = 1e-6):
+        self.func = func
+        self.step = step
+
+    def __call__(self, x: npt.ArrayLike) -> np.ndarray | float:
+        x = np.asarray(x, dtype=float)
+        h = self.step * np.maximum(1.0, np.abs(x))
+        d = (self.func(x + h) - self.func(x - h)) / (2.0 * h)
+        return d.item() if d.ndim == 0 else d
+
+
+class _CallableInterpolation(Interpolation):
+    """Adapts a plain callable (closure) into an :class:`Interpolation`.
+
+    Inherits the numerical :meth:`Interpolation.deriv`, so interpolations built
+    from closures (stitched, softplus, Whitney) gain a derivative for free.
+    """
+
+    def __init__(self, func: Callable):
+        self.func = func
+
+    def __call__(self, x: npt.ArrayLike) -> np.ndarray | float:
+        return self.func(x)
+
+
+class PolynomialInterpolation(Interpolation):
+    """A polynomial fit with an analytic (polynomial) derivative.
+
+    Wraps a :class:`numpy.poly1d` so the poly1d representation (and its
+    descending-power coefficient order) stays an implementation detail;
+    :attr:`coefficients` exposes them in ascending power order.
+    """
+
+    def __init__(self, poly: np.poly1d):
+        self.poly = poly
+
+    @property
+    def coefficients(self) -> np.ndarray:
+        """Coefficients in ascending power order: ``c0 + c1*x + c2*x**2 + ...``."""
+        return self.poly.coeffs[::-1]
+
+    def __call__(self, x: npt.ArrayLike) -> np.ndarray | float:
+        return self.poly(x)
+
+    def deriv(self) -> "Interpolation":
+        """The exact derivative polynomial."""
+        return PolynomialInterpolation(self.poly.deriv())
 
 
 class Interpolator(ABC):
@@ -110,7 +187,7 @@ class PolyFit(TemperatureInterpolator, ConcentrationInterpolator):
                     constraints={0: polyfit.Constraints(curvature="concave")}
             )
             coef = reg.coeffs_[::-1]
-        return np.poly1d(coef)
+        return PolynomialInterpolation(np.poly1d(coef))
 
 
 @dataclass(frozen=True, eq=True)
@@ -164,7 +241,29 @@ class SGTE(TemperatureInterpolator):
 
     def fit(self, x, y):
         parameters, *_ = so.curve_fit(G_calphad, x, y, p0=[0] * self.nparam)
-        return lambda x: G_calphad(x, *parameters)
+        return SGTEInterpolation(tuple(parameters))
+
+
+@dataclass(frozen=True)
+class SGTEInterpolation(Interpolation):
+    """``G(T) = T*ln(T)*pl + sum_i p_i*T^i`` with the analytic ``dG/dT``."""
+
+    parameters: tuple[float, ...]
+
+    def __call__(self, T: npt.ArrayLike) -> np.ndarray | float:
+        return G_calphad(T, *self.parameters)
+
+    def deriv(self) -> Interpolation:
+        """The analytic ``dG/dT`` as a callable interpolation."""
+        pl, *p = self.parameters
+
+        def dG(T):
+            T_arr = np.asarray(T, dtype=float)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                g = pl * (np.log(T_arr) + 1.0) + sum(i * pi * T_arr ** (i - 1) for i, pi in enumerate(p) if i >= 1)
+            return g.item() if g.ndim == 0 else g
+
+        return _CallableInterpolation(dG)
 
 
 @dataclass(frozen=True, eq=True)
@@ -197,7 +296,7 @@ class RedlichKister(ConcentrationInterpolator):
 
 
 @dataclass(frozen=True)
-class RedlichKisterInterpolation:
+class RedlichKisterInterpolation(Interpolation):
     df: float
     """Change in mixing "enthalpy" across composition range."""
     f0: float
@@ -244,8 +343,17 @@ class RedlichKisterInterpolation:
     #     self.f0 = f0 - self(c0)
     #     return self
 
-    def __call__(self, c):
+    def __call__(self, c: npt.ArrayLike) -> np.ndarray | float:
         return self._eval_mix(c, *self.rk_parameters) + self.f0 + self.df * c
+
+    def deriv(self) -> Interpolation:
+        """The analytic ``d/dc`` from :meth:`_eval_mix_derivative`."""
+        # d/dc [ mix(c) + f0 + df*c ] = mix'(c) + df
+        rk_parameters = self.rk_parameters
+        df = self.df
+        return _CallableInterpolation(
+            lambda c: self._eval_mix_derivative(c, *rk_parameters) + df
+        )
 
 
 @dataclass(frozen=True, eq=True)
@@ -285,4 +393,4 @@ class StitchedFit(TemperatureInterpolator):
                 f = f.item()
             return f
 
-        return interpolation
+        return _CallableInterpolation(interpolation)

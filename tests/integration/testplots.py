@@ -225,7 +225,11 @@ def plot_2d_basics_mu(out_dir: Path, poly_method: str | None = None, **_) -> Pat
 
 
 def plot_2d_toy(out_dir: Path, poly_method: str | None = None, tielines: bool = True, **_) -> Path:
-    """2D c-T diagram with a regular-solution liquid + intermediate solid, from Toy.ipynb."""
+    """2D c-T diagram with a regular-solution liquid + intermediate solid, from Toy.ipynb.
+
+    The liquid is a FastInterpolatingPhase (Redlich-Kister), exercising the
+    vectorized solver; the diagram matches the RegularSolution render.
+    """
     l1 = ldp.TemperatureDependentLinePhase(
         "l0", fixed_concentration=0, temperatures=[1, 750, 1000],
         free_energies=[2.00, 1.80, 1.00], interpolator=ldi.PolyFit(3),
@@ -250,7 +254,7 @@ def plot_2d_toy(out_dir: Path, poly_method: str | None = None, tielines: bool = 
         "s3", fixed_concentration=0.4, temperatures=[1, 750, 1000],
         free_energies=np.array([2.4, 1.85, 1.45]) - 0.05, interpolator=ldi.SGTE(3),
     )
-    rliq = ldp.RegularSolution("liquid", [l1, l3, l2])
+    rliq = ldp.FastInterpolatingPhase("liquid", [l1, l3, l2])
     sol = ldp.IdealSolution("solid", s1, s2)
 
     c = np.linspace(0, 1, 75)[1:-1]
@@ -264,7 +268,11 @@ def plot_2d_toy(out_dir: Path, poly_method: str | None = None, tielines: bool = 
 
 
 def plot_excess_free_energy(out_dir: Path, **_) -> Path:
-    """Excess free energy vs concentration (Intermetallics example) from ExcessFreeEnergy.ipynb."""
+    """Excess free energy vs concentration (Intermetallics example) from ExcessFreeEnergy.ipynb.
+
+    The sigma phase uses FastInterpolatingPhase, so this exercises the vectorized
+    logit-Newton solver; the figure should match the SlowInterpolatingPhase render.
+    """
     solid_a = ldp.LinePhase("A",    fixed_concentration=0, line_energy=-2.0, line_entropy=1.0 * ldp.kB)
     solid_b = ldp.LinePhase("B",    fixed_concentration=1, line_energy=-3.0, line_entropy=1.5 * ldp.kB)
     solid   = ldp.IdealSolution("solid", solid_a, solid_b)
@@ -282,7 +290,7 @@ def plot_excess_free_energy(out_dir: Path, **_) -> Path:
         ldp.LinePhase("sig@0.60", fixed_concentration=0.60, line_energy=-2.55),
         ldp.LinePhase("sig@0.70", fixed_concentration=0.70, line_energy=-2.40),
     ]
-    sigma = ldp.SlowInterpolatingPhase(name="sigma", phases=sigma_pts)
+    sigma = ldp.FastInterpolatingPhase(name="sigma", phases=sigma_pts)
 
     import pandas as pd
     df = pd.concat(
@@ -310,7 +318,11 @@ def plot_excess_free_energy_line_phases(out_dir: Path, **_) -> Path:
 
 
 def plot_2d_toy_mu(out_dir: Path, poly_method: str | None = None, **_) -> Path:
-    """2D T-mu diagram with a regular-solution liquid + intermediate solid, from Toy.ipynb."""
+    """2D T-mu diagram with a regular-solution liquid + intermediate solid, from Toy.ipynb.
+
+    The liquid is a FastInterpolatingPhase (Redlich-Kister), exercising the
+    vectorized solver; the diagram matches the RegularSolution render.
+    """
     l1 = ldp.TemperatureDependentLinePhase(
         "l0", fixed_concentration=0, temperatures=[1, 750, 1000],
         free_energies=[2.00, 1.80, 1.00], interpolator=ldi.PolyFit(3),
@@ -335,7 +347,7 @@ def plot_2d_toy_mu(out_dir: Path, poly_method: str | None = None, **_) -> Path:
         "s3", fixed_concentration=0.4, temperatures=[1, 750, 1000],
         free_energies=np.array([2.4, 1.85, 1.45]) - 0.05, interpolator=ldi.SGTE(3),
     )
-    rliq = ldp.RegularSolution("liquid", [l1, l3, l2])
+    rliq = ldp.FastInterpolatingPhase("liquid", [l1, l3, l2])
     sol = ldp.IdealSolution("solid", s1, s2)
 
     c = np.linspace(0, 1, 75)[1:-1]

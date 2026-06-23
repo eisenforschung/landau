@@ -18,3 +18,15 @@ so timings are directly comparable across datasets.  Methods that
 don't apply to a case (e.g. `RedlichKister` on a temperature axis)
 are caught and reported as skipped rather than aborting the run.
 Add cases by editing `case_*` factories.
+
+## `bench_fast_interpolating_phase.py`
+
+```bash
+python benchmarks/bench_fast_interpolating_phase.py
+```
+
+Compares `FastInterpolatingPhase` against `SlowInterpolatingPhase` on a
+`calc_phase_diagram`-style driver (scalar-`T` loop over a `dmu` array),
+reporting wall-time, speedup, and each solver's error against a dense-grid
+true minimum.  Fast is ~2 orders of magnitude faster and at least as
+accurate (the brute reference's coarse 20-point grid can miss deep wells).

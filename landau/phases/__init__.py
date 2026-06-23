@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from functools import lru_cache, cache
-from typing import Iterable, Optional
+from typing import Iterable, Optional, ClassVar
 from pyiron_snippets.deprecate import deprecate
 
 import matplotlib.pyplot as plt
@@ -29,6 +29,7 @@ __all__ = [
     "RegularSolution",
     "InterpolatingPhase",
     "SlowInterpolatingPhase",
+    "FastInterpolatingPhase",
     "AbstractPointDefect",
     "ConstantPointDefect",
     "PointDefectSublattice",
@@ -635,6 +636,161 @@ class SlowInterpolatingPhase(Phase):
         check_concentration_interpolation(
             self, self.phases, T, samples, plot_excess, self.concentration_range, plot_error=plot_error
         )
+
+
+class FastInterpolatingPhase(SlowInterpolatingPhase):
+    """A faster, equally accurate replacement for :class:`SlowInterpolatingPhase`.
+
+    Computes the same quantity -- ``phi = min_c [ f(c) - c*dmu ]`` with
+    ``f(c) = fe(c) - T*S(c)`` -- but vectorised over the whole ``dmu`` array
+    instead of one ``scipy.optimize.brute`` call per scalar.
+
+    For a fixed ``T`` the free-energy curve ``f(c)`` is evaluated once on a grid
+    to locate the global basin (handling miscibility gaps), then the minimum is
+    polished with a few Newton steps in the logit variable ``u = log(c/(1-c))``.
+    The ideal-mixing entropy contributes ``-T*S'(c) = kB*T*u``, which is *linear*
+    in ``u``, so the polish is uniformly well conditioned from the dilute to the
+    concentrated limit -- where a plain ``c``-space Newton step is stiff. The
+    polish is confined to the grid cell around the basin and the lowest of
+    {Newton result, cell edges} is kept, so a minimum sitting on a range
+    boundary is recovered exactly and the global basin is never abandoned.
+
+    Reproduces the true minimum to ~1e-6; faster than the ``brute`` reference by
+    two orders of magnitude on representative phases (see
+    ``benchmarks/bench_fast_interpolating_phase.py``).
+    """
+
+    # solver tuning (ClassVar -> never treated as dataclass fields)
+    _n_grid: ClassVar[int] = 201      # basin-locating grid resolution over the concentration range
+    _n_newton: ClassVar[int] = 6      # logit-space Newton polish steps
+    _fd2: ClassVar[float] = 1e-3      # wider difference step for fe'' (limits 1/h^2 round-off)
+
+    def _solve_fixed_T(self, T: float, dmu: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Minimise ``f(c) - dmu*c`` over ``c`` for one ``T`` and a whole ``dmu`` array.
+
+        The free-energy curve ``f(c) = fe(c) - T*S(c)`` is built once on a grid;
+        a single vectorised ``argmin`` over ``dmu`` against that shared curve picks
+        the global basin for every ``dmu`` at once (this is where the speed comes
+        from), then a bounded logit-space Newton polish sharpens each minimum.
+
+        The Newton loop is hand-rolled rather than :func:`scipy.optimize.newton`
+        because the polish must be clipped per element to the grid cell ``[cl, cr]``
+        around the basin -- the confinement that stops Newton from escaping to a
+        different stationary point on a non-convex landscape. ``scipy.optimize.newton``
+        offers no per-element bounds, so it cannot express that guard.
+
+        Args:
+            T: temperature (scalar); fixes the free-energy curve and its fit.
+            dmu: chemical-potential array (any shape).
+
+        Returns:
+            ``(phi, c)`` arrays shaped like ``dmu``: the semigrand potential and
+            the minimising concentration.
+        """
+        a, b = self.concentration_range
+        fe = self._get_interpolation(T)
+        # fe.deriv() is analytic for PolyFit/RedlichKister, so the located c is
+        # the exact stationary point and c = -d(phi)/d(dmu) holds to machine
+        # precision; a generic interpolator falls back to a numerical derivative.
+        fe_prime = fe.deriv()
+        kT = kB * T
+
+        conc = np.linspace(a, b, self._n_grid)
+        f_grid = fe(conc) - T * S(conc)
+
+        flat = np.asarray(dmu, dtype=float).ravel()
+
+        def obj(c):
+            return fe(c) - T * S(c) - flat * c
+
+        # global basin: argmin of f(c) - dmu*c over the grid for each dmu
+        idx = (f_grid[None, :] - flat[:, None] * conc[None, :]).argmin(axis=1)
+
+        # confine the polish to the cell [conc[idx-1], conc[idx+1]]; the true
+        # minimum lies within one cell of the grid argmin
+        cl = conc[np.maximum(idx - 1, 0)]
+        cr = conc[np.minimum(idx + 1, self._n_grid - 1)]
+        with np.errstate(divide="ignore"):
+            # -inf/+inf at the 0/1 ends keep the dilute/saturated tails reachable
+            ua = np.where(cl <= 0.0, -np.inf, se.logit(np.clip(cl, 1e-300, 1.0)))
+            ub = np.where(cr >= 1.0, np.inf, se.logit(np.clip(cr, 0.0, 1.0 - 1e-16)))
+
+        u = np.clip(se.logit(np.clip(conc[idx], 1e-15, 1.0 - 1e-15)), ua, ub)
+        h2 = self._fd2
+        for _ in range(self._n_newton):
+            c = se.expit(u)
+            fp = fe_prime(c)
+            fpp = (fe(c + h2) - 2 * fe(c) + fe(c - h2)) / (h2 * h2)
+            g = fp + kT * u - flat                  # stationarity residual f'(c) = dmu
+            gp = fpp * (c * (1.0 - c)) + kT          # dg/du
+            u = np.clip(u - g / gp, ua, ub)
+        c_newton = np.clip(se.expit(u), a, b)
+
+        # keep the lowest objective among the polished point and the two cell
+        # edges, so a minimum sitting exactly on a cell/range boundary is taken
+        # as-is rather than chased past it by Newton
+        cands = np.stack([c_newton, cl, cr])
+        vals = np.stack([obj(c_newton), obj(cl), obj(cr)])
+        best = vals.argmin(axis=0)
+        c = np.take_along_axis(cands, best[None, :], axis=0)[0]
+        phi = np.take_along_axis(vals, best[None, :], axis=0)[0]
+        return phi.reshape(np.shape(dmu)), c.reshape(np.shape(dmu))
+
+    @lru_cache(maxsize=512)
+    def _find_phi_c_cached(
+        self,
+        t_shape: tuple[int, ...],
+        t_bytes: bytes,
+        d_shape: tuple[int, ...],
+        d_bytes: bytes,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Solve and cache by raw ``(T, dmu)`` bytes.
+
+        ``semigrand_potential`` and ``concentration`` are called separately by
+        ``calc_phase_diagram`` with the same ``(T, dmu)``; keying the cache on
+        the array bytes (arrays are unhashable) lets the second call reuse the
+        first solve. A scalar ``T`` solves in one :meth:`_solve_fixed_T` call;
+        an array ``T`` is grouped by unique temperature, since each distinct
+        ``T`` needs its own free-energy fit.
+        """
+        T = np.frombuffer(t_bytes, dtype=float).reshape(t_shape)
+        dmu = np.frombuffer(d_bytes, dtype=float).reshape(d_shape)
+        out_shape = np.broadcast_shapes(t_shape, d_shape)
+        if T.ndim == 0:
+            phi, c = self._solve_fixed_T(float(T), dmu)
+            phi = np.broadcast_to(phi, out_shape)
+            c = np.broadcast_to(c, out_shape)
+        else:
+            # each distinct T needs its own fit; group the work by temperature
+            Tb = np.broadcast_to(T, out_shape)
+            dmub = np.broadcast_to(dmu, out_shape)
+            phi = np.empty(out_shape)
+            c = np.empty(out_shape)
+            for uT in np.unique(Tb):
+                m = Tb == uT
+                p, cc = self._solve_fixed_T(float(uT), dmub[m])
+                phi[m] = p
+                c[m] = cc
+        return np.asarray(phi), np.asarray(c)
+
+    def _find_phi_c(
+        self, T: float | np.ndarray, dmu: float | np.ndarray
+    ) -> tuple[float | np.ndarray, float | np.ndarray]:
+        """Return ``(phi, c)`` for ``(T, dmu)``, scalars collapsed back to Python floats.
+
+        Thin wrapper over the bytes-keyed cache: builds the cache key, then
+        copies the result out so callers cannot mutate the cached arrays.
+        """
+        # asarray preserves 0-d shape; ascontiguousarray only for the byte key
+        Ta = np.asarray(T, dtype=float)
+        Da = np.asarray(dmu, dtype=float)
+        phi, c = self._find_phi_c_cached(
+            Ta.shape, np.ascontiguousarray(Ta).tobytes(),
+            Da.shape, np.ascontiguousarray(Da).tobytes(),
+        )
+        # copy out so callers cannot mutate the cached arrays
+        return _scalarize(phi.copy()), _scalarize(c.copy())
+
 
 def check_concentration_interpolation(
         phase: SlowInterpolatingPhase | InterpolatingPhase | RegularSolution,
