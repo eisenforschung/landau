@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from functools import lru_cache, cache
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Callable, ClassVar
 from pyiron_snippets.deprecate import deprecate
 
 import matplotlib.pyplot as plt
@@ -660,13 +660,13 @@ class FastInterpolatingPhase(SlowInterpolatingPhase):
     ``benchmarks/bench_fast_interpolating_phase.py``).
     """
 
-    # solver tuning (class constants, not dataclass fields)
-    _n_grid = 201        # basin-locating grid resolution over the concentration range
-    _n_newton = 6        # logit-space Newton polish steps
-    _fd1 = 1e-6          # central difference step for a fallback fe'
-    _fd2 = 1e-3          # wider difference step for fe'' (limits 1/h^2 round-off)
+    # solver tuning (ClassVar -> never treated as dataclass fields)
+    _n_grid: ClassVar[int] = 201      # basin-locating grid resolution over the concentration range
+    _n_newton: ClassVar[int] = 6      # logit-space Newton polish steps
+    _fd1: ClassVar[float] = 1e-6      # central difference step for a fallback fe'
+    _fd2: ClassVar[float] = 1e-3      # wider difference step for fe'' (limits 1/h^2 round-off)
 
-    def _fe_derivative(self, fe):
+    def _fe_derivative(self, fe: Callable) -> Callable[[np.ndarray], np.ndarray]:
         """Return ``fe'`` as a vectorised callable, analytic where possible.
 
         An exact first derivative makes the located concentration the *exact*
@@ -686,7 +686,7 @@ class FastInterpolatingPhase(SlowInterpolatingPhase):
         h1 = self._fd1
         return lambda c: (fe(c + h1) - fe(c - h1)) / (2 * h1)
 
-    def _solve_fixed_T(self, T, dmu):
+    def _solve_fixed_T(self, T: float, dmu: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         a, b = self.concentration_range
         fe = self._get_interpolation(T)
         fe_prime = self._fe_derivative(fe)
@@ -733,7 +733,13 @@ class FastInterpolatingPhase(SlowInterpolatingPhase):
         return phi.reshape(np.shape(dmu)), c.reshape(np.shape(dmu))
 
     @lru_cache(maxsize=512)
-    def _find_phi_c_cached(self, t_shape, t_bytes, d_shape, d_bytes):
+    def _find_phi_c_cached(
+        self,
+        t_shape: tuple[int, ...],
+        t_bytes: bytes,
+        d_shape: tuple[int, ...],
+        d_bytes: bytes,
+    ) -> tuple[np.ndarray, np.ndarray]:
         # keyed on raw bytes so semigrand_potential and concentration -- called
         # separately by calc_phase_diagram with the same (T, dmu) -- solve once
         T = np.frombuffer(t_bytes, dtype=float).reshape(t_shape)
@@ -756,7 +762,9 @@ class FastInterpolatingPhase(SlowInterpolatingPhase):
                 c[m] = cc
         return np.asarray(phi), np.asarray(c)
 
-    def _find_phi_c(self, T, dmu):
+    def _find_phi_c(
+        self, T: float | np.ndarray, dmu: float | np.ndarray
+    ) -> tuple[float | np.ndarray, float | np.ndarray]:
         # asarray preserves 0-d shape; ascontiguousarray only for the byte key
         Ta = np.asarray(T, dtype=float)
         Da = np.asarray(dmu, dtype=float)

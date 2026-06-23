@@ -15,10 +15,12 @@ root. Requires the ``[test]`` extras.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 
 import numpy as np
 
 from landau.phases import (
+    Phase,
     LinePhase,
     SlowInterpolatingPhase,
     FastInterpolatingPhase,
@@ -28,7 +30,7 @@ from landau.phases import (
 
 # ---------- representative phases ----------
 
-def case_polyfit_interior():
+def case_polyfit_interior() -> list[LinePhase]:
     """Interior phase, range (0.3, 0.7) -> PolyFit interpolation (sigma-like)."""
     pts = [
         LinePhase("p0", 0.30, -2.30),
@@ -40,7 +42,7 @@ def case_polyfit_interior():
     return pts
 
 
-def case_redlich_kister():
+def case_redlich_kister() -> list[LinePhase]:
     """Full-range phase with terminals -> RedlichKister interpolation."""
     pts = [
         LinePhase("A", 0.00, 0.00),
@@ -52,7 +54,7 @@ def case_redlich_kister():
     return pts
 
 
-def case_double_well():
+def case_double_well() -> list[LinePhase]:
     """A landscape with two competing minima (miscibility gap)."""
     pts = [
         LinePhase("A", 0.00, 0.00),
@@ -74,7 +76,7 @@ TS = np.linspace(300.0, 1600.0, 14)
 MU = np.linspace(-3.0, 3.0, 120)
 
 
-def _clear_caches(cls):
+def _clear_caches(cls: type) -> None:
     # the lru_caches are class attributes shared across equal frozen instances
     for attr in ("_find_phi_c_scalar", "_find_phi_c_cached", "_get_interpolation"):
         f = cls.__dict__.get(attr)
@@ -82,7 +84,7 @@ def _clear_caches(cls):
             f.cache_clear()
 
 
-def _drive(phase):
+def _drive(phase: Phase) -> tuple[np.ndarray, np.ndarray]:
     phi, c = [], []
     for T in TS:
         phi.append(np.asarray(phase.semigrand_potential(float(T), MU)))
@@ -90,7 +92,7 @@ def _drive(phase):
     return np.array(phi), np.array(c)
 
 
-def _time(make_phase, reps=3):
+def _time(make_phase: Callable[[], Phase], reps: int = 3) -> tuple[float, tuple[np.ndarray, np.ndarray]]:
     best = np.inf
     out = None
     for _ in range(reps):
@@ -103,7 +105,7 @@ def _time(make_phase, reps=3):
     return best, out
 
 
-def _gold(phase, T):
+def _gold(phase: Phase, T: float) -> np.ndarray:
     """True minimum on a dense grid, for accuracy reference."""
     fe = phase._get_interpolation(float(T))
     a, b = phase.concentration_range
@@ -113,7 +115,7 @@ def _gold(phase, T):
     return val[i, np.arange(len(MU))]
 
 
-def main():
+def main() -> None:
     print(f"driver: {len(TS)} temperatures x {len(MU)} dmu  (semigrand + concentration)\n")
     header = f"{'case':18s} {'slow [ms]':>10s} {'fast [ms]':>10s} {'speedup':>8s} " \
              f"{'slow err':>10s} {'fast err':>10s}"
