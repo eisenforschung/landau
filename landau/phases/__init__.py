@@ -40,18 +40,6 @@ def S(c):
     return kB * (se.entr(c) + se.entr(1 - c))
 
 
-def Sprime(c):
-    with np.errstate(divide="ignore"):
-        s = -kB * (np.log(c / (1 - c)))
-    s[np.isclose(c, 0)] = +np.inf
-    s[np.isclose(c, 1)] = -np.inf
-    return s
-
-
-def c_from_dmu(dmu, T, e_defect):
-    return 1 / (1 + np.exp(-(dmu - e_defect) / kB / T))
-
-
 def _scalarize(x):
     """Collapse a 0-d numpy result to a Python scalar; pass everything else through.
 
