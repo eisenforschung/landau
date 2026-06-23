@@ -56,6 +56,7 @@ Python `>=3.11,<3.14`. Extras: `test`, `constraints`, `fast-tsp`, `python-tsp`, 
 - **Minimal change.** Reuse existing helpers (numpy, scipy, shapely, matplotlib.testing, pyiron_snippets) before writing a new one. Don't introduce abstractions for hypothetical future requirements.
 - **Tests assert tight conditions** that a degenerate or constant solution would fail. Loose `atol=0.05` "it ran" tests get rejected. Use Hypothesis for round-trip recovery on fits.
 - **Git: rebase, never merge.** Merge commits are disabled on GitHub. Rebase onto `origin/main` and force-push to keep history linear.
+- **Conventional Commits drive releases.** `release-please` (`.github/workflows/release-please.yml`, PR #225) reads conventional-commit messages on `main` to open release PRs; non-conforming messages are ignored by the release tooling. Use `feat:`/`fix:`/`docs:`/`test:`/`chore:`/`refactor:`, `!` or `BREAKING CHANGE:` for breaks.
 - **Do not commit** `.hypothesis/`, `_version.py`, stray top-level scripts, duplicate exploratory files.
 - **Keep PR body in sync with the diff.** When review feedback invalidates a claim in the body, edit the body — never leave a stale claim standing.
 - **Notebooks** are committed with executed outputs only.
