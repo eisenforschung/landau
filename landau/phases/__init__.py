@@ -666,6 +666,27 @@ class FastInterpolatingPhase(SlowInterpolatingPhase):
     _fd2: ClassVar[float] = 1e-3      # wider difference step for fe'' (limits 1/h^2 round-off)
 
     def _solve_fixed_T(self, T: float, dmu: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Minimise ``f(c) - dmu*c`` over ``c`` for one ``T`` and a whole ``dmu`` array.
+
+        The free-energy curve ``f(c) = fe(c) - T*S(c)`` is built once on a grid;
+        a single vectorised ``argmin`` over ``dmu`` against that shared curve picks
+        the global basin for every ``dmu`` at once (this is where the speed comes
+        from), then a bounded logit-space Newton polish sharpens each minimum.
+
+        The Newton loop is hand-rolled rather than :func:`scipy.optimize.newton`
+        because the polish must be clipped per element to the grid cell ``[cl, cr]``
+        around the basin -- the confinement that stops Newton from escaping to a
+        different stationary point on a non-convex landscape. ``scipy.optimize.newton``
+        offers no per-element bounds, so it cannot express that guard.
+
+        Args:
+            T: temperature (scalar); fixes the free-energy curve and its fit.
+            dmu: chemical-potential array (any shape).
+
+        Returns:
+            ``(phi, c)`` arrays shaped like ``dmu``: the semigrand potential and
+            the minimising concentration.
+        """
         a, b = self.concentration_range
         fe = self._get_interpolation(T)
         # fe.deriv() is analytic for PolyFit/RedlichKister, so the located c is
@@ -705,8 +726,9 @@ class FastInterpolatingPhase(SlowInterpolatingPhase):
             u = np.clip(u - g / gp, ua, ub)
         c_newton = np.clip(se.expit(u), a, b)
 
-        # keep the lowest objective among the polished point and the cell edges
-        # (fe is called on 1-D arrays only: RedlichKister evaluation uses np.vander)
+        # keep the lowest objective among the polished point and the two cell
+        # edges, so a minimum sitting exactly on a cell/range boundary is taken
+        # as-is rather than chased past it by Newton
         cands = np.stack([c_newton, cl, cr])
         vals = np.stack([obj(c_newton), obj(cl), obj(cr)])
         best = vals.argmin(axis=0)
@@ -722,8 +744,15 @@ class FastInterpolatingPhase(SlowInterpolatingPhase):
         d_shape: tuple[int, ...],
         d_bytes: bytes,
     ) -> tuple[np.ndarray, np.ndarray]:
-        # keyed on raw bytes so semigrand_potential and concentration -- called
-        # separately by calc_phase_diagram with the same (T, dmu) -- solve once
+        """Solve and cache by raw ``(T, dmu)`` bytes.
+
+        ``semigrand_potential`` and ``concentration`` are called separately by
+        ``calc_phase_diagram`` with the same ``(T, dmu)``; keying the cache on
+        the array bytes (arrays are unhashable) lets the second call reuse the
+        first solve. A scalar ``T`` solves in one :meth:`_solve_fixed_T` call;
+        an array ``T`` is grouped by unique temperature, since each distinct
+        ``T`` needs its own free-energy fit.
+        """
         T = np.frombuffer(t_bytes, dtype=float).reshape(t_shape)
         dmu = np.frombuffer(d_bytes, dtype=float).reshape(d_shape)
         out_shape = np.broadcast_shapes(t_shape, d_shape)
@@ -747,6 +776,11 @@ class FastInterpolatingPhase(SlowInterpolatingPhase):
     def _find_phi_c(
         self, T: float | np.ndarray, dmu: float | np.ndarray
     ) -> tuple[float | np.ndarray, float | np.ndarray]:
+        """Return ``(phi, c)`` for ``(T, dmu)``, scalars collapsed back to Python floats.
+
+        Thin wrapper over the bytes-keyed cache: builds the cache key, then
+        copies the result out so callers cannot mutate the cached arrays.
+        """
         # asarray preserves 0-d shape; ascontiguousarray only for the byte key
         Ta = np.asarray(T, dtype=float)
         Da = np.asarray(dmu, dtype=float)

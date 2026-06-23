@@ -5,6 +5,7 @@ from typing import Literal
 import warnings
 
 import numpy as np
+import numpy.typing as npt
 import scipy.optimize as so
 from scipy.interpolate import UnivariateSpline
 try:
@@ -53,21 +54,32 @@ class Interpolation(ABC):
     """
 
     @abstractmethod
-    def __call__(self, x):
+    def __call__(self, x: npt.ArrayLike) -> np.ndarray | float:
+        """Evaluate the interpolation at ``x`` (scalar or array-like)."""
         ...
 
     def deriv(self) -> "Interpolation":
+        """Return ``f'`` as another :class:`Interpolation` (numerical by default)."""
         return NumericalDerivative(self)
 
 
 class NumericalDerivative(Interpolation):
-    """``f'`` by a scale-aware central difference; the generic fallback derivative."""
+    """``f'`` by a scale-aware central difference; the generic fallback derivative.
+
+    A single fixed-step central difference (vectorised, no Python-level loop)
+    rather than :func:`scipy.differentiate.derivative`, which only exists from
+    SciPy 1.15 and would lift the package's ``scipy>=1.11.2`` floor.
+
+    Args:
+        func: the interpolation to differentiate.
+        step: relative step; the absolute step is ``step * max(1, |x|)``.
+    """
 
     def __init__(self, func: Callable, step: float = 1e-6):
         self.func = func
         self.step = step
 
-    def __call__(self, x):
+    def __call__(self, x: npt.ArrayLike) -> np.ndarray | float:
         x = np.asarray(x, dtype=float)
         h = self.step * np.maximum(1.0, np.abs(x))
         d = (self.func(x + h) - self.func(x - h)) / (2.0 * h)
@@ -84,7 +96,7 @@ class _CallableInterpolation(Interpolation):
     def __init__(self, func: Callable):
         self.func = func
 
-    def __call__(self, x):
+    def __call__(self, x: npt.ArrayLike) -> np.ndarray | float:
         return self.func(x)
 
 
@@ -104,10 +116,11 @@ class PolynomialInterpolation(Interpolation):
         """Coefficients in ascending power order: ``c0 + c1*x + c2*x**2 + ...``."""
         return self.poly.coeffs[::-1]
 
-    def __call__(self, x):
+    def __call__(self, x: npt.ArrayLike) -> np.ndarray | float:
         return self.poly(x)
 
     def deriv(self) -> "Interpolation":
+        """The exact derivative polynomial."""
         return PolynomialInterpolation(self.poly.deriv())
 
 
@@ -237,10 +250,11 @@ class SGTEInterpolation(Interpolation):
 
     parameters: tuple[float, ...]
 
-    def __call__(self, T):
+    def __call__(self, T: npt.ArrayLike) -> np.ndarray | float:
         return G_calphad(T, *self.parameters)
 
     def deriv(self) -> Interpolation:
+        """The analytic ``dG/dT`` as a callable interpolation."""
         pl, *p = self.parameters
 
         def dG(T):
@@ -329,10 +343,11 @@ class RedlichKisterInterpolation(Interpolation):
     #     self.f0 = f0 - self(c0)
     #     return self
 
-    def __call__(self, c):
+    def __call__(self, c: npt.ArrayLike) -> np.ndarray | float:
         return self._eval_mix(c, *self.rk_parameters) + self.f0 + self.df * c
 
     def deriv(self) -> Interpolation:
+        """The analytic ``d/dc`` from :meth:`_eval_mix_derivative`."""
         # d/dc [ mix(c) + f0 + df*c ] = mix'(c) + df
         rk_parameters = self.rk_parameters
         df = self.df
