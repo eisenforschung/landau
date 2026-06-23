@@ -759,6 +759,19 @@ def test_fast_finds_deep_well_global_minimum():
         assert_allclose(np.asarray(phase.concentration(T, dmu)), gc, atol=1e-3)
 
 
+def test_fast_interpolating_phase_inherits_concentration_range_xor():
+    """Fast honours the SlowInterpolatingPhase concentration_range/extrapolation XOR (#278)."""
+    phases = [
+        LinePhase("A", fixed_concentration=0.2, line_energy=0.0),
+        LinePhase("mid", fixed_concentration=0.5, line_energy=-0.3),
+        LinePhase("B", fixed_concentration=0.8, line_energy=0.0),
+    ]
+    explicit = (0.1, 0.9)
+    assert FastInterpolatingPhase("sol", phases, concentration_range=explicit).concentration_range == explicit
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        FastInterpolatingPhase("sol", phases, concentration_range=explicit, maximum_extrapolation=0.05)
+
+
 # --- LowTemperatureExpansionSublattice tests ---
 
 _LTE_ATOL = 1e-12
