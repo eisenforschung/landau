@@ -19,7 +19,7 @@ from scipy.spatial import ConvexHull
 from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.utils.validation import check_is_fitted
 
-from .basic import TemperatureInterpolator
+from .basic import TemperatureInterpolator, Interpolation, _CallableInterpolation
 
 
 def _in_hull(points, hull):
@@ -331,4 +331,4 @@ class WhitneyTemperatureInterpolator(TemperatureInterpolator):
             t = np.atleast_1d(np.asarray(t, dtype=float)).reshape(-1, 1)
             return interp.predict(t)
 
-        return predict
+        return _CallableInterpolation(predict)

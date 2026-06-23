@@ -5,7 +5,7 @@ from typing import Literal
 import numpy as np
 from scipy.optimize import least_squares
 
-from .basic import ConcentrationInterpolator, TemperatureInterpolator
+from .basic import ConcentrationInterpolator, TemperatureInterpolator, Interpolation, _CallableInterpolation
 
 
 def _softplus(t):
@@ -144,8 +144,8 @@ class SoftplusFit(ConcentrationInterpolator, TemperatureInterpolator):
 
         return predictor
 
-    def fit(self, x, y) -> Callable[[float], float]:
+    def fit(self, x, y) -> Interpolation:
         """Local nonlinear least-squares fit with analytical Jacobian."""
         xn, y, model, jac, p0, lb, ub, xm, xs = self._prepare(x, y)
         res = self._least_squares(xn, y, model, jac, p0, lb, ub)
-        return self._make_predictor(model, res.x, xm, xs)
+        return _CallableInterpolation(self._make_predictor(model, res.x, xm, xs))
