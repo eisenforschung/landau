@@ -1,9 +1,10 @@
-"""Unit tests for landau.resample.RandomlyShiftedPhase."""
+"""Unit tests for landau.resample."""
 import numpy as np
+import pandas as pd
 import pytest
 
 from landau.phases import LinePhase, Phase
-from landau.resample import RandomlyShiftedPhase
+from landau.resample import RandomlyShiftedPhase, _resample_borders_once
 
 
 @pytest.fixture
@@ -59,3 +60,46 @@ def test_shift_scale_matches_noise():
     # Allow ~15% tolerance to keep the test stable across platforms.
     assert np.isclose(shifts.std(), noise, rtol=0.15)
     assert abs(shifts.mean()) < 0.01
+
+
+# ---- _resample_borders_once ----
+
+# Two terminal line phases: semigrand potential phi_A = 0, phi_B = -mu,
+# so the A-B boundary falls at exactly mu = 0 for any T.
+_TWO_PHASES = [LinePhase("A", 0, 0, 0), LinePhase("B", 1, 0, 0)]
+_TS = np.linspace(300, 800, 5)
+_DMUS = np.linspace(-0.3, 0.3, 30)
+
+
+def test_resample_borders_once_all_rows_are_border():
+    """All returned rows must have border=True and finite mu."""
+    df = _resample_borders_once(_TWO_PHASES, _TS, _DMUS, noise_norm=0.0)
+    assert isinstance(df, pd.DataFrame)
+    assert len(df) > 0
+    assert df["border"].all()
+    assert np.isfinite(df["mu"]).all()
+
+
+def test_resample_borders_once_run_column_value():
+    """The 'run' column must equal the provided run argument on every row."""
+    df = _resample_borders_once(_TWO_PHASES, _TS, _DMUS, noise_norm=0.0, run=5)
+    assert (df["run"] == 5).all()
+
+
+def test_resample_borders_once_default_run_is_zero():
+    df = _resample_borders_once(_TWO_PHASES, _TS, _DMUS, noise_norm=0.0)
+    assert (df["run"] == 0).all()
+
+
+def test_resample_borders_once_noise_shifts_refined_boundary():
+    """With nonzero noise the refined A-B boundary must shift from the noiseless mu=0 location."""
+    df_zero = _resample_borders_once(_TWO_PHASES, _TS, _DMUS, noise_norm=0.0)
+    np.random.seed(0)
+    df_noisy = _resample_borders_once(_TWO_PHASES, _TS, _DMUS, noise_norm=0.05)
+    refined_zero = df_zero[df_zero["refined"] != "no"]["mu"]
+    refined_noisy = df_noisy[df_noisy["refined"] != "no"]["mu"]
+    assert len(refined_zero) > 0
+    assert len(refined_noisy) > 0
+    # seed=0, noise_norm=0.05 shifts A and B by different amounts (~0.088 and ~0.020),
+    # moving the boundary from mu=0 to mu≈-0.068; mean must differ by more than 1e-8.
+    assert not np.isclose(refined_noisy.mean(), refined_zero.mean(), atol=1e-8)
