@@ -298,11 +298,11 @@ def test_miscibility_gap_refiner_regular_solution():
 def test_miscibility_gap_refiner_asymmetric_subregular():
     """Sub-regular solution f_mix = c(1-c)(L0 + L1(2c-1)) with L1 != 0
     breaks c <-> 1-c symmetry, so mu*(T) != 0 and c_left + c_right != 1.
-    Builds the phase as a SlowInterpolatingPhase fitted to control
+    Builds the phase as a FastInterpolatingPhase fitted to control
     points whose line energies sample the analytical f_mix; the
     refiner should trace the asymmetric binodal without complaint."""
     from scipy.constants import Boltzmann, eV
-    from landau.phases import SlowInterpolatingPhase
+    from landau.phases import FastInterpolatingPhase
     from landau.interpolate import RedlichKister
     from landau.calculate import calc_phase_diagram, refine_phase_diagram
 
@@ -318,7 +318,7 @@ def test_miscibility_gap_refiner_asymmetric_subregular():
                   line_energy=f_mix(c), line_entropy=0.0)
         for i, c in enumerate(control_cs)
     ]
-    sub = SlowInterpolatingPhase(
+    sub = FastInterpolatingPhase(
         name='sub', phases=line_phases,
         add_entropy=True, interpolator=RedlichKister(2),
     )
