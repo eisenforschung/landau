@@ -10,7 +10,9 @@ from landau.poly import (
     _greedy_stitch,
     _pca_sort_segment,
     _segment_tsp_polygon,
+    _segments_cross,
     _segments_from_labels,
+    _uncross_ring,
     handle_poly_method,
 )
 import pytest
@@ -570,3 +572,59 @@ def test_segment_tsp_polygon_rotated_tour_cut_inside_segment():
     assert isinstance(result, shapely.Polygon)
     assert result.is_valid
     assert result.equals(shapely.Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]))
+
+
+def test_segment_tsp_polygon_uncrosses_protruding_nose():
+    # A segment whose terminal point is not its geometric extreme (a curved
+    # nose: the middle point protrudes past the endpoints) leaves the closing
+    # chord cutting across it, so the assembled ring self-intersects even with
+    # an optimal tour. This is what a phase region touching the c=1 corner does
+    # on the opposite side (#253). The reconstruction must uncross the ring
+    # itself -- returning a valid polygon that keeps every border point --
+    # rather than leaning on make()'s make_valid repair (which warns and clips
+    # the protrusion off).
+    seg0 = np.array([[0.0, 0.0], [1.0, 2.0], [2.0, 0.0]])  # apex [1, 2] protrudes
+    seg1 = np.array([[2.0, 1.0], [0.0, 1.0]])
+    assert not shapely.Polygon(np.vstack([seg0, seg1])).is_valid  # naive ring crosses
+    result = _segment_tsp_polygon([seg0, seg1], lambda dm: [0, 1, 2, 3])
+    assert isinstance(result, shapely.Polygon)
+    assert result.is_valid
+    verts = {tuple(p) for p in np.array(result.exterior.coords)[:-1]}
+    assert {tuple(p) for p in np.vstack([seg0, seg1])} <= verts  # no point dropped
+
+
+# --- _segments_cross / _uncross_ring tests ---
+
+
+def test_segments_cross_proper_crossing():
+    a, b = np.array([0.0, 0.0]), np.array([2.0, 2.0])
+    c, d = np.array([0.0, 2.0]), np.array([2.0, 0.0])
+    assert _segments_cross(a, b, c, d)
+
+
+def test_segments_cross_disjoint():
+    a, b = np.array([0.0, 0.0]), np.array([1.0, 0.0])
+    c, d = np.array([0.0, 1.0]), np.array([1.0, 1.0])
+    assert not _segments_cross(a, b, c, d)
+
+
+def test_segments_cross_shared_endpoint_is_not_a_crossing():
+    a, b = np.array([0.0, 0.0]), np.array([1.0, 1.0])
+    c, d = np.array([0.0, 0.0]), np.array([1.0, -1.0])
+    assert not _segments_cross(a, b, c, d)
+
+
+def test_uncross_ring_repairs_bowtie():
+    # classic self-intersecting bow-tie; uncrossing yields a simple ring
+    bowtie = np.array([[0.0, 0.0], [1.0, 1.0], [1.0, 0.0], [0.0, 1.0]])
+    assert not shapely.Polygon(bowtie).is_valid
+    fixed = _uncross_ring(bowtie)
+    poly = shapely.Polygon(fixed)
+    assert poly.is_valid
+    # all four points survive (none dropped, unlike a hull/repair)
+    assert {tuple(p) for p in fixed} == {tuple(p) for p in bowtie}
+
+
+def test_uncross_ring_leaves_simple_ring_unchanged():
+    square = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+    np.testing.assert_array_equal(_uncross_ring(square), square)

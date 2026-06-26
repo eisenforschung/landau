@@ -411,7 +411,54 @@ def _segment_tsp_polygon(
     coords = np.vstack(chunks)
     if len(coords) < 3:
         return None
-    return shapely.Polygon(coords)
+    polygon = shapely.Polygon(coords)
+    if not polygon.is_valid:
+        polygon = shapely.Polygon(_uncross_ring(coords))
+    return polygon
+
+
+def _segments_cross(p1: np.ndarray, p2: np.ndarray, p3: np.ndarray, p4: np.ndarray) -> bool:
+    """Whether the open segments ``p1 p2`` and ``p3 p4`` properly cross.
+
+    Shared endpoints or collinear touching do not count -- only a genuine
+    interior crossing of the two segments.
+    """
+    def ccw(a, b, c):
+        return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+    d1, d2 = ccw(p3, p4, p1), ccw(p3, p4, p2)
+    d3, d4 = ccw(p1, p2, p3), ccw(p1, p2, p4)
+    return ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0))
+
+
+def _uncross_ring(coords: np.ndarray) -> np.ndarray:
+    """Remove self-intersections from a closed ring of points by 2-opt reversal.
+
+    The segment-endpoint TSP minimises connecting distance but does not
+    guarantee a simple polygon: where a segment's PCA-ordered terminal point is
+    not its geometric extreme -- a curved nose, e.g. the left side of a phase
+    region whose opposite side touches the ``c=1`` corner -- the closing chord
+    can cut across the segment.  Reversing the sub-path between two crossing
+    edges removes that crossing while keeping every border point; each reversal
+    strictly shortens the ring, so iterating converges to a simple polygon
+    without dropping any of the boundary the way a ``make_valid`` repair would.
+    """
+    pts = coords.astype(float).copy()
+    n = len(pts)
+    for _ in range(n * n):
+        for i in range(n - 1):
+            j = next(
+                (j for j in range(i + 2, n)
+                 if (j + 1) % n != i
+                 and _segments_cross(pts[i], pts[i + 1], pts[j], pts[(j + 1) % n])),
+                None,
+            )
+            if j is not None:
+                pts[i + 1:j + 1] = pts[i + 1:j + 1][::-1]
+                break
+        else:
+            break
+    return pts
 
 
 __all__ = ["Concave", "Segments"]
