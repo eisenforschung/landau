@@ -244,8 +244,9 @@ def calc_phase_diagram(
     Args:
         phases (iterable of Phases)
         Ts (iterable of floats): sampling points in temperature
-        mu (iterable of floats): sampling points in chemical potential; if int
-            guess sampling points with guess_mu_range at max(Ts)
+        mu (iterable of floats): sampling points in chemical potential; if a
+            non-zero int, guess sampling points with guess_mu_range at max(Ts)
+            (pass ``mu=0.0`` for a fixed-mu temperature-only diagram)
         refine (bool): add additional sampling points at exact phase transitions
         keep_unstable (bool): only keep entries of stable phases, otherwise keep entries of all phases at all sampling points
 
@@ -258,18 +259,14 @@ def calc_phase_diagram(
         Ts = [Ts]
     phases = {p.name: p for p in phases}
     if isinstance(mu, numbers.Integral) and mu != 0:
-        # we would often pass mu=0 to calculate a fixed mu, temperature only diagram and it'd be a bit annoying to pass
-        # mu=0.0 all the time, so we special case as above
         try:
-            mu, min_c, max_c = guess_mu_range(phases.values(), max(Ts), int(mu))
+            mu, *_ = guess_mu_range(phases.values(), max(Ts), int(mu))
         except ValueError:
             if all(isinstance(p, AbstractLinePhase) for p in phases.values()):
                 raise ValueError(
                         "Cannot guess chemical potential range of line phases with all the same concentration!"
                 ) from None
             raise
-    elif refine:
-        min_c, max_c = None, None
 
     def get(s, T):
         phi = s.semigrand_potential(T, mu)
