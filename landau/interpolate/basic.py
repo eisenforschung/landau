@@ -229,7 +229,7 @@ class SplineFit(ConcentrationInterpolator):
         def interpolation(c):
             return _scalarize(spline(c))
 
-        return interpolation
+        return _CallableInterpolation(interpolation)
 
 
 @dataclass(frozen=True, eq=True)

@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 from landau.interpolate import SplineFit
+from landau.interpolate.basic import Interpolation
 from hypothesis import given, strategies as st
 from hypothesis.extra.numpy import arrays
 
@@ -104,6 +105,31 @@ def test_SplineFit_none_smoothing_uses_scipy_default():
     fit = SplineFit(degree=3, smoothing=None).fit(x, y)
     # default s is the sample count, so the curve is allowed to miss the nodes
     assert np.max(np.abs(fit(x) - y)) > 1e-2
+
+
+def test_SplineFit_returns_interpolation():
+    """fit() returns an Interpolation, not a bare closure (PR #297)."""
+    x = np.linspace(0, 1, 8)
+    fit = SplineFit().fit(x, x**3)
+    assert isinstance(fit, Interpolation)
+
+
+@given(
+    coeffs=arrays(dtype=float, shape=4, elements=st.floats(min_value=-10, max_value=10)),
+)
+def test_SplineFit_deriv_matches_cubic_derivative(coeffs):
+    """The inherited numerical deriv() of a cubic spline recovers the cubic's
+    analytic derivative between nodes."""
+    x = np.linspace(0, 1, 8)
+    y = np.polyval(coeffs, x)
+    d = SplineFit(degree=3, smoothing=0.0).fit(x, y).deriv()
+    assert isinstance(d, Interpolation)
+    xt = np.linspace(0.05, 0.95, 51)
+    # central difference of a cubic spline tracks the analytic slope closely;
+    # 1e-5 stays far below anything a constant/linear derivative could reach.
+    assert np.allclose(d(xt), np.polyval(np.polyder(coeffs), xt), atol=1e-5)
+    # scalar in -> python float out, through the numerical-derivative wrapper
+    assert isinstance(d(0.5), float)
 
 
 def test_SplineFit_is_hashable_and_immutable():
