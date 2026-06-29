@@ -606,6 +606,36 @@ def test_interpolating_vs_slow_concentration():
     assert_allclose(fast.concentration(1000.0, dmu), slow.concentration(1000.0, dmu), atol=_INTERP_ATOL)
 
 
+def test_regular_solution_vs_slow_semigrand_potential():
+    """RegularSolution and SlowInterpolatingPhase agree on semigrand_potential.
+
+    Both fit the same RedlichKister polynomial to (line_fe + T*S) at the sample
+    concentrations; SlowInterpolatingPhase minimises with brute+fmin while
+    RegularSolution uses a dense-grid convex-hull, so the outputs should be
+    nearly identical (well inside the InterpolatingPhase grid tolerance).
+    """
+    rs = RegularSolution("sol", _make_interp_line_phases())
+    slow = _make_slow_interpolating_phase()
+    dmu = np.linspace(-0.4, 0.4, 11)
+    assert_allclose(
+        rs.semigrand_potential(1000.0, dmu),
+        slow.semigrand_potential(1000.0, dmu),
+        atol=_INTERP_ATOL,
+    )
+
+
+def test_regular_solution_vs_slow_concentration():
+    """RegularSolution and SlowInterpolatingPhase agree on concentration."""
+    rs = RegularSolution("sol", _make_interp_line_phases())
+    slow = _make_slow_interpolating_phase()
+    dmu = np.linspace(-0.4, 0.4, 11)
+    assert_allclose(
+        rs.concentration(1000.0, dmu),
+        slow.concentration(1000.0, dmu),
+        atol=_INTERP_ATOL,
+    )
+
+
 def test_slow_interpolating_phase_explicit_concentration_range_honoured():
     """Explicitly passed concentration_range is not overridden by maximum_extrapolation=0."""
     phases = [
