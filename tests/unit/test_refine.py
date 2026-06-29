@@ -692,40 +692,40 @@ def _dom_phases(*specs):
 
 
 def test_dominated_no_rivals_returns_false():
-    # Two phases coexist, the mapping carries only those two: nothing else can
-    # dominate. The generator is empty and any() returns False.
+    """Two phases coexist, the mapping carries only those two: nothing else
+    can dominate. The generator is empty and any() returns False."""
     phases = _dom_phases(("A", 0.0, 0.0), ("B", 1.0, 0.0))
     pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B"))
     assert _dominated(pt, phases) is False
 
 
 def test_dominated_rival_with_lower_phi_returns_true():
-    # phi_A = 0, phi_B = -mu = 0, phi_C = E_C - 0.5*mu = -0.1 at (T, mu=0).
-    # C is outside pt.phase_names() and strictly lower, so it dominates.
+    """phi_A = 0, phi_B = -mu = 0, phi_C = E_C - 0.5*mu = -0.1 at (T, mu=0).
+    C is outside pt.phase_names() and strictly lower, so it dominates."""
     phases = _dom_phases(("A", 0.0, 0.0), ("B", 1.0, 0.0), ("C", 0.5, -0.1))
     pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B"))
     assert _dominated(pt, phases) is True
 
 
 def test_dominated_rival_with_higher_phi_returns_false():
-    # phi_C = +0.5 > phi_A = phi_B = 0 at mu = 0: no dominator.
+    """phi_C = +0.5 > phi_A = phi_B = 0 at mu = 0: no dominator."""
     phases = _dom_phases(("A", 0.0, 0.0), ("B", 1.0, 0.0), ("C", 0.5, 0.5))
     pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B"))
     assert _dominated(pt, phases) is False
 
 
 def test_dominated_rival_equal_phi_returns_false():
-    # phi_C == own_phi exactly: the comparison is strict "<", so a degenerate
-    # rival is not treated as dominating. At a true triple point we want this
-    # so the refined point survives instead of getting dropped.
+    """phi_C == own_phi exactly: the comparison is strict "<", so a
+    degenerate rival is not treated as dominating. At a true triple point
+    we want this so the refined point survives instead of getting dropped."""
     phases = _dom_phases(("A", 0.0, 0.0), ("B", 1.0, 0.0), ("C", 0.5, 0.0))
     pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B"))
     assert _dominated(pt, phases) is False
 
 
 def test_dominated_skips_phases_in_own_set():
-    # Triple-point candidate. D would dominate but it is *in* `own`, so the
-    # `if p.name not in own` filter excludes it and no rival remains.
+    """Triple-point candidate. D would dominate but it is *in* ``own``, so
+    the ``if p.name not in own`` filter excludes it and no rival remains."""
     phases = _dom_phases(
         ("A", 0.0, 0.0), ("B", 1.0, 0.0), ("D", 0.5, -1.0),
     )
@@ -734,7 +734,7 @@ def test_dominated_skips_phases_in_own_set():
 
 
 def test_dominated_triple_with_outside_dominator_returns_true():
-    # Three phases coexist; a fourth phase outside `own` dominates.
+    """Three phases coexist; a fourth phase outside ``own`` dominates."""
     phases = _dom_phases(
         ("A", 0.0, 0.0), ("B", 1.0, 0.0), ("C", 0.5, 0.0), ("X", 0.25, -0.5),
     )
@@ -743,7 +743,8 @@ def test_dominated_triple_with_outside_dominator_returns_true():
 
 
 def test_dominated_picks_any_lower_rival_among_many():
-    # Two outside rivals: one higher, one lower. The lower one alone is enough.
+    """Two outside rivals: one higher, one lower. The lower one alone is
+    enough to make the candidate dominated."""
     phases = _dom_phases(
         ("A", 0.0, 0.0), ("B", 1.0, 0.0),
         ("hi", 0.25, +0.5), ("lo", 0.75, -0.2),
