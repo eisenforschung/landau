@@ -13,7 +13,7 @@ import scipy.special as se
 import numpy as np
 
 from ..interpolate import ConcentrationInterpolator, TemperatureInterpolator, SGTE, PolyFit, RedlichKister, SoftplusFit
-from ..interpolate.basic import _scalarize, RedlichKisterInterpolation
+from ..interpolate.basic import _scalarize, SurfaceInterpolator
 
 from scipy.constants import Boltzmann, eV
 
@@ -30,7 +30,7 @@ __all__ = [
     "InterpolatingPhase",
     "SlowInterpolatingPhase",
     "FastInterpolatingPhase",
-    "CalphadInterpolatingPhase",
+    "Surface2DInterpolatingPhase",
     "AbstractPointDefect",
     "ConstantPointDefect",
     "PointDefectSublattice",
@@ -794,37 +794,45 @@ class FastInterpolatingPhase(SlowInterpolatingPhase):
 
 
 @dataclass(frozen=True, eq=True)
-class CalphadInterpolatingPhase(FastInterpolatingPhase):
-    """FastInterpolatingPhase backed by a temperature-dependent Redlich-Kister surface.
+class Surface2DInterpolatingPhase(FastInterpolatingPhase):
+    """FastInterpolatingPhase backed by a fitted 2-D free-energy surface.
 
-    CALPHAD-style free-energy model:
+    Unlike the parent's :meth:`_get_interpolation` — which fits a fresh 1-D curve
+    f(c) at each temperature from the line phases' free energies — this class fits
+    a single surface f(T, c) once via ``surface_interpolator.fit()`` and returns
+    fixed-T slices via ``FittedSurface.slice_at(T)``.  The inherited logit-Newton
+    solver and the full semigrand/concentration API from
+    :class:`FastInterpolatingPhase` are reused unchanged.
 
-        H(T, c) = (1-c) f0(T) + c (f0(T)+df(T)) + c(1-c) sum_v L_v(T) (1-2c)^v
+    Training data: each line phase is sampled at ``num_temperature_samples`` evenly
+    spaced temperatures over ``temperature_range`` (or the union of the phases' own
+    sampled ranges).  The entropy-removed free energy H = f + T·S(c) is passed to
+    the interpolator when ``add_entropy=False`` (the usual case with calphy data).
 
-    The terminal energies ``f0(T)`` and ``df(T)`` are fitted with
-    :class:`~landau.interpolate.SGTE`; each interaction coefficient ``L_v(T)``
-    is fitted with :class:`~landau.interpolate.PolyFit` in ``T``.
-    :meth:`_get_interpolation` returns a live
-    :class:`~landau.interpolate.basic.RedlichKisterInterpolation` whose analytic
-    c-derivative is used by the inherited fast logit-Newton solver.
-
-    Requires terminal line phases at c=0 **and** c=1 (solution phases only).
+    Args:
+        surface_interpolator: A :class:`~landau.interpolate.SurfaceInterpolator`
+            that fits the 2-D surface from flat (T, c, H) arrays and returns a
+            :class:`~landau.interpolate.FittedSurface`.  **Required** — there is
+            no default; omitting it raises :exc:`TypeError` at construction time.
+        num_temperature_samples: Number of T values sampled per line phase for
+            the training set.
+        temperature_range: ``(Tmin, Tmax)`` span used for training.  Should cover
+            the full solve grid; defaults to the union of the line phases' own
+            sampled temperature ranges.
     """
 
-    num_coeffs: int = 5
-    """Number of Redlich-Kister interaction coefficients L_0..L_{n-1}."""
-    terminal_sgte_order: int = 4
-    """SGTE order for the terminal energies f0(T) and df(T)."""
-    coeff_poly_order: int = 2
-    """Polynomial order in T for each interaction coefficient L_v(T)."""
+    surface_interpolator: Optional[SurfaceInterpolator] = None
     num_temperature_samples: int = 40
-    """Temperatures at which RedlichKister is fitted to seed the coefficient series."""
     temperature_range: Optional[tuple] = None
-    """(Tmin, Tmax) the coefficient series is built over; defaults to the union of the
-    line phases' sampled temperature ranges.  Set it to span the solve grid."""
 
-    def _coefficient_series(self):
-        """Fit RedlichKister at each sampled T -> (Ts, f0(T), df(T), L_v(T))."""
+    def __post_init__(self):
+        super().__post_init__()
+        if self.surface_interpolator is None:
+            raise TypeError(
+                f"{type(self).__name__} requires a surface_interpolator keyword argument"
+            )
+
+    def _gather_training_data(self):
         n = self.num_temperature_samples
         sweeps = [np.asarray(getattr(p, "temperatures", []), float) for p in self.phases]
         have = [s for s in sweeps if s.size]
@@ -838,42 +846,31 @@ class CalphadInterpolatingPhase(FastInterpolatingPhase):
                 "need line phases with sampled temperatures or an explicit temperature_range"
             )
 
-        cc = np.array([p.line_concentration for p in self.phases], float)
-        if not (np.isclose(cc.min(), 0.0) and np.isclose(cc.max(), 1.0)):
-            raise ValueError(
-                "CalphadInterpolatingPhase requires terminal line phases at c=0 and c=1"
-            )
+        tg = np.linspace(glo, ghi, n)
+        TT, CC, FF = [], [], []
+        for p in self.phases:
+            TT.append(tg)
+            CC.append(np.full(tg.shape, float(p.line_concentration)))
+            FF.append(np.asarray(p.line_free_energy(tg), float))
+        TT = np.concatenate(TT)
+        CC = np.concatenate(CC)
+        FF = np.concatenate(FF)
 
-        Ts = np.linspace(glo, ghi, n)
-        rk = RedlichKister(self.num_coeffs)
-        f0s, dfs, Ls = [], [], []
-        for T in Ts:
-            ff = np.array([p.line_free_energy(T) for p in self.phases], float)
-            if not self.add_entropy:
-                ff = ff + T * S(cc)
-            interp = rk.fit(cc, ff)
-            f0s.append(interp.f0)
-            dfs.append(interp.df)
-            Ls.append(np.asarray(interp.rk_parameters, float))
-        return Ts, np.array(f0s), np.array(dfs), np.array(Ls)
+        if not self.add_entropy:
+            FF = FF + TT * S(CC)
+
+        return TT, CC, FF
 
     @cached_property
-    def _models(self):
-        Ts, f0s, dfs, Ls = self._coefficient_series()
-        f0_model = SGTE(self.terminal_sgte_order).fit(Ts, f0s)
-        df_model = SGTE(self.terminal_sgte_order).fit(Ts, dfs)
-        poly = PolyFit(self.coeff_poly_order + 1)
-        L_models = tuple(poly.fit(Ts, Ls[:, v]) for v in range(Ls.shape[1]))
-        return f0_model, df_model, L_models
+    def _fitted_surface(self):
+        TT, CC, FF = self._gather_training_data()
+        return self.surface_interpolator.fit(TT, CC, FF)
 
+    @lru_cache(maxsize=512)
     def _get_interpolation(self, T):
         if not isinstance(T, Real):
             raise TypeError(T)
-        f0_model, df_model, L_models = self._models
-        f0 = float(f0_model(T))
-        df = float(df_model(T))
-        L = np.array([float(m(T)) for m in L_models])
-        return RedlichKisterInterpolation(df, f0, L)
+        return self._fitted_surface.slice_at(float(T))
 
 
 def check_concentration_interpolation(
