@@ -19,7 +19,11 @@ from .basic import (
     StitchedFit,
 )
 
-from .softplus import SoftplusFit
+from .softplus import (
+    SoftplusFit,
+    SoftplusFittedSurface,
+    SoftplusSurface2DInterpolator,
+)
 from .whitney import (
     WhitneyTemperatureInterpolator,
     WhitneyFittedSurface,
@@ -46,6 +50,8 @@ __all__ = [
     "CalphadSurface2DInterpolator",
     "StitchedFit",
     "SoftplusFit",
+    "SoftplusFittedSurface",
+    "SoftplusSurface2DInterpolator",
     "WhitneyTemperatureInterpolator",
     "WhitneyFittedSurface",
     "WhitneySurface2DInterpolator",

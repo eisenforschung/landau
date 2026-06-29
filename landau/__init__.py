@@ -23,6 +23,7 @@ from .interpolate import (
     SoftplusFit,
     CalphadSurface2DInterpolator,
     WhitneySurface2DInterpolator,
+    SoftplusSurface2DInterpolator,
 )
 
 from .plot import plot_phase_diagram, plot_excess_free_energy
