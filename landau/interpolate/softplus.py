@@ -210,27 +210,122 @@ class _SoftplusSlice(Interpolation):
         return _CallableInterpolation(dfdc)
 
 
+_BMAX = 200.0
+"""Magnitude bound on the (normalised) slope during the per-slice seed fit.
+
+A redundant softplus term is unconstrained in a flat direction and would otherwise
+drift to infinity; the bound keeps every seed finite without touching the genuine
+sharpness range the data needs."""
+
+
+def _knee_position(cn, H):
+    """Well-bottom (knee) estimate: the ``argmin`` of the data with its best-fit
+    line in ``c`` removed.  A softplus term's knee is where its curvature
+    concentrates; for a convex well that is the curvature peak, which the
+    detrended ``argmin`` recovers.  The raw ``argmin`` instead returns the
+    function *minimum*, which for an asymmetric well sits off the knee and, when
+    the entropy-removed free energy is a small dimple riding a chemical-potential
+    tilt, collapses onto the downhill window edge.  Removing the linear trend
+    exposes the curvature and leaves the knee where it belongs."""
+    return cn[np.argmin(H - np.polyval(np.polyfit(cn, H, 1), cn))]
+
+
+def _smoothv_seed(cn, H, n, bb=12.0):
+    """Data-driven initial guess for one fixed-T slice of ``n`` softplus terms: an
+    opposite-slope softplus pair at the knee (the smooth-V identity
+    ``softplus(b u)+softplus(-b u) ~ |u|``); any further terms start inert (tiny
+    amplitude) and are activated by the polish only if the data needs them.
+    Returns flat ``[a, b, c]*n + [offset]`` in the normalised concentration ``cn``.
+
+    Knee and branch slopes are seeded from *different* features.  The knee is the
+    curvature centre (:func:`_knee_position`).  The two branch amplitudes come
+    from one-sided line fits, but the data is split at the function *minimum* (its
+    turning point) rather than at the knee: the two softplus arms are monotone
+    only on either side of where ``H`` actually turns around, so splitting at the
+    minimum keeps each line fit on a monotone arm even when the minimum sits off
+    the knee (an asymmetric well)."""
+    c0 = _knee_position(cn, H)
+    split = cn[np.argmin(H)]
+    left, right = cn <= split, cn >= split
+    sL = abs(np.polyfit(cn[left], H[left], 1)[0]) if left.sum() >= 2 else 1.0
+    sR = abs(np.polyfit(cn[right], H[right], 1)[0]) if right.sum() >= 2 else 1.0
+    a = [max(sR / bb, 1e-6), max(sL / bb, 1e-6)] + [1e-4] * (n - 2)
+    b = [bb, -bb] + [bb] * (n - 2)
+    c = [-c0] * n
+    return np.concatenate([np.ravel(np.column_stack([a, b, c])), [float(np.median(H))]])
+
+
+def _slice_model(p, cn, n):
+    a, b, c, off = p[0:3 * n:3], p[1:3 * n:3], p[2:3 * n:3], p[-1]
+    out = np.full(cn.shape, off, float)
+    for ai, bi, ci in zip(a, b, c):
+        out = out + ai * _softplus(bi * (cn + ci))
+    return out
+
+
+def _slice_jac(p, cn, n):
+    a, b, c = p[0:3 * n:3], p[1:3 * n:3], p[2:3 * n:3]
+    J = np.empty((cn.size, 3 * n + 1))
+    for i in range(n):
+        u = cn + c[i]
+        t = b[i] * u
+        sig = _sigmoid(t)
+        J[:, 3 * i] = _softplus(t)
+        J[:, 3 * i + 1] = a[i] * sig * u
+        J[:, 3 * i + 2] = a[i] * sig * b[i]
+    J[:, -1] = 1.0
+    return J
+
+
+def _fit_slice(cn, H, n, max_nfev):
+    """Robust single-slice fit: data-driven smooth-V seed, then a bounded,
+    graduated-sharpness trust-region polish (``x_scale='jac'``).  Returns the
+    per-term ``(a, b, c)`` arrays and the offset.  Used only to seed the coupled
+    surface fit, so two slices (coldest, central) are enough regardless of how
+    many temperatures are sampled."""
+    pad = 0.5 * (cn.max() - cn.min())
+    klo, khi = -(cn.max() + pad), -(cn.min() - pad)
+    lo = np.array([v for _ in range(n) for v in (0.0, -_BMAX, klo)] + [-np.inf])
+    hi = np.array([v for _ in range(n) for v in (np.inf, _BMAX, khi)] + [np.inf])
+    p0 = np.clip(_smoothv_seed(cn, H, n), lo, hi)
+    best = None
+    for scale in (0.4, 1.0):  # graduated sharpness: blunt corners first, then full
+        p = p0.copy()
+        p[1:3 * n:3] = np.clip(p[1:3 * n:3] * scale, lo[1:3 * n:3], hi[1:3 * n:3])
+        res = least_squares(lambda q: _slice_model(q, cn, n) - H, p,
+                            jac=lambda q: _slice_jac(q, cn, n), bounds=(lo, hi),
+                            method="trf", x_scale="jac", max_nfev=max_nfev)
+        if best is None or res.cost < best.cost:
+            best = res
+        p0 = res.x  # warm-start the sharper stage
+    s = best.x
+    return s[0:3 * n:3], s[1:3 * n:3], s[2:3 * n:3], float(s[-1])
+
+
 class SoftplusFittedSurface(FittedSurface):
     """Fitted surface for :class:`SoftplusSurface2DInterpolator`.
 
     Holds the per-term coefficient polynomials ``A`` / ``B`` / ``C`` (amplitude
-    pre-activation / slope / knee, each a row of ascending-power coefficients in
-    normalised T) and the offset polynomial ``O``, plus the T and c
-    normalisations.  :meth:`slice_at` evaluates them at T to produce a
-    :class:`_SoftplusSlice` with an analytic c-derivative; the amplitude passes
-    through the softplus link ``a_i(T) = softplus(polyval(Tn, A[i]))`` so it is
-    non-negative and the slice is convex in c.
+    pre-activation / slope / knee) and the offset polynomial ``O``, plus the T,
+    1/T and c normalisations.  The amplitude, knee and offset polynomials are in
+    normalised T; the **slope ``B`` is a polynomial in normalised 1/T** (well
+    sharpness scales with inverse temperature).  :meth:`slice_at` evaluates them
+    at T to produce a :class:`_SoftplusSlice` with an analytic c-derivative; the
+    amplitude passes through the softplus link ``a_i(T) = softplus(polyval(Tn,
+    A[i]))`` so it is non-negative and the slice is convex in c.
     """
 
-    def __init__(self, A, B, C, O, Tm, Ts, cm, cs):
+    def __init__(self, A, B, C, O, Tm, Ts, wm, ws, cm, cs):
         self._A, self._B, self._C, self._O = A, B, C, O
-        self._Tm, self._Ts, self._cm, self._cs = Tm, Ts, cm, cs
+        self._Tm, self._Ts, self._wm, self._ws = Tm, Ts, wm, ws
+        self._cm, self._cs = cm, cs
 
     def slice_at(self, T: float) -> _SoftplusSlice:
         Tn = (float(T) - self._Tm) / self._Ts
+        Wn = (1.0 / float(T) - self._wm) / self._ws
         pv = np.polynomial.polynomial.polyval
         a = _softplus(np.array([pv(Tn, row) for row in self._A]))  # non-negative amplitude
-        b = np.array([pv(Tn, row) for row in self._B])
+        b = np.array([pv(Wn, row) for row in self._B])             # slope: polynomial in 1/T
         c = np.array([pv(Tn, row) for row in self._C])
         offset = float(pv(Tn, self._O))
         return _SoftplusSlice(offset, a, b, c, self._cm, self._cs)
@@ -244,11 +339,13 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
 
         H(T, c) = off(T) + sum_i a_i(T) softplus( b_i(T) (cn + c_i(T)) )
 
-    as a single nonlinear least-squares problem with an analytic Jacobian, where
-    each softplus coefficient is a polynomial in normalised T.  ``c`` carries the
-    shape; ``T`` only modulates the coefficients, with the slope ``b`` expected to
-    move the most (hence ``b_order`` defaults higher than ``a_order`` /
-    ``c_order``).
+    as a single nonlinear least-squares problem with an analytic Jacobian.  ``c``
+    carries the shape; ``T`` only modulates the coefficients.  The amplitude
+    ``a_i``, knee ``c_i`` and offset polynomials are in normalised ``T``; the
+    **slope ``b_i`` is a polynomial in normalised 1/T** -- the well sharpens as the
+    temperature drops, so its inverse-temperature dependence is far better
+    approximated by a low-order polynomial in 1/T than in T (a polynomial in T
+    cannot track the strong sharpening at the cold end over a wide range).
 
     **Convexity.** The amplitudes are reparametrised through a non-negative link,
     ``a_i(T) = softplus(alpha_i(T))`` with ``alpha_i(T)`` the fitted polynomial,
@@ -259,10 +356,17 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
     the bounded 1-D :class:`SoftplusFit` gives.  A plain unconstrained polynomial
     amplitude could dip negative between knots and break this.
 
-    The fit is multi-started from both the *fitted* and the *large-amplitude
-    heuristic* 1-D :class:`SoftplusFit` on the central-T slice (the latter rescues
-    slices where the per-T fit collapses into the flat near-zero-amplitude basin),
-    keeping the lower-cost result.
+    **Avoiding bad minima.**  The coupled fit is multimodal -- the sharp V-wells
+    that motivate softplus sit in a flat-gradient landscape where a single
+    optimisation easily stalls with the knee or branch slopes badly placed.  Two
+    things keep it out of those basins: each start is a *convex-well-aware*
+    per-slice seed (the knee taken from the data minimum, an opposite-slope
+    softplus pair seeding the V; see :func:`_fit_slice`) rather than a generic
+    quantile guess, and the coupled solve runs with ``x_scale='jac'`` so the
+    badly scaled sharp-knee Jacobian does not stall the trust region.  Two slices
+    -- the coldest (sharpest, most structure) and the central -- are seeded and
+    the lower-cost coupled fit kept; seeding cost is independent of how many
+    temperatures are sampled (hundreds in practice).
 
     Unlike :class:`CalphadSurface2DInterpolator` there is no terminal-phase
     requirement, so this works for narrow intermetallics as well as solution
@@ -276,15 +380,19 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
     a_order: int = 1
     """Polynomial order in T for the amplitudes a_i(T)."""
     b_order: int = 2
-    """Polynomial order in T for the slopes b_i(T) (the strongest T-dependence)."""
+    """Polynomial order in 1/T for the slopes b_i(T) (the strongest T-dependence)."""
     c_order: int = 1
     """Polynomial order in T for the knee positions c_i(T)."""
     offset_order: int = 2
     """Polynomial order in T for the vertical offset off(T)."""
-    loss: Literal["linear", "soft_l1", "huber", "cauchy", "arctan"] = "soft_l1"
-    """Robust loss for the surface fit (see :func:`scipy.optimize.least_squares`)."""
+    loss: Literal["linear", "soft_l1", "huber", "cauchy", "arctan"] = "linear"
+    """Loss for the surface fit (see :func:`scipy.optimize.least_squares`).  The
+    default is ``linear`` -- the well bottom is the signal, not an outlier, so a
+    robust loss that down-weights large residuals is counter-productive here.  Set
+    a robust loss only for data with genuine outlier points."""
     f_scale: float = 1.0
-    """Soft margin between inlier and outlier residuals for the robust loss."""
+    """Soft margin between inlier and outlier residuals for a robust ``loss``;
+    ignored when ``loss='linear'``."""
     max_nfev: int = 4000
     """Maximum function evaluations per start of the surface fit."""
 
@@ -296,7 +404,7 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
         """Split the flat vector into A (n,na), B (n,nb), C (n,nc), O (no,).
 
         ``A`` holds the amplitude *pre-activation* polynomial coefficients:
-        ``a_i(T) = softplus(polyval(Tn, A[i]))``.
+        ``a_i(T) = softplus(polyval(Tn, A[i]))``.  ``B`` is in 1/T, the rest in T.
         """
         na, nb, nc, no = self._orders
         n = self.n_softplus
@@ -313,13 +421,14 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
         return A, B, C, O
 
     def _model(self, p, cn, vt):
-        """Model values at the normalised points (no Jacobian)."""
-        VTa, VTb, VTc, VTo = vt
+        """Model values at the normalised points (no Jacobian).  ``vt`` carries the
+        Vandermonde of normalised T for a/c/offset and of normalised 1/T for b."""
+        VTa, VWb, VTc, VTo = vt
         A, B, C, O = self._unpack(p)
         out = VTo @ O
         for i in range(self.n_softplus):
             a = _softplus(VTa @ A[i])   # non-negative amplitude link -> convexity
-            b = VTb @ B[i]
+            b = VWb @ B[i]              # slope: polynomial in 1/T
             cc = VTc @ C[i]
             out = out + a * _softplus(b * (cn + cc))
         return out
@@ -328,7 +437,7 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
         """Analytic Jacobian d(model)/d(params) at the normalised points."""
         na, nb, nc, no = self._orders
         n = self.n_softplus
-        VTa, VTb, VTc, VTo = vt
+        VTa, VWb, VTc, VTo = vt
         A, B, C, O = self._unpack(p)
         per = na + nb + nc
         J = np.empty((cn.size, n * per + no))
@@ -336,7 +445,7 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
             alpha = VTa @ A[i]
             a = _softplus(alpha)        # amplitude; da/dalpha = sigmoid(alpha)
             sig_a = _sigmoid(alpha)
-            b = VTb @ B[i]
+            b = VWb @ B[i]
             cc = VTc @ C[i]
             u = cn + cc
             t = b * u
@@ -344,47 +453,27 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
             base = i * per
             # d/dA = d/da * da/dalpha * dalpha/dA = softplus(t) * sigmoid(alpha) * Tn^k
             J[:, base:base + na] = (_softplus(t) * sig_a)[:, None] * VTa
-            J[:, base + na:base + na + nb] = (a * sig * u)[:, None] * VTb
+            J[:, base + na:base + na + nb] = (a * sig * u)[:, None] * VWb
             J[:, base + na + nb:base + per] = (a * sig * b)[:, None] * VTc
         J[:, n * per:] = VTo
         return J
 
-    def _pack_order0(self, slice_params, xm, xs, cm, cs):
-        """Pack a 1-D softplus vector ``[a,b,coff]*n + [offset]`` (slice
-        normalisation ``xm, xs``) into a 2-D coefficient vector: order-0 terms are
-        those values transformed to the surface normalisation ``cm, cs``, higher
-        orders zero.  The amplitude is mapped through the inverse link
-        (``alpha0 = softplus_inv(a)``) since ``A`` parametrises ``alpha``, not
-        ``a``; ``b' = b*cs/xs``, ``c' = (xs*coff + cm - xm)/cs``.
-        """
+    def _const_init(self, a, b, c, off):
+        """Coefficient vector for a constant-in-T surface from one slice's
+        ``(a, b, c, offset)`` -- order-0 terms set, higher orders zero.  The
+        amplitude is mapped through the inverse link (``alpha0 = softplus_inv(a)``)
+        since ``A`` parametrises ``alpha``, not ``a``."""
         na, nb, nc, no = self._orders
         n = self.n_softplus
         per = na + nb + nc
         p = np.zeros(n * per + no)
         for i in range(n):
-            a, b, coff = slice_params[3 * i], slice_params[3 * i + 1], slice_params[3 * i + 2]
             base = i * per
-            p[base] = _softplus_inv(a)
-            p[base + na] = b * cs / xs
-            p[base + na + nb] = (xs * coff + cm - xm) / cs
-        p[n * per] = slice_params[-1]
+            p[base] = _softplus_inv(a[i])
+            p[base + na] = b[i]
+            p[base + na + nb] = c[i]
+        p[n * per] = off
         return p
-
-    def _candidate_starts(self, Tn, cn, f, cm, cs):
-        """Both 1-D softplus starts on the central-T slice: the large-amplitude
-        heuristic (avoids the flat near-zero-a basin) and the fitted per-T
-        solution (fast when good)."""
-        n = self.n_softplus
-        mask = np.isclose(Tn, Tn[np.argmin(np.abs(Tn))])
-        c_slice = cn[mask] * cs + cm
-        f_slice = f[mask]
-        sf = SoftplusFit(n_softplus=n, loss=self.loss, f_scale=self.f_scale, max_nfev=self.max_nfev)
-        xn, yv, model, jac, p0, lb, ub, xm, xs = sf._prepare(c_slice, f_slice)
-        res = sf._least_squares(xn, yv, model, jac, p0, lb, ub)
-        return [
-            self._pack_order0(p0, xm, xs, cm, cs),     # heuristic (large a)
-            self._pack_order0(res.x, xm, xs, cm, cs),  # fitted per-T
-        ]
 
     def fit(self, T, c, f) -> SoftplusFittedSurface:
         T = np.asarray(T, float)
@@ -397,26 +486,42 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
 
         Tm, Ts = float(T.mean()), float(T.std() or 1.0)
         cm, cs = float(c.mean()), float(c.std() or 1.0)
+        w = 1.0 / T
+        wm, ws = float(w.mean()), float(w.std() or 1.0)
         Tn = (T - Tm) / Ts
+        Wn = (w - wm) / ws
         cn = (c - cm) / cs
         na, nb, nc, no = self._orders
         vt = (
             np.vander(Tn, na, increasing=True),
-            np.vander(Tn, nb, increasing=True),
+            np.vander(Wn, nb, increasing=True),   # slope basis is 1/T
             np.vander(Tn, nc, increasing=True),
             np.vander(Tn, no, increasing=True),
         )
 
-        # multi-start; keep the lower-cost fit
+        # Seed from the coldest (sharpest) and central slices: solve each convexly
+        # well, then start the coupled fit constant-in-T from it.  Keep the
+        # lower-cost coupled fit.  A tiny ridge toward the seed pins flat
+        # directions (a redundant term's slope/knee are otherwise unconstrained
+        # and run away under x_scale='jac'); the weight is negligible against the
+        # data residual, so it does not bias an active term.
+        uT = np.unique(T)
+        n = self.n_softplus
+        ridge = 1e-7 * (float(np.abs(f).max()) or 1.0)
+        eye = ridge * np.eye(self.n_softplus * (na + nb + nc) + no)
         best = None
-        for p0 in self._candidate_starts(Tn, cn, f, cm, cs):
+        for Tseed in (uT[0], uT[len(uT) // 2]):
+            m = np.isclose(T, Tseed)
+            a0, b0, c0, off0 = _fit_slice(cn[m], f[m], n, self.max_nfev)
+            p0 = self._const_init(a0, b0, c0, off0)
             res = least_squares(
-                lambda p: self._model(p, cn, vt) - f, p0,
-                jac=lambda p: self._jac(p, cn, vt),
-                loss=self.loss, f_scale=self.f_scale, max_nfev=self.max_nfev,
+                lambda p: np.concatenate([self._model(p, cn, vt) - f, ridge * (p - p0)]),
+                p0, jac=lambda p: np.vstack([self._jac(p, cn, vt), eye]),
+                loss=self.loss, f_scale=self.f_scale, x_scale="jac",
+                max_nfev=self.max_nfev,
             )
             if best is None or res.cost < best.cost:
                 best = res
 
         A, B, C, O = self._unpack(best.x)
-        return SoftplusFittedSurface(A, B, C, O, Tm, Ts, cm, cs)
+        return SoftplusFittedSurface(A, B, C, O, Tm, Ts, wm, ws, cm, cs)
