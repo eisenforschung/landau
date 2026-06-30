@@ -476,7 +476,7 @@ class DelaunayTripleRefiner(Refiner):
 
     Near a physical triple point the tessellation may produce several adjacent
     three-phase simplices, each seeding the same minimisation. The located
-    minimum typically falls outside every three-phase simplex — inside a
+    minimum may fall outside every three-phase simplex — inside a
     neighbouring two-phase triangle (the Delaunay partition has at most one
     triangle that strictly contains any point). Ownership is therefore
     determined by :func:`_simplex_containment`: the sibling with the largest
