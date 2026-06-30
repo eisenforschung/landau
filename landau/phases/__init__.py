@@ -833,17 +833,26 @@ def check_concentration_interpolation(
     free_energy = phase.free_energy(T, x)
 
     if plot_excess:
-        p_min = min(phases, key=lambda p: p.fixed_concentration)
-        p_max = max(phases, key=lambda p: p.fixed_concentration)
+        # Anchor the chord to the line phases' own free energies at their own
+        # concentrations (c_lo, c_hi) -- not at the concentration_range bounds
+        # (cmin, cmax).  The two coincide only when concentration_range happens
+        # to match the underlying phases' span; concentration_range can be wider
+        # (e.g. maximum_extrapolation > 0) or narrower (an explicit range), and
+        # in either case the previous code used cmin/cmax as both the chord's
+        # x-anchors and the entropy-correction concentration, which is only
+        # correct when c_lo == cmin and c_hi == cmax.
+        p_min = min(phases, key=lambda p: p.line_concentration)
+        p_max = max(phases, key=lambda p: p.line_concentration)
+        c_lo, c_hi = p_min.line_concentration, p_max.line_concentration
         f_min = p_min.line_free_energy(T)
         f_max = p_max.line_free_energy(T)
 
         # line_free_energy doesn't automatically respect add_entropy, unlike free_energy
         if phase.add_entropy:
-            f_min -= T * S(cmin)
-            f_max -= T * S(cmax)
+            f_min -= T * S(c_lo)
+            f_max -= T * S(c_hi)
 
-        free_energy -= (((cmax-x)*f_min + (x-cmin)*f_max)/(cmax-cmin))
+        free_energy -= (((c_hi-x)*f_min + (x-c_lo)*f_max)/(c_hi-c_lo))
 
     plt.plot(x, free_energy, label=phase.name)
 
@@ -855,7 +864,7 @@ def check_concentration_interpolation(
             line_free_energy -= T * S(cline)
 
         if plot_excess:
-            line_free_energy -= (((cmax-cline)*f_min + (cline-cmin)*f_max)/(cmax-cmin))
+            line_free_energy -= (((c_hi-cline)*f_min + (cline-c_lo)*f_max)/(c_hi-c_lo))
 
         plt.scatter(cline, line_free_energy)
 
