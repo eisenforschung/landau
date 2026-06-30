@@ -655,9 +655,6 @@ class _CCBase(Refiner):
     dT_min : float
         Minimum allowed temperature step (K) and the bootstrap step
         right after the seed.
-    max_steps : int
-        Hard cap on steps per trace direction, just in case the
-        adaptive logic somehow fails to terminate.
     dc_max : float
         Maximum concentration drift allowed per step. ``_dT_adapt``
         bounds the *mu* drift, which keeps the corrector bracket valid
@@ -670,14 +667,31 @@ class _CCBase(Refiner):
         never engages, so nothing is over-sampled. The cap is applied
         after the ``[dT_min, dT_max]`` clamp, so ``dT_min`` yields when
         it would otherwise block the drift target.
+    dc_min : float
+        Minimum concentration drift required per step, the complement of
+        ``dc_max``: a density *ceiling* that coarsens a boundary which is
+        steep in mu (``_dT_adapt`` shrinks the step toward ``dT_min``) but
+        nearly flat in c, where ``dc_max`` never engages and the curve
+        gets over-sampled. The step grows so the plotted concentration
+        moves at least ``dc_min``, but never past ``dT_max``. The ``max``
+        bounds take precedence over the ``min`` bounds: the floor is
+        applied before the ``dc_max`` cap, so a ``dc_min`` set at or above
+        ``dc_max`` yields to it and the per-step drift never exceeds
+        ``dc_max``. Disabled by default (``0.0``); set it below ``dc_max``
+        to thin redundant points without losing resolution.
+    max_steps : int
+        Hard cap on steps per trace direction, just in case the
+        adaptive logic somehow fails to terminate.
     """
 
-    def __init__(self, dT_max: float = 5.0, dT_min: float = 1.0,
-                 max_steps: int = 500, dc_max: float = 0.01):
+    def __init__(self, *, dT_max: float = 5.0, dT_min: float = 1.0,
+                 dc_max: float = 0.01, dc_min: float = 0.0,
+                 max_steps: int = 500):
         self.dT_max = dT_max
         self.dT_min = dT_min
-        self.max_steps = max_steps
         self.dc_max = dc_max
+        self.dc_min = dc_min
+        self.max_steps = max_steps
 
     # -- subclass hooks -----------------------------------------------------
 
@@ -798,8 +812,8 @@ class _CCBase(Refiner):
         return half_width / slope
 
     def _emitted_concentrations(self, pt, phases) -> tuple[float, ...]:
-        """Concentrations plotted by one emitted point, for the ``dc_max``
-        density floor in :meth:`_trace`.
+        """Concentrations plotted by one emitted point, for the
+        ``dc_max``/``dc_min`` density caps in :meth:`_trace`.
 
         A :class:`RefinedMiscibilityGap` plots its two pre-computed branch
         concentrations; a :class:`RefinedPoint` plots one branch per
@@ -907,13 +921,21 @@ class _CCBase(Refiner):
             # clipped to [dT_min, dT_max].
             dT_adapt = self._dT_adapt(step, dmu_dT, half_width)
             dT_adapt = min(self.dT_max, max(self.dT_min, dT_adapt))
+            # Concentration-drift floor (density ceiling): grow the step so
+            # |dc| per step reaches dc_min where it would otherwise over-sample
+            # a steep-in-mu, flat-in-c boundary. Capped at dT_max. Off when
+            # dc_min == 0. Applied before the dc_max cap below so the max
+            # parameters take precedence over the min ones.
+            if dc_dT > 0 and self.dc_min > 0:
+                dT_adapt = min(max(dT_adapt, self.dc_min / dc_dT), self.dT_max)
             # Concentration-drift cap: keep |dc| per step under dc_max using
             # the drift observed over the previous step. On a flat-in-mu but
             # curved-in-c boundary the mu-drift step saturates at dT_max and
             # this is what keeps the c-T curve resolved; on a straight
             # constant-c boundary dc_dT stays ~0 and it's a no-op. Applied
-            # after the [dT_min, dT_max] clamp so dT_min yields to it — a
-            # tiny absolute floor keeps the walk progressing.
+            # last — after the [dT_min, dT_max] clamp and the dc_min floor —
+            # so dT_min and dc_min both yield to it (max wins). A tiny
+            # absolute floor keeps the walk progressing.
             if dc_dT > 0:
                 dT_adapt = max(min(dT_adapt, self.dc_max / dc_dT), 1e-3)
             dT = sign * dT_adapt
@@ -1045,6 +1067,8 @@ class ClausiusClapeyronRefiner(_CCBase):
     dT_min : float
         Minimum temperature step / bootstrap step (K). See
         :class:`_CCBase`.
+    dc_max, dc_min : float
+        Per-step concentration-drift cap / floor. See :class:`_CCBase`.
     max_steps : int
         Hard cap on steps per trace direction. See :class:`_CCBase`.
     """
@@ -1158,7 +1182,7 @@ class MiscibilityGapRefiner(_CCBase):
 
     Parameters
     ----------
-    dT_max, dT_min, max_steps :
+    dT_max, dT_min, dc_max, dc_min, max_steps :
         See :class:`_CCBase`.
     c_jump_min : float
         Minimum c-spread of a simplex's vertices for it to be seeded.
@@ -1173,12 +1197,12 @@ class MiscibilityGapRefiner(_CCBase):
 
     label = "miscibility-gap"
 
-    def __init__(self, dT_max: float = 5.0, dT_min: float = 1.0,
-                 max_steps: int = 500, dc_max: float = 0.01,
-                 c_jump_min: float = 0.3,
+    def __init__(self, *, dT_max: float = 5.0, dT_min: float = 1.0,
+                 dc_max: float = 0.01, dc_min: float = 0.0,
+                 max_steps: int = 500, c_jump_min: float = 0.3,
                  gap_close: float = 1e-3, gap_share_min: float = 0.1):
-        super().__init__(dT_max=dT_max, dT_min=dT_min, max_steps=max_steps,
-                         dc_max=dc_max)
+        super().__init__(dT_max=dT_max, dT_min=dT_min, dc_max=dc_max,
+                         dc_min=dc_min, max_steps=max_steps)
         self.c_jump_min = c_jump_min
         self.gap_close = gap_close
         self.gap_share_min = gap_share_min

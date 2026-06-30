@@ -239,6 +239,119 @@ def test_cc_refiner_dc_max_noop_on_constant_c_boundary():
     assert len(tight) == len(loose)
 
 
+# -- dc_min concentration-drift floor ----------------------------------------
+
+
+@dataclass(frozen=True)
+class _SteepMuFlatCPhase(Phase):
+    """Toy phase with decoupled boundary slope and plotted concentration.
+
+    ``phi(T, mu) = -mu * a - k * (T - T0)`` so a coexistence pair with
+    different ``a`` locates ``mu* = -(k1 - k2)/(a1 - a2) * (T - T0)`` — a
+    boundary whose mu-slope is set by ``k`` alone. ``concentration`` is
+    defined independently as a near-flat ``c0 + cslope * (T - T0)``; the toy
+    need not satisfy ``c = -dphi/dmu``, so the boundary can be steep in mu
+    (``_dT_adapt`` pins the step at ``dT_min``) while c barely drifts —
+    exactly the regime the ``dc_min`` density ceiling targets.
+    """
+
+    a: float = 0.0
+    k: float = 0.0
+    c0: float = 0.5
+    cslope: float = 0.0
+    T0: float = 850.0
+
+    def semigrand_potential(self, T, mu):
+        return -np.asarray(mu, float) * self.a - self.k * (np.asarray(T, float) - self.T0)
+
+    def concentration(self, T, mu):
+        return self.c0 + self.cslope * (np.asarray(T, float) - self.T0) + 0.0 * np.asarray(mu, float)
+
+
+def _steep_candidate(T_min=840.0, T_max=860.0, T_c=850.0):
+    return _InterCandidate(
+        phase1="A", phase2="B", T_seed=T_c,
+        mu_bracket=(-0.05, 0.05), T_bracket=(T_c - 5.0, T_c + 5.0),
+        T_min=T_min, T_max=T_max,
+        proj_p1=(T_c, -0.1), proj_p2=(T_c, 0.1),
+    )
+
+
+def _solve_steep(dc_min, cslope=1e-3, K=0.025):
+    # mu* = K * (T - 850); |dmu/dT| = K, so _dT_adapt = half_width / K = 2 K,
+    # finer than dT_max = 5 K (the boundary is over-sampled) yet the dT_min
+    # bootstrap shift K * 1 = 0.025 stays inside the half-width bracket.
+    A = _SteepMuFlatCPhase(name="A", a=1.0, k=0.0, c0=0.5, cslope=cslope)
+    B = _SteepMuFlatCPhase(name="B", a=0.0, k=K, c0=0.2, cslope=0.0)
+    pts = ClausiusClapeyronRefiner(dc_min=dc_min).solve(
+        _steep_candidate(), {"A": A, "B": B})
+    return A, sorted(pts, key=lambda p: p.T)
+
+
+def test_cc_refiner_dc_min_floors_concentration_drift():
+    """On a steep-in-mu, flat-in-c boundary the floor grows each steady step
+    until the plotted concentration drifts exactly dc_min (capped at dT_max)."""
+    A, pts = _solve_steep(dc_min=4e-3)
+    assert len(pts) > 4  # genuinely traced
+    order = np.argsort([p.T for p in pts])
+    Ts = np.array([p.T for p in pts])[order]
+    cs = np.array([float(A.concentration(p.T, p.mu)) for p in pts])[order]
+    # Steady steps sit on the floor: dT = dc_min / cslope = 4 K, dc = dc_min.
+    # Nothing drifts more (dc_max is slack, dT_max = 5 K is not reached); the
+    # bootstrap and the truncated end steps drift less.
+    assert np.abs(np.diff(cs)).max() == pytest.approx(4e-3, abs=1e-9)
+    assert np.diff(Ts).max() == pytest.approx(4.0, abs=1e-9)
+
+
+def test_cc_refiner_dc_min_thins_oversampled_boundary():
+    """Without the floor the over-sampled steep-in-mu boundary steps at the
+    bare _dT_adapt size; the floor coarsens it to fewer points."""
+    _, dense = _solve_steep(dc_min=0.0)
+    _, thin = _solve_steep(dc_min=4e-3)
+    # Regime check: with the floor off every step is the 2 K _dT_adapt size.
+    assert np.diff(sorted(p.T for p in dense)).max() == pytest.approx(2.0, abs=1e-9)
+    assert len(thin) < len(dense)
+
+
+def test_cc_refiner_dc_min_noop_when_drift_already_met():
+    """A boundary whose bare step already drifts past dc_min never engages the
+    floor: identical point count whether it is set or off."""
+    _, off = _solve_steep(dc_min=0.0, cslope=3e-3)
+    _, on = _solve_steep(dc_min=4e-3, cslope=3e-3)
+    assert len(off) > 4  # genuinely traced
+    assert len(on) == len(off)
+
+
+def _solve_steep_caps(dc_max, dc_min, cslope):
+    A = _SteepMuFlatCPhase(name="A", a=1.0, k=0.0, c0=0.5, cslope=cslope)
+    B = _SteepMuFlatCPhase(name="B", a=0.0, k=0.025, c0=0.2, cslope=0.0)
+    pts = ClausiusClapeyronRefiner(dc_max=dc_max, dc_min=dc_min).solve(
+        _steep_candidate(), {"A": A, "B": B})
+    return A, sorted(pts, key=lambda p: p.T)
+
+
+def test_cc_refiner_dc_max_takes_precedence_over_dc_min():
+    """The max bound wins: a dc_min set above dc_max still cannot drive a step
+    past the dc_max cap, so the per-step drift is pinned at dc_max."""
+    # dc_min = 0.05 alone wants dT = 0.05 / 4e-3 = 12.5 K (clamped to dT_max),
+    # but dc_max = 0.01 caps the drift at dT = 0.01 / 4e-3 = 2.5 K.
+    A, pts = _solve_steep_caps(dc_max=0.01, dc_min=0.05, cslope=4e-3)
+    assert len(pts) > 4
+    cs = np.array([float(A.concentration(p.T, p.mu)) for p in pts])
+    assert np.abs(np.diff(cs)).max() == pytest.approx(0.01, abs=1e-9)
+
+
+def test_cc_refiner_dT_max_bounds_dc_min_floor():
+    """The dc_min floor never oversteps dT_max even when the drift target
+    would call for a larger step."""
+    # dc_min = 0.05 wants dT = 50 K with cslope = 1e-3; dc_max = 1.0 is slack,
+    # so only dT_max = 5 K bounds the step.
+    _, pts = _solve_steep_caps(dc_max=1.0, dc_min=0.05, cslope=1e-3)
+    assert len(pts) > 4
+    Ts = np.sort([p.T for p in pts])
+    assert np.diff(Ts).max() == pytest.approx(5.0, abs=1e-9)
+
+
 def test_simplex_straddles_segment_crossing():
     """A simplex with no traced vertex inside still gets skipped if a
     segment of the traced line crosses its bounding box."""
