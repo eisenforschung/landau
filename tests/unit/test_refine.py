@@ -21,6 +21,7 @@ from landau.refine import (
     _simplex_straddles,
     _dominated,
     _InterCandidate,
+    _SimplexCandidate,
     _delaunay_simplices,
 )
 
@@ -488,6 +489,83 @@ def test_delaunay_triple_refiner_deduplicates():
     assert set(out["phase"]) == {"A", "B", "C"}
     assert np.allclose(out["T"], 300.0, atol=10.0)
     assert np.allclose(out["mu"], 0.2, atol=0.05)
+
+
+def _four_phase_two_triple_system():
+    """Four LinePhases with two genuinely distinct, nearby triple points.
+
+    Solving the equal-phi conditions gives a stable A-B-C invariant at
+    (T=122.05, mu=-0.3120) and a stable B-C-D invariant at
+    (T=116.81, mu=-0.3057): different phase sets, only ~5 K / ~6 meV apart.
+    """
+    cs = (0.0, 0.33, 0.66, 1.0)
+    es = (0.0, -0.14637, -0.20137, -0.33458)
+    ss = (0.0006737, 0.000318, 0.0007109, 0.0004604)
+    return {n: LinePhase(name=n, fixed_concentration=c, line_energy=e, line_entropy=s)
+            for n, c, e, s in zip("ABCD", cs, es, ss)}
+
+
+def test_delaunay_triple_refiner_keeps_distinct_phase_sets():
+    """Two distinct invariants that sit within one simplex's (T, mu) extent
+    of each other must both survive: the dedup keys on the coexisting-phase
+    set, so an A-B-C and a B-C-D triple point are never collapsed into one."""
+    phases = _four_phase_two_triple_system()
+    # Two candidate simplices, one bracketing each invariant. Their extents
+    # (~20 K, ~0.04 eV) deliberately exceed the ~5 K / ~6 meV separation, so a
+    # phase-blind (T, mu) dedup would merge them.
+    s_abc = pd.DataFrame({"T": [112.0, 132.0, 122.0],
+                          "mu": [-0.33, -0.33, -0.29],
+                          "phase": ["A", "B", "C"]})
+    s_bcd = pd.DataFrame({"T": [107.0, 127.0, 117.0],
+                          "mu": [-0.32, -0.32, -0.28],
+                          "phase": ["B", "C", "D"]})
+
+    class _Injected(DelaunayTripleRefiner):
+        def propose(self, df):
+            yield _SimplexCandidate(simplex=s_abc)
+            yield _SimplexCandidate(simplex=s_bcd)
+
+    out = _Injected().run(None, phases)
+    locs = out.groupby(["T", "mu"])["phase"].agg(lambda s: frozenset(s.unique()))
+    assert len(locs) == 2
+    assert set(locs) == {frozenset("ABC"), frozenset("BCD")}
+    # Each invariant lands on its analytic location. The A-row belongs only to
+    # the A-B-C triple, the D-row only to B-C-D, so they tag the two points.
+    a_row = out[out.phase == "A"].iloc[0]
+    d_row = out[out.phase == "D"].iloc[0]
+    assert abs(a_row["T"] - 122.05) < 0.5 and abs(a_row["mu"] - (-0.3120)) < 2e-3
+    assert abs(d_row["T"] - 116.81) < 0.5 and abs(d_row["mu"] - (-0.3057)) < 2e-3
+
+
+def test_delaunay_triple_refiner_solve_is_pure():
+    """solve() carries no cross-call state: repeated calls on one candidate
+    return the same located point instead of going silently empty."""
+    phases = _three_phase_system()
+    Ts = np.linspace(220.0, 480.0, 6)
+    mus = np.linspace(-0.05, 0.55, 7)
+    df = _coarse_df(phases, Ts, mus)
+    refiner = DelaunayTripleRefiner()
+    cand = next(c for c in refiner.propose(df))
+    first = refiner.solve(cand, phases)
+    second = refiner.solve(cand, phases)
+    assert len(first) == len(second) == 1
+    assert first[0].phases == second[0].phases
+    assert (first[0].T, first[0].mu) == (second[0].T, second[0].mu)
+
+
+def test_delaunay_triple_refiner_run_is_repeatable():
+    """run() holds its dedup state locally, so the same instance applied
+    twice to one diagram yields identical output (was: second run emitted
+    nothing because the located point leaked from the first)."""
+    phases = _three_phase_system()
+    Ts = np.linspace(220.0, 480.0, 6)
+    mus = np.linspace(-0.05, 0.55, 7)
+    df = _coarse_df(phases, Ts, mus)
+    refiner = DelaunayTripleRefiner()
+    first = refiner.run(df, phases)
+    second = refiner.run(df, phases)
+    assert not first.empty and not second.empty
+    pd.testing.assert_frame_equal(first, second)
 
 
 def test_boundary_id_cc_refiner_single_line(two_phase_system):
