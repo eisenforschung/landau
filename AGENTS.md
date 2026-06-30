@@ -4,7 +4,7 @@ Cross-tool entry point for AI coding agents (Codex, Cursor, Aider, Claude, ...).
 
 ## TL;DR
 
-`landau.py` — thermodynamic equilibria and phase diagrams in the (semi-)grand ensemble. Pure Python, dataclass-heavy, plug-in strategies (`Phase`, `Interpolator`, `Refiner`, `AbstractPolyMethod`).
+`landau.py` — thermodynamic equilibria and phase diagrams in the (semi-)grand ensemble. Dataclass-heavy, plug-in strategies (`Phase`, `Interpolator`, `Refiner`, `AbstractPolyMethod`).
 
 ## Commands
 
@@ -26,14 +26,14 @@ Python `>=3.11,<3.14`. Extras: `test`, `constraints`, `fast-tsp`, `python-tsp`, 
 | Path | What's there |
 |------|--------------|
 | `landau/calculate.py` | `calc_phase_diagram`, `refine_phase_diagram`, `guess_mu_range`, `get_transitions`, clustering helpers |
-| `landau/phases/` | `Phase` ABC, `LinePhase`, `IdealSolution`, `RegularSolution`, `InterpolatingPhase`, `SlowInterpolatingPhase`, `FastInterpolatingPhase` (the default solution-phase choice; `SlowInterpolatingPhase` stays as the per-scalar `scipy.optimize.brute` reference oracle); `pointdefects.py`, `asewrapper.py` siblings |
+| `landau/phases/` | `Phase` ABC, `AbstractLinePhase`, `LinePhase`, `TemperatureDependentLinePhase` (alias `TemperatureDepandantLinePhase` kept for back-compat), `IdealSolution`, `RegularSolution`, `InterpolatingPhase`, `SlowInterpolatingPhase`, `FastInterpolatingPhase` (the default solution-phase choice; `SlowInterpolatingPhase` stays as the per-scalar `scipy.optimize.brute` reference oracle). Sibling modules: `pointdefects.py` (`AbstractPointDefect`, `ConstantPointDefect`, `PointDefectSublattice`, `LowTemperatureExpansionSublattice`, `PointDefectedPhase` — pre-split names re-exported through `phases/__init__.py` behind `@deprecate` shims for back-compat) and `asewrapper.py` (`AsePhase`). User-facing classes are re-exported from `landau/__init__.py` |
 | `landau/interpolate/` | `Interpolator` strategies: `PolyFit`, `SplineFit`, `SGTE`, `RedlichKister`, `StitchedFit`, `SoftplusFit`, `WhitneyTemperatureInterpolator` (the sklearn-style `WhitneyRBFInterpolator` it wraps is not re-exported). Central contract: `Interpolator.fit(x, y) → Interpolation`; `Interpolation.deriv() → Interpolation` returns `f'` (analytic for `PolyFit` / `SGTE` / `RedlichKister`, numerical-default for closure-wrapped fits) — `FastInterpolatingPhase` needs the analytic first derivative |
 | `landau/refine.py` | `Refiner` ABC + `ScanRefiner`, `DelaunayLineRefiner`, `DelaunayTripleRefiner`, `ClausiusClapeyronRefiner`, `MiscibilityGapRefiner` |
 | `landau/plot.py` | `plot_phase_diagram`, `plot_mu_phase_diagram`, 1d variants, `plot_excess_free_energy`, `get_polygons` |
 | `landau/poly.py` | Point-cloud → polygon: `Concave`, `Segments`, optional `PythonTsp` / `FastTsp` / segment variants |
 | `landau/resample.py` | `resample_borders`, `RandomlyShiftedPhase` — bootstrap-style border resampling |
 | `landau/features.py` | `Locus` enum (`INTERIOR`/`BOUNDARY`/`TRIPLE`); imported as `from landau.features import Locus` (not re-exported from package root) |
-| `benchmarks/` | Scripts backing any number cited in a PR body (working-style hard rule); committed alongside the PR that introduces the number |
+| `benchmarks/` | Scripts backing any number cited in a PR body (see Working style); committed alongside the PR that introduces the number |
 | `tests/unit/` | One subdirectory per module; filenames mirror what's under test |
 | `tests/regression/` | Bug pins — names contain issue numbers or descriptive labels |
 | `tests/integration/test_border_coverage.py` | Polygon-coverage smoke test across every `poly_method` × axis pair |
