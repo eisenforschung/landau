@@ -235,7 +235,7 @@ def calc_phase_diagram(
     phases: Iterable[Phase],
     Ts: Iterable[float] | float,
     mu: Iterable[float] | float | int,
-    refine: bool = True,
+    refine: bool | Sequence[Refiner] = True,
     keep_unstable: bool = False,
 ):
     """
@@ -247,7 +247,11 @@ def calc_phase_diagram(
         mu (iterable of floats): sampling points in chemical potential; if a
             non-zero int, guess sampling points with guess_mu_range at max(Ts)
             (pass ``mu=0.0`` for a fixed-mu temperature-only diagram)
-        refine (bool): add additional sampling points at exact phase transitions
+        refine (bool or sequence of :class:`~landau.refine.Refiner`): add
+            additional sampling points at exact phase transitions. ``True``
+            picks defaults based on which of ``T``/``mu`` are sampled, ``False``
+            skips refinement, and an explicit sequence of
+            :class:`~landau.refine.Refiner` instances applies just those.
         keep_unstable (bool): only keep entries of stable phases, otherwise keep entries of all phases at all sampling points
 
     Returns:
@@ -277,10 +281,11 @@ def calc_phase_diagram(
     pdf["stable"] = False
     pdf.loc[pdf.groupby(["T", "mu"], group_keys=False).phi.idxmin(), "stable"] = True
     pdf["locus"] = Locus.INTERIOR
-    if refine:
+    if refine is not False:
+        refiners = None if isinstance(refine, bool) else refine
         min_c = pdf.c.min()
         max_c = pdf.c.max()
-        pdf = refine_phase_diagram(pdf, phases, min_c=min_c, max_c=max_c)
+        pdf = refine_phase_diagram(pdf, phases, min_c=min_c, max_c=max_c, refiners=refiners)
     pdf["f"] = pdf.phi + pdf.mu * pdf.c
     pdf["f_excess"] = _apply_series(
         pdf.groupby("T", group_keys=False), _f_excess_tangent_chord, "f_excess"
