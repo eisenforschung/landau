@@ -338,19 +338,37 @@ class SoftplusFittedSurface(FittedSurface):
     at T to produce a :class:`_SoftplusSlice` with an analytic c-derivative; the
     amplitude passes through the softplus link ``a_i(T) = softplus(polyval(Tn,
     A[i]))`` so it is non-negative and the slice is convex in c.
+
+    Under :attr:`SoftplusSurface2DInterpolator.monotone_slope`, ``B`` holds the
+    *pre-link* slope coefficients instead: the slope is
+    ``b_i(T) = signs[i] * sum_k softplus(B[i,k]) * w^k`` with
+    ``w = max(Wn - wmin, 0)``, so ``|b_i(T)|`` is non-increasing in T.  ``signs``
+    and ``wmin`` are stored for :meth:`slice_at`; both are unused for the default
+    free polynomial slope.
     """
 
-    def __init__(self, A, B, C, O, Tm, Ts, wm, ws, cm, cs):
+    def __init__(self, A, B, C, O, Tm, Ts, wm, ws, cm, cs,
+                 monotone_slope=False, signs=None, wmin=0.0):
         self._A, self._B, self._C, self._O = A, B, C, O
         self._Tm, self._Ts, self._wm, self._ws = Tm, Ts, wm, ws
         self._cm, self._cs = cm, cs
+        self._monotone_slope = monotone_slope
+        self._signs = signs        # fixed per-term branch sign (monotone_slope only)
+        self._wmin = wmin          # training min of normalised 1/T (the w=0 anchor)
 
     def slice_at(self, T: float) -> _SoftplusSlice:
         Tn = (float(T) - self._Tm) / self._Ts
         Wn = (1.0 / float(T) - self._wm) / self._ws
         pv = np.polynomial.polynomial.polyval
         a = _softplus(np.array([pv(Tn, row) for row in self._A]))  # non-negative amplitude
-        b = np.array([pv(Wn, row) for row in self._B])             # slope: polynomial in 1/T
+        if self._monotone_slope:
+            # |b| = sum_k softplus(B_k) w^k, w = max(Wn - wmin, 0); sign fixed per term.
+            # Clamping at 0 holds |b| flat for T hotter than training, keeping it
+            # monotone (and positive) under extrapolation past the hot end.
+            w = max(Wn - self._wmin, 0.0)
+            b = np.array([s * pv(w, _softplus(row)) for s, row in zip(self._signs, self._B)])
+        else:
+            b = np.array([pv(Wn, row) for row in self._B])         # slope: polynomial in 1/T
         c = np.array([pv(Tn, row) for row in self._C])
         return _SoftplusSlice(float(pv(Tn, self._O)), a, b, c, self._cm, self._cs)
 
@@ -369,7 +387,9 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
     **slope ``b_i`` is a polynomial in normalised 1/T** -- the well sharpens as the
     temperature drops, so its inverse-temperature dependence is far better
     approximated by a low-order polynomial in 1/T than in T (a polynomial in T
-    cannot track the strong sharpening at the cold end over a wide range).
+    cannot track the strong sharpening at the cold end over a wide range).  Set
+    :attr:`monotone_slope` to additionally constrain ``|b_i(T)|`` to never reverse
+    -- a physically convex well only ever sharpens as it cools.
 
     **Convexity.** The amplitudes are reparametrised through a non-negative link,
     ``a_i(T) = softplus(alpha_i(T))`` with ``alpha_i(T)`` the fitted polynomial,
@@ -457,6 +477,24 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
     poorly on stiff data (see :attr:`_LM_HAS_INTERNAL_SCALING`).  Force ``'lm'``
     or ``'trf'`` to override the default; ``'lm'`` requires ``loss='linear'`` and,
     on scipy < 1.16, still converges poorly on sharp-knee data."""
+    monotone_slope: bool = False
+    """Constrain every term's slope magnitude ``|b_i(T)|`` to be non-increasing in
+    ``T`` -- a convex well only ever sharpens as it cools, so the fitted sharpness
+    should never reverse.  When ``True`` the slope is reparametrised as
+
+        ``b_i(T) = s_i * [ softplus(B_i0) + sum_{k>=1} softplus(B_ik) * w^k ]``,
+        ``w = max((1/T) - min_train(1/T), 0)``,
+
+    with the branch sign ``s_i`` fixed from the per-slice seed.  Each
+    ``softplus(B_ik) >= 0`` and ``w^k`` is non-decreasing in ``1/T``, so ``|b_i|`` is
+    non-decreasing in ``1/T`` (= non-increasing in ``T``) by construction at *every*
+    temperature, training and extrapolated -- the ``max(., 0)`` holds the magnitude
+    flat for ``T`` hotter than the training range rather than letting an even-power
+    term turn it back up.  Softplus (not sigmoid) is the positivity link: it is
+    unbounded above and keeps the solve unconstrained, so the default ``lm`` fast
+    path is retained and the slope is free to grow at the cold end (a bounded
+    sigmoid link caps the slope and converges worse on sharp wells).  The default
+    ``False`` leaves ``b_i(T)`` a free polynomial in ``1/T``."""
 
     # --- internal solver tuning (not dataclass fields) ---
     _SEED_MAX_NFEV: ClassVar[int] = 300
@@ -519,61 +557,98 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
         terms = p[:n * per].reshape(n, per)
         return terms[:, :na], terms[:, na:na + nb], terms[:, na + nb:], p[n * per:]
 
-    def _const_init(self, a, b, c, off):
+    def _bseed(self, b, b_basis):
+        """Seed the per-term b-block, returning an ``(n, nb)`` array.
+
+        Free slope: the order-0 coefficient is the slice slope ``b_i``, higher
+        orders zero.  Monotone slope: ``B_i0`` goes through the inverse softplus
+        link so the constant magnitude is ``|b_i|``, and the higher-order
+        increments are small but *active* (a non-dead gradient), scaled by the
+        basis column magnitudes so each contributes a few percent of ``|b_i|`` at
+        the cold end rather than being born saturated-off."""
+        na, nb, nc, no = self._orders
+        n = self.n_softplus
+        block = np.zeros((n, nb))
+        if not self.monotone_slope:
+            block[:, 0] = b
+            return block
+        mag = np.maximum(np.abs(b), 1e-6)
+        block[:, 0] = _softplus_inv(mag)
+        if nb > 1:
+            col = np.abs(b_basis).mean(axis=0) if b_basis is not None else np.ones(nb)
+            for k in range(1, nb):
+                block[:, k] = _softplus_inv(0.05 * mag / max(float(col[k]), 1e-12))
+        return block
+
+    def _const_init(self, a, b, c, off, b_basis=None):
         """Coefficient vector for a constant-in-T surface from one slice's
         ``(a, b, c, offset)`` -- order-0 terms set, higher orders zero.  The
         amplitude is mapped through the inverse link (``alpha0 = softplus_inv(a)``)
-        since ``A`` parametrises ``alpha``, not ``a``.  With :attr:`shared_knee`
-        the per-slice seed already has identical knees across terms
-        (:func:`_smoothv_seed`), so ``c[0]`` is the shared value."""
+        since ``A`` parametrises ``alpha``, not ``a``; the b-block is seeded by
+        :meth:`_bseed` (which applies the same inverse link under
+        :attr:`monotone_slope`, ``b_basis`` being its slope Vandermonde).  With
+        :attr:`shared_knee` the per-slice seed already has identical knees across
+        terms (:func:`_smoothv_seed`), so ``c[0]`` is the shared value."""
         na, nb, nc, no = self._orders
         n = self.n_softplus
         offset = np.zeros(no)
         offset[0] = off
+        bblock = self._bseed(b, b_basis)
         if self.shared_knee:
             terms = np.zeros((n, na + nb))
             terms[:, 0] = _softplus_inv(a)
-            terms[:, na] = b
+            terms[:, na:na + nb] = bblock
             c_shared = np.zeros(nc)
             c_shared[0] = c[0]
             return np.concatenate([terms.ravel(), c_shared, offset])
         terms = np.zeros((n, na + nb + nc))
         terms[:, 0] = _softplus_inv(a)
-        terms[:, na] = b
+        terms[:, na:na + nb] = bblock
         terms[:, na + nb] = c
         return np.concatenate([terms.ravel(), offset])
 
-    def _model_and_jac(self, p, cn, vt):
+    def _model_and_jac(self, p, cn, vt, signs=None):
         """Model values and analytic Jacobian ``d(model)/d(params)`` in one pass.
 
         The coupled fit evaluates the residual and Jacobian at the same point on
         every iteration, so the per-term ``softplus``/``sigmoid`` are computed
         once here and reused for both the value and its derivatives.  ``vt`` is the
-        Vandermonde of normalised T for a/c/offset and of normalised 1/T for b;
+        Vandermonde of normalised T for a/c/offset and, for b, of normalised 1/T
+        (free slope) or of the clamped shifted ``w >= 0`` (:attr:`monotone_slope`);
         the Jacobian columns follow the ``[A_i | B_i | C_i]`` term layout, offset
         last -- or, with :attr:`shared_knee`, ``[A_i | B_i]`` per term, one shared
         knee block, then offset, matching :meth:`_unpack`.  In the shared case
         every term evaluates the same knee polynomial (``C`` is already broadcast
         by :meth:`_unpack`), and by the chain rule the derivative wrt a shared
         coefficient is the *sum* of each term's contribution, so the per-term
-        knee blocks are accumulated rather than each appended separately.
+        knee blocks are accumulated rather than each appended separately.  Under
+        :attr:`monotone_slope` the slope passes through the same non-negative
+        softplus link as the amplitude (``signs`` carries the fixed branch sign
+        ``s_i``), so ``db/dB_ik = s_i * sigmoid(B_ik) * w^k``.
         """
         VTa, VWb, VTc, VTo = vt
         A, B, C, O = self._unpack(p)
         out = VTo @ O
         blocks = []
         dC_shared = np.zeros((cn.size, VTc.shape[1])) if self.shared_knee else None
-        for Ai, Bi, Ci in zip(A, B, C):
+        for i, (Ai, Bi, Ci) in enumerate(zip(A, B, C)):
             alpha = VTa @ Ai
             a = _softplus(alpha)        # amplitude link -> convexity; da/dalpha = sigmoid(alpha)
-            b = VWb @ Bi                # slope: polynomial in 1/T
+            if self.monotone_slope:
+                # |b| = sum_k softplus(B_k) w^k, monotone in w=1/T; db/dB_k = sigmoid(B_k) w^k
+                spB, sgB = _softplus(Bi), _sigmoid(Bi)
+                b = signs[i] * (VWb @ spB)
+                db = signs[i] * (VWb * sgB[None, :])
+            else:
+                b = VWb @ Bi            # slope: free polynomial in 1/T
+                db = VWb
             u = cn + VTc @ Ci
             t = b * u
             sig = _sigmoid(t)
             spt = _softplus(t)
             out = out + a * spt
             blocks.append((spt * _sigmoid(alpha))[:, None] * VTa)  # d/dA via the link
-            blocks.append((a * sig * u)[:, None] * VWb)
+            blocks.append((a * sig * u)[:, None] * db)
             dC = (a * sig * b)[:, None] * VTc
             if self.shared_knee:
                 dC_shared += dC
@@ -609,22 +684,27 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
             np.vander(Tn, no, increasing=True),
         )
 
-    def _seed_starts(self, T, cn, f):
-        """Constant-in-T seed vectors from the coldest and central temperature slices.
+    def _seed_starts(self, T, cn, f, b_basis=None):
+        """Constant-in-T ``(seed, signs)`` pairs from the coldest and central slices.
 
         Trying both guards against a bad basin: the central slice alone misplaces
         the knee on a strongly T-sharpening well, while the cold slice alone misses
         a second term that only the warm data resolves.  The per-slice fit is
         capped (:attr:`_SEED_MAX_NFEV`), so seeding cost is independent of how many
-        temperatures are sampled.
+        temperatures are sampled.  ``signs`` is the per-term branch sign of the
+        slice slopes, fixed for :attr:`monotone_slope` (unused otherwise);
+        ``b_basis`` is the slope Vandermonde, used to scale the seed increments.
         """
         uT = np.unique(T)
         max_nfev = min(self.max_nfev, self._SEED_MAX_NFEV)
-        return [
-            self._const_init(*_fit_slice(cn[np.isclose(T, Tseed)], f[np.isclose(T, Tseed)],
-                                         self.n_softplus, max_nfev))
-            for Tseed in (uT[0], uT[len(uT) // 2])
-        ]
+        starts = []
+        for Tseed in (uT[0], uT[len(uT) // 2]):
+            m = np.isclose(T, Tseed)
+            a0, b0, c0, off0 = _fit_slice(cn[m], f[m], self.n_softplus, max_nfev)
+            signs = np.sign(b0)
+            signs[signs == 0] = 1.0
+            starts.append((self._const_init(a0, b0, c0, off0, b_basis), signs))
+        return starts
 
     def fit(self, T, c, f) -> SoftplusFittedSurface:
         T = np.asarray(T, float)
@@ -638,14 +718,20 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
         Tn, Tm, Ts = _standardize(T)        # amplitude / knee / offset polynomials are in T
         Wn, wm, ws = _standardize(1.0 / T)  # slope polynomial is in 1/T
         cn, cm, cs = _standardize(c)
-        vt = self._vandermonde(Tn, Wn)
+        # monotone slope: fit b against the clamped shifted variable w = max(Wn - wmin, 0)
+        # (training min of 1/T maps to w=0), so |b| is non-decreasing in 1/T by construction.
+        wmin = float(Wn.min())
+        Wb = np.maximum(Wn - wmin, 0.0) if self.monotone_slope else Wn
+        vt = self._vandermonde(Tn, Wb)
 
         ridge = 1e-7 * (float(np.abs(f).max()) or 1.0)
         eye = ridge * np.eye(self._n_params)
         kwargs = self._solver_kwargs()
 
-        def coupled(seed):
-            return _CachedResidual(self._model_and_jac, cn, vt, f, seed, ridge, eye, kwargs)
+        def coupled(seed, signs):
+            mj = ((lambda p, cn_, vt_: self._model_and_jac(p, cn_, vt_, signs))
+                  if self.monotone_slope else self._model_and_jac)
+            return _CachedResidual(mj, cn, vt, f, seed, ridge, eye, kwargs)
 
         # Race the two seeds: a short polish each, finish only the better one.  The
         # faster-converging seed is *not* the one with the lower constant-in-T start
@@ -655,9 +741,11 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
         # so structureless data can't wander down a flat valley to a degenerate
         # huge-amplitude basin; if the short polish already converged it *is* the answer.
         race_nfev = min(self.max_nfev, self._SEED_RACE_NFEV)
-        trials = [(seed, coupled(seed).solve(race_nfev)) for seed in self._seed_starts(T, cn, f)]
-        seed, trial = min(trials, key=lambda st: st[1].cost)
-        res = trial if trial.status > 0 else coupled(seed).solve(self.max_nfev)
+        trials = [(seed, signs, coupled(seed, signs).solve(race_nfev))
+                  for seed, signs in self._seed_starts(T, cn, f, vt[1])]
+        seed, signs, trial = min(trials, key=lambda st: st[2].cost)
+        res = trial if trial.status > 0 else coupled(seed, signs).solve(self.max_nfev)
 
         A, B, C, O = self._unpack(res.x)
-        return SoftplusFittedSurface(A, B, C, O, Tm, Ts, wm, ws, cm, cs)
+        return SoftplusFittedSurface(A, B, C, O, Tm, Ts, wm, ws, cm, cs,
+                                     monotone_slope=self.monotone_slope, signs=signs, wmin=wmin)
