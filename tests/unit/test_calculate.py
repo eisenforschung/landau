@@ -535,6 +535,30 @@ def test_calc_phase_diagram_refined_locus(triple_point_phases):
     assert (df.loc[edges, "locus"] == Locus.INTERIOR).all()
 
 
+def test_calc_phase_diagram_refine_explicit_list(triple_point_phases):
+    """An explicit refiner list is applied instead of the defaults."""
+    from landau.refine import DelaunayLineRefiner
+    # DelaunayLineRefiner is opt-in (not in the 2-D defaults) and emits no
+    # triple points, so the explicit list is distinguishable from the default
+    # set which does produce Locus.TRIPLE rows.
+    df = calc_phase_diagram(triple_point_phases, Ts=np.linspace(220, 480, 12),
+                            mu=np.linspace(-0.05, 0.55, 15),
+                            refine=[DelaunayLineRefiner()], keep_unstable=True)
+    refined = df["refined"].fillna("no") != "no"
+    assert refined.any()
+    assert (df["locus"] == Locus.BOUNDARY).any()
+    assert not (df["locus"] == Locus.TRIPLE).any()
+
+
+def test_calc_phase_diagram_refine_empty_list_skips(triple_point_phases):
+    """An explicit empty refiner list refines nothing, like refine=False."""
+    df = calc_phase_diagram(triple_point_phases, Ts=np.linspace(220, 480, 12),
+                            mu=np.linspace(-0.05, 0.55, 15),
+                            refine=[], keep_unstable=True)
+    assert (df["refined"].fillna("no") == "no").all()
+    assert (df["locus"] == Locus.INTERIOR).all()
+
+
 def test_calc_phase_diagram_locus_triple(triple_point_phases):
     df = calc_phase_diagram(triple_point_phases, Ts=np.linspace(220, 480, 12),
                             mu=np.linspace(-0.05, 0.55, 15))
