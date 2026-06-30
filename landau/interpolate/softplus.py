@@ -539,6 +539,21 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
         p[n * per] = off
         return p
 
+    def _solver_kwargs(self) -> dict:
+        """``least_squares`` keyword arguments for the coupled solve.
+
+        Uses ``method='lm'`` where scipy applies MINPACK's internal variable
+        scaling (:data:`_LM_HAS_INTERNAL_SCALING`) and the loss is linear,
+        otherwise the trust-region solver with ``x_scale='jac'``.  An explicit
+        :attr:`method` overrides the version-based choice.
+        """
+        method = self.method
+        if method is None:
+            method = "lm" if (_LM_HAS_INTERNAL_SCALING and self.loss == "linear") else "trf"
+        if method == "lm":
+            return dict(method="lm")  # __post_init__ guarantees loss == "linear"
+        return dict(method="trf", loss=self.loss, f_scale=self.f_scale, x_scale="jac")
+
     def fit(self, T, c, f) -> SoftplusFittedSurface:
         T = np.asarray(T, float)
         c = np.asarray(c, float)
@@ -597,14 +612,6 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
             a0, b0, c0, off0 = _fit_slice(cn[m], f[m], n, seed_nfev)
             seeds.append(self._const_init(a0, b0, c0, off0))
 
-        method = self.method
-        if method is None:
-            method = "lm" if (_LM_HAS_INTERNAL_SCALING and self.loss == "linear") else "trf"
-        if method == "lm":
-            solver_kw = dict(method="lm")  # __post_init__ guarantees loss == "linear"
-        else:
-            solver_kw = dict(method="trf", loss=self.loss, f_scale=self.f_scale, x_scale="jac")
-
         def coupled(seed, x0, max_nfev):
             # Residual and Jacobian share one ``_model_and_jac`` pass per point via
             # a one-slot cache: ``least_squares`` calls ``fun(p)`` then ``jac(p)``
@@ -622,7 +629,7 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
 
             return least_squares(
                 lambda p: evaluate(p)["res"], x0, jac=lambda p: evaluate(p)["jac"],
-                max_nfev=max_nfev, **solver_kw,
+                max_nfev=max_nfev, **self._solver_kwargs(),
             )
 
         race_nfev = min(self.max_nfev, _SEED_RACE_NFEV)
