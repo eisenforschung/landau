@@ -22,6 +22,7 @@ from landau.refine import (
     _dominated,
     _InterCandidate,
     _delaunay_simplices,
+    _simplex_containment,
 )
 
 
@@ -488,6 +489,55 @@ def test_delaunay_triple_refiner_deduplicates():
     assert set(out["phase"]) == {"A", "B", "C"}
     assert np.allclose(out["T"], 300.0, atol=10.0)
     assert np.allclose(out["mu"], 0.2, atol=0.05)
+
+
+def test_delaunay_triple_solve_is_pure_and_simplex_owned():
+    """``solve`` only emits from the simplex that owns the triple point, and is
+    a pure function of its candidate (no dedup state)."""
+    phases = _three_phase_system()
+    Ts = np.linspace(220.0, 480.0, 6)
+    mus = np.linspace(-0.05, 0.55, 7)
+    df = _coarse_df(phases, Ts, mus)
+
+    refiner = DelaunayTripleRefiner()
+    cands = list(refiner.propose(df))
+    assert len(cands) > 1, "grid should produce multiple three-phase simplices"
+
+    emitting = [c for c in cands if refiner.solve(c, phases)]
+    # The point is attributed to exactly one owning simplex.
+    assert len(emitting) == 1
+
+    # Pure: re-solving the same candidates yields the same partition; the
+    # previously-emitting simplex still emits (old self._found would mute it).
+    assert [c for c in cands if refiner.solve(c, phases)] == emitting
+
+    pt = refiner.solve(emitting[0], phases)[0]
+    assert np.isclose(pt.T, 300.0, atol=10.0)
+    assert np.isclose(pt.mu, 0.2, atol=0.05)
+
+
+def test_simplex_containment_scores_ownership():
+    """``_simplex_containment`` is the affine-invariant ownership score: ``>= 0``
+    when the point is inside, negative outside, and largest for the simplex the
+    point is least far outside of — the fallback that attributes a triple point
+    landing just past every three-phase simplex to a single owner."""
+    inside = pd.DataFrame({"T": [0.0, 2.0, 0.0], "mu": [0.0, 0.0, 2.0]})
+    # Centroid is strictly inside, edge midpoint sits on the boundary.
+    assert _simplex_containment((0.5, 0.5), inside) > 0
+    assert np.isclose(_simplex_containment((1.0, 0.0), inside), 0.0)
+
+    # A point past the hypotenuse is outside; the simplex it is least far
+    # outside of wins ``max``.
+    near = pd.DataFrame({"T": [0.0, 2.0, 0.0], "mu": [0.0, 0.0, 2.0]})
+    far = pd.DataFrame({"T": [0.0, -2.0, 0.0], "mu": [0.0, 0.0, -2.0]})
+    point = (1.1, 1.1)
+    assert _simplex_containment(point, near) < 0
+    assert _simplex_containment(point, far) < _simplex_containment(point, near)
+    assert max((near, far), key=lambda s: _simplex_containment(point, s)) is near
+
+    # Degenerate (collinear) simplex never wins ownership.
+    line = pd.DataFrame({"T": [0.0, 1.0, 2.0], "mu": [0.0, 1.0, 2.0]})
+    assert _simplex_containment((0.5, 0.5), line) == float("-inf")
 
 
 def test_boundary_id_cc_refiner_single_line(two_phase_system):

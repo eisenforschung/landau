@@ -384,9 +384,43 @@ def _phase_centroids_xy(simplex: pd.DataFrame) -> tuple[TMuPoint, TMuPoint]:
     return tuple(by_phase[0]), tuple(by_phase[1])
 
 
+def _simplex_containment(point: TMuPoint, simplex: pd.DataFrame) -> float:
+    """Smallest barycentric coordinate of ``(T, mu)`` w.r.t. the triangle.
+
+    ``>= 0`` iff the point lies inside (or on an edge of) the simplex; the
+    more negative the value the further outside it is. Barycentric
+    coordinates are affine-invariant, so the value does not depend on the
+    anisotropy between the T and mu axes, and it doubles as a "how nearly
+    contained" score: the simplex with the largest value owns the point.
+    Returns ``-inf`` for a degenerate (zero-area) simplex so it never wins.
+    """
+    (x1, y1), (x2, y2), (x3, y3) = simplex[["T", "mu"]].to_numpy()
+    x, y = point
+    det = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3)
+    if det == 0:
+        return float("-inf")
+    a = ((y2 - y3) * (x - x3) + (x3 - x2) * (y - y3)) / det
+    b = ((y3 - y1) * (x - x3) + (x1 - x3) * (y - y3)) / det
+    c = 1.0 - a - b
+    return min(a, b, c)
+
+
 @dataclass(frozen=True)
 class _SimplexCandidate:
     simplex: pd.DataFrame  # 3 rows of the input df
+
+
+@dataclass(frozen=True)
+class _TripleCandidate:
+    """One three-phase simplex plus all of its siblings in the tessellation.
+
+    Carrying the sibling simplices lets :meth:`DelaunayTripleRefiner.solve`
+    decide, as a pure function of the candidate, which simplex owns the
+    located triple point without any cross-call dedup state.
+    """
+
+    simplex: pd.DataFrame  # 3 rows of the input df
+    siblings: tuple  # every three-phase simplex, including ``simplex``
 
 
 class DelaunayLineRefiner(Refiner):
@@ -439,25 +473,29 @@ class DelaunayTripleRefiner(Refiner):
     For every Delaunay simplex containing three distinct phases, locate the
     triple point by minimizing the sum of pairwise potential differences,
     starting from the simplex centroid.
+
+    The located minimum may fall outside every three-phase simplex---inside a
+    neighbouring two-phase triangle (the Delaunay partition has at most one
+    triangle that strictly contains any point). Ownership is therefore
+    determined by :func:`_simplex_containment`: the sibling with the largest
+    score (least far outside the minimum) is the owner. :meth:`solve` emits
+    only when its own simplex is that owner, so exactly one candidate fires per
+    triple point. The siblings travel in the candidate, keeping :meth:`solve` a
+    pure function of ``(cand, phases)`` --- no ``__init__`` or no dedup state.
     """
 
     label = "delaunay-triple"
 
-    def __init__(self):
-        self._found: list[TMuPoint] = []
+    def propose(self, df: pd.DataFrame) -> Iterator[_TripleCandidate]:
+        siblings = tuple(simplex for simplex, n in _delaunay_simplices(df) if n == 3)
+        for simplex in siblings:
+            yield _TripleCandidate(simplex=simplex, siblings=siblings)
 
-    def propose(self, df: pd.DataFrame) -> Iterator[_SimplexCandidate]:
-        for simplex, n in _delaunay_simplices(df):
-            if n == 3:
-                yield _SimplexCandidate(simplex=simplex)
-
-    def solve(self, cand: _SimplexCandidate, phases) -> list[RefinedPoint]:
+    def solve(self, cand: _TripleCandidate, phases) -> list[RefinedPoint]:
         tr = cand.simplex
         T0, mu0 = tr[["T", "mu"]].mean()
         names = tuple(tr.phase.unique())
         p1, p2, p3 = (phases[n] for n in names)
-        T_tol = float(tr["T"].max() - tr["T"].min())
-        mu_tol = float(tr["mu"].max() - tr["mu"].min())
 
         def triplemin(x):
             T, mu = x
@@ -467,10 +505,9 @@ class DelaunayTripleRefiner(Refiner):
             return abs(phi1 - phi2) + abs(phi2 - phi3) + abs(phi3 - phi1)
 
         T, mu = so.fmin(triplemin, (T0, mu0), disp=False)
-        if any(abs(T - fT) <= T_tol and abs(mu - fmu) <= mu_tol
-               for fT, fmu in self._found):
+        owner = max(cand.siblings, key=lambda s: _simplex_containment((T, mu), s))
+        if owner is not tr:
             return []
-        self._found.append((T, mu))
         return [RefinedPoint(T=T, mu=mu, phases=names)]
 
 
