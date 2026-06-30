@@ -19,7 +19,14 @@ from scipy.spatial import ConvexHull
 from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.utils.validation import check_is_fitted
 
-from .basic import TemperatureInterpolator, Interpolation, _CallableInterpolation
+from .basic import (
+    TemperatureInterpolator,
+    Interpolation,
+    _CallableInterpolation,
+    _scalarize,
+    SurfaceInterpolator,
+    FittedSurface,
+)
 
 
 def _in_hull(points, hull):
@@ -332,3 +339,68 @@ class WhitneyTemperatureInterpolator(TemperatureInterpolator):
             return interp.predict(t)
 
         return _CallableInterpolation(predict)
+
+
+class WhitneyFittedSurface(FittedSurface):
+    """Fitted surface for :class:`WhitneySurface2DInterpolator`.
+
+    Wraps a :class:`WhitneyRBFInterpolator` trained over the 2-D (T, c) space.
+    :meth:`slice_at` returns a closure at fixed T wrapped in
+    :class:`~landau.interpolate.basic._CallableInterpolation`; the c-derivative
+    is a numerical central difference (inherited from :class:`~.Interpolation`).
+    """
+
+    def __init__(self, rbf: WhitneyRBFInterpolator):
+        self._rbf = rbf
+
+    def slice_at(self, T: float) -> _CallableInterpolation:
+        Tf = float(T)
+        rbf = self._rbf
+
+        def predict_at_T(c):
+            c_arr = np.asarray(c, float)
+            flat = c_arr.ravel()
+            X = np.column_stack([np.full(flat.shape, Tf), flat])
+            return _scalarize(rbf.predict(X).reshape(c_arr.shape))
+
+        return _CallableInterpolation(predict_at_T)
+
+
+@dataclass(frozen=True, eq=True)
+class WhitneySurface2DInterpolator(SurfaceInterpolator):
+    """2-D free-energy surface backed by a Whitney-extended RBF.
+
+    Trains a single :class:`WhitneyRBFInterpolator` over all scattered (T, c, H)
+    samples at once; slicing at a fixed T returns a closure with numerical
+    c-derivatives (via the inherited :meth:`~.Interpolation.deriv`).
+
+    Unlike :class:`CalphadSurface2DInterpolator`, there is no terminal-phase
+    requirement, so this works for narrow intermetallics as well as solution
+    phases.  The trade-off is slower per-(T, mu) solves (numerical derivative)
+    and a need for ``temperature_range`` to span the solve grid to keep query
+    points inside the RBF's convex hull (fast batched path).
+    """
+
+    kernel: str = "thin_plate_spline"
+    smoothing: float = 1e-3
+    degree: int = 2
+    epsilon: float = 1.0
+    grad_eps: float = 1e-4
+
+    def fit(self, T, c, f) -> WhitneyFittedSurface:
+        T = np.asarray(T, float)
+        c = np.asarray(c, float)
+        f = np.asarray(f, float)
+        if np.unique(c).size < 2:
+            raise ValueError(
+                "WhitneySurface2DInterpolator requires at least two distinct concentrations"
+            )
+        X = np.column_stack([T, c])
+        rbf = WhitneyRBFInterpolator(
+            kernel=self.kernel,
+            smoothing=self.smoothing,
+            degree=self.degree,
+            epsilon=self.epsilon,
+            grad_eps=self.grad_eps,
+        ).fit(X, f)
+        return WhitneyFittedSurface(rbf)

@@ -148,6 +148,43 @@ class ConcentrationInterpolator(Interpolator):
     pass
 
 
+class FittedSurface(ABC):
+    """A fitted 2-D free-energy surface; slices to a 1-D :class:`Interpolation` at fixed T."""
+
+    @abstractmethod
+    def slice_at(self, T: float) -> "Interpolation":
+        """Return H(c) = f(T,c) + T·S(c) — the entropy-removed free energy — as a 1-D interpolation."""
+
+
+class SurfaceInterpolator(ABC):
+    """Fits a 2-D free-energy surface f(T, c) from flat scattered (T, c, H) samples.
+
+    ``H = f_raw + T·S(c)`` is the entropy-removed free energy (the quantity the
+    parent phase solver operates on).  Implementations should be hashable (frozen
+    dataclasses satisfy this) so they can be stored as fields in
+    :class:`~landau.phases.Surface2DInterpolatingPhase`.
+    """
+
+    @abstractmethod
+    def fit(
+        self,
+        T: npt.ArrayLike,
+        c: npt.ArrayLike,
+        f: npt.ArrayLike,
+    ) -> FittedSurface:
+        """Fit a surface from flat arrays of (temperature, concentration, entropy-removed free energy).
+
+        Args:
+            T: 1-D array of temperatures.
+            c: 1-D array of concentrations (same length as T).
+            f: 1-D array of entropy-removed free energies H = f_raw + T·S(c).
+
+        Returns:
+            A :class:`FittedSurface` whose :meth:`~FittedSurface.slice_at` yields a
+            1-D :class:`Interpolation` at any requested temperature.
+        """
+
+
 @dataclass(frozen=True, eq=True)
 class PolyFit(TemperatureInterpolator, ConcentrationInterpolator):
     nparam: int | Literal["auto"]
@@ -354,6 +391,87 @@ class RedlichKisterInterpolation(Interpolation):
         return _CallableInterpolation(
             lambda c: self._eval_mix_derivative(c, *rk_parameters) + df
         )
+
+
+class CalphadFittedSurface(FittedSurface):
+    """Fitted surface for :class:`CalphadSurface2DInterpolator`.
+
+    Holds SGTE models for the terminal free energies and polynomial models for each
+    Redlich-Kister interaction coefficient.  :meth:`slice_at` evaluates them at T to
+    produce a :class:`RedlichKisterInterpolation` with an analytic c-derivative.
+    """
+
+    def __init__(self, f0_model, df_model, L_models):
+        self._f0_model = f0_model
+        self._df_model = df_model
+        self._L_models = L_models
+
+    def slice_at(self, T: float) -> "RedlichKisterInterpolation":
+        f0 = float(self._f0_model(T))
+        df = float(self._df_model(T))
+        L = np.array([float(m(T)) for m in self._L_models])
+        return RedlichKisterInterpolation(df, f0, L)
+
+
+@dataclass(frozen=True, eq=True)
+class CalphadSurface2DInterpolator(SurfaceInterpolator):
+    """CALPHAD-style 2-D surface: SGTE terminals + polynomial-in-T Redlich-Kister coefficients.
+
+    Fits the entropy-removed free energy
+
+        H(T, c) = (1-c) f0(T) + c (f0(T)+df(T)) + c(1-c) Σ_v L_v(T) (1-2c)^v
+
+    in two stages:
+
+    1. Fit :class:`RedlichKister` independently at each T in the incoming grid,
+       extracting terminals ``f0(T)``, ``df(T)`` and interaction coefficients ``L_v(T)``.
+    2. Fit the T-dependence: terminals via :class:`SGTE`, interaction coefficients via
+       :class:`PolyFit`.
+
+    :meth:`slice_at` evaluates these models at T and returns a
+    :class:`RedlichKisterInterpolation` with an analytic c-derivative, so the parent
+    phase's logit-Newton solver uses exact gradients (~1 ms solves).
+
+    Requires terminal concentrations at c=0 and c=1 in the training data.
+    """
+
+    num_coeffs: int = 5
+    """Number of Redlich-Kister interaction coefficients L_0..L_{n-1}."""
+    terminal_sgte_order: int = 4
+    """SGTE order for the terminal free energies f0(T) and df(T)."""
+    coeff_poly_order: int = 2
+    """Polynomial order in T for each interaction coefficient L_v(T)."""
+
+    def fit(self, T, c, f) -> CalphadFittedSurface:
+        T = np.asarray(T, float)
+        c = np.asarray(c, float)
+        f = np.asarray(f, float)
+        if not (np.isclose(c.min(), 0.0) and np.isclose(c.max(), 1.0)):
+            raise ValueError(
+                "CalphadSurface2DInterpolator requires terminal concentrations at c=0 and c=1"
+            )
+
+        unique_T = np.unique(T)
+        rk = RedlichKister(self.num_coeffs)
+        f0s, dfs, Ls = [], [], []
+        for Ti in unique_T:
+            mask = np.isclose(T, Ti)
+            ci, fi = c[mask], f[mask]
+            interp = rk.fit(ci, fi)
+            f0s.append(interp.f0)
+            dfs.append(interp.df)
+            Ls.append(np.asarray(interp.rk_parameters, float))
+
+        f0s = np.array(f0s)
+        dfs = np.array(dfs)
+        Ls = np.array(Ls)
+
+        sgte = SGTE(self.terminal_sgte_order)
+        f0_model = sgte.fit(unique_T, f0s)
+        df_model = sgte.fit(unique_T, dfs)
+        poly = PolyFit(self.coeff_poly_order + 1)
+        L_models = tuple(poly.fit(unique_T, Ls[:, v]) for v in range(Ls.shape[1]))
+        return CalphadFittedSurface(f0_model, df_model, L_models)
 
 
 @dataclass(frozen=True, eq=True)

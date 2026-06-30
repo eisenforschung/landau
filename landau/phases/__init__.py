@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from functools import lru_cache, cache
+from functools import lru_cache, cache, cached_property
 from typing import Iterable, Optional, ClassVar
 from pyiron_snippets.deprecate import deprecate
 
@@ -13,7 +13,7 @@ import scipy.special as se
 import numpy as np
 
 from ..interpolate import ConcentrationInterpolator, TemperatureInterpolator, SGTE, PolyFit, RedlichKister, SoftplusFit
-from ..interpolate.basic import _scalarize
+from ..interpolate.basic import _scalarize, SurfaceInterpolator
 
 from scipy.constants import Boltzmann, eV
 
@@ -30,6 +30,7 @@ __all__ = [
     "InterpolatingPhase",
     "SlowInterpolatingPhase",
     "FastInterpolatingPhase",
+    "Surface2DInterpolatingPhase",
     "AbstractPointDefect",
     "ConstantPointDefect",
     "PointDefectSublattice",
@@ -792,6 +793,86 @@ class FastInterpolatingPhase(SlowInterpolatingPhase):
         return _scalarize(phi.copy()), _scalarize(c.copy())
 
 
+@dataclass(frozen=True, eq=True)
+class Surface2DInterpolatingPhase(FastInterpolatingPhase):
+    """FastInterpolatingPhase backed by a fitted 2-D free-energy surface.
+
+    Unlike the parent's :meth:`_get_interpolation` — which fits a fresh 1-D curve
+    f(c) at each temperature from the line phases' free energies — this class fits
+    a single surface f(T, c) once via ``surface_interpolator.fit()`` and returns
+    fixed-T slices via ``FittedSurface.slice_at(T)``.  The inherited logit-Newton
+    solver and the full semigrand/concentration API from
+    :class:`FastInterpolatingPhase` are reused unchanged.
+
+    Training data: each line phase is sampled at ``num_temperature_samples`` evenly
+    spaced temperatures over ``temperature_range`` (or the union of the phases' own
+    sampled ranges).  The entropy-removed free energy H = f + T·S(c) is passed to
+    the interpolator when ``add_entropy=False`` (the usual case with calphy data).
+
+    Args:
+        surface_interpolator: A :class:`~landau.interpolate.SurfaceInterpolator`
+            that fits the 2-D surface from flat (T, c, H) arrays and returns a
+            :class:`~landau.interpolate.FittedSurface`.  **Required** — there is
+            no default; omitting it raises :exc:`TypeError` at construction time.
+        num_temperature_samples: Number of T values sampled per line phase for
+            the training set.
+        temperature_range: ``(Tmin, Tmax)`` span used for training.  Should cover
+            the full solve grid; defaults to the union of the line phases' own
+            sampled temperature ranges.
+    """
+
+    surface_interpolator: Optional[SurfaceInterpolator] = None
+    num_temperature_samples: int = 40
+    temperature_range: Optional[tuple] = None
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.surface_interpolator is None:
+            raise TypeError(
+                f"{type(self).__name__} requires a surface_interpolator keyword argument"
+            )
+
+    def _gather_training_data(self):
+        n = self.num_temperature_samples
+        sweeps = [np.asarray(getattr(p, "temperatures", []), float) for p in self.phases]
+        have = [s for s in sweeps if s.size]
+        if self.temperature_range is not None:
+            glo, ghi = map(float, self.temperature_range)
+        elif have:
+            glo = min(float(s.min()) for s in have)
+            ghi = max(float(s.max()) for s in have)
+        else:
+            raise ValueError(
+                "need line phases with sampled temperatures or an explicit temperature_range"
+            )
+
+        tg = np.linspace(glo, ghi, n)
+        TT, CC, FF = [], [], []
+        for p in self.phases:
+            TT.append(tg)
+            CC.append(np.full(tg.shape, float(p.line_concentration)))
+            FF.append(np.asarray(p.line_free_energy(tg), float))
+        TT = np.concatenate(TT)
+        CC = np.concatenate(CC)
+        FF = np.concatenate(FF)
+
+        if not self.add_entropy:
+            FF = FF + TT * S(CC)
+
+        return TT, CC, FF
+
+    @cached_property
+    def _fitted_surface(self):
+        TT, CC, FF = self._gather_training_data()
+        return self.surface_interpolator.fit(TT, CC, FF)
+
+    @lru_cache(maxsize=512)
+    def _get_interpolation(self, T):
+        if not isinstance(T, Real):
+            raise TypeError(T)
+        return self._fitted_surface.slice_at(float(T))
+
+
 def check_concentration_interpolation(
         phase: SlowInterpolatingPhase | InterpolatingPhase | RegularSolution,
         phases: list[AbstractLinePhase],
@@ -833,17 +914,26 @@ def check_concentration_interpolation(
     free_energy = phase.free_energy(T, x)
 
     if plot_excess:
-        p_min = min(phases, key=lambda p: p.fixed_concentration)
-        p_max = max(phases, key=lambda p: p.fixed_concentration)
+        # Anchor the chord to the line phases' own free energies at their own
+        # concentrations (c_lo, c_hi) -- not at the concentration_range bounds
+        # (cmin, cmax).  The two coincide only when concentration_range happens
+        # to match the underlying phases' span; concentration_range can be wider
+        # (e.g. maximum_extrapolation > 0) or narrower (an explicit range), and
+        # in either case the previous code used cmin/cmax as both the chord's
+        # x-anchors and the entropy-correction concentration, which is only
+        # correct when c_lo == cmin and c_hi == cmax.
+        p_min = min(phases, key=lambda p: p.line_concentration)
+        p_max = max(phases, key=lambda p: p.line_concentration)
+        c_lo, c_hi = p_min.line_concentration, p_max.line_concentration
         f_min = p_min.line_free_energy(T)
         f_max = p_max.line_free_energy(T)
 
         # line_free_energy doesn't automatically respect add_entropy, unlike free_energy
         if phase.add_entropy:
-            f_min -= T * S(cmin)
-            f_max -= T * S(cmax)
+            f_min -= T * S(c_lo)
+            f_max -= T * S(c_hi)
 
-        free_energy -= (((cmax-x)*f_min + (x-cmin)*f_max)/(cmax-cmin))
+        free_energy -= (((c_hi-x)*f_min + (x-c_lo)*f_max)/(c_hi-c_lo))
 
     plt.plot(x, free_energy, label=phase.name)
 
@@ -855,7 +945,7 @@ def check_concentration_interpolation(
             line_free_energy -= T * S(cline)
 
         if plot_excess:
-            line_free_energy -= (((cmax-cline)*f_min + (cline-cmin)*f_max)/(cmax-cmin))
+            line_free_energy -= (((c_hi-cline)*f_min + (cline-c_lo)*f_max)/(c_hi-c_lo))
 
         plt.scatter(cline, line_free_energy)
 

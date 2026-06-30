@@ -1198,3 +1198,38 @@ def test_check_concentration_interpolation_error_respects_add_entropy():
         assert_allclose(off[:, 1], expected[order], atol=ERR_ATOL)
     finally:
         plt.close(fig)
+
+
+@pytest.mark.parametrize("concentration_range", [(0.3, 0.7), (0.0, 1.0)])
+@pytest.mark.parametrize("add_entropy", [False, True])
+def test_check_concentration_interpolation_plot_excess_anchors_to_line_phases(
+    concentration_range, add_entropy
+):
+    """plot_excess subtracts the chord between the *line phases'* free energies at
+    their own (min/max) concentrations -- not at the concentration_range bounds.
+    The two coincide only when concentration_range matches the line phases' span;
+    here it doesn't, both narrower (0.3, 0.7) and wider (0.0, 1.0) than the
+    phases' [0.2, 0.8], so the extremal line phases must land exactly on zero in
+    both directions and under add_entropy (which exercises the S(c) correction
+    at the line phase's own concentration rather than the range bound)."""
+    cs = [0.2, 0.5, 0.8]
+    fe = [0.0, -0.3, 0.05]
+    lps = [LinePhase(n, c, f) for n, c, f in zip("ABC", cs, fe)]
+    phase = SlowInterpolatingPhase(
+        name="sol",
+        phases=lps,
+        concentration_range=concentration_range,
+        interpolator=PolyFit(2),
+        add_entropy=add_entropy,
+    )
+
+    fig, ax = plt.subplots()
+    try:
+        phase.check_concentration_interpolation(T=1000, plot_excess=True)
+        offsets = {tuple(c.get_offsets()[0]) for c in ax.collections}
+        anchors = {c for c in offsets if c[0] in (0.2, 0.8)}
+        assert len(anchors) == 2
+        for _, y in anchors:
+            assert abs(y) < ERR_ATOL
+    finally:
+        plt.close(fig)
