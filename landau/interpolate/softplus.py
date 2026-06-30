@@ -380,6 +380,13 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
     the bounded 1-D :class:`SoftplusFit` gives.  A plain unconstrained polynomial
     amplitude could dip negative between knots and break this.
 
+    **Shared knee.**  Set :attr:`shared_knee` to tie every term to one knee
+    polynomial ``c(T)`` instead of fitting ``n_softplus`` independent ones --
+    the knee still moves with T, it's just the same function for every term.
+    This matches a single well built from an opposite-slope softplus pair,
+    which is already what the per-slice seed assumes (see :func:`_smoothv_seed`);
+    turning it on removes degrees of freedom the seed was not using anyway.
+
     **Avoiding bad minima.**  The coupled fit is multimodal -- the sharp V-wells
     that motivate softplus sit in a flat-gradient landscape where a single
     optimisation easily stalls with the knee or branch slopes badly placed.  Two
@@ -423,6 +430,14 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
     """Polynomial order in 1/T for the slopes b_i(T) (the strongest T-dependence)."""
     c_order: int = 1
     """Polynomial order in T for the knee positions c_i(T)."""
+    shared_knee: bool = False
+    """When True, every softplus term shares a single knee polynomial c(T)
+    instead of fitting one independently per term -- the knee can still vary
+    with T, it is just the same function for all ``n_softplus`` terms.  This is
+    the constraint the smooth-V seed already assumes for an opposite-slope
+    term pair (:func:`_smoothv_seed` seeds identical knees), so turning it on
+    only removes degrees of freedom the seed was not using anyway.  Reduces the
+    knee parameter count from ``n_softplus * (c_order + 1)`` to ``c_order + 1``."""
     offset_order: int = 2
     """Polynomial order in T for the vertical offset off(T)."""
     loss: Literal["linear", "soft_l1", "huber", "cauchy", "arctan"] = "linear"
@@ -475,17 +490,31 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
     @property
     def _n_params(self):
         na, nb, nc, no = self._orders
-        return self.n_softplus * (na + nb + nc) + no
+        n = self.n_softplus
+        if self.shared_knee:
+            return n * (na + nb) + nc + no
+        return n * (na + nb + nc) + no
 
     def _unpack(self, p):
         """Split the flat vector into A (n,na), B (n,nb), C (n,nc), O (no,).
 
         ``A`` holds the amplitude *pre-activation* polynomial coefficients:
         ``a_i(T) = softplus(polyval(Tn, A[i]))``.  ``B`` is in 1/T, the rest in T.
-        Terms are laid out contiguously ``[A_i | B_i | C_i]`` then the offset.
+        With :attr:`shared_knee` off, terms are laid out contiguously
+        ``[A_i | B_i | C_i]`` then the offset.  With it on, only ``[A_i | B_i]``
+        is per-term; one shared knee block follows all terms and is broadcast
+        into ``C`` so :meth:`_model_and_jac` and :class:`SoftplusFittedSurface`
+        see the usual per-term ``(n, nc)`` shape either way.
         """
         na, nb, nc, no = self._orders
         n = self.n_softplus
+        if self.shared_knee:
+            per = na + nb
+            terms = p[:n * per].reshape(n, per)
+            c_shared = p[n * per:n * per + nc]
+            C = np.tile(c_shared, (n, 1))
+            offset = p[n * per + nc:]
+            return terms[:, :na], terms[:, na:na + nb], C, offset
         per = na + nb + nc
         terms = p[:n * per].reshape(n, per)
         return terms[:, :na], terms[:, na:na + nb], terms[:, na + nb:], p[n * per:]
@@ -494,15 +523,24 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
         """Coefficient vector for a constant-in-T surface from one slice's
         ``(a, b, c, offset)`` -- order-0 terms set, higher orders zero.  The
         amplitude is mapped through the inverse link (``alpha0 = softplus_inv(a)``)
-        since ``A`` parametrises ``alpha``, not ``a``."""
+        since ``A`` parametrises ``alpha``, not ``a``.  With :attr:`shared_knee`
+        the per-slice seed already has identical knees across terms
+        (:func:`_smoothv_seed`), so ``c[0]`` is the shared value."""
         na, nb, nc, no = self._orders
         n = self.n_softplus
+        offset = np.zeros(no)
+        offset[0] = off
+        if self.shared_knee:
+            terms = np.zeros((n, na + nb))
+            terms[:, 0] = _softplus_inv(a)
+            terms[:, na] = b
+            c_shared = np.zeros(nc)
+            c_shared[0] = c[0]
+            return np.concatenate([terms.ravel(), c_shared, offset])
         terms = np.zeros((n, na + nb + nc))
         terms[:, 0] = _softplus_inv(a)
         terms[:, na] = b
         terms[:, na + nb] = c
-        offset = np.zeros(no)
-        offset[0] = off
         return np.concatenate([terms.ravel(), offset])
 
     def _model_and_jac(self, p, cn, vt):
@@ -512,12 +550,19 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
         every iteration, so the per-term ``softplus``/``sigmoid`` are computed
         once here and reused for both the value and its derivatives.  ``vt`` is the
         Vandermonde of normalised T for a/c/offset and of normalised 1/T for b;
-        the Jacobian columns follow the ``[A_i | B_i | C_i]`` term layout, offset last.
+        the Jacobian columns follow the ``[A_i | B_i | C_i]`` term layout, offset
+        last -- or, with :attr:`shared_knee`, ``[A_i | B_i]`` per term, one shared
+        knee block, then offset, matching :meth:`_unpack`.  In the shared case
+        every term evaluates the same knee polynomial (``C`` is already broadcast
+        by :meth:`_unpack`), and by the chain rule the derivative wrt a shared
+        coefficient is the *sum* of each term's contribution, so the per-term
+        knee blocks are accumulated rather than each appended separately.
         """
         VTa, VWb, VTc, VTo = vt
         A, B, C, O = self._unpack(p)
         out = VTo @ O
         blocks = []
+        dC_shared = np.zeros((cn.size, VTc.shape[1])) if self.shared_knee else None
         for Ai, Bi, Ci in zip(A, B, C):
             alpha = VTa @ Ai
             a = _softplus(alpha)        # amplitude link -> convexity; da/dalpha = sigmoid(alpha)
@@ -529,7 +574,13 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
             out = out + a * spt
             blocks.append((spt * _sigmoid(alpha))[:, None] * VTa)  # d/dA via the link
             blocks.append((a * sig * u)[:, None] * VWb)
-            blocks.append((a * sig * b)[:, None] * VTc)
+            dC = (a * sig * b)[:, None] * VTc
+            if self.shared_knee:
+                dC_shared += dC
+            else:
+                blocks.append(dC)
+        if self.shared_knee:
+            blocks.append(dC_shared)
         blocks.append(VTo)
         return out, np.hstack(blocks)
 
