@@ -474,15 +474,17 @@ class DelaunayTripleRefiner(Refiner):
     triple point by minimizing the sum of pairwise potential differences,
     starting from the simplex centroid.
 
-    Near a physical triple point the tessellation produces several adjacent
-    three-phase simplices, each of which seeds the same minimum. The point is
-    attributed to the single simplex that owns it — the one whose triangle
-    contains it, or, when the coarse grid leaves the minimum just past a shared
-    edge, the one it is least far outside of (largest :func:`_simplex_containment`
-    score over the sibling simplices). :meth:`solve` emits only when its own
-    simplex is that owner, so exactly one candidate fires. The siblings travel
-    in the candidate, keeping :meth:`solve` a pure function of ``(cand, phases)``
-    — no ``__init__``, no dedup state, no ``run`` override.
+    Near a physical triple point the tessellation may produce several adjacent
+    three-phase simplices, each seeding the same minimisation. The located
+    minimum typically falls outside every three-phase simplex — inside a
+    neighbouring two-phase triangle (the Delaunay partition has at most one
+    triangle that strictly contains any point). Ownership is therefore
+    determined by :func:`_simplex_containment`: the sibling with the largest
+    score (least far outside the minimum) is the owner. :meth:`solve` emits
+    only when its own simplex is that owner, so exactly one candidate fires per
+    triple point. The siblings travel in the candidate, keeping :meth:`solve` a
+    pure function of ``(cand, phases)`` — no ``__init__``, no dedup state, no
+    ``run`` override.
     """
 
     label = "delaunay-triple"
