@@ -14,7 +14,7 @@ from landau.interpolate import (
     SoftplusSurface2DInterpolator,
     SoftplusFittedSurface,
 )
-from landau.interpolate.softplus import _softplus
+from landau.interpolate.softplus import _softplus, _standardize
 from landau.phases import Surface2DInterpolatingPhase, TemperatureDependentLinePhase, S
 from landau.interpolate import SGTE
 
@@ -339,3 +339,19 @@ def test_surface_phase_free_energy_is_convex():
         f = phase.free_energy(T, cc)
         d2 = f[2:] - 2 * f[1:-1] + f[:-2]
         assert d2.min() >= -CONVEX_ATOL
+
+
+def test_standardize_centers_scales_and_guards_constant():
+    """``_standardize`` centres on the mean and scales by the std, returning the
+    shift/scale needed to reproduce the transform; a constant input falls back to
+    scale 1 instead of dividing by zero."""
+    x = np.array([400.0, 800.0, 1600.0])
+    xn, shift, scale = _standardize(x)
+    assert (shift, scale) == pytest.approx((x.mean(), x.std()))
+    np.testing.assert_allclose(xn, (x - x.mean()) / x.std())
+    # reapply the frozen shift/scale to a fresh input
+    np.testing.assert_allclose((np.array([400.0]) - shift) / scale, (400.0 - x.mean()) / x.std())
+
+    xn0, _, scale0 = _standardize(np.full(5, 7.0))
+    assert scale0 == 1.0
+    np.testing.assert_allclose(xn0, 0.0)

@@ -41,6 +41,7 @@ from landau.interpolate.softplus import (
     _fit_slice,
     _softplus,
     _sigmoid,
+    _standardize,
 )
 
 
@@ -54,11 +55,9 @@ def legacy_fit(itp: SoftplusSurface2DInterpolator, T, c, f) -> SoftplusFittedSur
     f = np.asarray(f, float)
     na, nb, nc, no = itp._orders
     n = itp.n_softplus
-    Tm, Ts = float(T.mean()), float(T.std() or 1.0)
-    cm, cs = float(c.mean()), float(c.std() or 1.0)
-    w = 1.0 / T
-    wm, ws = float(w.mean()), float(w.std() or 1.0)
-    Tn, Wn, cn = (T - Tm) / Ts, (w - wm) / ws, (c - cm) / cs
+    Tn, Tm, Ts = _standardize(T)
+    Wn, wm, ws = _standardize(1.0 / T)
+    cn, cm, cs = _standardize(c)
     vt = (
         np.vander(Tn, na, increasing=True),
         np.vander(Wn, nb, increasing=True),

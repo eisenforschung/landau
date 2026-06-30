@@ -171,6 +171,20 @@ def _softplus_inv(a):
     return a + np.log1p(-np.exp(-a))
 
 
+def _standardize(x):
+    """Centre ``x`` on its mean and scale by its std (1 if constant, so a
+    single-valued input maps to ``0`` rather than ``nan``).  Returns the
+    normalised array plus the ``(shift, scale)`` needed to reproduce the
+    transform on a later input.  Centring and scaling conditions the basis the
+    coefficient polynomials are solved against -- ``np.vander``/``polyval`` raise
+    the variable to powers as given, so raw ``T`` (``T**4 ~ 1e12`` over
+    400-1600 K) or raw ``1/T`` (``[6e-4, 2.5e-3]``) span many decades."""
+    x = np.asarray(x, float)
+    shift = float(x.mean())
+    scale = float(x.std() or 1.0)
+    return (x - shift) / scale, shift, scale
+
+
 @dataclass(frozen=True)
 class _SoftplusSlice(Interpolation):
     """A fixed-T softplus curve ``off + sum_i a_i*softplus(b_i*(cn + c_i))``.
@@ -563,13 +577,9 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
                 "SoftplusSurface2DInterpolator requires at least two distinct concentrations"
             )
 
-        Tm, Ts = float(T.mean()), float(T.std() or 1.0)
-        cm, cs = float(c.mean()), float(c.std() or 1.0)
-        w = 1.0 / T
-        wm, ws = float(w.mean()), float(w.std() or 1.0)
-        Tn = (T - Tm) / Ts
-        Wn = (w - wm) / ws
-        cn = (c - cm) / cs
+        Tn, Tm, Ts = _standardize(T)        # amplitude / knee / offset polynomials are in T
+        Wn, wm, ws = _standardize(1.0 / T)  # slope polynomial is in 1/T
+        cn, cm, cs = _standardize(c)
         na, nb, nc, no = self._orders
         vt = (
             np.vander(Tn, na, increasing=True),
