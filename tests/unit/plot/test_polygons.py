@@ -23,13 +23,14 @@ from landau import plot as plot_mod
 from landau.plot import (
     _add_inline_polygon_labels,
     _largest_inscribed_circle_center,
+    _patch_outline_xy,
     _text_with_outline,
     get_phase_colors,
     get_polygons,
     plot_phase_diagram,
     plot_polygons,
 )
-from landau.poly import AbstractPolyMethod, Concave
+from landau.poly import AbstractPolyMethod, BufferedSegments, Concave
 
 
 # --- shared fixtures ---------------------------------------------------------
@@ -325,6 +326,78 @@ def test_inscribed_circle_center_is_inside_polygon():
     center = _largest_inscribed_circle_center(xy, ax)
     assert ShapelyPolygon(xy).contains(_point(center))
     plt.close(fig)
+
+
+def test_patch_outline_xy_prefers_label_region():
+    """A border stroke labels at its attached `_label_region`, not its path."""
+    import shapely
+
+    border = shapely.MultiLineString([
+        [(0.0, 0.0), (1.0, 0.0)],
+        [(0.0, 1.0), (1.0, 1.0)],
+    ])
+    patch = BufferedSegments()._to_mpl_polygon(border)
+    # No region attached yet: an open stroke has no closed ring to anchor.
+    assert _patch_outline_xy(patch) is None
+
+    patch._label_region = shapely.Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+    outline = _patch_outline_xy(patch)
+    fig, ax = plt.subplots()
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    cx, cy = _largest_inscribed_circle_center(outline, ax)
+    assert cx == pytest.approx(0.5, abs=2e-3)
+    assert cy == pytest.approx(0.5, abs=2e-3)
+    plt.close(fig)
+
+
+def test_buffered_segments_apply_attaches_label_region():
+    """apply() attaches the convex hull of each phase's stable points as the
+    label region, keyed to match the drawn patches."""
+    import shapely
+
+    # A square block of stable 'A' points plus a transition border so the
+    # Segments pipeline produces a patch; 'refined' marks the border rows.
+    xs, ys = np.meshgrid(np.linspace(0.1, 0.4, 4), np.linspace(100, 400, 4))
+    block = pd.DataFrame({"c": xs.ravel(), "T": ys.ravel()})
+    block["mu"] = 0.0
+    block["phase"] = "A"
+    block["phase_id"] = "A_0"
+    block["phase_unit"] = 0
+    block["stable"] = True
+    block["border"] = False
+    block["refined"] = False
+    block["border_segment"] = 1
+    # Two refined border segments so make() yields a stroke for phase A.
+    border = pd.DataFrame({
+        "c": [0.4, 0.4, 0.1, 0.1], "T": [100.0, 400.0, 100.0, 400.0], "mu": 0.0,
+        "phase": "A", "phase_id": "A_0", "phase_unit": 0, "stable": True,
+        "border": True, "refined": True, "border_segment": [1, 1, 2, 2],
+    })
+    df = pd.concat([block, border], ignore_index=True)
+
+    polys = BufferedSegments().apply(df)
+    (key, patch), = polys.items()
+    region = patch._label_region
+    expected = shapely.convex_hull(shapely.MultiPoint(df[["c", "T"]].to_numpy()))
+    assert region.equals(expected)
+
+
+def test_buffered_segments_label_region_line_phase_sliver():
+    """A line phase's stable points are collinear (no 2-D hull); the region must
+    still be a thin polygon centred on the line so the label is kept."""
+    import shapely
+
+    df = pd.DataFrame({
+        "c": [0.4, 0.4, 0.4], "T": [100.0, 250.0, 400.0],
+        "phase": "L", "phase_unit": 0,
+    })
+    regions = BufferedSegments()._label_regions(df, ["c", "T"])
+    region = regions[("L", 0)]
+    assert isinstance(region, shapely.Polygon)
+    assert region.area > 0
+    assert region.centroid.x == pytest.approx(0.4, abs=1e-6)
+    assert region.centroid.y == pytest.approx(250.0, abs=1.0)
 
 
 def test_inscribed_circle_center_returns_none_for_degenerate():

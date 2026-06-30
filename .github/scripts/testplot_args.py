@@ -31,7 +31,7 @@ from pathlib import Path
 # plot list + Haiku transform helpers
 # ---------------------------------------------------------------------------
 
-POLY_METHODS = ["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"]
+POLY_METHODS = ["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp", "buffered-segments"]
 
 
 _FALLBACK_PLOTS = [
@@ -261,7 +261,7 @@ Flags you can emit:
 Heuristics from changed file paths:
   - landau/poly.py touched
       → render all four 2D c-T/mu plots
-      → --poly-method fasttsp tsp segment-fasttsp segment-tsp
+      → --poly-method fasttsp tsp segment-fasttsp segment-tsp buffered-segments
         (skip "concave" / "segments" unless the change explicitly affects them)
   - landau/plot.py touched
       → all plots (no extra flags)
@@ -280,7 +280,7 @@ Heuristics from changed file paths:
 Respond with a single JSON object and NOTHING else (no prose, no code fences):
 
   {{"args": ["--only", "2d_basics", "2d_basics_mu", "2d_toy", "2d_toy_mu",
-            "--poly-method", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"],
+            "--poly-method", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp", "buffered-segments"],
    "note": "poly.py touched: all 2D × tsp variants", "diff": false}}
 
 `args` is flat list of argparse tokens. `note` is a short one-line summary

@@ -5,6 +5,7 @@ from hypothesis import given, strategies as st, settings
 import landau.poly as poly_module
 from landau.poly import (
     AbstractPolyMethod,
+    BufferedSegments,
     Concave,
     Segments,
     _greedy_stitch,
@@ -14,7 +15,8 @@ from landau.poly import (
     handle_poly_method,
 )
 import pytest
-from matplotlib.patches import Polygon
+from matplotlib.patches import Polygon, PathPatch
+from matplotlib.path import Path
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
@@ -121,6 +123,59 @@ def test_segments(df):
     if isinstance(res, pd.Series):
         for p in res:
             assert isinstance(p, Polygon)
+
+
+@settings(deadline=None)
+@given(df=poly_dataframe())
+def test_buffered_segments(df):
+    method = BufferedSegments()
+    res = method.apply(df)
+    assert isinstance(res, (pd.Series, pd.DataFrame))
+    if isinstance(res, pd.Series):
+        # Output is a fixed-width stroke: an unfilled PathPatch.
+        for p in res:
+            assert isinstance(p, PathPatch)
+            assert p.get_fill() is False
+
+
+def test_buffered_segments_unions_border_lines():
+    # Two disjoint unit border segments. The result is the union of the lines
+    # themselves (not a buffered band): a line geometry whose total length is
+    # the sum of the segment lengths.
+    pp = np.array([
+        [0.0, 0.0], [1.0, 0.0],   # segment 0 along y=0
+        [0.0, 1.0], [1.0, 1.0],   # segment 1 along y=1
+    ])
+    border = np.ones(len(pp), dtype=bool)
+    segment_label = np.array([0, 0, 1, 1])
+
+    geom = BufferedSegments()._make(pp, border, segment_label)
+    assert isinstance(geom, (shapely.LineString, shapely.MultiLineString))
+    np.testing.assert_allclose(geom.length, 2.0, atol=1e-9)
+
+
+def test_buffered_segments_patch_is_open_stroke():
+    # A MultiLineString maps to an unfilled PathPatch carrying the configured
+    # line width, with one MOVETO subpath per line.
+    geom = shapely.MultiLineString([[(0, 0), (1, 0)], [(0, 1), (1, 1)]])
+    patch = BufferedSegments(thickness=3.0)._to_mpl_polygon(geom)
+    assert isinstance(patch, PathPatch)
+    assert patch.get_fill() is False
+    assert patch.get_linewidth() == 3.0
+    codes = patch.get_path().codes
+    assert (codes == Path.MOVETO).sum() == 2
+
+
+def test_buffered_segments_requires_refined():
+    pp = np.array([[0.0, 0.0], [1.0, 0.0]])
+    border = np.ones(len(pp), dtype=bool)
+    segment_label = np.ones(len(pp), dtype=int)  # all 1 == unrefined
+    with pytest.raises(ValueError, match="refined phase boundaries"):
+        BufferedSegments()._make(pp, border, segment_label)
+
+
+def test_handle_poly_method_buffered_segments():
+    assert isinstance(handle_poly_method("buffered-segments"), BufferedSegments)
 
 
 @pytest.mark.skipif(not HAS_PYTHON_TSP, reason="python-tsp not installed")

@@ -61,6 +61,27 @@ def _shapely_polygon(coords):
     return poly
 
 
+def _patch_outline_xy(p):
+    """Outline vertices of a polygon patch, for label placement.
+
+    For the filled poly methods the drawn :class:`matplotlib.patches.Polygon`
+    *is* the region, so its ring is used directly.  A method that draws only a
+    border (:class:`~landau.poly.BufferedSegments`) instead attaches a stand-in
+    region polygon as ``_label_region``; the label belongs at that region's
+    centre.  ``None`` if the patch exposes no usable ring.
+    """
+    region = getattr(p, "_label_region", None)
+    if region is not None and not region.is_empty:
+        return np.asarray(region.exterior.coords, dtype=float)
+    if hasattr(p, "get_xy"):
+        return np.asarray(p.get_xy(), dtype=float)
+    rings = [np.asarray(v, dtype=float) for v in p.get_path().to_polygons()]
+    rings = [v for v in rings if len(v) >= 4]
+    if not rings:
+        return None
+    return max(rings, key=lambda v: shapely.Polygon(v).area)
+
+
 def _largest_inscribed_circle_center(polygon_xy, ax):
     """Centre of the largest circle inscribable in a polygon, in data units.
 
@@ -150,7 +171,10 @@ def _add_inline_polygon_labels(ax, polys):
             phase, rep = key
         else:
             phase, rep = key, 0
-        center = _largest_inscribed_circle_center(p.get_xy(), ax)
+        outline = _patch_outline_xy(p)
+        if outline is None:
+            continue
+        center = _largest_inscribed_circle_center(outline, ax)
         if center is None:
             continue
         text = _text_with_outline(
@@ -158,7 +182,7 @@ def _add_inline_polygon_labels(ax, polys):
             ha="center", va="center", fontsize="small", fontweight="bold",
             color="black",
         )
-        poly_px = _shapely_polygon(ax.transData.transform(p.get_xy()))
+        poly_px = _shapely_polygon(ax.transData.transform(outline))
         if poly_px is None or _label_fits(poly_px, text, renderer):
             continue
         text.set_rotation(90)
@@ -271,8 +295,13 @@ def plot_polygons(polys, color_map, ax=None):
             phase, rep = phase
         else:
             rep = 0
-        p.set_color(color_map[phase])
-        p.set_edgecolor("k")
+        if p.get_fill():
+            p.set_color(color_map[phase])
+            p.set_edgecolor("k")
+        else:
+            # Unfilled stroke (a BufferedSegments border): the line itself
+            # carries the phase colour instead of outlining a fill in black.
+            p.set_edgecolor(color_map[phase])
         p.set_label(phase + "'" * rep)
         ax.add_patch(p)
 
