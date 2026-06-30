@@ -481,8 +481,7 @@ class DelaunayTripleRefiner(Refiner):
     score (least far outside the minimum) is the owner. :meth:`solve` emits
     only when its own simplex is that owner, so exactly one candidate fires per
     triple point. The siblings travel in the candidate, keeping :meth:`solve` a
-    pure function of ``(cand, phases)`` — no ``__init__``, no dedup state, no
-    ``run`` override.
+    pure function of ``(cand, phases)`` --- no ``__init__`` or no dedup state.
     """
 
     label = "delaunay-triple"
