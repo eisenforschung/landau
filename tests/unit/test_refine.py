@@ -1,10 +1,12 @@
 """Unit tests for refiners in landau.refine."""
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from landau.features import Locus
-from landau.phases import LinePhase, TemperatureDependentLinePhase
+from landau.phases import LinePhase, Phase, TemperatureDependentLinePhase
 from landau.interpolate import SGTE
 from landau.interpolate.basic import G_calphad
 from landau.refine import (
@@ -140,6 +142,89 @@ def test_clausius_clapeyron_refiner_respects_dT_min(two_phase_system):
 
 def test_clausius_clapeyron_refiner_label():
     assert ClausiusClapeyronRefiner.label == "clausius-clapeyron"
+
+
+# -- dc_max concentration-drift density floor --------------------------------
+
+_DC_MAX = 0.02
+
+
+@dataclass(frozen=True)
+class _DriftLinePhase(Phase):
+    """Line-like phase whose plotted composition drifts linearly with T.
+
+    ``phi(T, mu) = e - mu * c(T)`` so ``c = -dphi/dmu = c(T)`` exactly and
+    sweeps with T at fixed mu.  Two of these with equal ``e`` coexist at
+    ``mu = 0`` for every T — a boundary that is exactly flat in mu — which
+    isolates the ``dc_max`` density floor: ``_dT_adapt`` saturates at
+    ``dT_max`` because ``dmu/dT = 0``, yet ``c`` still moves, so only the
+    concentration cap limits the step.
+    """
+
+    e: float = 0.0
+    c0: float = 0.5
+    slope: float = 0.0
+    T0: float = 300.0
+
+    def _c(self, T):
+        return self.c0 + self.slope * (np.asarray(T, float) - self.T0)
+
+    def semigrand_potential(self, T, mu):
+        return self.e - np.asarray(mu, float) * self._c(T)
+
+    def concentration(self, T, mu):
+        return self._c(T) + 0.0 * np.asarray(mu, float)
+
+
+def _drift_candidate():
+    return _InterCandidate(
+        phase1="P", phase2="Q", T_seed=850.0,
+        mu_bracket=(-0.05, 0.05), T_bracket=(800.0, 900.0),
+        T_min=300.0, T_max=1400.0,
+        proj_p1=(800.0, -0.1), proj_p2=(900.0, 0.1),
+    )
+
+
+def _solve_drift(dc_max, p_slope):
+    P = _DriftLinePhase(name="P", e=-2.0, c0=0.8, slope=p_slope)
+    Q = _DriftLinePhase(name="Q", e=-2.0, c0=0.05, slope=0.0)
+    pts = ClausiusClapeyronRefiner(dc_max=dc_max).solve(
+        _drift_candidate(), {"P": P, "Q": Q})
+    return P, sorted(pts, key=lambda p: p.T)
+
+
+def test_cc_refiner_dc_max_bounds_concentration_drift():
+    """On a boundary flat in mu but sweeping in c, dc_max caps every
+    per-step concentration jump so the plotted curve stays resolved."""
+    P, pts = _solve_drift(_DC_MAX, p_slope=-0.7 / 1100.0)
+    # Regime check: the located boundary is exactly flat in mu, so the
+    # mu-drift step heuristic alone would saturate at dT_max.
+    assert max(abs(p.mu) for p in pts) < 1e-9
+    # The trace spans the full sampled T range in both directions.
+    Ts = np.array([p.T for p in pts])
+    assert Ts.min() < 320.0 and Ts.max() > 1380.0
+    # Every consecutive step keeps the plotted concentration drift under
+    # the cap (priming from the seed leaves no coarse bootstrap step).
+    cs = np.array([float(P.concentration(p.T, p.mu)) for p in pts])
+    assert np.abs(np.diff(cs)).max() <= _DC_MAX + 1e-9
+
+
+def test_cc_refiner_dc_max_densifies_curved_boundary():
+    """Tightening dc_max adds samples on a curved-in-c boundary that the
+    mu-drift heuristic alone leaves coarse."""
+    _, loose = _solve_drift(1e9, p_slope=-0.7 / 1100.0)
+    _, tight = _solve_drift(_DC_MAX, p_slope=-0.7 / 1100.0)
+    assert len(tight) > len(loose)
+
+
+def test_cc_refiner_dc_max_noop_on_constant_c_boundary():
+    """A boundary straight in c (dc/dT ~ 0) must not be over-sampled:
+    dc_max never engages, so the point count is identical whether the cap
+    is tight or effectively off."""
+    _, tight = _solve_drift(1e-4, p_slope=0.0)
+    _, loose = _solve_drift(1e9, p_slope=0.0)
+    assert len(loose) > 3  # genuinely traced, not just the seed
+    assert len(tight) == len(loose)
 
 
 def test_simplex_straddles_segment_crossing():
