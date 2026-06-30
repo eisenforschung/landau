@@ -363,7 +363,7 @@ class SoftplusFittedSurface(FittedSurface):
         Wn = (1.0 / float(T) - self._wm) / self._ws
         pv = np.polynomial.polynomial.polyval
         a = _softplus(np.array([pv(Tn, row) for row in self._A]))  # non-negative amplitude
-        b = np.array([pv(Wn, row) for row in self._B])             # slope: polynomial in 1/T
+        b = np.array([pv(Wn, row) for row in self._B]) 
         c = np.array([pv(Tn, row) for row in self._C])
         offset = float(pv(Tn, self._O))
         return _SoftplusSlice(offset, a, b, c, self._cm, self._cs)
