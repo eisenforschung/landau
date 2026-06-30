@@ -173,6 +173,22 @@ def test_convexity_holds_far_outside_training_range():
         assert _second_difference_min(sl, 0.2, 0.8) >= -CONVEX_ATOL
 
 
+@pytest.mark.parametrize("loss", ["soft_l1", "huber", "cauchy"])
+def test_robust_loss_produces_convex_fit(loss):
+    """A non-default robust ``loss`` (for data with genuine outliers) must still
+    produce a finite, convex slice that recovers a clean convex surface."""
+    T, c, Tg, cg = _grid()
+    H = 0.4 * (c - 0.5) ** 2 + 2e-5 * (T - 600) * (c - 0.5) ** 2
+    surface = SoftplusSurface2DInterpolator(loss=loss, f_scale=0.5).fit(T, c, H)
+    for Tq in (Tg[0], Tg[len(Tg) // 2], Tg[-1]):
+        sl = surface.slice_at(Tq)
+        pred = np.asarray(sl(cg))
+        assert np.isfinite(pred).all()
+        assert (sl.a >= 0).all()
+        assert _second_difference_min(sl, 0.2, 0.8) >= -CONVEX_ATOL
+        np.testing.assert_allclose(pred, H[np.isclose(T, Tq)], atol=5e-3)
+
+
 # --------------------------------------------------------------------------- #
 # analytic c-derivative
 # --------------------------------------------------------------------------- #
@@ -246,6 +262,23 @@ def test_interpolator_is_frozen_and_hashable():
     assert SoftplusSurface2DInterpolator(b_order=3) != a
     with pytest.raises(Exception):
         a.n_softplus = 5
+
+
+def test_method_override_selects_solver():
+    """``method`` forces the coupled solver to ``'lm'`` or ``'trf'``; both recover
+    a smooth convex surface (the version-dependent fragility is only for the stiff
+    sharp-knee case), the field participates in equality, and ``'lm'`` rejects a
+    robust loss up front."""
+    T, c, Tg, cg = _grid()
+    H = 0.4 * (c - 0.5) ** 2 + 2e-5 * (T - 600) * (c - 0.5) ** 2
+    for method in ("lm", "trf"):
+        surface = SoftplusSurface2DInterpolator(method=method).fit(T, c, H)
+        for Tq in (Tg[0], Tg[len(Tg) // 2], Tg[-1]):
+            np.testing.assert_allclose(surface.slice_at(Tq)(cg), H[np.isclose(T, Tq)], atol=2e-3)
+
+    assert SoftplusSurface2DInterpolator(method="trf") != SoftplusSurface2DInterpolator()
+    with pytest.raises(ValueError, match="loss='linear'"):
+        SoftplusSurface2DInterpolator(method="lm", loss="soft_l1")
 
 
 # --------------------------------------------------------------------------- #
