@@ -655,9 +655,6 @@ class _CCBase(Refiner):
     dT_min : float
         Minimum allowed temperature step (K) and the bootstrap step
         right after the seed.
-    max_steps : int
-        Hard cap on steps per trace direction, just in case the
-        adaptive logic somehow fails to terminate.
     dc_max : float
         Maximum concentration drift allowed per step. ``_dT_adapt``
         bounds the *mu* drift, which keeps the corrector bracket valid
@@ -670,14 +667,28 @@ class _CCBase(Refiner):
         never engages, so nothing is over-sampled. The cap is applied
         after the ``[dT_min, dT_max]`` clamp, so ``dT_min`` yields when
         it would otherwise block the drift target.
+    dc_min : float
+        Minimum concentration drift required per step, the complement of
+        ``dc_max``: a density *ceiling* that coarsens a boundary which is
+        steep in mu (``_dT_adapt`` shrinks the step toward ``dT_min``) but
+        nearly flat in c, where ``dc_max`` never engages and the curve
+        gets over-sampled. The step grows so the plotted concentration
+        moves at least ``dc_min``, but never past ``dT_max``. Disabled by
+        default (``0.0``); set it below ``dc_max`` to thin redundant
+        points without losing resolution.
+    max_steps : int
+        Hard cap on steps per trace direction, just in case the
+        adaptive logic somehow fails to terminate.
     """
 
-    def __init__(self, dT_max: float = 5.0, dT_min: float = 1.0,
-                 max_steps: int = 500, dc_max: float = 0.01):
+    def __init__(self, *, dT_max: float = 5.0, dT_min: float = 1.0,
+                 dc_max: float = 0.01, dc_min: float = 0.0,
+                 max_steps: int = 500):
         self.dT_max = dT_max
         self.dT_min = dT_min
-        self.max_steps = max_steps
         self.dc_max = dc_max
+        self.dc_min = dc_min
+        self.max_steps = max_steps
 
     # -- subclass hooks -----------------------------------------------------
 
@@ -798,8 +809,8 @@ class _CCBase(Refiner):
         return half_width / slope
 
     def _emitted_concentrations(self, pt, phases) -> tuple[float, ...]:
-        """Concentrations plotted by one emitted point, for the ``dc_max``
-        density floor in :meth:`_trace`.
+        """Concentrations plotted by one emitted point, for the
+        ``dc_max``/``dc_min`` density caps in :meth:`_trace`.
 
         A :class:`RefinedMiscibilityGap` plots its two pre-computed branch
         concentrations; a :class:`RefinedPoint` plots one branch per
@@ -916,6 +927,14 @@ class _CCBase(Refiner):
             # tiny absolute floor keeps the walk progressing.
             if dc_dT > 0:
                 dT_adapt = max(min(dT_adapt, self.dc_max / dc_dT), 1e-3)
+                # Concentration-drift floor (density ceiling): grow the step
+                # so |dc| per step reaches dc_min where it would otherwise
+                # over-sample a steep-in-mu, flat-in-c boundary. Capped at
+                # dT_max so the floor never oversteps the hard step bound.
+                # Off when dc_min == 0; kept below dc_max so it can't fight
+                # the cap above.
+                if self.dc_min > 0:
+                    dT_adapt = min(max(dT_adapt, self.dc_min / dc_dT), self.dT_max)
             dT = sign * dT_adapt
             # Don't step past the walk boundary; clip dT instead.
             if sign * (T + dT - T_target) > 0:
@@ -1045,6 +1064,8 @@ class ClausiusClapeyronRefiner(_CCBase):
     dT_min : float
         Minimum temperature step / bootstrap step (K). See
         :class:`_CCBase`.
+    dc_max, dc_min : float
+        Per-step concentration-drift cap / floor. See :class:`_CCBase`.
     max_steps : int
         Hard cap on steps per trace direction. See :class:`_CCBase`.
     """
@@ -1158,7 +1179,7 @@ class MiscibilityGapRefiner(_CCBase):
 
     Parameters
     ----------
-    dT_max, dT_min, max_steps :
+    dT_max, dT_min, dc_max, dc_min, max_steps :
         See :class:`_CCBase`.
     c_jump_min : float
         Minimum c-spread of a simplex's vertices for it to be seeded.
@@ -1173,12 +1194,12 @@ class MiscibilityGapRefiner(_CCBase):
 
     label = "miscibility-gap"
 
-    def __init__(self, dT_max: float = 5.0, dT_min: float = 1.0,
-                 max_steps: int = 500, dc_max: float = 0.01,
-                 c_jump_min: float = 0.3,
+    def __init__(self, *, dT_max: float = 5.0, dT_min: float = 1.0,
+                 dc_max: float = 0.01, dc_min: float = 0.0,
+                 max_steps: int = 500, c_jump_min: float = 0.3,
                  gap_close: float = 1e-3, gap_share_min: float = 0.1):
-        super().__init__(dT_max=dT_max, dT_min=dT_min, max_steps=max_steps,
-                         dc_max=dc_max)
+        super().__init__(dT_max=dT_max, dT_min=dT_min, dc_max=dc_max,
+                         dc_min=dc_min, max_steps=max_steps)
         self.c_jump_min = c_jump_min
         self.gap_close = gap_close
         self.gap_share_min = gap_share_min
