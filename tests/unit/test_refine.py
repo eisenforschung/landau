@@ -121,10 +121,13 @@ def test_clausius_clapeyron_refiner_skips_straddling_simplices(two_phase_system)
     # The grid does have many two-phase simplices for the same pair...
     pairs = [frozenset((c.phase1, c.phase2)) for c in cands]
     assert pairs.count(frozenset(("A", "B"))) > 1
-    # ...but run() should skip retraces and emit roughly one line's worth.
+    # ...but run() should skip retraces and emit roughly one line's worth:
+    # the point count tracks a single T-sweep (span / dT_max), not ~one
+    # full trace per straddling simplex stacked on the same line.
     out = refiner.run(df, mapping)
     n_points = out.groupby(["T", "mu"]).ngroups
-    assert n_points < 4 * len(cands)
+    T_span = df["T"].max() - df["T"].min()
+    assert n_points < 3 * T_span / refiner.dT_max
 
 
 def test_clausius_clapeyron_refiner_respects_dT_min(two_phase_system):
@@ -144,9 +147,13 @@ def test_clausius_clapeyron_refiner_label():
     assert ClausiusClapeyronRefiner.label == "clausius-clapeyron"
 
 
-# -- dc_max concentration-drift density floor --------------------------------
+# -- dc_max concentration-drift cap ------------------------------------------
 
-_DC_MAX = 0.02
+# Physical drift slope: c sweeps ~0.8 -> 0.1 across the sampled T range.
+_DRIFT_SLOPE = -0.7 / 1100.0
+# Tight enough that the cap binds below the default dT_min = 1.0 K, so the
+# "dT_min yields to dc_max" path is exercised.
+_DC_TIGHT = 5e-4
 
 
 @dataclass(frozen=True)
@@ -176,44 +183,49 @@ class _DriftLinePhase(Phase):
         return self._c(T) + 0.0 * np.asarray(mu, float)
 
 
-def _drift_candidate():
+def _drift_candidate(T_min=300.0, T_max=1400.0):
+    T_seed = (T_min + T_max) / 2.0
     return _InterCandidate(
-        phase1="P", phase2="Q", T_seed=850.0,
-        mu_bracket=(-0.05, 0.05), T_bracket=(800.0, 900.0),
-        T_min=300.0, T_max=1400.0,
-        proj_p1=(800.0, -0.1), proj_p2=(900.0, 0.1),
+        phase1="P", phase2="Q", T_seed=T_seed,
+        mu_bracket=(-0.05, 0.05), T_bracket=(T_seed - 50.0, T_seed + 50.0),
+        T_min=T_min, T_max=T_max,
+        proj_p1=(T_seed - 50.0, -0.1), proj_p2=(T_seed + 50.0, 0.1),
     )
 
 
-def _solve_drift(dc_max, p_slope):
+def _solve_drift(dc_max, p_slope, T_min=300.0, T_max=1400.0):
     P = _DriftLinePhase(name="P", e=-2.0, c0=0.8, slope=p_slope)
     Q = _DriftLinePhase(name="Q", e=-2.0, c0=0.05, slope=0.0)
     pts = ClausiusClapeyronRefiner(dc_max=dc_max).solve(
-        _drift_candidate(), {"P": P, "Q": Q})
+        _drift_candidate(T_min, T_max), {"P": P, "Q": Q})
     return P, sorted(pts, key=lambda p: p.T)
 
 
 def test_cc_refiner_dc_max_bounds_concentration_drift():
     """On a boundary flat in mu but sweeping in c, dc_max caps every
-    per-step concentration jump so the plotted curve stays resolved."""
-    P, pts = _solve_drift(_DC_MAX, p_slope=-0.7 / 1100.0)
+    per-step concentration jump, and dT_min yields so the cap holds."""
+    # A short T window keeps c physical while dc_max binds below dT_min.
+    P, pts = _solve_drift(_DC_TIGHT, p_slope=_DRIFT_SLOPE, T_min=800.0, T_max=900.0)
     # Regime check: the located boundary is exactly flat in mu, so the
     # mu-drift step heuristic alone would saturate at dT_max.
     assert max(abs(p.mu) for p in pts) < 1e-9
-    # The trace spans the full sampled T range in both directions.
+    # The fine stepping does not truncate the walk: it spans the window
+    # in both directions.
     Ts = np.array([p.T for p in pts])
-    assert Ts.min() < 320.0 and Ts.max() > 1380.0
+    assert Ts.min() < 805.0 and Ts.max() > 895.0
     # Every consecutive step keeps the plotted concentration drift under
     # the cap (priming from the seed leaves no coarse bootstrap step).
     cs = np.array([float(P.concentration(p.T, p.mu)) for p in pts])
-    assert np.abs(np.diff(cs)).max() <= _DC_MAX + 1e-9
+    assert np.abs(np.diff(cs)).max() <= _DC_TIGHT + 1e-9
+    # dT_min (default 1.0 K) gives way to the drift target: steps go finer.
+    assert np.diff(Ts).min() < 1.0
 
 
 def test_cc_refiner_dc_max_densifies_curved_boundary():
     """Tightening dc_max adds samples on a curved-in-c boundary that the
     mu-drift heuristic alone leaves coarse."""
-    _, loose = _solve_drift(1e9, p_slope=-0.7 / 1100.0)
-    _, tight = _solve_drift(_DC_MAX, p_slope=-0.7 / 1100.0)
+    _, loose = _solve_drift(1e9, p_slope=_DRIFT_SLOPE, T_min=800.0, T_max=900.0)
+    _, tight = _solve_drift(_DC_TIGHT, p_slope=_DRIFT_SLOPE, T_min=800.0, T_max=900.0)
     assert len(tight) > len(loose)
 
 

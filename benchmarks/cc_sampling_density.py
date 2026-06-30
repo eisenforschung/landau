@@ -54,19 +54,20 @@ class DriftLinePhase(Phase):
         return self._c(T) + 0.0 * np.asarray(mu, float)
 
 
-def trace(dc_max: float):
+def trace(dT_max: float, dc_max: float):
     # Equal e -> coexistence at mu = 0 for every T (flat boundary); P's
-    # composition sweeps 0.8 -> 0.1 over the sampled T range.
-    P = DriftLinePhase(name="P", e=-2.0, c0=0.8, slope=-0.7 / 1100.0)
+    # composition sweeps 0.8 -> 0.2 over the sampled T window, fast enough
+    # that the dc_max cap binds below dT_min in the new-defaults run.
+    P = DriftLinePhase(name="P", e=-2.0, c0=0.8, slope=-0.6 / 300.0, T0=700.0)
     Q = DriftLinePhase(name="Q", e=-2.0, c0=0.05, slope=0.0)
     cand = _InterCandidate(
         phase1="P", phase2="Q", T_seed=850.0,
         mu_bracket=(-0.05, 0.05), T_bracket=(800.0, 900.0),
-        T_min=300.0, T_max=1400.0,
+        T_min=700.0, T_max=1000.0,
         proj_p1=(800.0, -0.1), proj_p2=(900.0, 0.1),
     )
-    pts = ClausiusClapeyronRefiner(dc_max=dc_max).solve(cand, {"P": P, "Q": Q})
-    pts = sorted(pts, key=lambda p: p.T)
+    refiner = ClausiusClapeyronRefiner(dT_max=dT_max, dc_max=dc_max)
+    pts = sorted(refiner.solve(cand, {"P": P, "Q": Q}), key=lambda p: p.T)
     T = np.array([p.T for p in pts])
     c = np.array([float(P.concentration(p.T, p.mu)) for p in pts])
     mu = np.array([p.mu for p in pts])
@@ -78,12 +79,15 @@ def main() -> None:
     ap.add_argument("--plot", default=None, help="write a c-T scatter PNG here")
     args = ap.parse_args()
 
-    runs = [("mu-drift only (dc_max=inf)", 1e9), ("dc_max=0.02", 0.02)]
+    runs = [
+        ("old defaults (dT_max=50, no dc cap)", 50.0, 1e9),
+        ("new defaults (dT_max=5, dc_max=0.01)", 5.0, 0.01),
+    ]
     series = []
-    for label, dc_max in runs:
-        T, c, mu = trace(dc_max)
+    for label, dT_max, dc_max in runs:
+        T, c, mu = trace(dT_max, dc_max)
         max_dc = float(np.abs(np.diff(c)).max()) if len(c) > 1 else 0.0
-        print(f"{label:>26}: n={len(T):3d}  max|dc/step|={max_dc:.4f}  "
+        print(f"{label:>38}: n={len(T):3d}  max|dc/step|={max_dc:.4f}  "
               f"|mu|max={np.abs(mu).max():.2e}")
         series.append((label, T, c))
 
@@ -95,7 +99,8 @@ def main() -> None:
         fig, ax = plt.subplots(figsize=(6, 5))
         for (label, T, c), color in zip(series, ["tab:red", "tab:green"]):
             ax.plot(c, T, "o-", ms=4, color=color, label=f"{label} (n={len(T)})")
-        ax.set_xlabel("c"); ax.set_ylabel("T")
+        ax.set_xlabel("c")
+        ax.set_ylabel("T")
         ax.set_title("CC sampling density on a flat-mu, c-sweeping boundary")
         ax.legend()
         fig.savefig(args.plot, dpi=120, bbox_inches="tight")

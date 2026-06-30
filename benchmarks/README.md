@@ -38,7 +38,8 @@ python benchmarks/cc_sampling_density.py [--plot out.png]
 ```
 
 Isolates the `ClausiusClapeyronRefiner` sampling-density regime that the
-`dc_max` floor targets: a coexistence boundary that is flat in `mu`
+`dc_max` cap targets: a coexistence boundary that is flat in `mu`
 (`dmu/dT -> 0`, where `_dT_adapt` saturates at `dT_max`) but whose plotted
 concentration still sweeps.  Reports the point count and worst per-step
-concentration jump with the cap off vs on (`--plot` writes the c-T scatter).
+concentration jump for the old defaults (`dT_max=50`, no drift cap) vs the
+new defaults (`dT_max=5`, `dc_max=0.01`); `--plot` writes the c-T scatter.

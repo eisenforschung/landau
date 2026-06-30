@@ -667,11 +667,13 @@ class _CCBase(Refiner):
         Capping the per-step concentration drift gives the trace a
         density floor tied to the curve that is actually plotted; a
         straight constant-c boundary keeps ``dc/dT ~ 0`` and the cap
-        never engages, so nothing is over-sampled.
+        never engages, so nothing is over-sampled. The cap is applied
+        after the ``[dT_min, dT_max]`` clamp, so ``dT_min`` yields when
+        it would otherwise block the drift target.
     """
 
-    def __init__(self, dT_max: float = 50.0, dT_min: float = 1.0,
-                 max_steps: int = 500, dc_max: float = 0.02):
+    def __init__(self, dT_max: float = 5.0, dT_min: float = 1.0,
+                 max_steps: int = 500, dc_max: float = 0.01):
         self.dT_max = dT_max
         self.dT_min = dT_min
         self.max_steps = max_steps
@@ -860,10 +862,25 @@ class _CCBase(Refiner):
         dT_boot = sign * min(self.dT_min, abs(T_target - T0))
         if dT_boot == 0:
             return
-        T_b = T0 + dT_boot
-        try:
+
+        def boot(dT):
+            # One bootstrap refinement at T0 + dT; returns (step, pt, drift).
             step = self._refine_step(
-                cand, phases, T_b, mu0 - half_width, mu0 + half_width)
+                cand, phases, T0 + dT, mu0 - half_width, mu0 + half_width)
+            pt = self._emit(cand, T0 + dT, step)
+            c = self._emitted_concentrations(pt, phases)
+            drift = max((abs(a - b) for a, b in zip(c, seed_c)), default=0.0)
+            return step, pt, c, drift
+
+        try:
+            step, pt, c_b, drift = boot(dT_boot)
+            # The bootstrap is a fixed dT_min kick, so it can overshoot
+            # dc_max where dT_min would otherwise block the drift target,
+            # so dT_min yields: re-solve once at the concentration-capped
+            # step (drift is ~linear in dT locally).
+            if drift > self.dc_max:
+                dT_boot *= self.dc_max / drift
+                step, pt, c_b, drift = boot(dT_boot)
         except ValueError:
             # Bootstrap step failed. Exercised mainly when the seed
             # already sits at the gap's closure (refine raises
@@ -872,13 +889,11 @@ class _CCBase(Refiner):
             # benign: leave the seed-only point alone, let the
             # straddle dedup downstream decide whether to absorb it.
             return
-        pt = self._emit(cand, T_b, step)
+        T_b = T0 + dT_boot
         yield pt
         mu_star = step.mu_star
         dmu_dT = (mu_star - mu0) / dT_boot
-        c_b = self._emitted_concentrations(pt, phases)
-        dc_dT = max((abs(a - b) for a, b in zip(c_b, seed_c)),
-                    default=0.0) / abs(dT_boot)
+        dc_dT = drift / abs(dT_boot)
         c_prev = c_b
         T = T_b
 
@@ -888,16 +903,19 @@ class _CCBase(Refiner):
             if sign * (T_target - T) <= 1e-12:
                 return
 
-            # Adaptive temperature step, clipped to [dT_min, dT_max].
+            # Adaptive temperature step from the mu-drift heuristic,
+            # clipped to [dT_min, dT_max].
             dT_adapt = self._dT_adapt(step, dmu_dT, half_width)
-            # Concentration-drift density floor: keep |dc| per step under
-            # dc_max using the drift observed over the previous step. On a
-            # flat-in-mu but curved-in-c boundary _dT_adapt saturates at
-            # dT_max and this is what keeps the c-T curve resolved; on a
-            # straight constant-c boundary dc_dT stays ~0 and it's a no-op.
-            if dc_dT > 0:
-                dT_adapt = min(dT_adapt, self.dc_max / dc_dT)
             dT_adapt = min(self.dT_max, max(self.dT_min, dT_adapt))
+            # Concentration-drift cap: keep |dc| per step under dc_max using
+            # the drift observed over the previous step. On a flat-in-mu but
+            # curved-in-c boundary the mu-drift step saturates at dT_max and
+            # this is what keeps the c-T curve resolved; on a straight
+            # constant-c boundary dc_dT stays ~0 and it's a no-op. Applied
+            # after the [dT_min, dT_max] clamp so dT_min yields to it — a
+            # tiny absolute floor keeps the walk progressing.
+            if dc_dT > 0:
+                dT_adapt = max(min(dT_adapt, self.dc_max / dc_dT), 1e-3)
             dT = sign * dT_adapt
             # Don't step past the walk boundary; clip dT instead.
             if sign * (T + dT - T_target) > 0:
@@ -1155,8 +1173,8 @@ class MiscibilityGapRefiner(_CCBase):
 
     label = "miscibility-gap"
 
-    def __init__(self, dT_max: float = 50.0, dT_min: float = 1.0,
-                 max_steps: int = 500, dc_max: float = 0.02,
+    def __init__(self, dT_max: float = 5.0, dT_min: float = 1.0,
+                 max_steps: int = 500, dc_max: float = 0.01,
                  c_jump_min: float = 0.3,
                  gap_close: float = 1e-3, gap_share_min: float = 0.1):
         super().__init__(dT_max=dT_max, dT_min=dT_min, max_steps=max_steps,
