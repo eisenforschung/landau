@@ -673,9 +673,12 @@ class _CCBase(Refiner):
         steep in mu (``_dT_adapt`` shrinks the step toward ``dT_min``) but
         nearly flat in c, where ``dc_max`` never engages and the curve
         gets over-sampled. The step grows so the plotted concentration
-        moves at least ``dc_min``, but never past ``dT_max``. Disabled by
-        default (``0.0``); set it below ``dc_max`` to thin redundant
-        points without losing resolution.
+        moves at least ``dc_min``, but never past ``dT_max``. The ``max``
+        bounds take precedence over the ``min`` bounds: the floor is
+        applied before the ``dc_max`` cap, so a ``dc_min`` set at or above
+        ``dc_max`` yields to it and the per-step drift never exceeds
+        ``dc_max``. Disabled by default (``0.0``); set it below ``dc_max``
+        to thin redundant points without losing resolution.
     max_steps : int
         Hard cap on steps per trace direction, just in case the
         adaptive logic somehow fails to terminate.
@@ -918,23 +921,23 @@ class _CCBase(Refiner):
             # clipped to [dT_min, dT_max].
             dT_adapt = self._dT_adapt(step, dmu_dT, half_width)
             dT_adapt = min(self.dT_max, max(self.dT_min, dT_adapt))
+            # Concentration-drift floor (density ceiling): grow the step so
+            # |dc| per step reaches dc_min where it would otherwise over-sample
+            # a steep-in-mu, flat-in-c boundary. Capped at dT_max. Off when
+            # dc_min == 0. Applied before the dc_max cap below so the max
+            # parameters take precedence over the min ones.
+            if dc_dT > 0 and self.dc_min > 0:
+                dT_adapt = min(max(dT_adapt, self.dc_min / dc_dT), self.dT_max)
             # Concentration-drift cap: keep |dc| per step under dc_max using
             # the drift observed over the previous step. On a flat-in-mu but
             # curved-in-c boundary the mu-drift step saturates at dT_max and
             # this is what keeps the c-T curve resolved; on a straight
             # constant-c boundary dc_dT stays ~0 and it's a no-op. Applied
-            # after the [dT_min, dT_max] clamp so dT_min yields to it — a
-            # tiny absolute floor keeps the walk progressing.
+            # last — after the [dT_min, dT_max] clamp and the dc_min floor —
+            # so dT_min and dc_min both yield to it (max wins). A tiny
+            # absolute floor keeps the walk progressing.
             if dc_dT > 0:
                 dT_adapt = max(min(dT_adapt, self.dc_max / dc_dT), 1e-3)
-                # Concentration-drift floor (density ceiling): grow the step
-                # so |dc| per step reaches dc_min where it would otherwise
-                # over-sample a steep-in-mu, flat-in-c boundary. Capped at
-                # dT_max so the floor never oversteps the hard step bound.
-                # Off when dc_min == 0; kept below dc_max so it can't fight
-                # the cap above.
-                if self.dc_min > 0:
-                    dT_adapt = min(max(dT_adapt, self.dc_min / dc_dT), self.dT_max)
             dT = sign * dT_adapt
             # Don't step past the walk boundary; clip dT instead.
             if sign * (T + dT - T_target) > 0:

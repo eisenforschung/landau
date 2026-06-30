@@ -322,6 +322,36 @@ def test_cc_refiner_dc_min_noop_when_drift_already_met():
     assert len(on) == len(off)
 
 
+def _solve_steep_caps(dc_max, dc_min, cslope):
+    A = _SteepMuFlatCPhase(name="A", a=1.0, k=0.0, c0=0.5, cslope=cslope)
+    B = _SteepMuFlatCPhase(name="B", a=0.0, k=0.025, c0=0.2, cslope=0.0)
+    pts = ClausiusClapeyronRefiner(dc_max=dc_max, dc_min=dc_min).solve(
+        _steep_candidate(), {"A": A, "B": B})
+    return A, sorted(pts, key=lambda p: p.T)
+
+
+def test_cc_refiner_dc_max_takes_precedence_over_dc_min():
+    """The max bound wins: a dc_min set above dc_max still cannot drive a step
+    past the dc_max cap, so the per-step drift is pinned at dc_max."""
+    # dc_min = 0.05 alone wants dT = 0.05 / 4e-3 = 12.5 K (clamped to dT_max),
+    # but dc_max = 0.01 caps the drift at dT = 0.01 / 4e-3 = 2.5 K.
+    A, pts = _solve_steep_caps(dc_max=0.01, dc_min=0.05, cslope=4e-3)
+    assert len(pts) > 4
+    cs = np.array([float(A.concentration(p.T, p.mu)) for p in pts])
+    assert np.abs(np.diff(cs)).max() == pytest.approx(0.01, abs=1e-9)
+
+
+def test_cc_refiner_dT_max_bounds_dc_min_floor():
+    """The dc_min floor never oversteps dT_max even when the drift target
+    would call for a larger step."""
+    # dc_min = 0.05 wants dT = 50 K with cslope = 1e-3; dc_max = 1.0 is slack,
+    # so only dT_max = 5 K bounds the step.
+    _, pts = _solve_steep_caps(dc_max=1.0, dc_min=0.05, cslope=1e-3)
+    assert len(pts) > 4
+    Ts = np.sort([p.T for p in pts])
+    assert np.diff(Ts).max() == pytest.approx(5.0, abs=1e-9)
+
+
 def test_simplex_straddles_segment_crossing():
     """A simplex with no traced vertex inside still gets skipped if a
     segment of the traced line crosses its bounding box."""
