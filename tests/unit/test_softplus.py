@@ -4,17 +4,13 @@ from hypothesis import HealthCheck, given, settings, strategies as st
 
 from landau.interpolate import SoftplusFit
 from landau.interpolate.basic import ConcentrationInterpolator, TemperatureInterpolator
+from landau.interpolate.softplus import _sigmoid, _softplus
 
 
 # Maximum allowed deviation between fit and truth, as a fraction of ``ptp(y)``.
 # Generous enough to cope with scipy patch-version differences in the
 # trust-region step but tight enough to assert a real fit.
 RECOVERY_TOL = 0.03
-
-
-def _softplus(t):
-    t = np.asarray(t, float)
-    return np.log1p(np.exp(-np.abs(t))) + np.maximum(t, 0.0)
 
 
 def _truth(x, params):
@@ -120,3 +116,35 @@ class TestSoftplusFit:
         assert abs(x_kink - x0) < 0.1, (
             f"recovered kink {x_kink:.3f} too far from true {x0:.3f}"
         )
+
+
+class TestSoftplusPrimitive:
+    def test_large_positive_linear_asymptote(self):
+        t = np.array([100.0, 500.0, 1000.0])
+        np.testing.assert_allclose(_softplus(t), t, atol=1e-12)
+
+    def test_large_negative_zero_asymptote(self):
+        t = np.array([-100.0, -500.0, -1000.0])
+        np.testing.assert_allclose(_softplus(t), 0.0, atol=1e-12)
+
+    def test_at_zero(self):
+        assert abs(_softplus(0.0) - np.log(2.0)) < 1e-15
+
+    def test_matches_naive_formula_on_moderate_range(self):
+        t = np.linspace(-30.0, 30.0, 601)
+        naive = np.log1p(np.exp(t))
+        np.testing.assert_allclose(_softplus(t), naive, atol=1e-12)
+
+    def test_sigmoid_bounded(self):
+        t = np.linspace(-1000.0, 1000.0, 2001)
+        s = _sigmoid(t)
+        assert np.all(s >= 0.0) and np.all(s <= 1.0)
+
+    def test_sigmoid_at_zero(self):
+        assert abs(_sigmoid(np.array([0.0]))[0] - 0.5) < 1e-15
+
+    def test_sigmoid_is_derivative_of_softplus(self):
+        t = np.linspace(-10.0, 10.0, 201)
+        h = 1e-5
+        fd = (_softplus(t + h) - _softplus(t - h)) / (2 * h)
+        np.testing.assert_allclose(_sigmoid(t), fd, atol=1e-6)
