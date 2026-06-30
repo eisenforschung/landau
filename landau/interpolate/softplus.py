@@ -410,10 +410,8 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
     scipy version (see :data:`_LM_HAS_INTERNAL_SCALING`); set :attr:`method` to
     ``'lm'`` or ``'trf'`` to override.  scipy 1.16 switched the default variable
     scaling of ``least_squares(method='lm')`` to MINPACK's internal scaling
-    (``mode=1``), matching what plain ``leastsq`` always did -- see the `scipy
-    1.16.0 release notes
-    <https://docs.scipy.org/doc/scipy/release/1.16.0-notes.html>`_, gh-22790 and
-    the bug it fixed, gh-19459.  Before 1.16, ``lm`` silently disabled that
+    (``mode=1``), matching what plain ``leastsq`` always did -- see gh-22790 and
+    the bug it fixed, gh-19459 over on gh/scipy.  Before 1.16, ``lm`` silently disabled that
     scaling (``mode=2`` with an all-ones ``diag``) and converged poorly on the
     badly conditioned sharp-knee Jacobian.  So on scipy >= 1.16 the solve defaults
     to ``lm`` (no per-iteration SVD, faster); on older scipy it defaults to the
