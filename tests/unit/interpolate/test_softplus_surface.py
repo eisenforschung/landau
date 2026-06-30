@@ -14,7 +14,7 @@ from landau.interpolate import (
     SoftplusSurface2DInterpolator,
     SoftplusFittedSurface,
 )
-from landau.interpolate.softplus import _softplus
+from landau.interpolate.softplus import _softplus, _standardize
 from landau.phases import Surface2DInterpolatingPhase, TemperatureDependentLinePhase, S
 from landau.interpolate import SGTE
 
@@ -81,6 +81,67 @@ def test_recovers_better_than_constant_predictor():
     assert mse_fit < 1e-3 * mse_mean
 
 
+def _v_slope_1overT(T, c, c0=0.36):
+    """In-family softplus V whose sharpness b(T) is a degree-1 polynomial in 1/T."""
+    b = 4.0 + 30.0 * (1000.0 / np.asarray(T, float))
+    u = np.asarray(c, float) - c0
+    return -0.2 + 0.05 * _softplus(b * u) + 0.03 * _softplus(-b * u)
+
+
+def test_recovers_slope_polynomial_in_inverse_T():
+    """The slope ``b`` is a polynomial in 1/T, so a well that sharpens as 1/T over
+    a wide T-range is recovered to machine precision -- the regime a polynomial in
+    T cannot represent.  A poly-in-T slope leaves ~9% error at the extremes here."""
+    Tg = np.linspace(200.0, 1000.0, 40)
+    cg = np.linspace(0.30, 0.45, 11)
+    T = np.repeat(Tg, len(cg))
+    c = np.tile(cg, len(Tg))
+    surface = SoftplusSurface2DInterpolator(n_softplus=2).fit(T, c, _v_slope_1overT(T, c))
+    for Tq in (Tg[0], Tg[len(Tg) // 2], Tg[-1]):
+        np.testing.assert_allclose(surface.slice_at(Tq)(cg), _v_slope_1overT(Tq, cg), atol=1e-7)
+
+
+def test_handles_strong_temperature_sharpening():
+    """A sharp, asymmetric V whose branch slopes scale with 1/T over a wide T-range
+    is fit accurately at *every* temperature -- including the cold extreme where a
+    central-slice-only seed or a poly-in-T slope places the knee and branch slopes
+    badly.  Pins the fix for the bad-minima behaviour: a degenerate/stuck fit would
+    blow the normalised RMSE or the knee position well past these bounds."""
+    c0 = 0.36
+    Tg = np.linspace(150.0, 1500.0, 60)
+    cg = np.linspace(0.30, 0.45, 13)
+    T = np.repeat(Tg, len(cg))
+    c = np.tile(cg, len(Tg))
+
+    def H(Tq, cq):
+        Tq, u = np.asarray(Tq, float), np.asarray(cq, float) - c0
+        sL, sR = 0.03 + 0.22 * (1000.0 / Tq), 0.01 + 0.09 * (1000.0 / Tq)
+        return np.where(u < 0, sL * (-u), sR * u)
+
+    surface = SoftplusSurface2DInterpolator(n_softplus=2).fit(T, c, H(T, c))
+    cd = np.linspace(cg.min(), cg.max(), 401)
+    for Tq in Tg:
+        depth = max(H(Tq, cg.max()), H(Tq, cg.min()))
+        pred = np.asarray(surface.slice_at(Tq)(cg))
+        nrmse = np.sqrt(np.mean((pred - H(Tq, cg)) ** 2)) / depth
+        knee_err = abs(cd[np.argmin(surface.slice_at(Tq)(cd))] - c0)
+        assert nrmse < 1e-3
+        assert knee_err < 5e-3
+
+
+def test_seed_knee_debiased_against_linear_tilt():
+    """The per-slice seed places the knee at the curvature centre, found from the
+    data with its best-fit line in c removed.  The entropy-removed free energy is a
+    small convex dimple on a chemical-potential ramp, where a raw argmin returns
+    the downhill window edge; the detrended estimate recovers the knee."""
+    from landau.interpolate.softplus import _knee_position
+
+    cn = np.linspace(-1.7, 1.7, 13)
+    H = 0.02 * (_softplus(8 * (cn - 0.3)) + _softplus(-8 * (cn - 0.3))) - 0.5 * cn
+    assert abs(cn[np.argmin(H)] - 0.3) > 1.0          # raw argmin is fooled by the tilt
+    assert abs(_knee_position(cn, H) - 0.3) < 0.1     # detrended knee is at the well
+
+
 # --------------------------------------------------------------------------- #
 # convexity (the reason softplus is used over a polynomial amplitude)
 # --------------------------------------------------------------------------- #
@@ -110,6 +171,22 @@ def test_convexity_holds_far_outside_training_range():
         sl = surface.slice_at(Tq)
         assert (sl.a >= 0).all()
         assert _second_difference_min(sl, 0.2, 0.8) >= -CONVEX_ATOL
+
+
+@pytest.mark.parametrize("loss", ["soft_l1", "huber", "cauchy"])
+def test_robust_loss_produces_convex_fit(loss):
+    """A non-default robust ``loss`` (for data with genuine outliers) must still
+    produce a finite, convex slice that recovers a clean convex surface."""
+    T, c, Tg, cg = _grid()
+    H = 0.4 * (c - 0.5) ** 2 + 2e-5 * (T - 600) * (c - 0.5) ** 2
+    surface = SoftplusSurface2DInterpolator(loss=loss, f_scale=0.5).fit(T, c, H)
+    for Tq in (Tg[0], Tg[len(Tg) // 2], Tg[-1]):
+        sl = surface.slice_at(Tq)
+        pred = np.asarray(sl(cg))
+        assert np.isfinite(pred).all()
+        assert (sl.a >= 0).all()
+        assert _second_difference_min(sl, 0.2, 0.8) >= -CONVEX_ATOL
+        np.testing.assert_allclose(pred, H[np.isclose(T, Tq)], atol=5e-3)
 
 
 # --------------------------------------------------------------------------- #
@@ -187,6 +264,23 @@ def test_interpolator_is_frozen_and_hashable():
         a.n_softplus = 5
 
 
+def test_method_override_selects_solver():
+    """``method`` forces the coupled solver to ``'lm'`` or ``'trf'``; both recover
+    a smooth convex surface (the version-dependent fragility is only for the stiff
+    sharp-knee case), the field participates in equality, and ``'lm'`` rejects a
+    robust loss up front."""
+    T, c, Tg, cg = _grid()
+    H = 0.4 * (c - 0.5) ** 2 + 2e-5 * (T - 600) * (c - 0.5) ** 2
+    for method in ("lm", "trf"):
+        surface = SoftplusSurface2DInterpolator(method=method).fit(T, c, H)
+        for Tq in (Tg[0], Tg[len(Tg) // 2], Tg[-1]):
+            np.testing.assert_allclose(surface.slice_at(Tq)(cg), H[np.isclose(T, Tq)], atol=2e-3)
+
+    assert SoftplusSurface2DInterpolator(method="trf") != SoftplusSurface2DInterpolator()
+    with pytest.raises(ValueError, match="loss='linear'"):
+        SoftplusSurface2DInterpolator(method="lm", loss="soft_l1")
+
+
 # --------------------------------------------------------------------------- #
 # integration with Surface2DInterpolatingPhase
 # --------------------------------------------------------------------------- #
@@ -245,3 +339,19 @@ def test_surface_phase_free_energy_is_convex():
         f = phase.free_energy(T, cc)
         d2 = f[2:] - 2 * f[1:-1] + f[:-2]
         assert d2.min() >= -CONVEX_ATOL
+
+
+def test_standardize_centers_scales_and_guards_constant():
+    """``_standardize`` centres on the mean and scales by the std, returning the
+    shift/scale needed to reproduce the transform; a constant input falls back to
+    scale 1 instead of dividing by zero."""
+    x = np.array([400.0, 800.0, 1600.0])
+    xn, shift, scale = _standardize(x)
+    assert (shift, scale) == pytest.approx((x.mean(), x.std()))
+    np.testing.assert_allclose(xn, (x - x.mean()) / x.std())
+    # reapply the frozen shift/scale to a fresh input
+    np.testing.assert_allclose((np.array([400.0]) - shift) / scale, (400.0 - x.mean()) / x.std())
+
+    xn0, _, scale0 = _standardize(np.full(5, 7.0))
+    assert scale0 == 1.0
+    np.testing.assert_allclose(xn0, 0.0)
