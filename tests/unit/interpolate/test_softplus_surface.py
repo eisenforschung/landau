@@ -143,6 +143,46 @@ def test_seed_knee_debiased_against_linear_tilt():
 
 
 # --------------------------------------------------------------------------- #
+# shared_knee: one knee polynomial tied across all terms
+# --------------------------------------------------------------------------- #
+def test_shared_knee_recovers_in_family_surface():
+    """A surface whose opposite-slope term pair genuinely shares one (still
+    T-dependent) knee is recovered as tightly as the unconstrained fit."""
+    T, c, Tg, cg = _grid()
+    knee = lambda t: -0.5 + 1e-4 * (t - 600)  # noqa: E731 -- identical for both terms
+    amps = [lambda t: 0.05 + 2e-5 * (t - 600), lambda t: 0.03]
+    slopes = [lambda t: 4.0 + 1e-3 * (t - 600), lambda t: -3.0 - 5e-4 * (t - 600)]
+    H = _softplus_surface(T, c, amps=amps, slopes=slopes, knees=[knee, knee], offset=-0.2)
+
+    surface = SoftplusSurface2DInterpolator(n_softplus=2, shared_knee=True).fit(T, c, H)
+
+    for Tq in (Tg[0], Tg[len(Tg) // 2], Tg[-1]):
+        Hq = _softplus_surface(Tq, cg, amps=amps, slopes=slopes, knees=[knee, knee], offset=-0.2)
+        np.testing.assert_allclose(surface.slice_at(Tq)(cg), Hq, atol=RECOVER_ATOL)
+
+
+def test_shared_knee_ties_terms_at_every_temperature():
+    """With ``shared_knee=True`` every term's knee coincides exactly, not just at
+    the training temperatures -- the fitted polynomial coefficients are tied, so
+    this holds at any query T including extrapolated ones."""
+    T, c, *_ = _grid()
+    H = 0.4 * (c - 0.55) ** 2 + 2e-5 * (T - 600) * (c - 0.55) ** 2
+    surface = SoftplusSurface2DInterpolator(n_softplus=3, shared_knee=True).fit(T, c, H)
+    for Tq in (200.0, 600.0, 950.0):  # 950 is outside the (400, 800) training range
+        knees = surface.slice_at(Tq).c
+        np.testing.assert_array_equal(knees, np.full_like(knees, knees[0]))
+
+
+def test_shared_knee_reduces_parameter_count():
+    """Tying the knee across terms drops it from ``n_softplus`` independent
+    polynomials to one, the only parameter-count difference between the two
+    settings."""
+    shared = SoftplusSurface2DInterpolator(n_softplus=3, c_order=2, shared_knee=True)
+    independent = SoftplusSurface2DInterpolator(n_softplus=3, c_order=2, shared_knee=False)
+    assert independent._n_params - shared._n_params == (3 - 1) * (2 + 1)
+
+
+# --------------------------------------------------------------------------- #
 # convexity (the reason softplus is used over a polynomial amplitude)
 # --------------------------------------------------------------------------- #
 @settings(max_examples=15, deadline=None)
