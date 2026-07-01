@@ -17,6 +17,7 @@ import pytest
 from matplotlib.patches import Polygon
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+from unittest.mock import MagicMock
 
 # Check if optional dependencies are available
 try:
@@ -570,3 +571,37 @@ def test_segment_tsp_polygon_rotated_tour_cut_inside_segment():
     assert isinstance(result, shapely.Polygon)
     assert result.is_valid
     assert result.equals(shapely.Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]))
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        shapely.LineString([(0, 0), (1, 1)]),
+        shapely.MultiPolygon(
+            [
+                shapely.Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+                shapely.Polygon([(2, 2), (3, 2), (3, 3), (2, 3)]),
+            ]
+        ),
+        shapely.Point(0, 0),
+        shapely.Polygon(),
+    ],
+    ids=["linestring", "multipolygon", "point", "empty_polygon"],
+)
+def test_to_mpl_polygon_non_polygon_returns_none(shape):
+    assert AbstractPolyMethod._to_mpl_polygon(shape) is None
+
+
+def test_to_mpl_polygon_degenerate_boundary_returns_none():
+    # A Polygon whose exterior ring has collapsed below 3 coordinates.
+    shape = MagicMock(spec=shapely.Polygon)
+    shape.is_empty = False
+    shape.exterior.coords = [(0.0, 0.0), (1.0, 0.0)]
+    assert AbstractPolyMethod._to_mpl_polygon(shape) is None
+
+
+def test_to_mpl_polygon_valid_polygon_round_trips_coords():
+    shape = shapely.Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+    result = AbstractPolyMethod._to_mpl_polygon(shape)
+    assert isinstance(result, Polygon)
+    np.testing.assert_array_equal(result.get_xy(), np.asarray(shape.exterior.coords))
