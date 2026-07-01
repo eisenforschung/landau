@@ -30,6 +30,7 @@ __all__ = [
     "InterpolatingPhase",
     "SlowInterpolatingPhase",
     "FastInterpolatingPhase",
+    "IntermetallicPhase",
     "AbstractPointDefect",
     "ConstantPointDefect",
     "PointDefectSublattice",
@@ -889,4 +890,5 @@ def PointDefectedPhase(*args, **kwargs):
     return _pointdefects.PointDefectedPhase(*args, **kwargs)
 
 
+from .intermetallic import IntermetallicPhase
 from .asewrapper import AsePhase

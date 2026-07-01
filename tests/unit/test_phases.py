@@ -11,7 +11,16 @@ from scipy.constants import Boltzmann, eV
 
 from landau.interpolate import PolyFit, SGTE
 from landau.interpolate.basic import G_calphad
-from landau.phases import IdealSolution, InterpolatingPhase, LinePhase, RegularSolution, SlowInterpolatingPhase, FastInterpolatingPhase, TemperatureDependentLinePhase
+from landau.phases import (
+    IdealSolution,
+    InterpolatingPhase,
+    IntermetallicPhase,
+    LinePhase,
+    RegularSolution,
+    SlowInterpolatingPhase,
+    FastInterpolatingPhase,
+    TemperatureDependentLinePhase,
+)
 from landau.phases.pointdefects import (
     AbstractPointDefectSublattice,
     ConstantPointDefect,
@@ -1198,3 +1207,183 @@ def test_check_concentration_interpolation_error_respects_add_entropy():
         assert_allclose(off[:, 1], expected[order], atol=ERR_ATOL)
     finally:
         plt.close(fig)
+
+
+# --- IntermetallicPhase tests ---
+
+# IntermetallicPhase is a chain of independent ideal-solution segments over the
+# low-T convex hull, summed (not min'd) so the semigrand potential is smooth and
+# mu-native: phi(dmu) / c(dmu) in closed form with c = -dphi/dmu exact.
+_IM_ATOL = 1e-10
+
+
+def _intermetallic():
+    """Five stable compounds spanning [0, 1] (monotone hull slopes -> none dropped)."""
+    return IntermetallicPhase("im", [
+        LinePhase("A", 0.0, -2.00, 1.0 * kB),
+        LinePhase("AB3", 0.25, -2.60, 1.2 * kB),
+        LinePhase("AB", 0.50, -2.80, 1.3 * kB),
+        LinePhase("A3B", 0.70, -2.95, 1.2 * kB),
+        LinePhase("B", 1.0, -3.00, 1.5 * kB),
+    ])
+
+
+def test_intermetallic_empty_raises():
+    with pytest.raises(ValueError, match="at least one"):
+        IntermetallicPhase("im", [])
+
+
+def test_intermetallic_keeps_all_stable_compounds():
+    """The fixture's compounds have monotone hull slopes, so none are dropped."""
+    assert_allclose(_intermetallic().connection_concentrations, [0.0, 0.25, 0.5, 0.7, 1.0])
+
+
+def test_intermetallic_single_segment_equals_ideal_solution():
+    """A single 0->1 segment reproduces IdealSolution exactly (length scaling)."""
+    A = LinePhase("A", 0.0, -2.0, 1.0 * kB)
+    B = LinePhase("B", 1.0, -3.0, 1.5 * kB)
+    ideal = IdealSolution("id", A, B)
+    inter = IntermetallicPhase("im", [A, B])
+    dmu = np.linspace(-3.0, 3.0, 41)
+    for T in (300.0, 800.0, 1500.0):
+        assert_allclose(inter.semigrand_potential(T, dmu), ideal.semigrand_potential(T, dmu), atol=_IM_ATOL)
+        assert_allclose(inter.concentration(T, dmu), ideal.concentration(T, dmu), atol=_IM_ATOL)
+
+
+def test_intermetallic_drops_metastable_compound():
+    """A compound above the tie line of its neighbours is not a connection point."""
+    phase = IntermetallicPhase("im", [
+        LinePhase("A", 0.0, 0.0),
+        LinePhase("m1", 0.25, -0.3),
+        LinePhase("bad", 0.5, 0.5),   # sits well above the m1-m2 chord
+        LinePhase("m2", 0.75, -0.3),
+        LinePhase("B", 1.0, 0.0),
+    ])
+    assert_allclose(phase.connection_concentrations, [0.0, 0.25, 0.75, 1.0])
+
+
+def test_intermetallic_drops_collinear_compound():
+    """A compound exactly on a tie line is absorbed into the segment, not a kink."""
+    phase = IntermetallicPhase("im", [
+        LinePhase("A", 0.0, 0.0),
+        LinePhase("mid", 0.5, -0.5),   # on the straight line from (0,0) to (1,-1)
+        LinePhase("B", 1.0, -1.0),
+    ])
+    assert_allclose(phase.connection_concentrations, [0.0, 1.0])
+
+
+def test_intermetallic_scalar_contract():
+    phase = _intermetallic()
+    phi = phase.semigrand_potential(700.0, 0.1)
+    c = phase.concentration(700.0, 0.1)
+    assert not isinstance(phi, np.ndarray)
+    assert not isinstance(c, np.ndarray)
+    assert 0.0 <= float(c) <= 1.0
+
+
+def test_intermetallic_array_dmu_shape():
+    phase = _intermetallic()
+    dmu = np.linspace(-6.0, 6.0, 23)
+    assert phase.semigrand_potential(700.0, dmu).shape == (23,)
+    c = phase.concentration(700.0, dmu)
+    assert c.shape == (23,)
+    assert np.all((c >= 0.0) & (c <= 1.0))
+
+
+def test_intermetallic_array_T_shape():
+    phase = _intermetallic()
+    T = np.array([300.0, 700.0, 1200.0])
+    assert phase.semigrand_potential(T, 0.2).shape == (3,)
+    assert phase.concentration(T, 0.2).shape == (3,)
+
+
+def test_intermetallic_concentration_monotone_and_bounded():
+    """c(dmu) is non-decreasing and stays within the connection-point span."""
+    phase = _intermetallic()
+    cs = phase.connection_concentrations
+    dmu = np.linspace(-8.0, 8.0, 161)
+    c = np.asarray(phase.concentration(900.0, dmu))
+    assert np.all(np.diff(c) >= -1e-12)
+    assert c.min() >= cs[0] - 1e-12
+    assert c.max() <= cs[-1] + 1e-12
+
+
+def test_intermetallic_saturates_at_terminal_compounds():
+    """Far-negative/positive dmu pin c to the extreme connection concentrations."""
+    phase = _intermetallic()
+    cs = phase.connection_concentrations
+    assert_allclose(phase.concentration(600.0, -50.0), cs[0], atol=1e-9)
+    assert_allclose(phase.concentration(600.0, +50.0), cs[-1], atol=1e-9)
+
+
+@pytest.mark.parametrize("T", [300.0, 1100.0])
+def test_intermetallic_gibbs_duhem_exact(T):
+    """c = -d(phi)/d(dmu) to machine precision: phi/c are the analytic Legendre pair.
+
+    A small-step finite difference of phi recovers c far below grid tolerance;
+    only the FD step itself limits the comparison.
+    """
+    phase = _intermetallic()
+    dmu = np.linspace(-6.0, 6.0, 60)
+    h = 1e-6
+    dphi = (np.asarray(phase.semigrand_potential(T, dmu + h))
+            - np.asarray(phase.semigrand_potential(T, dmu - h))) / (2 * h)
+    assert_allclose(-dphi, np.asarray(phase.concentration(T, dmu)), atol=1e-6)
+
+
+@pytest.mark.parametrize("T", [400.0, 1800.0])
+def test_intermetallic_smooth_no_jumps(T):
+    """No concentration jumps: even a coarse-grid gradient of phi recovers c.
+
+    Summing the segments gives a C-infinity phi; a hard min over segments would
+    switch argmin and jump c, which np.gradient would expose as a large residual.
+    """
+    phase = _intermetallic()
+    dmu = np.linspace(-10.0, 10.0, 8000)
+    phi = np.asarray(phase.semigrand_potential(T, dmu))
+    c = np.asarray(phase.concentration(T, dmu))
+    assert np.abs(np.diff(c)).max() < 0.03
+    assert_allclose(-np.gradient(phi, dmu)[5:-5], c[5:-5], atol=1e-3)
+
+
+def test_intermetallic_interior_compounds_form_plateaus():
+    """At low T each interior compound is realized as a stable phase (a c plateau)."""
+    phase = _intermetallic()
+    cs = phase.connection_concentrations
+    dmu = np.linspace(-10.0, 10.0, 40001)
+    c = np.asarray(phase.concentration(300.0, dmu))
+    for cp in cs[1:-1]:
+        assert np.min(np.abs(c - cp)) < 1e-3
+
+
+def test_intermetallic_segment_decouples_deep_in_a_segment():
+    """Deep inside a segment the phase matches the isolated two-compound sub-phase.
+
+    Well below the next segment's slope only the local segment is active, so a
+    three-compound phase reduces there to its lone left segment -- the property
+    that gives each segment its own length-scaled entropy.
+    """
+    A = LinePhase("A", 0.0, 0.0)
+    mid = LinePhase("mid", 0.5, -0.5)
+    B = LinePhase("B", 1.0, -0.6)
+    full = IntermetallicPhase("full", [A, mid, B])
+    left = IntermetallicPhase("left", [A, mid])      # the isolated A-mid segment
+    # left slope -1.0, right slope -0.2; stay well below -0.2 so the right segment is dormant
+    dmu = np.linspace(-2.5, -0.6, 50)
+    T = 300.0
+    assert_allclose(full.semigrand_potential(T, dmu), left.semigrand_potential(T, dmu), atol=1e-4)
+    assert_allclose(full.concentration(T, dmu), left.concentration(T, dmu), atol=1e-4)
+
+
+def test_intermetallic_connection_temperature_changes_hull():
+    """T_low picks which compounds are stable; entropy can re-rank the hull."""
+    # 'x' is below the A-B chord only once its larger entropy kicks in at high T
+    phases = [
+        LinePhase("A", 0.0, -1.0, 0.0),
+        LinePhase("x", 0.5, -0.5, 5.0 * kB),
+        LinePhase("B", 1.0, -1.0, 0.0),
+    ]
+    cold = IntermetallicPhase("cold", phases, T_low=10.0)
+    hot = IntermetallicPhase("hot", phases, T_low=2000.0)
+    assert_allclose(cold.connection_concentrations, [0.0, 1.0])
+    assert_allclose(hot.connection_concentrations, [0.0, 0.5, 1.0])

@@ -7,6 +7,7 @@ from .phases import (
     InterpolatingPhase,
     SlowInterpolatingPhase,
     FastInterpolatingPhase,
+    IntermetallicPhase,
     AsePhase,
 )
 
