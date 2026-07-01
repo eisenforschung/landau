@@ -183,6 +183,94 @@ def test_shared_knee_reduces_parameter_count():
 
 
 # --------------------------------------------------------------------------- #
+# monotone_slope: |b_i(T)| never reverses (a convex well only sharpens as it cools)
+# --------------------------------------------------------------------------- #
+MONO_ATOL = 1e-9  # forward-difference slack for "|b| non-increasing in T"
+
+
+def _abs_slopes_over_T(surface, Ts):
+    """``|b_i(T)|`` for every term, stacked as ``(len(Ts), n_softplus)``."""
+    return np.array([np.abs(surface.slice_at(float(t)).b) for t in Ts])
+
+
+def test_monotone_slope_recovers_in_family_surface():
+    """``_v_slope_1overT`` sharpens monotonically (b = 4 + 30/T), so the monotone
+    parametrisation can still recover it tightly -- the constraint is consistent
+    with the data and costs no accuracy."""
+    Tg = np.linspace(200.0, 1000.0, 40)
+    cg = np.linspace(0.30, 0.45, 11)
+    T = np.repeat(Tg, len(cg))
+    c = np.tile(cg, len(Tg))
+    surface = SoftplusSurface2DInterpolator(n_softplus=2, monotone_slope=True).fit(
+        T, c, _v_slope_1overT(T, c))
+    for Tq in (Tg[0], Tg[len(Tg) // 2], Tg[-1]):
+        np.testing.assert_allclose(surface.slice_at(Tq)(cg), _v_slope_1overT(Tq, cg), atol=1e-6)
+
+
+def test_monotone_slope_is_monotone_far_outside_training_range():
+    """``|b_i(T)|`` is non-increasing in T at *every* term and temperature,
+    including heavy extrapolation on both sides of the (250, 1500) training range
+    -- the clamp ``w = max(Wn - wmin, 0)`` holds it flat past the hot end rather
+    than letting the even-power term turn it back up."""
+    c0 = 0.36
+    Tg = np.linspace(250.0, 1500.0, 50)
+    cg = np.linspace(0.30, 0.45, 13)
+    T = np.repeat(Tg, len(cg))
+    c = np.tile(cg, len(Tg))
+
+    def H(Tq, cq):
+        Tq, u = np.asarray(Tq, float), np.asarray(cq, float) - c0
+        sL, sR = 0.03 + 0.22 * (1000.0 / Tq), 0.01 + 0.09 * (1000.0 / Tq)
+        return np.where(u < 0, sL * (-u), sR * u)
+
+    surface = SoftplusSurface2DInterpolator(n_softplus=2, monotone_slope=True).fit(T, c, H(T, c))
+    Ts = np.linspace(50.0, 5000.0, 300)  # far below and above the training window
+    babs = _abs_slopes_over_T(surface, Ts)
+    assert np.diff(babs, axis=0).max() <= MONO_ATOL
+
+
+def test_monotone_slope_constrains_a_non_monotone_truth():
+    """When the true sharpness is genuinely humped in 1/T, the free polynomial
+    slope reproduces the reversal while ``monotone_slope`` refuses it -- proof the
+    constraint binds rather than being vacuous."""
+    c0 = 0.36
+
+    def H(Tq, cq):
+        w = 1000.0 / np.asarray(Tq, float)
+        b = np.maximum(6.0 + 25.0 * w - 6.0 * w ** 2, 1.0)  # non-monotone in 1/T
+        u = np.asarray(cq, float) - c0
+        return -0.2 + 0.05 * _softplus(b * u) + 0.03 * _softplus(-b * u)
+
+    Tg = np.linspace(250.0, 1500.0, 40)
+    cg = np.linspace(0.30, 0.45, 13)
+    T = np.repeat(Tg, len(cg))
+    c = np.tile(cg, len(Tg))
+    free = SoftplusSurface2DInterpolator(n_softplus=2, monotone_slope=False).fit(T, c, H(T, c))
+    mono = SoftplusSurface2DInterpolator(n_softplus=2, monotone_slope=True).fit(T, c, H(T, c))
+
+    Ts = np.linspace(Tg[0], Tg[-1], 150)
+    assert _abs_slopes_over_T(free, Ts)[:, 0].max() - _abs_slopes_over_T(free, Ts)[:, 0][0] > 0
+    assert np.diff(_abs_slopes_over_T(free, Ts), axis=0).max() > 1e-2   # free reverses
+    assert np.diff(_abs_slopes_over_T(mono, Ts), axis=0).max() <= MONO_ATOL  # monotone does not
+
+
+def test_monotone_slope_keeps_slices_convex():
+    """The amplitude softplus link is untouched, so a monotone-slope fit on
+    arbitrary noisy data still yields non-negative amplitudes and convex slices
+    while honouring the slope constraint."""
+    rng = np.random.default_rng(0)
+    T, c, Tg, cg = _grid(nT=18, nc=9)
+    H = rng.normal(scale=0.05, size=c.shape)
+    surface = SoftplusSurface2DInterpolator(monotone_slope=True, max_nfev=300).fit(T, c, H)
+    for Tq in (Tg[0], Tg[len(Tg) // 2], Tg[-1]):
+        sl = surface.slice_at(Tq)
+        assert (sl.a >= 0).all()
+        assert _second_difference_min(sl, 0.2, 0.8) >= -CONVEX_ATOL
+    Ts = np.linspace(Tg[0], Tg[-1], 120)
+    assert np.diff(_abs_slopes_over_T(surface, Ts), axis=0).max() <= MONO_ATOL
+
+
+# --------------------------------------------------------------------------- #
 # convexity (the reason softplus is used over a polynomial amplitude)
 # --------------------------------------------------------------------------- #
 @settings(max_examples=15, deadline=None)
@@ -300,6 +388,7 @@ def test_interpolator_is_frozen_and_hashable():
     assert hash(a) == hash(b)
     assert len({a, b}) == 1
     assert SoftplusSurface2DInterpolator(b_order=3) != a
+    assert SoftplusSurface2DInterpolator(monotone_slope=True) != a
     with pytest.raises(Exception):
         a.n_softplus = 5
 
