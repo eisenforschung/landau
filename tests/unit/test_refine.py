@@ -25,6 +25,8 @@ from landau.refine import (
     _InterCandidate,
     _delaunay_simplices,
     _simplex_containment,
+    _state_row,
+    _phase_centroids_xy,
 )
 
 
@@ -1011,3 +1013,97 @@ def test_dominated_picks_any_lower_rival_among_many():
     )
     pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B"))
     assert _dominated(pt, phases) is True
+
+
+# -- _state_row -----------------------------------------------------------------
+#
+# `_state_row(phase, T, mu)` (refine.py:183) projects one phase at one (T, mu)
+# to the dict `RefinedPoint.to_rows` consumes.
+
+
+def test_state_row_projects_exact_values():
+    """The dict carries T, mu, phi, c, phase with the exact values the phase
+    reports at that point."""
+    phase = LinePhase(name="A", fixed_concentration=0.3, line_energy=0.1, line_entropy=1e-4)
+    T, mu = 500.0, 0.02
+    row = _state_row(phase, T, mu)
+    assert row.keys() == {"T", "mu", "phi", "c", "phase"}
+    assert row["T"] == T
+    assert row["mu"] == mu
+    assert row["phi"] == phase.semigrand_potential(T, mu)
+    assert row["c"] == phase.concentration(T, mu)
+    assert row["phase"] == phase.name
+
+
+def test_state_row_passes_T_and_mu_through_unchanged():
+    """T and mu are not rounded or cast; an int and a numpy scalar survive
+    as the exact objects passed in."""
+    phase = LinePhase(name="A", fixed_concentration=0.5, line_energy=0.0)
+    T = 400
+    mu = np.float64(0.0123456789)
+    row = _state_row(phase, T, mu)
+    assert row["T"] is T
+    assert row["mu"] is mu
+
+
+def test_state_row_two_phases_differ_only_in_projected_fields():
+    """Two distinct phases at the same (T, mu) produce two dicts that agree
+    on T and mu and differ only in phi, c, phase."""
+    T, mu = 600.0, -0.01
+    a = LinePhase(name="A", fixed_concentration=0.2, line_energy=0.05)
+    b = LinePhase(name="B", fixed_concentration=0.8, line_energy=-0.05)
+    row_a = _state_row(a, T, mu)
+    row_b = _state_row(b, T, mu)
+    assert row_a["T"] == row_b["T"] == T
+    assert row_a["mu"] == row_b["mu"] == mu
+    assert row_a["phi"] != row_b["phi"]
+    assert row_a["c"] != row_b["c"]
+    assert row_a["phase"] != row_b["phase"]
+
+
+# -- _phase_centroids_xy ----------------------------------------------------------
+#
+# `_phase_centroids_xy(simplex)` (refine.py:375) returns ((T, mu), (T, mu)) of
+# each phase's vertex centroids for a two-phase Delaunay simplex.
+
+
+def test_phase_centroids_xy_arithmetic_mean_per_phase():
+    """A 3-vertex two-phase simplex (A once, B twice) gives A's own vertex
+    unchanged and B's the arithmetic mean of its two vertices."""
+    simplex = pd.DataFrame({
+        "phase": ["A", "B", "B"],
+        "T":     [300.0, 300.0, 320.0],
+        "mu":    [0.0,   0.01,  0.02],
+    })
+    a_xy, b_xy = _phase_centroids_xy(simplex)
+    assert a_xy == pytest.approx((300.0, 0.0))
+    assert b_xy == pytest.approx((310.0, 0.015))
+
+
+def test_phase_centroids_xy_returns_plain_tuples_not_arrays():
+    """Return type is a tuple of (T, mu) tuples, not numpy arrays, so
+    downstream np.array(p1xy) construction works as expected."""
+    simplex = pd.DataFrame({
+        "phase": ["A", "A", "B"],
+        "T":     [100.0, 200.0, 400.0],
+        "mu":    [0.0, 0.0, 0.0],
+    })
+    result = _phase_centroids_xy(simplex)
+    assert isinstance(result, tuple) and len(result) == 2
+    for xy in result:
+        assert isinstance(xy, tuple) and len(xy) == 2
+    assert not isinstance(result[0], np.ndarray)
+
+
+def test_phase_centroids_xy_ordering_matches_groupby_mean():
+    """Ordering matches simplex.groupby("phase").mean() — alphabetical on
+    phase name, not first-appearance order in the simplex rows."""
+    simplex = pd.DataFrame({
+        "phase": ["zeta", "alpha", "zeta"],
+        "T":     [100.0, 500.0, 300.0],
+        "mu":    [0.0, 0.0, 0.0],
+    })
+    expected = simplex.groupby("phase")[["T", "mu"]].mean().to_numpy()
+    result = _phase_centroids_xy(simplex)
+    assert result[0] == pytest.approx(tuple(expected[0]))
+    assert result[1] == pytest.approx(tuple(expected[1]))
