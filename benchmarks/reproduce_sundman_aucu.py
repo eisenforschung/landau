@@ -2,28 +2,26 @@
 
     B. Sundman, S. G. Fries, W. A. Oates,
     "A thermodynamic assessment of the Au-Cu system",
-    Calphad 22 (1998) 335-354,   Assessment I, Figure 3.
+    Calphad 22 (1998) 335-354,   Assessment I, Figures 1 and 3.
 
-The fcc-based phases (disordered A1 and the ordered L1_0 / L1_2 superstructures)
-are a single four-sublattice Compound Energy Formalism phase; ordering is an
-internal (site-fraction) degree of freedom.  All parameters are given here as
-code -- no database file is read.  Units: the CALPHAD parameters are per mole of
-formula (4 sites) in J/mol; ``CompoundEnergyPhase`` works per atom in eV, so the
-per-formula energies are divided by NS=4 sites and by 96485.33 J/mol per eV.
+The fcc-based phases -- disordered A1 and the ordered L1_0 (AuCu) / L1_2 (Au3Cu,
+AuCu3) superstructures -- all share one four-sublattice Compound Energy Formalism
+energetics; ordering is an internal (site-fraction) degree of freedom.  A single
+partitioning ``CompoundEnergyPhase`` (``orderings=None``) would represent the whole
+fcc field, with the order/disorder transitions as intra-phase c(mu) jumps.  To draw
+the diagram with landau's phase-vs-phase pipeline we instead let each ordering
+compete as its own basin-pinned phase (same energetics, seeded from one ordered
+corner) -- the global minimum, and hence the phase diagram, is identical (the lower
+envelope of the basins) but each phase is a clean region ``calc_phase_diagram`` can
+resolve.
 
-The order/disorder transitions are first order, so at fixed dmu the equilibrium
-concentration jumps between the ordered plateau and the disordered branch.  We
-locate those jumps along dmu at each temperature; the two compositions bracketing
-a jump are the tie-line ends -- the boundaries of the ordered domes.
+All parameters are given here as code -- no database file is read.  Units: the
+CALPHAD parameters are per mole of formula (4 sites) in J/mol; ``CompoundEnergyPhase``
+works per atom in eV, so the per-formula energies are divided by NS=4 sites and by
+96485.33 J/mol per eV.
 
 Run:  python benchmarks/reproduce_sundman_aucu.py
 """
-
-import os
-
-# small dense-array solves oversubscribe BLAS threads against the outer loop
-os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
-os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 from itertools import combinations
 
@@ -31,6 +29,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from landau import CompoundEnergyPhase
+from landau.calculate import calc_phase_diagram
+from landau.plot import get_phase_colors
 
 JMOL = 96485.332  # J/mol per eV/atom
 NS = 4            # sites per formula unit
@@ -70,54 +70,49 @@ def _excess(y, T):
     return (e_reg + e_rec) / NS / JMOL
 
 
-def au_cu_fcc():
-    """The four-sublattice fcc CEF phase (disordered A1 + ordered L1_0/L1_2)."""
-    return CompoundEnergyPhase(
-        name="fcc",
-        site_multiplicities=(0.25, 0.25, 0.25, 0.25),
-        endmember_energies=_ENDMEMBERS,
-        excess=_excess,
-    )
+_COMMON = dict(site_multiplicities=(0.25, 0.25, 0.25, 0.25), endmember_energies=_ENDMEMBERS, excess=_excess)
 
 
-def order_disorder_boundary(phase, temperatures, mu=np.linspace(-0.5, 0.5, 81), jump=0.02):
-    """Return (c, T) points on the order/disorder boundaries.
-
-    At each T the equilibrium c(dmu) jumps at every first-order transition; the
-    two concentrations bracketing a jump larger than ``jump`` are boundary points.
-    """
-    cs, ts = [], []
-    for T in temperatures:
-        c = phase.concentration(float(T), mu)  # one f(c) build per T, argmin over all mu
-        (idx,) = np.where(np.abs(np.diff(c)) > jump)
-        for i in idx:
-            cs.extend([c[i], c[i + 1]])
-            ts.extend([T, T])
-    return np.array(cs), np.array(ts)
+def au_cu_phases():
+    """Disordered A1 plus the three ordered superstructures as competing phases."""
+    fcc = CompoundEnergyPhase(name="fcc", orderings=(), **_COMMON)  # disordered A1
+    au3cu = CompoundEnergyPhase(name="Au3Cu", orderings=((1, 0, 0, 0),), include_disordered_seed=False, **_COMMON)
+    aucu = CompoundEnergyPhase(name="AuCu", orderings=((1, 1, 0, 0),), include_disordered_seed=False, **_COMMON)
+    aucu3 = CompoundEnergyPhase(name="AuCu3", orderings=((1, 1, 1, 0),), include_disordered_seed=False, **_COMMON)
+    return [fcc, au3cu, aucu, aucu3]
 
 
 def main():
-    phase = au_cu_fcc()
+    phases = au_cu_phases()
 
     # --- verification against the paper -------------------------------------
     print(f"AuCu (L1_0) end-member energy at 300 K: {_G_Au2Cu2(300) * JMOL:8.1f} J/mol-atom  (Fig 5 ~ -9000)")
 
-    temperatures = np.arange(280, 700, 20.0)
-    c, T = order_disorder_boundary(phase, temperatures)
+    temperatures = np.arange(290, 720, 10.0)
+    mu = np.linspace(-0.5, 0.5, 121)
+    df = calc_phase_diagram(phases, temperatures, mu=mu, refine=False)
 
-    plt.figure(figsize=(6, 4.5))
-    plt.scatter(c, T, s=8, color="tab:blue")
+    # plot_phase_diagram's polygon renderer cannot represent the disordered matrix
+    # pierced by the ordered-island domes (a multiply-connected region), so we draw
+    # the calc_phase_diagram equilibria directly: each stable (c, T) grid point,
+    # coloured by the phase that minimises the semi-grand potential there.
+    stable = df.query("stable")
+    colors = get_phase_colors([p.name for p in phases])
+
+    plt.figure(figsize=(6.4, 4.7))
+    for name, g in stable.groupby("phase"):
+        plt.scatter(g["c"], g["T"], s=6, color=colors[name], label=name)
     plt.xlim(0, 1)
-    plt.ylim(250, 720)
+    plt.ylim(290, 720)
     plt.xlabel("Mole fraction Cu")
     plt.ylabel("Temperature (K)")
-    plt.title("Au-Cu fcc order/disorder (Sundman et al. 1998, Fig. 3)")
-    for xc, lab in [(0.25, "L1$_2$"), (0.5, "L1$_0$"), (0.75, "L1$_2$")]:
-        plt.text(xc, 300, lab, ha="center")
+    plt.title("Au-Cu fcc order/disorder (Sundman et al. 1998)")
+    plt.legend(markerscale=2, ncol=4, loc="upper center", fontsize=9)
     plt.tight_layout()
     out = "benchmarks/_aucu_order_disorder.png"
     plt.savefig(out, dpi=130)
-    print(f"wrote {out}  ({len(c)} boundary points over {len(temperatures)} isotherms)")
+    counts = stable.phase.value_counts().to_dict()
+    print(f"wrote {out}  (stable grid points per phase: {counts})")
 
 
 if __name__ == "__main__":
