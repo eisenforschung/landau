@@ -30,7 +30,8 @@ import matplotlib.pyplot as plt
 
 from landau import CompoundEnergyPhase
 from landau.calculate import calc_phase_diagram
-from landau.plot import get_phase_colors
+from landau.plot import plot_phase_diagram
+from landau.refine import DelaunayLineRefiner
 
 JMOL = 96485.332  # J/mol per eV/atom
 NS = 4            # sites per formula unit
@@ -93,30 +94,25 @@ def main():
     # --- verification against the paper -------------------------------------
     print(f"AuCu (L1_0) end-member energy at 300 K: {_G_Au2Cu2(300) * JMOL:8.1f} J/mol-atom  (Fig 5 ~ -9000)")
 
-    temperatures = np.arange(290, 720, 10.0)
-    mu = np.linspace(-0.5, 0.5, 121)
-    df = calc_phase_diagram(phases, temperatures, mu=mu, refine=False)
+    temperatures = np.arange(300, 700, 20.0)
+    mu = np.linspace(-0.5, 0.5, 81)
+    df = calc_phase_diagram(phases, temperatures, mu=mu, refine=[DelaunayLineRefiner()])
 
-    # plot_phase_diagram's polygon renderer cannot represent the disordered matrix
-    # pierced by the ordered-island domes (a multiply-connected region), so we draw
-    # the calc_phase_diagram equilibria directly: each stable (c, T) grid point,
-    # coloured by the phase that minimises the semi-grand potential there.
-    stable = df.query("stable")
-    colors = get_phase_colors([p.name for p in phases])
-
-    plt.figure(figsize=(6.4, 4.7))
-    for name, g in stable.groupby("phase"):
-        plt.scatter(g["c"], g["T"], s=6, color=colors[name], label=name)
-    plt.xlim(0, 1)
-    plt.ylim(290, 720)
-    plt.xlabel("Mole fraction Cu")
-    plt.ylabel("Temperature (K)")
-    plt.title("Au-Cu fcc order/disorder (Sundman et al. 1998)")
-    plt.legend(markerscale=2, ncol=4, loc="upper center", fontsize=9)
-    plt.tight_layout()
+    # The four phases occupy four simply-connected c-T regions -- the disordered fcc
+    # matrix and the three ordered domes -- so plot_phase_diagram draws them directly
+    # (the ordered phases are absent outside their domes, so fcc is one clean region
+    # and there is no ordered/disordered degeneracy).
+    fig, ax = plt.subplots(figsize=(6.4, 4.7))
+    plot_phase_diagram(df, poly_method="segments", legend=True, inline_legend=False, ax=ax)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(300, 700)
+    ax.set_xlabel("Mole fraction Cu")
+    ax.set_ylabel("Temperature (K)")
+    ax.set_title("Au-Cu fcc order/disorder (Sundman et al. 1998)")
+    fig.tight_layout()
     out = "benchmarks/_aucu_order_disorder.png"
-    plt.savefig(out, dpi=130)
-    counts = stable.phase.value_counts().to_dict()
+    fig.savefig(out, dpi=130)
+    counts = df.query("stable").phase.value_counts().to_dict()
     print(f"wrote {out}  (stable grid points per phase: {counts})")
 
 
