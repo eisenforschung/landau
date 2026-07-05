@@ -1340,3 +1340,132 @@ def test_check_concentration_interpolation_plot_excess_anchors_to_line_phases(
             assert abs(y) < ERR_ATOL
     finally:
         plt.close(fig)
+
+
+# --- CompoundEnergyPhase tests ---
+
+from itertools import combinations as _combinations
+
+from landau.phases import CompoundEnergyPhase
+
+_CEF_JMOL = 96485.332  # J/mol per eV/atom
+
+
+def _cef_one_sublattice(fA=0.10, fB=-0.20):
+    """A single-sublattice binary CEF -- identical model to an IdealSolution."""
+    return CompoundEnergyPhase(
+        name="cef1",
+        site_multiplicities=(1.0,),
+        endmember_energies={(0,): lambda T, v=fA: v, (1,): lambda T, v=fB: v},
+    )
+
+
+def _cef_au_cu_fcc():
+    """Sundman-Fries-Oates (1998) four-sublattice fcc Au-Cu phase, Assessment I."""
+    u1, u2, u3, u4, u5, u6 = -7590, -9590, -9900, 10.32, 10.62, -1.565
+    ns = 4
+
+    def g1(T):
+        return (3 * u1 + 3 * u4 * T + 3 * u6 * T * np.log(T)) / ns / _CEF_JMOL
+
+    def g2(T):
+        return (4 * u2 + 4 * u5 * T + 4 * u6 * T * np.log(T)) / ns / _CEF_JMOL
+
+    def g3(T):
+        return (3 * u3 + 3 * u4 * T + 3 * u6 * T * np.log(T)) / ns / _CEF_JMOL
+
+    by_ncu = {0: lambda T: 0.0, 1: g1, 2: g2, 3: g3, 4: lambda T: 0.0}
+    endmembers = {tuple(int(b) for b in cfg): by_ncu[sum(cfg)] for cfg in np.ndindex(2, 2, 2, 2)}
+
+    def excess(y, T):
+        e = (3940 + 10.32 * T) * np.sum(y * (1 - y))
+        for r, s in _combinations(range(4), 2):
+            t, u = (i for i in range(4) if i not in (r, s))
+            e += (1 - y[r]) * y[r] * (1 - y[s]) * y[s] * (-18 * T - 15900 * y[t] * y[u])
+        return e / ns / _CEF_JMOL
+
+    return CompoundEnergyPhase(
+        name="fcc",
+        site_multiplicities=(0.25, 0.25, 0.25, 0.25),
+        endmember_energies=endmembers,
+        excess=excess,
+    )
+
+
+def test_cef_free_energy_pure_end_members_have_no_mixing_entropy():
+    phase = _cef_one_sublattice(fA=0.10, fB=-0.20)
+    assert phase.free_energy(1000.0, [0.0]) == pytest.approx(0.10)
+    assert phase.free_energy(1000.0, [1.0]) == pytest.approx(-0.20)
+
+
+def test_cef_composition_is_site_weighted_average():
+    phase = _cef_au_cu_fcc()
+    assert phase.composition([0.2, 0.4, 0.6, 0.8]) == pytest.approx(0.5)
+    assert phase.composition([1.0, 1.0, 0.0, 0.0]) == pytest.approx(0.5)
+
+
+def test_cef_semigrand_potential_scalar_shape():
+    result = _cef_one_sublattice().semigrand_potential(1000.0, 0.0)
+    assert np.isscalar(result) or not isinstance(result, np.ndarray)
+
+
+def test_cef_concentration_array_dmu_shape():
+    dmu = np.linspace(-0.3, 0.3, 5)
+    c = _cef_one_sublattice().concentration(1000.0, dmu)
+    assert c.shape == dmu.shape
+    assert np.all((c >= 0) & (c <= 1))
+
+
+def test_cef_one_sublattice_matches_ideal_solution_potential():
+    fA, fB = 0.10, -0.20
+    cef = _cef_one_sublattice(fA, fB)
+    ideal = IdealSolution("id", LinePhase("A", 0.0, fA), LinePhase("B", 1.0, fB))
+    dmu = np.linspace(-0.3, 0.3, 13)
+    assert_allclose(cef.semigrand_potential(1000.0, dmu), ideal.semigrand_potential(1000.0, dmu), atol=_INTERP_ATOL)
+
+
+def test_cef_one_sublattice_matches_ideal_solution_concentration():
+    fA, fB = 0.10, -0.20
+    cef = _cef_one_sublattice(fA, fB)
+    ideal = IdealSolution("id", LinePhase("A", 0.0, fA), LinePhase("B", 1.0, fB))
+    dmu = np.linspace(-0.3, 0.3, 13)
+    assert_allclose(cef.concentration(1000.0, dmu), ideal.concentration(1000.0, dmu), atol=_INTERP_ATOL)
+
+
+def test_cef_gibbs_duhem():
+    """c = -d(phi)/d(dmu) for the multi-sublattice ordering phase."""
+    phase = _cef_au_cu_fcc()
+    dmu = np.linspace(-0.15, 0.15, 61)
+    phi = phase.semigrand_potential(400.0, dmu)
+    c_numeric = -np.gradient(phi, dmu)
+    c_direct = phase.concentration(400.0, dmu)
+    # exclude the jump cells: the transform is only differentiable off transitions
+    smooth = np.abs(np.gradient(c_direct, dmu)) < 5.0
+    assert_allclose(c_numeric[smooth], c_direct[smooth], atol=2e-2)
+
+
+def test_cef_au_cu_end_member_matches_paper():
+    """AuCu (L1_0) end-member energy at 300 K reproduces Fig. 5 (~ -9000 J/mol-atom)."""
+    phase = _cef_au_cu_fcc()
+    g = phase.free_energy(300.0, [1.0, 1.0, 0.0, 0.0]) * _CEF_JMOL
+    assert g == pytest.approx(-9082, abs=50)
+
+
+def test_cef_au_cu_orders_below_and_disorders_above_transition():
+    """L1_0 (AuCu) at c=0.5: fully ordered wins at 300 K, disordered wins at 700 K."""
+    phase = _cef_au_cu_fcc()
+    ordered = [1.0, 1.0, 0.0, 0.0]
+    disordered = [0.5, 0.5, 0.5, 0.5]
+    assert phase.free_energy(300.0, ordered) < phase.free_energy(300.0, disordered)
+    assert phase.free_energy(700.0, disordered) < phase.free_energy(700.0, ordered)
+
+
+def test_cef_au_cu_low_temperature_ordering_plateau():
+    """At 400 K and dmu=0 the equilibrium sits on the ordered L1_0 plateau near c=0.5.
+
+    The model is slightly asymmetric (Au3Cu and AuCu3 differ), so the plateau sits
+    at c ~ 0.504 rather than exactly 0.5; the tight window still separates it from
+    the disordered ramp on either side.
+    """
+    phase = _cef_au_cu_fcc()
+    assert phase.concentration(400.0, 0.0) == pytest.approx(0.5, abs=0.02)
