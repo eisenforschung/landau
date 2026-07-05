@@ -11,7 +11,9 @@ from scipy.constants import Boltzmann, eV
 
 from landau.interpolate import PolyFit, SGTE
 from landau.interpolate.basic import G_calphad
-from landau.phases import IdealSolution, InterpolatingPhase, LinePhase, RegularSolution, SlowInterpolatingPhase, FastInterpolatingPhase, TemperatureDependentLinePhase
+from itertools import combinations as _combinations
+
+from landau.phases import IdealSolution, InterpolatingPhase, LinePhase, RegularSolution, SlowInterpolatingPhase, FastInterpolatingPhase, TemperatureDependentLinePhase, CompoundEnergyPhase
 from landau.phases.pointdefects import (
     AbstractPointDefectSublattice,
     ConstantPointDefect,
@@ -1344,10 +1346,6 @@ def test_check_concentration_interpolation_plot_excess_anchors_to_line_phases(
 
 # --- CompoundEnergyPhase tests ---
 
-from itertools import combinations as _combinations
-
-from landau.phases import CompoundEnergyPhase
-
 _CEF_JMOL = 96485.332  # J/mol per eV/atom
 
 
@@ -1360,8 +1358,8 @@ def _cef_one_sublattice(fA=0.10, fB=-0.20):
     )
 
 
-def _cef_au_cu_fcc():
-    """Sundman-Fries-Oates (1998) four-sublattice fcc Au-Cu phase, Assessment I."""
+def _cef_aucu_kwargs():
+    """Shared Sundman-Fries-Oates (1998) four-sublattice fcc Au-Cu energetics."""
     u1, u2, u3, u4, u5, u6 = -7590, -9590, -9900, 10.32, 10.62, -1.565
     ns = 4
 
@@ -1384,12 +1382,12 @@ def _cef_au_cu_fcc():
             e += (1 - y[r]) * y[r] * (1 - y[s]) * y[s] * (-18 * T - 15900 * y[t] * y[u])
         return e / ns / _CEF_JMOL
 
-    return CompoundEnergyPhase(
-        name="fcc",
-        site_multiplicities=(0.25, 0.25, 0.25, 0.25),
-        endmember_energies=endmembers,
-        excess=excess,
-    )
+    return dict(site_multiplicities=(0.25, 0.25, 0.25, 0.25), endmember_energies=endmembers, excess=excess)
+
+
+def _cef_au_cu_fcc():
+    """Full partitioning Au-Cu fcc phase (global minimum over every ordering)."""
+    return CompoundEnergyPhase(name="fcc", **_cef_aucu_kwargs())
 
 
 def test_cef_free_energy_pure_end_members_have_no_mixing_entropy():
@@ -1469,3 +1467,29 @@ def test_cef_au_cu_low_temperature_ordering_plateau():
     """
     phase = _cef_au_cu_fcc()
     assert phase.concentration(400.0, 0.0) == pytest.approx(0.5, abs=0.02)
+
+
+def test_cef_disordered_pinned_stays_disordered():
+    """orderings=() keeps the phase on the disordered branch f(c)=G(c,c,c,c)."""
+    dis = CompoundEnergyPhase(name="dis", orderings=(), **_cef_aucu_kwargs())
+    for c in (0.25, 0.5, 0.75):
+        assert float(dis.free_energy_c(300.0, c)) == pytest.approx(dis.free_energy(300.0, [c, c, c, c]), abs=1e-9)
+
+
+def test_cef_ordered_pinned_is_lower_than_disordered_at_low_T():
+    """A basin-pinned L1_0 phase orders below the disordered branch at 300 K."""
+    kw = _cef_aucu_kwargs()
+    dis = CompoundEnergyPhase(name="dis", orderings=(), **kw)
+    l10 = CompoundEnergyPhase(name="l10", orderings=((1, 1, 0, 0),), include_disordered_seed=False, **kw)
+    assert float(l10.free_energy_c(300.0, 0.5)) < float(dis.free_energy_c(300.0, 0.5))
+
+
+def test_cef_partitioning_is_lower_envelope_of_basins():
+    """The full partitioning phase equals min(disordered, ordered) at each c."""
+    kw = _cef_aucu_kwargs()
+    dis = CompoundEnergyPhase(name="dis", orderings=(), **kw)
+    l10 = CompoundEnergyPhase(name="l10", orderings=((1, 1, 0, 0),), include_disordered_seed=False, **kw)
+    full = CompoundEnergyPhase(name="full", orderings=None, **kw)
+    for c in (0.4, 0.5, 0.6):
+        envelope = min(float(dis.free_energy_c(300.0, c)), float(l10.free_energy_c(300.0, c)))
+        assert float(full.free_energy_c(300.0, c)) == pytest.approx(envelope, abs=1e-6)

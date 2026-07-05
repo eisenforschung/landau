@@ -60,11 +60,22 @@ class CompoundEnergyPhase(Phase):
             end-member energy in eV/atom.  All ``2**S`` configurations must be given.
         excess: optional excess energy ``EG(y, T)`` in eV/atom, where ``y`` is the
             length-``S`` array of B site fractions.  ``None`` means ideal.
+        orderings: which ordered end-member corners the inner minimisation is seeded
+            from.  ``None`` (default) uses all ``2**S`` corners, so the phase is the
+            full partitioning CEF (global minimum over every ordering).  Pass a single
+            corner, e.g. ``((1, 1, 0, 0),)``, to pin the phase to one ordering basin --
+            useful for rendering an ordered superstructure (L1_0, L1_2, ...) as its own
+            phase that competes with a disordered phase in ``calc_phase_diagram``.
+        include_disordered_seed: also seed from the disordered point ``(c, ..., c)``.
+            Keep ``True`` for a disordered or partitioning phase; set ``False`` on a
+            basin-pinned ordered phase so it stays on its ordered branch.
     """
 
     site_multiplicities: tuple[float, ...] = ()
     endmember_energies: Mapping[tuple[int, ...], Callable[[float], float]] = field(default_factory=dict)
     excess: Callable[[np.ndarray, float], float] | None = None
+    orderings: tuple[tuple[int, ...], ...] | None = None
+    include_disordered_seed: bool = True
 
     # solver tuning (ClassVar -> never treated as dataclass fields)
     _n_grid: ClassVar[int] = 101  # concentration grid for the f(c) reduction
@@ -76,11 +87,11 @@ class CompoundEnergyPhase(Phase):
         S = len(a)
         assert len(self.endmember_energies) == 2**S, f"need 2**S={2**S} end-member energies for {S} sublattices"
         assert abs(sum(a) - 1) < 1e-9, "site_multiplicities must sum to 1"
-        # config array (1 where B sits) and the ordered end-member corners, cached
+        # config array (1 where B sits) and the ordered corners the solve is seeded from
         object.__setattr__(self, "_configs", np.array([cfg for cfg, _ in self.endmember_energies], dtype=float))
-        object.__setattr__(
-            self, "_corners", [np.clip(np.array(cfg, dtype=float), 1e-9, 1 - 1e-9) for cfg in product((0, 1), repeat=S)]
-        )
+        seeds = product((0, 1), repeat=S) if self.orderings is None else self.orderings
+        object.__setattr__(self, "_corners", [np.clip(np.array(cfg, dtype=float), 1e-9, 1 - 1e-9) for cfg in seeds])
+        assert self._corners or self.include_disordered_seed, "phase has no ordering seed"
 
     # hash by name so the phase can key the per-T caches; distinct phases in one
     # diagram carry distinct names.
@@ -118,16 +129,18 @@ class CompoundEnergyPhase(Phase):
         """``f(c, T) = min`` over site fractions at fixed overall composition ``c``.
 
         Multi-start SLSQP with the composition equality constraint, seeded from
-        the disordered point plus every ordered end-member corner so both ordered
-        and disordered basins are sampled; an infeasible corner seed is pulled onto
-        the constraint by SLSQP while staying in its basin.
+        the disordered point (when ``include_disordered_seed``) plus the ordered
+        end-member corners in ``orderings`` so the relevant basins are sampled; an
+        infeasible corner seed is pulled onto the constraint by SLSQP while staying
+        in its basin.
         """
         S = len(self.site_multiplicities)
         a = np.asarray(self.site_multiplicities)
         bounds = [(0.0, 1.0)] * S
         constraint = {"type": "eq", "fun": lambda y: float(a @ y) - c}
         best = np.inf
-        for y0 in [np.full(S, c), *self._corners]:
+        seeds = ([np.full(S, c)] if self.include_disordered_seed else []) + self._corners
+        for y0 in seeds:
             try:
                 res = so.minimize(
                     lambda y: self._free_energy(T, y, evals), y0,
