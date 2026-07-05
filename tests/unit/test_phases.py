@@ -1494,3 +1494,37 @@ def test_cef_partitioning_is_lower_envelope_of_basins():
     for c in (0.4, 0.5, 0.6):
         envelope = min(float(dis.free_energy_c(300.0, c)), float(l10.free_energy_c(300.0, c)))
         assert float(full.free_energy_c(300.0, c)) == pytest.approx(envelope, abs=1e-6)
+
+
+def _cef_aucu_ordered(pattern):
+    """A basin-pinned ordered Au-Cu phase for the given ordering corner."""
+    return CompoundEnergyPhase(name="ord", orderings=(pattern,), include_disordered_seed=False, **_cef_aucu_kwargs())
+
+
+def test_cef_pinned_ordered_absent_in_disordered_region():
+    """A pinned ordered phase reports phi = +inf where it has disordered."""
+    l10 = _cef_aucu_ordered((1, 1, 0, 0))
+    # deep in the dilute (disordered) tail the L1_0 ordering does not exist
+    assert not np.isfinite(l10.semigrand_potential(400.0, -0.30))
+    # near its stoichiometry (c ~ 0.5) it exists and is finite
+    assert np.isfinite(l10.semigrand_potential(400.0, 0.0))
+
+
+def test_cef_pinned_ordered_phases_do_not_tie():
+    """AuCu3 stays on its own ordering rather than flowing into the L1_0 basin.
+
+    Before confinement both the L1_0- and L1_2(AuCu3)-seeded phases relaxed to the
+    same L1_0 minimum at c ~ 0.5 and tied; now AuCu wins strictly there.
+    """
+    l10 = _cef_aucu_ordered((1, 1, 0, 0))
+    aucu3 = _cef_aucu_ordered((1, 1, 1, 0))
+    phi_l10 = l10.semigrand_potential(400.0, 0.0)
+    phi_aucu3 = aucu3.semigrand_potential(400.0, 0.0)
+    assert phi_l10 < phi_aucu3 - 1e-4  # strict winner, no numerical tie
+
+
+def test_cef_disordered_phase_is_finite_everywhere():
+    """The disordered phase (orderings=()) is present across the whole dmu range."""
+    dis = CompoundEnergyPhase(name="dis", orderings=(), **_cef_aucu_kwargs())
+    dmu = np.linspace(-0.4, 0.4, 9)
+    assert np.all(np.isfinite(dis.semigrand_potential(400.0, dmu)))
