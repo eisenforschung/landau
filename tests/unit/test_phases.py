@@ -1376,10 +1376,11 @@ def _cef_aucu_kwargs():
     endmembers = {tuple(int(b) for b in cfg): by_ncu[sum(cfg)] for cfg in np.ndindex(2, 2, 2, 2)}
 
     def excess(y, T):
-        e = (3940 + 10.32 * T) * np.sum(y * (1 - y))
+        y = np.asarray(y, dtype=float)
+        e = (3940 + 10.32 * T) * np.sum(y * (1 - y), axis=-1)
         for r, s in _combinations(range(4), 2):
             t, u = (i for i in range(4) if i not in (r, s))
-            e += (1 - y[r]) * y[r] * (1 - y[s]) * y[s] * (-18 * T - 15900 * y[t] * y[u])
+            e = e + (1 - y[..., r]) * y[..., r] * (1 - y[..., s]) * y[..., s] * (-18 * T - 15900 * y[..., t] * y[..., u])
         return e / ns / _CEF_JMOL
 
     return dict(site_multiplicities=(0.25, 0.25, 0.25, 0.25), endmember_energies=endmembers, excess=excess)

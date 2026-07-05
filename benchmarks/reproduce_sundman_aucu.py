@@ -57,16 +57,21 @@ _ENDMEMBERS = {tuple(int(b) for b in cfg): _BY_NCU[sum(cfg)] for cfg in np.ndind
 
 
 def _excess(y, T):
-    """Regular (eq 8) + reciprocal (eq 9) interactions, per atom (eV)."""
+    """Regular (eq 8) + reciprocal (eq 9) interactions, per atom (eV).
+
+    ``y`` broadcasts over any leading axes; the last axis is the four site
+    fractions (so the vectorised solver can evaluate a whole batch at once).
+    """
+    y = np.asarray(y, dtype=float)
     # regular  L_{Au,Cu:*:*:*} = 3940 + 10.32 T, one copy per sublattice
-    e_reg = (3940 + 10.32 * T) * np.sum(y * (1 - y))
+    e_reg = (3940 + 10.32 * T) * np.sum(y * (1 - y), axis=-1)
     # reciprocal parameters, collapsed over the two non-interacting sublattices:
     #   L=-18T when they hold <=1 Cu, L=-15900-18T when both hold Cu, i.e.
     #   (1-y_r)y_r (1-y_s)y_s [ -18T - 15900 y_t y_u ]  over the 6 interacting pairs
     e_rec = 0.0
     for r, s in combinations(range(4), 2):
         t, u = (i for i in range(4) if i not in (r, s))
-        e_rec += (1 - y[r]) * y[r] * (1 - y[s]) * y[s] * (-18 * T - 15900 * y[t] * y[u])
+        e_rec = e_rec + (1 - y[..., r]) * y[..., r] * (1 - y[..., s]) * y[..., s] * (-18 * T - 15900 * y[..., t] * y[..., u])
     return (e_reg + e_rec) / NS / JMOL
 
 

@@ -17,21 +17,29 @@ its relative size (``site_multiplicities``, summing to 1), and ``p_s^{(c)} = y_s
 if end-member ``c`` carries B on sublattice ``s`` else ``1 - y_s``.  The overall
 B concentration is ``c(y) = sum_s a_s y_s``.
 
-Semi-grand solve, mirroring :class:`~landau.phases.FastInterpolatingPhase`.  The
-site fractions are internal (order) parameters, and
+Semi-grand solve -- one minimisation, straight from site fractions.  The site
+fractions are internal (order) parameters and the semi-grand potential is their
+Legendre transform,
 
 .. math::
 
-    \phi(T, \Delta\mu) = \min_{\vec y \in [0,1]^S}\!\big[G(\vec y,T) - \Delta\mu\,c(\vec y)\big]
-        = \min_{c \in [0,1]}\!\big[f(c,T) - \Delta\mu\,c\big],
+    \phi(T, \Delta\mu) = \min_{\vec y \in [0,1]^S}\!\big[G(\vec y,T) - \Delta\mu\,c(\vec y)\big].
 
-so the ordering (inner) minimisation is separated from the semi-grand (outer)
-transform: for each ``T`` the reduced curve ``f(c,T) = min_{y: c(y)=c} G(y,T)`` is
-built once on a concentration grid, then a single vectorised ``argmin`` over the
-whole ``dmu`` array picks the global basin (handling the ordered/disordered
-common tangents), refined to sub-grid accuracy by a parabolic step.  All energies
-are per atom (eV) to match the rest of ``landau``; convert CALPHAD J/mol
-parameters by dividing by 96485.33.
+Setting :math:`\partial_{y_s}[\,G - \Delta\mu\,c\,] = 0` gives the self-consistent
+(Bragg-Williams / BGBW) fixed point
+
+.. math::
+
+    y_s = \sigma\!\Big(\frac{\Delta\mu - a_s^{-1}\,\partial_{y_s}(G_\text{ref}+{}^EG)}{k_B T}\Big),
+
+because the ideal term contributes :math:`k_B T\,a_s\,\mathrm{logit}(y_s)`, linear in
+``logit(y_s)``.  Iterating this map (damped) drives ``y`` to the stationary point of
+each basin; it is vectorised over the whole ``dmu`` array (one solve per ``T``) and
+run from a disordered start plus every ordered end-member corner, keeping the lowest
+``phi`` per ``dmu`` -- so ordered/disordered coexistence surfaces as ``c(dmu)`` jumps
+without any fixed-composition inner minimisation.  ``c = -partial phi/partial dmu``
+holds at the stationary point.  All energies are per atom (eV); convert CALPHAD J/mol
+by dividing by 96485.33.
 """
 
 from dataclasses import dataclass, field
@@ -58,11 +66,14 @@ class CompoundEnergyPhase(Phase):
         endmember_energies: maps each length-``S`` configuration tuple (``0`` = A,
             ``1`` = B on that sublattice) to a callable ``G(T)`` returning the
             end-member energy in eV/atom.  All ``2**S`` configurations must be given.
-        excess: optional excess energy ``EG(y, T)`` in eV/atom, where ``y`` is the
-            length-``S`` array of B site fractions.  ``None`` means ideal.
-        orderings: which ordered end-member corners the inner minimisation is seeded
-            from.  ``None`` (default) uses all ``2**S`` corners, so the phase is the
-            full partitioning CEF (global minimum over every ordering).  Pass a single
+        excess: optional excess energy ``EG(y, T)`` in eV/atom.  ``y`` is an array
+            whose last axis is the ``S`` site fractions; it must broadcast over any
+            leading axes (sum reductions over ``axis=-1``, index sublattices as
+            ``y[..., s]``) so the vectorised solve can evaluate it on a whole batch.
+            ``None`` means ideal.
+        orderings: which ordered end-member corners the solve is seeded from.
+            ``None`` (default) uses all ``2**S`` corners, so the phase is the full
+            partitioning CEF (global minimum over every ordering).  Pass a single
             corner, e.g. ``((1, 1, 0, 0),)``, to pin the phase to one ordering basin --
             useful for rendering an ordered superstructure (L1_0, L1_2, ...) as its own
             phase that competes with a disordered phase in ``calc_phase_diagram``.
@@ -78,7 +89,10 @@ class CompoundEnergyPhase(Phase):
     include_disordered_seed: bool = True
 
     # solver tuning (ClassVar -> never treated as dataclass fields)
-    _n_grid: ClassVar[int] = 101  # concentration grid for the f(c) reduction
+    _scf_max_iter: ClassVar[int] = 200  # self-consistent-field iterations per start
+    _scf_damp: ClassVar[float] = 0.5    # mixing factor y <- (1-d) y + d target
+    _scf_tol: ClassVar[float] = 1e-11   # max|dy| convergence tolerance
+    _fd: ClassVar[float] = 1e-6         # finite-difference step for the excess gradient
 
     def __post_init__(self):
         a = tuple(float(x) for x in self.site_multiplicities)
@@ -87,10 +101,13 @@ class CompoundEnergyPhase(Phase):
         S = len(a)
         assert len(self.endmember_energies) == 2**S, f"need 2**S={2**S} end-member energies for {S} sublattices"
         assert abs(sum(a) - 1) < 1e-9, "site_multiplicities must sum to 1"
-        # config array (1 where B sits) and the ordered corners the solve is seeded from
-        object.__setattr__(self, "_configs", np.array([cfg for cfg, _ in self.endmember_energies], dtype=float))
+        # config array (1 where B sits), the +/-1 sign per (endmember, sublattice) for
+        # the analytic G_ref gradient, and the ordered corners the solve is seeded from
+        cfg = np.array([c for c, _ in self.endmember_energies], dtype=float)
+        object.__setattr__(self, "_configs", cfg)
+        object.__setattr__(self, "_sign", 2.0 * cfg - 1.0)
         seeds = product((0, 1), repeat=S) if self.orderings is None else self.orderings
-        object.__setattr__(self, "_corners", [np.clip(np.array(cfg, dtype=float), 1e-9, 1 - 1e-9) for cfg in seeds])
+        object.__setattr__(self, "_corners", [np.clip(np.array(c, dtype=float), 1e-9, 1 - 1e-9) for c in seeds])
         assert self._corners or self.include_disordered_seed, "phase has no ordering seed"
 
     # hash by name so the phase can key the per-T caches; distinct phases in one
@@ -98,7 +115,7 @@ class CompoundEnergyPhase(Phase):
     def __hash__(self):
         return hash(self.name)
 
-    # --- model ---------------------------------------------------------------
+    # --- model (vectorised over any leading axes of y) -----------------------
 
     @lru_cache(maxsize=2000)
     def _endmember_evals(self, T):
@@ -106,13 +123,12 @@ class CompoundEnergyPhase(Phase):
         return np.array([g(T) for _, g in self.endmember_energies])
 
     def _free_energy(self, T, y, evals):
-        """Gibbs energy from site fractions with pre-evaluated end-member energies."""
+        """Gibbs energy ``G(y, T)`` for ``y`` of shape ``(..., S)`` -> ``(...)`` (eV/atom)."""
         a = np.asarray(self.site_multiplicities)
-        prob = np.prod(np.where(self._configs == 1, y, 1.0 - y), axis=1)  # (M,)
-        gref = float(evals @ prob)
-        # ideal mixing: +kB*T*sum a_s (y ln y + (1-y)ln(1-y)) = -kB*T*sum a_s (entr y + entr 1-y)
-        gid = -kB * T * float(np.dot(a, se.entr(y) + se.entr(1.0 - y)))
-        gex = float(self.excess(y, T)) if self.excess is not None else 0.0
+        p = np.where(self._configs == 1, y[..., None, :], 1.0 - y[..., None, :])  # (...,M,S)
+        gref = p.prod(axis=-1) @ evals  # (...,)
+        gid = -kB * T * ((se.entr(y) + se.entr(1.0 - y)) @ a)
+        gex = self.excess(y, T) if self.excess is not None else 0.0
         return gref + gid + gex
 
     def free_energy(self, T, y):
@@ -121,73 +137,68 @@ class CompoundEnergyPhase(Phase):
 
     def composition(self, y):
         """Overall B concentration ``sum_s a_s y_s``."""
-        return float(np.dot(self.site_multiplicities, np.asarray(y, dtype=float)))
+        return np.asarray(y, dtype=float) @ np.asarray(self.site_multiplicities)
 
-    # --- ordering (inner) minimisation: reduce to f(c) -----------------------
+    def _grad_non_ideal(self, T, y, evals):
+        """Gradient ``d(G_ref + EG)/dy_s`` for ``y`` of shape ``(..., S)`` -> ``(..., S)``."""
+        p = np.where(self._configs == 1, y[..., None, :], 1.0 - y[..., None, :])  # (...,M,S)
+        # leave-one-out product: prod_{s'!=s} p = (prod_s p) / p_s  (p bounded away from 0)
+        loo = p.prod(axis=-1, keepdims=True) / p  # (...,M,S)
+        gref = np.einsum("m,...ms->...s", evals, self._sign * loo)
+        if self.excess is None:
+            return gref
+        # central finite difference of the (cheap) excess in each sublattice
+        h = self._fd
+        gex = np.empty_like(y)
+        for s in range(y.shape[-1]):
+            yp = y.copy()
+            ym = y.copy()
+            yp[..., s] = np.clip(yp[..., s] + h, 1e-12, 1 - 1e-12)
+            ym[..., s] = np.clip(ym[..., s] - h, 1e-12, 1 - 1e-12)
+            gex[..., s] = (self.excess(yp, T) - self.excess(ym, T)) / (yp[..., s] - ym[..., s])
+        return gref + gex
 
-    def _fc_scalar(self, T, c, evals):
-        """``f(c, T) = min`` over site fractions at fixed overall composition ``c``.
+    # --- direct semi-grand solve (one minimisation per start) ----------------
 
-        Multi-start SLSQP with the composition equality constraint, seeded from
-        the disordered point (when ``include_disordered_seed``) plus the ordered
-        end-member corners in ``orderings`` so the relevant basins are sampled; an
-        infeasible corner seed is pulled onto the constraint by SLSQP while staying
-        in its basin.
+    def _scf(self, T, dmu, evals, y0):
+        """Self-consistent field iteration for one start, vectorised over ``dmu``.
+
+        Returns the stationary site fractions ``y`` of shape ``(len(dmu), S)``.
         """
-        S = len(self.site_multiplicities)
         a = np.asarray(self.site_multiplicities)
-        bounds = [(0.0, 1.0)] * S
-        constraint = {"type": "eq", "fun": lambda y: float(a @ y) - c}
-        best = np.inf
-        seeds = ([np.full(S, c)] if self.include_disordered_seed else []) + self._corners
-        for y0 in seeds:
-            try:
-                res = so.minimize(
-                    lambda y: self._free_energy(T, y, evals), y0,
-                    method="SLSQP", bounds=bounds, constraints=constraint,
-                )
-            except ValueError:
-                continue
-            if res.success and np.isfinite(res.fun) and res.fun < best:
-                best = res.fun
-        return best
-
-    @lru_cache(maxsize=2000)
-    def _fc_grid(self, T):
-        """The reduced free-energy curve ``f(c, T)`` on the concentration grid."""
-        evals = self._endmember_evals(T)
-        conc = np.linspace(0.0, 1.0, self._n_grid)
-        f = np.array([self._fc_scalar(T, float(c), evals) for c in conc])
-        return conc, f
-
-    def free_energy_c(self, T, c):
-        """Reduced Gibbs energy ``f(c, T)`` at overall composition ``c`` (eV/atom)."""
-        evals = self._endmember_evals(T)
-        return np.vectorize(lambda c: self._fc_scalar(T, float(c), evals))(c)
-
-    # --- semi-grand (outer) transform: min over c of f(c) - dmu*c ------------
+        kT = kB * T
+        d = self._scf_damp
+        y = np.clip(np.broadcast_to(y0, (dmu.size, a.size)).astype(float), 1e-9, 1 - 1e-9)
+        for _ in range(self._scf_max_iter):
+            field = self._grad_non_ideal(T, y, evals) / a  # (D,S)
+            target = se.expit((dmu[:, None] - field) / kT)
+            y_new = np.clip((1 - d) * y + d * target, 1e-12, 1 - 1e-12)
+            if np.max(np.abs(y_new - y)) < self._scf_tol:
+                return y_new
+            y = y_new
+        return y
 
     def _solve_fixed_T(self, T, dmu):
-        """Minimise ``f(c) - dmu*c`` over ``c`` for one ``T`` and a whole ``dmu`` array."""
-        conc, f_grid = self._fc_grid(T)
-        n = self._n_grid
+        """Semi-grand ``(phi, c)`` for one ``T`` and a whole ``dmu`` array.
+
+        Runs the SCF map from the disordered start plus every ordered corner and
+        keeps, per ``dmu``, the site fractions with the lowest ``G - dmu*c``.
+        """
+        evals = self._endmember_evals(T)
+        a = np.asarray(self.site_multiplicities)
         flat = np.asarray(dmu, dtype=float).ravel()
+        starts = ([np.full(a.size, 0.5)] if self.include_disordered_seed else []) + self._corners
 
-        val = f_grid[None, :] - flat[:, None] * conc[None, :]  # (D, n)
-        idx = val.argmin(axis=1)
-
-        # parabolic sub-grid refinement inside the winning cell [i-1, i+1]
-        i0 = np.clip(idx, 1, n - 2)
-        rows = np.arange(flat.size)
-        vm, v0, vp = val[rows, i0 - 1], val[rows, i0], val[rows, i0 + 1]
-        denom = vm - 2 * v0 + vp
-        shift = np.where(denom > 0, 0.5 * (vm - vp) / np.where(denom > 0, denom, 1.0), 0.0)
-        shift = np.clip(shift, -1.0, 1.0)
-        dc = conc[1] - conc[0]
-        c = np.clip(conc[i0] + shift * dc, 0.0, 1.0)
-        phi = v0 - 0.25 * (vm - vp) * shift  # parabola vertex value
-
-        return phi.reshape(np.shape(dmu)), c.reshape(np.shape(dmu))
+        best_phi = np.full(flat.size, np.inf)
+        best_c = np.zeros(flat.size)
+        for y0 in starts:
+            y = self._scf(T, flat, evals, y0)
+            c = y @ a
+            phi = self._free_energy(T, y, evals) - flat * c
+            take = phi < best_phi
+            best_phi[take] = phi[take]
+            best_c[take] = c[take]
+        return best_phi.reshape(np.shape(dmu)), best_c.reshape(np.shape(dmu))
 
     @lru_cache(maxsize=512)
     def _find_phi_c_cached(self, t_shape, t_bytes, d_shape, d_bytes):
@@ -221,3 +232,30 @@ class CompoundEnergyPhase(Phase):
 
     def concentration(self, T, dmu):
         return self._find_phi_c(T, dmu)[1]
+
+    # --- reduced free-energy curve f(c) (diagnostics; not on the hot path) ----
+
+    def _fc_scalar(self, T, c, evals):
+        """``f(c, T) = min`` over site fractions at fixed overall composition ``c``."""
+        S = len(self.site_multiplicities)
+        a = np.asarray(self.site_multiplicities)
+        bounds = [(0.0, 1.0)] * S
+        constraint = {"type": "eq", "fun": lambda y: float(a @ y) - c}
+        best = np.inf
+        seeds = ([np.full(S, c)] if self.include_disordered_seed else []) + self._corners
+        for y0 in seeds:
+            try:
+                res = so.minimize(
+                    lambda y: float(self._free_energy(T, np.asarray(y), evals)), y0,
+                    method="SLSQP", bounds=bounds, constraints=constraint,
+                )
+            except ValueError:
+                continue
+            if res.success and np.isfinite(res.fun) and res.fun < best:
+                best = res.fun
+        return best
+
+    def free_energy_c(self, T, c):
+        """Reduced Gibbs energy ``f(c, T) = min_{y: c(y)=c} G(y, T)`` (eV/atom)."""
+        evals = self._endmember_evals(T)
+        return np.vectorize(lambda c: self._fc_scalar(T, float(c), evals))(c)
