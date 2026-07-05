@@ -35,6 +35,7 @@ __all__ = [
     "ConstantPointDefect",
     "PointDefectSublattice",
     "PointDefectedPhase",
+    "CompoundEnergyPhase",
     "AsePhase",
 ]
 
@@ -978,5 +979,7 @@ def PointDefectSublattice(*args, **kwargs):
 def PointDefectedPhase(*args, **kwargs):
     return _pointdefects.PointDefectedPhase(*args, **kwargs)
 
+
+from .compoundenergy import CompoundEnergyPhase
 
 from .asewrapper import AsePhase
