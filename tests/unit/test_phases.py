@@ -1528,3 +1528,29 @@ def test_cef_disordered_phase_is_finite_everywhere():
     dis = CompoundEnergyPhase(name="dis", orderings=(), **_cef_aucu_kwargs())
     dmu = np.linspace(-0.4, 0.4, 9)
     assert np.all(np.isfinite(dis.semigrand_potential(400.0, dmu)))
+
+
+def test_cef_liquid_reproduces_melting_points():
+    """A 1-sublattice CEF with the SGTE Au/Cu liquid lattice stabilities (relative to
+    fcc) puts the pure-element liquid at the fcc reference at each melting point."""
+    liquid = CompoundEnergyPhase(
+        name="liquid",
+        site_multiplicities=(1.0,),
+        endmember_energies={
+            (0,): lambda T: (12552.45 - 9.385866 * T) / _CEF_JMOL,          # Au
+            (1,): lambda T: (12964.735 - 9.511904 * T - 5.83932e-21 * T**7) / _CEF_JMOL,  # Cu
+        },
+    )
+    assert liquid.free_energy(1337.33, [0.0]) == pytest.approx(0.0, abs=2e-5)  # Au, 1337.33 K
+    assert liquid.free_energy(1357.77, [1.0]) == pytest.approx(0.0, abs=2e-5)  # Cu, 1357.77 K
+
+
+def test_cef_hashes_and_compares_by_attributes():
+    """CompoundEnergyPhase hashes/compares by its fields, not just its name."""
+    kw = _cef_aucu_kwargs()
+    a = CompoundEnergyPhase(name="fcc", orderings=(), **kw)
+    b = CompoundEnergyPhase(name="fcc", orderings=(), **kw)
+    c = CompoundEnergyPhase(name="fcc", orderings=((1, 1, 0, 0),), include_disordered_seed=False, **kw)
+    assert a == b and hash(a) == hash(b)          # same attributes -> equal
+    assert a != c and hash(a) != hash(c)          # different orderings -> distinct
+    assert len({a, b, c}) == 2                    # usable as dict/set keys

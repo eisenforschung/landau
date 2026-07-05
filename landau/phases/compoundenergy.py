@@ -124,11 +124,6 @@ class CompoundEnergyPhase(Phase):
         object.__setattr__(self, "_pinned", pinned)
         object.__setattr__(self, "_groups", groups)
 
-    # hash by name so the phase can key the per-T caches; distinct phases in one
-    # diagram carry distinct names.
-    def __hash__(self):
-        return hash(self.name)
-
     # --- model (vectorised over any leading axes of y) -----------------------
 
     @lru_cache(maxsize=2000)
