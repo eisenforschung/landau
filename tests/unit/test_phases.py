@@ -418,6 +418,65 @@ def test_ideal_concentration_from_semigrand_potential():
     assert_allclose(c_numeric, c_direct, atol=1e-3)
 
 
+# IdealSolution's closed form is the Legendre transform of a linear enthalpy
+# background minus T*S(c); a SlowInterpolatingPhase built from the same two
+# terminals with a degree-1 PolyFit reproduces exactly the same background, so
+# the two must agree to solver precision (brute grid + fmin polish).
+_IDEAL_SLOW_ATOL_PHI = 1e-4
+_IDEAL_SLOW_ATOL_C = 1e-3
+
+
+def test_ideal_solution_matches_slow_interpolating_phase_potential():
+    p0 = LinePhase("A", 0, 0.05, 0.0005)
+    p1 = LinePhase("B", 1, -0.2, 0.0002)
+    ideal = IdealSolution("sol", p0, p1)
+    slow = SlowInterpolatingPhase("sol", [p0, p1], interpolator=PolyFit(2))
+    T = 800.0
+    dmu = np.linspace(-1.0, 1.0, 41)
+    assert_allclose(
+        ideal.semigrand_potential(T, dmu), slow.semigrand_potential(T, dmu), atol=_IDEAL_SLOW_ATOL_PHI
+    )
+
+
+def test_ideal_solution_matches_slow_interpolating_phase_concentration():
+    p0 = LinePhase("A", 0, 0.05, 0.0005)
+    p1 = LinePhase("B", 1, -0.2, 0.0002)
+    ideal = IdealSolution("sol", p0, p1)
+    slow = SlowInterpolatingPhase("sol", [p0, p1], interpolator=PolyFit(2))
+    T = 800.0
+    dmu = np.linspace(-1.0, 1.0, 41)
+    assert_allclose(ideal.concentration(T, dmu), slow.concentration(T, dmu), atol=_IDEAL_SLOW_ATOL_C)
+
+
+# FastInterpolatingPhase is the default user-facing choice, replacing brute's
+# 20-point grid with a vectorized basin search plus logit-Newton polish, so it
+# reproduces IdealSolution's closed form far tighter than the brute oracle.
+_IDEAL_FAST_ATOL_PHI = 1e-6
+_IDEAL_FAST_ATOL_C = 1e-5
+
+
+def test_ideal_solution_matches_fast_interpolating_phase_potential():
+    p0 = LinePhase("A", 0, 0.05, 0.0005)
+    p1 = LinePhase("B", 1, -0.2, 0.0002)
+    ideal = IdealSolution("sol", p0, p1)
+    fast = FastInterpolatingPhase("sol", [p0, p1], interpolator=PolyFit(2))
+    T = 800.0
+    dmu = np.linspace(-1.0, 1.0, 41)
+    assert_allclose(
+        ideal.semigrand_potential(T, dmu), fast.semigrand_potential(T, dmu), atol=_IDEAL_FAST_ATOL_PHI
+    )
+
+
+def test_ideal_solution_matches_fast_interpolating_phase_concentration():
+    p0 = LinePhase("A", 0, 0.05, 0.0005)
+    p1 = LinePhase("B", 1, -0.2, 0.0002)
+    ideal = IdealSolution("sol", p0, p1)
+    fast = FastInterpolatingPhase("sol", [p0, p1], interpolator=PolyFit(2))
+    T = 800.0
+    dmu = np.linspace(-1.0, 1.0, 41)
+    assert_allclose(ideal.concentration(T, dmu), fast.concentration(T, dmu), atol=_IDEAL_FAST_ATOL_C)
+
+
 # --- RegularSolution tests ---
 
 _RS_ATOL = 1e-8
@@ -484,6 +543,54 @@ def test_regular_solution_concentration_monotone():
     dmu = np.linspace(-1.0, 1.0, 20)
     c = sol.concentration(1000.0, dmu)
     assert np.all(np.diff(c) > 0)
+
+
+# RegularSolution's default num_coeffs (clipped to len(phases) - 2 = 1 for three
+# phases) and SlowInterpolatingPhase's default RedlichKister interpolator both
+# resolve to the same one-parameter Redlich-Kister fit for this fixture, so the
+# convex-hull tracer and the brute-force minimizer solve the same free-energy
+# landscape and must agree to solver precision.
+_RS_SLOW_ATOL_PHI = 1e-3
+_RS_SLOW_ATOL_C = 1e-3
+
+
+def test_regular_solution_matches_slow_interpolating_phase_potential():
+    sol = _make_regular_solution()
+    slow = SlowInterpolatingPhase("sol", sol.phases)
+    T = 1000.0
+    dmu = np.linspace(-1.0, 1.0, 25)
+    assert_allclose(sol.semigrand_potential(T, dmu), slow.semigrand_potential(T, dmu), atol=_RS_SLOW_ATOL_PHI)
+
+
+def test_regular_solution_matches_slow_interpolating_phase_concentration():
+    sol = _make_regular_solution()
+    slow = SlowInterpolatingPhase("sol", sol.phases)
+    T = 1000.0
+    dmu = np.linspace(-1.0, 1.0, 25)
+    assert_allclose(sol.concentration(T, dmu), slow.concentration(T, dmu), atol=_RS_SLOW_ATOL_C)
+
+
+# FastInterpolatingPhase resolves the same one-parameter Redlich-Kister fit as
+# the brute oracle above, but via an exact stationary-point solve rather than a
+# 20-point grid, so it agrees with RegularSolution's convex-hull tracer tighter.
+_RS_FAST_ATOL_PHI = 1e-8
+_RS_FAST_ATOL_C = 1e-4
+
+
+def test_regular_solution_matches_fast_interpolating_phase_potential():
+    sol = _make_regular_solution()
+    fast = FastInterpolatingPhase("sol", sol.phases)
+    T = 1000.0
+    dmu = np.linspace(-1.0, 1.0, 25)
+    assert_allclose(sol.semigrand_potential(T, dmu), fast.semigrand_potential(T, dmu), atol=_RS_FAST_ATOL_PHI)
+
+
+def test_regular_solution_matches_fast_interpolating_phase_concentration():
+    sol = _make_regular_solution()
+    fast = FastInterpolatingPhase("sol", sol.phases)
+    T = 1000.0
+    dmu = np.linspace(-1.0, 1.0, 25)
+    assert_allclose(sol.concentration(T, dmu), fast.concentration(T, dmu), atol=_RS_FAST_ATOL_C)
 
 
 # --- InterpolatingPhase / SlowInterpolatingPhase tests ---
