@@ -93,6 +93,7 @@ class CompoundEnergyPhase(Phase):
     _scf_damp: ClassVar[float] = 0.5    # mixing factor y <- (1-d) y + d target
     _scf_tol: ClassVar[float] = 1e-11   # max|dy| convergence tolerance
     _fd: ClassVar[float] = 1e-6         # finite-difference step for the excess gradient
+    _order_tol: ClassVar[float] = 0.05  # min long-range order for a pinned ordered phase to exist
 
     def __post_init__(self):
         a = tuple(float(x) for x in self.site_multiplicities)
@@ -109,6 +110,19 @@ class CompoundEnergyPhase(Phase):
         seeds = product((0, 1), repeat=S) if self.orderings is None else self.orderings
         object.__setattr__(self, "_corners", [np.clip(np.array(c, dtype=float), 1e-9, 1 - 1e-9) for c in seeds])
         assert self._corners or self.include_disordered_seed, "phase has no ordering seed"
+        # A basin-pinned ordered phase -- exactly one ordering and no disordered seed --
+        # is confined to that ordering's sublattice symmetry (sublattices sharing the
+        # same occupation stay equal, so the solve cannot drift into a different
+        # ordering) and is reported absent where it disorders.  This makes it a distinct
+        # phase that competes cleanly in ``calc_phase_diagram`` instead of relaxing onto
+        # -- and tying with -- the disordered or a neighbouring ordered branch.
+        pinned = self.orderings is not None and len(self._corners) == 1 and not self.include_disordered_seed
+        groups = None
+        if pinned:
+            pat = np.round(self._corners[0]).astype(int)
+            groups = [np.where(pat == v)[0] for v in np.unique(pat)]
+        object.__setattr__(self, "_pinned", pinned)
+        object.__setattr__(self, "_groups", groups)
 
     # hash by name so the phase can key the per-T caches; distinct phases in one
     # diagram carry distinct names.
@@ -173,10 +187,22 @@ class CompoundEnergyPhase(Phase):
             field = self._grad_non_ideal(T, y, evals) / a  # (D,S)
             target = se.expit((dmu[:, None] - field) / kT)
             y_new = np.clip((1 - d) * y + d * target, 1e-12, 1 - 1e-12)
+            if self._groups is not None:  # confine to the ordering's sublattice symmetry
+                for g in self._groups:
+                    y_new[:, g] = y_new[:, g].mean(axis=1, keepdims=True)
             if np.max(np.abs(y_new - y)) < self._scf_tol:
                 return y_new
             y = y_new
         return y
+
+    def _order_parameter(self, y):
+        """Long-range order of a pinned phase: the largest spread between sublattice groups."""
+        means = [y[..., g].mean(axis=-1) for g in self._groups]
+        op = np.zeros(y.shape[:-1])
+        for i in range(len(means)):
+            for j in range(i + 1, len(means)):
+                op = np.maximum(op, np.abs(means[i] - means[j]))
+        return op
 
     def _solve_fixed_T(self, T, dmu):
         """Semi-grand ``(phi, c)`` for one ``T`` and a whole ``dmu`` array.
@@ -195,6 +221,8 @@ class CompoundEnergyPhase(Phase):
             y = self._scf(T, flat, evals, y0)
             c = y @ a
             phi = self._free_energy(T, y, evals) - flat * c
+            if self._pinned:  # a pinned ordered phase is absent where it has disordered
+                phi = np.where(self._order_parameter(y) < self._order_tol, np.inf, phi)
             take = phi < best_phi
             best_phi[take] = phi[take]
             best_c[take] = c[take]
