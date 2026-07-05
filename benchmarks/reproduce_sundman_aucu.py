@@ -37,7 +37,7 @@ from landau.phases import Surface2DInterpolatingPhase, TemperatureDependentLineP
 from landau.interpolate import CalphadSurface2DInterpolator, SGTE
 from landau.calculate import calc_phase_diagram
 from landau.plot import plot_phase_diagram
-from landau.refine import DelaunayLineRefiner, DelaunayTripleRefiner
+from landau.refine import ClausiusClapeyronRefiner, DelaunayTripleRefiner
 
 JMOL = 96485.332  # J/mol per eV/atom
 NS = 4            # sites per fcc formula unit
@@ -149,13 +149,15 @@ def assessment_ii_phases():
 
 def _draw(ax, phases, title):
     # Coarse grid, dense in T where the ordered domes live, sparse over the liquid;
-    # the triple-point + line refiners locate the invariants and two-phase boundaries
-    # from it. The solver warm-starts each SCF from the nearest cached solution, so the
-    # clustered refinement probes converge in a few iterations and the whole diagram
-    # solves in well under 30 s.
+    # the triple-point + Clausius-Clapeyron refiners locate the invariants and trace
+    # the two-phase boundaries from it. The Clausius-Clapeyron step is loosened
+    # (dT_max/dc_max) so the trace is sampled at roughly the Delaunay density rather
+    # than its dense default, and the solver warm-starts each SCF from the nearest
+    # cached solution, so the whole diagram solves in well under 30 s.
     temperatures = np.concatenate([np.arange(300, 720, 30.0), np.arange(760, 1420, 60.0)])
     mu = np.linspace(-0.7, 0.7, 31)
-    df = calc_phase_diagram(phases, temperatures, mu=mu, refine=[DelaunayTripleRefiner(), DelaunayLineRefiner()])
+    refine = [DelaunayTripleRefiner(), ClausiusClapeyronRefiner(dT_max=40, dc_max=0.05, max_steps=120)]
+    df = calc_phase_diagram(phases, temperatures, mu=mu, refine=refine)
     plot_phase_diagram(df, poly_method="segments", triplepoints=True, legend=True, inline_legend=False, ax=ax)
     ax.set_xlim(0, 1)
     ax.set_ylim(300, 1420)
