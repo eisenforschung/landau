@@ -9,6 +9,7 @@ Notable changes to **landau.py**, newest first. Per-PR detail lives in the
 ### Features
 
 * **calculate:** accept explicit refiner list in calc_phase_diagram ([#311](https://github.com/eisenforschung/landau/issues/311)) ([a8d3ad7](https://github.com/eisenforschung/landau/commit/a8d3ad70049fb430f9a9c6696d014fd4c294560e))
+* **phases:** add Surface2DInterpolatingPhase with CalphadSurface2DInterpolator, SoftplusSurface2DInterpolator and WhitneySurface2DInterpolator ([#321](https://github.com/eisenforschung/landau/issues/321)) ([a0810f9](https://github.com/eisenforschung/landau/commit/a0810f96e4d6fadf79cb90b0e234ccc0fe814a9c))
 * **refine:** add dc_max concentration-drift floor to CC tracers ([#308](https://github.com/eisenforschung/landau/issues/308)) ([134843c](https://github.com/eisenforschung/landau/commit/134843c4dbaa82ee0c5c75ffb44ab6a6e3e1e7ff))
 * **refine:** add dc_min concentration-drift floor; kwarg-only CC ctors ([#312](https://github.com/eisenforschung/landau/issues/312)) ([54e8c5b](https://github.com/eisenforschung/landau/commit/54e8c5b3a4b6aef47184f1cab3d5e4714ddc92da))
 
