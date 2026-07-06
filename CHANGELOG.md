@@ -3,6 +3,20 @@
 Notable changes to **landau.py**, newest first. Per-PR detail lives in the
 [GitHub releases](https://github.com/eisenforschung/landau/releases).
 
+## [1.11.0](https://github.com/eisenforschung/landau/compare/1.10.0...1.11.0) (2026-07-06)
+
+
+### Features
+
+* **calculate:** accept explicit refiner list in calc_phase_diagram ([#311](https://github.com/eisenforschung/landau/issues/311)) ([a8d3ad7](https://github.com/eisenforschung/landau/commit/a8d3ad70049fb430f9a9c6696d014fd4c294560e))
+* **refine:** add dc_max concentration-drift floor to CC tracers ([#308](https://github.com/eisenforschung/landau/issues/308)) ([134843c](https://github.com/eisenforschung/landau/commit/134843c4dbaa82ee0c5c75ffb44ab6a6e3e1e7ff))
+* **refine:** add dc_min concentration-drift floor; kwarg-only CC ctors ([#312](https://github.com/eisenforschung/landau/issues/312)) ([54e8c5b](https://github.com/eisenforschung/landau/commit/54e8c5b3a4b6aef47184f1cab3d5e4714ddc92da))
+
+
+### Bug Fixes
+
+* **phases:** anchor check_concentration_interpolation plot_excess to line phases' own concentrations ([#322](https://github.com/eisenforschung/landau/issues/322)) ([aba45cc](https://github.com/eisenforschung/landau/commit/aba45ccf8b86f85ae652de6237d45b5aaaf6ec1b))
+
 ## [1.10.0](https://github.com/eisenforschung/landau/compare/1.9.0...1.10.0) (2026-06-23)
 
 
