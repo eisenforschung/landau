@@ -172,3 +172,122 @@ class TestWhitneyTemperatureInterpolator:
         from landau.interpolate import WhitneyTemperatureInterpolator  # noqa: F401
         import landau.interpolate as pkg
         assert "WhitneyRBFInterpolator" not in pkg.__all__
+
+
+class TestWhitneySurface2DInterpolator:
+    """The 2-D surface interpolator backed by a Whitney-extended RBF.
+
+    Unlike ``CalphadSurface2DInterpolator`` there is no terminal-phase
+    requirement, so it works for narrow intermetallic windows as well as full
+    solution phases; the trade-off is a numerical (rather than analytic)
+    c-derivative on each slice.
+    """
+
+    RECOVER_ATOL = 1e-6   # training-point recovery with smoothing=0 (measured ~1e-11)
+    GIBBS_ATOL = 1e-4     # c = -dphi/ddmu via the numerical slice derivative (~3e-6)
+    CONVEX_ATOL = 1e-9
+
+    @staticmethod
+    def _grid(Tlo=400.0, Thi=800.0, nT=20, clo=0.05, chi=0.95, nc=15):
+        Tg = np.linspace(Tlo, Thi, nT)
+        cg = np.linspace(clo, chi, nc)
+        return np.repeat(Tg, nc), np.tile(cg, nT), Tg, cg
+
+    def test_recovers_training_data(self):
+        """With ``smoothing=0`` the RBF interpolates, so each fixed-T slice
+        reproduces its own data slice at the interior training temperatures."""
+        from landau.interpolate import WhitneySurface2DInterpolator
+        from landau.interpolate.basic import FittedSurface
+
+        T, c, Tg, cg = self._grid()
+        H = 0.4 * (c - 0.5) ** 2 + 2e-5 * (T - 600) * (c - 0.5) ** 2
+        surface = WhitneySurface2DInterpolator(smoothing=0.0).fit(T, c, H)
+        assert isinstance(surface, FittedSurface)
+        for Tq in Tg[1:-1]:  # interior training temperatures
+            expect = 0.4 * (cg - 0.5) ** 2 + 2e-5 * (Tq - 600) * (cg - 0.5) ** 2
+            np.testing.assert_allclose(surface.slice_at(float(Tq))(cg), expect, atol=self.RECOVER_ATOL)
+
+    def test_slice_derivative_recovers_analytic_slope(self):
+        """The numerical slice derivative recovers the true ``dH/dc`` of a known
+        quadratic surface at an interior temperature (a constant/degenerate fit
+        would miss the linear slope)."""
+        from landau.interpolate import WhitneySurface2DInterpolator
+
+        T, c, Tg, cg = self._grid()
+        H = 0.4 * (c - 0.5) ** 2 + 2e-5 * (T - 600) * (c - 0.5) ** 2
+        surface = WhitneySurface2DInterpolator(smoothing=0.0).fit(T, c, H)
+        cc = np.linspace(0.2, 0.8, 30)
+        d = np.asarray(surface.slice_at(600.0).deriv()(cc))
+        np.testing.assert_allclose(d, 0.8 * (cc - 0.5), atol=1e-4)
+
+    def test_slice_scalar_and_array_shapes(self):
+        from landau.interpolate import WhitneySurface2DInterpolator
+
+        T, c, Tg, cg = self._grid()
+        H = 0.4 * (c - 0.5) ** 2
+        sl = WhitneySurface2DInterpolator().fit(T, c, H).slice_at(600.0)
+        assert np.ndim(sl(0.5)) == 0
+        arr = sl(np.linspace(0.3, 0.7, 11))
+        assert isinstance(arr, np.ndarray) and arr.shape == (11,)
+        assert np.ndim(sl.deriv()(0.5)) == 0
+
+    def test_fit_requires_two_distinct_concentrations(self):
+        from landau.interpolate import WhitneySurface2DInterpolator
+
+        T = np.linspace(400, 800, 12)
+        c = np.full_like(T, 0.5)
+        f = np.zeros_like(T)
+        with pytest.raises(ValueError, match="two distinct concentrations"):
+            WhitneySurface2DInterpolator().fit(T, c, f)
+
+    def test_is_frozen_hashable_and_exported(self):
+        from landau.interpolate import WhitneySurface2DInterpolator
+        from landau.interpolate.basic import SurfaceInterpolator
+        import landau.interpolate as pkg
+
+        a = WhitneySurface2DInterpolator()
+        b = WhitneySurface2DInterpolator()
+        assert a == b and hash(a) == hash(b) and len({a, b}) == 1
+        assert WhitneySurface2DInterpolator(degree=3) != a
+        assert WhitneySurface2DInterpolator(smoothing=1.0) != a
+        assert isinstance(a, SurfaceInterpolator)
+        assert "WhitneySurface2DInterpolator" in pkg.__all__
+        with pytest.raises(Exception):
+            a.degree = 5
+
+    def test_surface_phase_narrow_window_gibbs_duhem(self):
+        """No terminal requirement -- a narrow intermetallic window (never
+        reaching c=0/c=1) fits, and ``c = -dphi/ddmu`` holds at interior c."""
+        from landau.interpolate import WhitneySurface2DInterpolator, SGTE
+        from landau.phases import (
+            Surface2DInterpolatingPhase,
+            TemperatureDependentLinePhase,
+            S,
+        )
+
+        clo, chi, c0 = 0.30, 0.40, 0.35
+        Tsweep = np.linspace(400.0, 800.0, 60)
+        lines = []
+        for ci in np.linspace(clo, chi, 7):
+            H = 1.0 * (1 + 1e-4 * Tsweep) * (ci - c0) ** 2
+            f = H - Tsweep * S(np.array(ci))
+            lines.append(TemperatureDependentLinePhase("im", float(ci), Tsweep, f, interpolator=SGTE(3)))
+
+        phase = Surface2DInterpolatingPhase(
+            "im", lines, concentration_range=(clo, chi), add_entropy=False,
+            temperature_range=(400.0, 800.0),
+            surface_interpolator=WhitneySurface2DInterpolator(smoothing=1e-4))
+
+        T = 500.0
+        dmu = np.linspace(-0.2, 0.2, 41)
+        c = phase.concentration(np.full_like(dmu, T), dmu)
+        phi = phase.semigrand_potential(np.full_like(dmu, T), dmu)
+        assert np.isfinite(c).all() and np.isfinite(phi).all()
+        assert (c >= clo - 1e-6).all() and (c <= chi + 1e-6).all()
+
+        h = 1e-4
+        cphi = -(phase.semigrand_potential(np.full_like(dmu, T), dmu + h)
+                 - phase.semigrand_potential(np.full_like(dmu, T), dmu - h)) / (2 * h)
+        interior = (c > clo + 1e-3) & (c < chi - 1e-3)
+        assert interior.sum() > 5
+        np.testing.assert_allclose(c[interior], cphi[interior], atol=self.GIBBS_ATOL)
