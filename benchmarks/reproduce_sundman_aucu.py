@@ -7,14 +7,17 @@
 The paper gives two assessments.  **Assessment I** (Table 1, eqs 6-9) models the
 fcc-based phases with the four-sublattice Compound Energy Formalism, capturing the
 ordered L1_0 (AuCu) and L1_2 (Au3Cu, AuCu3) superstructures inside the disordered
-A1 matrix (Figs. 1, 3).  **Assessment II** (eq 10) drops the ordering and models
-the liquid and the disordered fcc as plain substitutional solutions -- a better fit
-to the liquidus/solidus but no order/disorder region.  Both share the same liquid,
-a substitutional solution (eqs 1-3).
+A1 matrix (Figs. 1, 3).  **Assessment II** (eq 10) refits the liquid and the
+disordered fcc as plain substitutional solutions -- a better liquidus/solidus fit;
+the paper drops the ordering there, but we keep the ordered phases so the two
+assessments differ only in the disordered/liquid description.
 
-This script builds both assessments from the paper's parameters as code -- no
-database file is read -- and draws them side by side through
-``calc_phase_diagram`` / ``plot_phase_diagram`` for comparison.
+The substitutional phases (the shared liquid, eqs 1-3/6, and the Assessment-II fcc,
+eq 10) are built through landau's Calphad-surface path -- ``Surface2DInterpolatingPhase``
+with a ``CalphadSurface2DInterpolator`` (SGTE terminals + polynomial-in-T
+Redlich-Kister) -- rather than a bespoke phase; the four-sublattice CEF phases are
+``CompoundEnergyPhase`` instances.  All parameters are given as code, no database
+file is read.
 
 Units: the four-sublattice compound energies and interaction parameters are per
 mole of formula (4 sites) in J/mol, so the per-formula ``G`` is divided by NS=4
@@ -30,15 +33,20 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from landau import CompoundEnergyPhase
+from landau.phases import Surface2DInterpolatingPhase, TemperatureDependentLinePhase, S
+from landau.interpolate import CalphadSurface2DInterpolator, SGTE
 from landau.calculate import calc_phase_diagram
 from landau.plot import plot_phase_diagram
 from landau.refine import DelaunayLineRefiner
 
 JMOL = 96485.332  # J/mol per eV/atom
 NS = 4            # sites per fcc formula unit
+_TMIN, _TMAX = 300.0, 1450.0  # diagram / surface-fit temperature span
 
-# --- pure-element liquid lattice stabilities relative to fcc (SGTE, Dinsdale 1991) ---
-# per mole of atoms, J/mol; zero at the element melting points (Au 1337.33 K, Cu 1357.77 K)
+
+# --- substitutional solutions (liquid, Assessment-II fcc) via the Calphad surface ---
+# pure-element liquid lattice stabilities relative to fcc (SGTE, Dinsdale 1991), per
+# atom (eV); zero at the element melting points (Au 1337.33 K, Cu 1357.77 K)
 
 
 def _G_liq_Au(T):
@@ -49,26 +57,34 @@ def _G_liq_Cu(T):
     return (12964.735 - 9.511904 * T - 5.83932e-21 * T**7) / JMOL
 
 
-def _redlich_kister(y, T, coeffs):
-    """Substitutional Redlich-Kister excess (eqs 2-3), per atom (eV).  ``y`` is x_Cu."""
-    y = np.asarray(y, dtype=float)
-    x = y[..., 0]
-    dd = (1 - x) - x  # x_Au - x_Cu
-    e = 0.0
-    for v, L in enumerate(coeffs):
-        e = e + L(T) * dd**v
-    return (1 - x) * x * e / JMOL
+def _calphad_solution(name, g_a, g_b, rk_coeffs, ncomp=9, nT=40):
+    """A substitutional Redlich-Kister solution through landau's Calphad-surface path.
+
+    Rather than re-rolling the RK evaluation into a bespoke phase, we sample
+    ``f(c, T) = (1-c) g_a + c g_b + c(1-c) Σ_v L_v (1-2c)^v - T S(c)`` on a ``(c, T)``
+    grid and hand the line-phase samples to ``Surface2DInterpolatingPhase`` with a
+    ``CalphadSurface2DInterpolator`` (SGTE terminals + polynomial-in-T Redlich-Kister)
+    -- the library's CALPHAD solution-phase representation.  ``g_a``/``g_b`` are the
+    pure-element lattice stabilities (per atom, eV) and ``rk_coeffs`` the ``L_v(T)``
+    callables (J/mol).
+    """
+    Tsweep = np.linspace(_TMIN, _TMAX, nT)
+    lines = []
+    for ci in np.linspace(0.0, 1.0, ncomp):
+        d = 1 - 2 * ci
+        excess = ci * (1 - ci) * sum(L(Tsweep) * d**v for v, L in enumerate(rk_coeffs)) / JMOL
+        f = (1 - ci) * g_a(Tsweep) + ci * g_b(Tsweep) + excess - Tsweep * S(np.array(ci))
+        lines.append(TemperatureDependentLinePhase(name, float(ci), Tsweep, f, interpolator=SGTE(3)))
+    return Surface2DInterpolatingPhase(
+        name, lines, concentration_range=(0.0, 1.0), add_entropy=False,
+        temperature_range=(_TMIN, _TMAX), surface_interpolator=CalphadSurface2DInterpolator(num_coeffs=3),
+    )
 
 
 def _liquid():
-    """The liquid, a substitutional solution shared by both assessments (eq 6)."""
-    coeffs = (lambda T: -27900 - T, lambda T: 4730.0, lambda T: 3500 + 3.5 * T)
-    return CompoundEnergyPhase(
-        name="liquid",
-        site_multiplicities=(1.0,),
-        endmember_energies={(0,): _G_liq_Au, (1,): _G_liq_Cu},
-        excess=lambda y, T: _redlich_kister(y, T, coeffs),
-    )
+    """The liquid, a substitutional solution shared by both assessments (eqs 1-3, 6)."""
+    return _calphad_solution("liquid", _G_liq_Au, _G_liq_Cu,
+                             (lambda T: -27900 - T, lambda T: 4730.0 + 0 * T, lambda T: 3500 + 3.5 * T))
 
 
 # --- Assessment I: four-sublattice CEF fcc (Table 1, eqs 7-9) -----------------
@@ -105,30 +121,30 @@ def _excess_cef(y, T):
 _CEF = dict(site_multiplicities=(0.25, 0.25, 0.25, 0.25), endmember_energies=_ENDMEMBERS, excess=_excess_cef)
 
 
-def assessment_i_phases():
-    """Liquid + four competing fcc phases: disordered A1 and the ordered superstructures."""
+def _ordered_fcc_phases():
+    """The three ordered fcc superstructures as basin-pinned CEF phases (shared energetics)."""
     return [
-        _liquid(),
-        CompoundEnergyPhase(name="fcc", orderings=(), **_CEF),
         CompoundEnergyPhase(name="Au3Cu", orderings=((1, 0, 0, 0),), include_disordered_seed=False, **_CEF),
         CompoundEnergyPhase(name="AuCu", orderings=((1, 1, 0, 0),), include_disordered_seed=False, **_CEF),
         CompoundEnergyPhase(name="AuCu3", orderings=((1, 1, 1, 0),), include_disordered_seed=False, **_CEF),
     ]
 
 
-# --- Assessment II: substitutional liquid + disordered fcc (eq 10) ------------
+def assessment_i_phases():
+    """Liquid + the CEF disordered A1 fcc + the three ordered superstructures."""
+    return [_liquid(), CompoundEnergyPhase(name="fcc", orderings=(), **_CEF), *_ordered_fcc_phases()]
 
 
 def assessment_ii_phases():
-    """Liquid + a single disordered fcc, both plain substitutional solutions (no ordering)."""
-    fcc_coeffs = (lambda T: -28000 + 78.8 * T - 10 * T * np.log(T), lambda T: 6000.0)
-    fcc = CompoundEnergyPhase(
-        name="fcc",
-        site_multiplicities=(1.0,),
-        endmember_energies={(0,): lambda T: 0.0, (1,): lambda T: 0.0},
-        excess=lambda y, T: _redlich_kister(y, T, fcc_coeffs),
-    )
-    return [_liquid(), fcc]
+    """Liquid + a substitutional disordered fcc (eq 10) + the same ordered phases.
+
+    The paper's Assessment II drops the ordering; we keep the ordered phases so the
+    two panels differ only in how the disordered fcc and liquid are described (a
+    plain Redlich-Kister solution here vs the four-sublattice CEF in Assessment I).
+    """
+    fcc = _calphad_solution("fcc", lambda T: 0.0 * T, lambda T: 0.0 * T,
+                            (lambda T: -28000 + 78.8 * T - 10 * T * np.log(T), lambda T: 6000.0 + 0 * T))
+    return [_liquid(), fcc, *_ordered_fcc_phases()]
 
 
 def _draw(ax, phases, title):
@@ -149,8 +165,8 @@ def main():
     print(f"Au melting point (Gliq = Gfcc): {12552.45 / 9.385866:7.1f} K  (paper 1337.33)")
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.8), sharey=True)
-    c1 = _draw(ax1, assessment_i_phases(), "Assessment I (CEF: order/disorder)")
-    c2 = _draw(ax2, assessment_ii_phases(), "Assessment II (substitutional, no order)")
+    c1 = _draw(ax1, assessment_i_phases(), "Assessment I (CEF order/disorder fcc)")
+    c2 = _draw(ax2, assessment_ii_phases(), "Assessment II (substitutional fcc + ordering)")
     fig.suptitle("Au-Cu (Sundman, Fries & Oates 1998)")
     fig.tight_layout()
     out = "benchmarks/_aucu_phase_diagram.png"
