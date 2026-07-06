@@ -190,39 +190,47 @@ def _state_row(phase: Phase, T: float, mu: float) -> dict:
     }
 
 
-# eV; largest spread in the own-phase potentials still read as one coexistence.
-# Comfortably above a converged triple/pair residual (~1e-5) and far below any
-# real domination gap, so it separates a genuine N-phase point from one where a
-# vertex doesn't belong.
+# eV; largest spread in a *triple*'s own-phase potentials still read as one
+# coexistence. Comfortably above a converged triple residual (~1e-5) and far
+# below any real domination gap. Not applied to two-phase boundaries, which may
+# be genuinely first-order (see _dominated).
 _COEXIST_TOL = 1e-3
 
 
 def _dominated(pt, phases: Mapping[str, Phase]) -> bool:
-    """True iff the refined transition ``pt`` is not a genuine coexistence and
-    should be dropped.
+    """True iff the refined transition ``pt`` is not a valid piece of the global
+    phase boundary and should be dropped.
 
-    Two failure modes:
+    A point is valid when its own phases are exactly the most stable set at
+    ``(pt.T, pt.mu)``. It is dropped when:
 
-    * Its own phases don't actually share a finite semigrand potential at
-      ``(pt.T, pt.mu)`` — one is absent (``phi = +inf``) or lies below the
-      others and merely rode along as a vertex of a Delaunay simplex, so the
-      claimed N-phase point isn't real. (This is how a pinned ordered phase
+    * An own phase is **absent** (``phi = +inf``): a phase that doesn't exist
+      here can't be a coexisting vertex. (This is how a pinned ordered phase
       reported absent outside its dome leaked into a triple point at ``c = 0``.)
-    * Some phase *outside* ``pt.phase_names()`` lies strictly below the
-      coexistence potential and is the true equilibrium.
+    * Some phase **outside** ``pt.phase_names()`` sits below the least-stable own
+      phase — then the own set isn't the top-|own| most stable, so this isn't
+      the boundary it claims to be (a Clausius-Clapeyron trace that oversteps an
+      invariant lands here).
+    * For a **triple** only, its three phases don't share one potential (spread
+      ``> _COEXIST_TOL``) — a genuine three-phase point is a single ``(T, mu)``
+      where all three are degenerate. Two-phase boundaries are exempt: a
+      first-order boundary (a pinned ordered phase appearing already below the
+      disordered one) is a real boundary where the two phases' potentials jump
+      rather than cross, and clamping it to coexistence would drop the whole
+      upper flank of the ordered dome.
 
-    Comparing every own phase to their minimum (rather than to one arbitrary
-    member) also removes a ``set``-iteration-order dependence: the previous
-    version's reference was ``next(iter(own))``, so whether a phantom vertex
-    survived depended on which name the set happened to yield first.
+    Using ``max(own_phi)`` as the reference (not one arbitrary set member) also
+    removes a ``set``-iteration-order dependence in the outside comparison.
     """
     own = pt.phase_names()
     own_phi = [phases[n].semigrand_potential(pt.T, pt.mu) for n in own]
-    ref = min(own_phi)
-    if not np.isfinite(ref) or max(own_phi) - ref > _COEXIST_TOL:
+    if not np.all(np.isfinite(own_phi)):
+        return True
+    hi = max(own_phi)
+    if len(own) >= 3 and hi - min(own_phi) > _COEXIST_TOL:
         return True
     return any(
-        p.semigrand_potential(pt.T, pt.mu) < ref
+        p.semigrand_potential(pt.T, pt.mu) < hi
         for p in phases.values()
         if p.name not in own
     )
