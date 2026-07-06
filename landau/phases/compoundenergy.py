@@ -275,26 +275,22 @@ class CompoundEnergyPhase(Phase):
 
         Runs the SCF map from a warm start (nearest cached solution) plus the corner
         seeds and keeps, per ``dmu``, the site fractions with the lowest ``G - dmu*c``.
-        A pinned phase trusts the warm seed alone (single basin) but falls back to its
-        ordered corner where the warm result came out absent -- so a ``dmu`` that just
-        entered the dome is still caught. Warm-starting only changes the seed, never
-        the kept minimum, so the result is independent of cache state.
+        A pinned phase is confined to a single ordering basin, so its ordered corner
+        already finds that basin; it is solved **cold from the corner only** (no warm
+        start).  Trusting a warm seed for a pinned phase was start-dependent near its
+        dome edge -- a warm seed drawn from a neighbour could steer the confined solve
+        into a disordered result and report the phase *absent* (``phi = +inf``) where
+        it is really present, which then let ``_dominated`` miss it and a Clausius-
+        Clapeyron trace overstep the invariant. The cold corner is deterministic.
         """
         evals = self._endmember_evals(T)
         a = np.asarray(self.site_multiplicities)
         flat = np.asarray(dmu, dtype=float).ravel()
-        warm = self._warm_seed(T, flat)
-        corners = ([np.full(a.size, 0.5)] if self.include_disordered_seed else []) + self._corners
         if self._pinned:
-            # trust the warm seed only where it is actually ordered; fall back to the
-            # ordered corner elsewhere, so a dmu whose warm neighbour had disordered is
-            # still seeded into its own basin. One solve, correct in every column.
-            if warm is not None:
-                ordered = (self._order_parameter(warm) > self._order_tol)[:, None]
-                starts = [np.where(ordered, warm, self._corners[0])]
-            else:
-                starts = [self._corners[0]]
+            starts = [self._corners[0]]
         else:
+            warm = self._warm_seed(T, flat)
+            corners = ([np.full(a.size, 0.5)] if self.include_disordered_seed else []) + self._corners
             starts = ([warm] if warm is not None else []) + corners
 
         best_phi = np.full(flat.size, np.inf)
