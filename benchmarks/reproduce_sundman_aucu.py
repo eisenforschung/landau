@@ -160,7 +160,11 @@ def _draw(ax, phases, title):
     mu = np.linspace(-0.7, 0.7, 31)
     refine = [DelaunayTripleRefiner(), ClausiusClapeyronRefiner(dT_max=40, dc_max=0.05, max_steps=120)]
     df = calc_phase_diagram(phases, temperatures, mu=mu, refine=refine)
-    plot_phase_diagram(df, poly_method="segments", triplepoints=True, legend=True, inline_legend=False, ax=ax)
+    # Default poly_method falls through to segment-fasttsp when the fast-tsp extra
+    # is installed (segment-tsp / concave otherwise). The TSP tour walks the border
+    # points in order, so the dome caps come out smooth instead of the spiky rings
+    # the plain segment stitcher produced at the ordered-phase apices.
+    plot_phase_diagram(df, triplepoints=True, legend=True, inline_legend=False, ax=ax)
     ax.set_xlim(0, 1)
     ax.set_ylim(300, 1420)
     ax.set_xlabel("Mole fraction Cu")
