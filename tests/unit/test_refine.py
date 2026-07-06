@@ -1020,14 +1020,36 @@ def test_dominated_rival_equal_phi_returns_false():
     assert _dominated(pt, phases) is False
 
 
-def test_dominated_skips_phases_in_own_set():
-    """Triple-point candidate. D would dominate but it is *in* ``own``, so
-    the ``if p.name not in own`` filter excludes it and no rival remains."""
+def test_dominated_own_phase_below_others_returns_true():
+    """A claimed triple point whose own phases don't share a potential is not a
+    real coexistence: D lies far below A and B at ``(T, mu)``, so only D is
+    stable there and the A+B+D point is spurious. The old code compared against
+    one arbitrary member of ``own`` and, when it wasn't D, let the point survive;
+    now the own-phase spread (1.0 eV) exceeds the coexistence tolerance and it is
+    dropped regardless of set order."""
     phases = _dom_phases(
         ("A", 0.0, 0.0), ("B", 1.0, 0.0), ("D", 0.5, -1.0),
     )
     pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B", "D"))
-    assert _dominated(pt, phases) is False
+    assert _dominated(pt, phases) is True
+
+
+def test_dominated_absent_own_phase_returns_true():
+    """The Au-Cu degeneracy in miniature: a pinned ordered phase reported absent
+    (``phi = +inf``) must not survive as a triple-point vertex. C is absent, so
+    A+B+C is really just A+B and the triple point is dropped."""
+    class _Absent:
+        name = "C"
+
+        def semigrand_potential(self, T, mu):
+            return float("inf")
+
+        def concentration(self, T, mu):
+            return 0.0
+
+    phases = {**_dom_phases(("A", 0.0, 0.0), ("B", 1.0, 0.0)), "C": _Absent()}
+    pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B", "C"))
+    assert _dominated(pt, phases) is True
 
 
 def test_dominated_triple_with_outside_dominator_returns_true():

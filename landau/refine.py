@@ -190,16 +190,39 @@ def _state_row(phase: Phase, T: float, mu: float) -> dict:
     }
 
 
+# eV; largest spread in the own-phase potentials still read as one coexistence.
+# Comfortably above a converged triple/pair residual (~1e-5) and far below any
+# real domination gap, so it separates a genuine N-phase point from one where a
+# vertex doesn't belong.
+_COEXIST_TOL = 1e-3
+
+
 def _dominated(pt, phases: Mapping[str, Phase]) -> bool:
-    """True iff some phase outside ``pt.phase_names()`` has a lower
-    semigrand potential at ``(pt.T, pt.mu)`` — meaning the refined
-    transition we found isn't actually globally stable, so we drop it.
+    """True iff the refined transition ``pt`` is not a genuine coexistence and
+    should be dropped.
+
+    Two failure modes:
+
+    * Its own phases don't actually share a finite semigrand potential at
+      ``(pt.T, pt.mu)`` — one is absent (``phi = +inf``) or lies below the
+      others and merely rode along as a vertex of a Delaunay simplex, so the
+      claimed N-phase point isn't real. (This is how a pinned ordered phase
+      reported absent outside its dome leaked into a triple point at ``c = 0``.)
+    * Some phase *outside* ``pt.phase_names()`` lies strictly below the
+      coexistence potential and is the true equilibrium.
+
+    Comparing every own phase to their minimum (rather than to one arbitrary
+    member) also removes a ``set``-iteration-order dependence: the previous
+    version's reference was ``next(iter(own))``, so whether a phantom vertex
+    survived depended on which name the set happened to yield first.
     """
     own = pt.phase_names()
-    own_phase = next(iter(own))
-    own_phi = phases[own_phase].semigrand_potential(pt.T, pt.mu)
+    own_phi = [phases[n].semigrand_potential(pt.T, pt.mu) for n in own]
+    ref = min(own_phi)
+    if not np.isfinite(ref) or max(own_phi) - ref > _COEXIST_TOL:
+        return True
     return any(
-        p.semigrand_potential(pt.T, pt.mu) < own_phi
+        p.semigrand_potential(pt.T, pt.mu) < ref
         for p in phases.values()
         if p.name not in own
     )
