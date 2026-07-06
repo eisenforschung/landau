@@ -34,10 +34,11 @@ Setting :math:`\partial_{y_s}[\,G - \Delta\mu\,c\,] = 0` gives the self-consiste
 
 because the ideal term contributes :math:`k_B T\,a_s\,\mathrm{logit}(y_s)`, linear in
 ``logit(y_s)``.  Iterating this map (damped) drives ``y`` to the stationary point of
-each basin; it is vectorised over the whole ``dmu`` array (one solve per ``T``) and
-run from a disordered start plus every ordered end-member corner, keeping the lowest
-``phi`` per ``dmu`` -- so ordered/disordered coexistence surfaces as ``c(dmu)`` jumps
-without any fixed-composition inner minimisation.  ``c = -partial phi/partial dmu``
+each basin; it is vectorised over the whole ``(T, dmu)`` grid -- a multi-``T`` grid is
+one batched solve per start, not one per ``T`` -- and run from a disordered start plus
+every ordered end-member corner, keeping the lowest ``phi`` per point -- so
+ordered/disordered coexistence surfaces as ``c(dmu)`` jumps without any
+fixed-composition inner minimisation.  ``c = -partial phi/partial dmu``
 holds at the stationary point.  All energies are per atom (eV); convert CALPHAD J/mol
 by dividing by 96485.33.
 """
@@ -136,10 +137,13 @@ class CompoundEnergyPhase(Phase):
         return np.array([g(T) for _, g in self.endmember_energies])
 
     def _free_energy(self, T, y, evals):
-        """Gibbs energy ``G(y, T)`` for ``y`` of shape ``(..., S)`` -> ``(...)`` (eV/atom)."""
+        """Gibbs energy ``G(y, T)`` for ``y`` of shape ``(..., S)`` -> ``(...)`` (eV/atom).
+
+        ``evals`` is ``(M,)`` for a scalar ``T`` or ``(..., M)`` for a per-element ``T``.
+        """
         a = np.asarray(self.site_multiplicities)
         p = np.where(self._configs == 1, y[..., None, :], 1.0 - y[..., None, :])  # (...,M,S)
-        gref = p.prod(axis=-1) @ evals  # (...,)
+        gref = np.sum(p.prod(axis=-1) * evals, axis=-1)  # (...,)  broadcasts evals (M,) or (...,M)
         gid = -kB * T * ((se.entr(y) + se.entr(1.0 - y)) @ a)
         gex = self.excess(y, T) if self.excess is not None else 0.0
         return gref + gid + gex
@@ -157,7 +161,8 @@ class CompoundEnergyPhase(Phase):
         p = np.where(self._configs == 1, y[..., None, :], 1.0 - y[..., None, :])  # (...,M,S)
         # leave-one-out product: prod_{s'!=s} p = (prod_s p) / p_s  (p bounded away from 0)
         loo = p.prod(axis=-1, keepdims=True) / p  # (...,M,S)
-        gref = np.einsum("m,...ms->...s", evals, self._sign * loo)
+        # evals is (M,) for scalar T or (...,M) for per-element T; broadcast either way
+        gref = np.sum(evals[..., :, None] * (self._sign * loo), axis=-2)  # (...,S)
         if self.excess is None:
             return gref
         # central finite difference of the excess in every sublattice, in one
@@ -176,22 +181,27 @@ class CompoundEnergyPhase(Phase):
     # --- direct semi-grand solve (one minimisation per start) ----------------
 
     def _scf(self, T, dmu, evals, y0):
-        """Self-consistent field iteration for one start, vectorised over ``dmu``.
+        """Self-consistent field iteration for one start, vectorised over ``(T, dmu)``.
 
+        ``T`` is a scalar or a ``(len(dmu),)`` array (per-element temperature) and
+        ``evals`` the matching ``(M,)`` or ``(len(dmu), M)`` end-member energies.
         Columns are dropped from the working set as they converge, so the iteration
-        cost shrinks toward the few ``dmu`` that keep oscillating in a spinodal
+        cost shrinks toward the few ``(T, dmu)`` that keep oscillating in a spinodal
         region (where this branch is unstable and loses the ``argmin`` anyway).
         Returns the stationary site fractions ``y`` of shape ``(len(dmu), S)``.
         """
         a = np.asarray(self.site_multiplicities)
-        kT = kB * T
+        N = dmu.size
+        Tarr = np.broadcast_to(np.asarray(T, dtype=float), (N,))
+        ev = evals if evals.ndim == 2 else np.broadcast_to(evals, (N, evals.shape[-1]))
+        kT = kB * Tarr
         d = self._scf_damp
-        y = np.clip(np.broadcast_to(y0, (dmu.size, a.size)).astype(float), 1e-9, 1 - 1e-9)
-        active = np.arange(dmu.size)  # indices still iterating
+        y = np.clip(np.broadcast_to(y0, (N, a.size)).astype(float), 1e-9, 1 - 1e-9)
+        active = np.arange(N)  # indices still iterating
         ya = y[active]
         for _ in range(self._scf_max_iter):
-            field = self._grad_non_ideal(T, ya, evals) / a  # (n_active, S)
-            target = se.expit((dmu[active, None] - field) / kT)
+            field = self._grad_non_ideal(Tarr[active], ya, ev[active]) / a  # (n_active, S)
+            target = se.expit((dmu[active, None] - field) / kT[active, None])
             y_new = np.clip((1 - d) * ya + d * target, 1e-12, 1 - 1e-12)
             if self._groups is not None:  # confine to the ordering's sublattice symmetry
                 for g in self._groups:
@@ -286,9 +296,45 @@ class CompoundEnergyPhase(Phase):
         self._warm[round(float(T))] = (flat[order], best_y[order])
         return best_phi.reshape(np.shape(dmu)), best_c.reshape(np.shape(dmu))
 
+    def _solve_batch(self, T, dmu):
+        """Semi-grand ``(phi, c)`` for per-element ``T`` and ``dmu`` (same 1-D shape).
+
+        The array-``T`` analogue of :meth:`_solve_fixed_T`: one batched SCF over the
+        whole ``(T, dmu)`` grid from the corner seeds, vectorised in ``T`` as well so a
+        multi-``T`` grid is one solve per start instead of one per unique ``T``.  Cold
+        corners (no warm start), but the per-``T`` slices are cached into ``_warm`` so
+        the later clustered refinement probes still warm-start off the grid.
+        """
+        a = np.asarray(self.site_multiplicities)
+        Tf = np.asarray(T, dtype=float).ravel()
+        flat = np.asarray(dmu, dtype=float).ravel()
+        ev = np.stack([np.broadcast_to(g(Tf), Tf.shape) for _, g in self.endmember_energies], axis=-1)
+        corners = ([np.full(a.size, 0.5)] if self.include_disordered_seed else []) + self._corners
+        starts = [self._corners[0]] if self._pinned else corners
+
+        best_phi = np.full(flat.size, np.inf)
+        best_c = np.zeros(flat.size)
+        best_y = None
+        for y0 in starts:
+            phi, c, y = self._from_seed(Tf, flat, ev, a, y0)
+            take = phi < best_phi
+            best_phi[take] = phi[take]
+            best_c[take] = c[take]
+            best_y = y.copy() if best_y is None else best_y
+            best_y[take] = y[take]
+
+        # cache each unique-T slice so later scalar-T refinement probes warm-start
+        for uT in np.unique(Tf):
+            if len(self._warm) >= 12:
+                self._warm.pop(next(iter(self._warm)))
+            m = Tf == uT
+            order = np.argsort(flat[m])
+            self._warm[round(float(uT))] = (flat[m][order], best_y[m][order])
+        return best_phi.reshape(np.shape(dmu)), best_c.reshape(np.shape(dmu))
+
     @lru_cache(maxsize=50000)
     def _find_phi_c_cached(self, t_shape, t_bytes, d_shape, d_bytes):
-        """Solve and cache by raw ``(T, dmu)`` bytes; group array ``T`` by unique value."""
+        """Solve and cache by raw ``(T, dmu)`` bytes; array ``T`` solves in one batch."""
         T = np.frombuffer(t_bytes, dtype=float).reshape(t_shape)
         dmu = np.frombuffer(d_bytes, dtype=float).reshape(d_shape)
         out_shape = np.broadcast_shapes(t_shape, d_shape)
@@ -297,12 +343,8 @@ class CompoundEnergyPhase(Phase):
             return np.broadcast_to(phi, out_shape).copy(), np.broadcast_to(c, out_shape).copy()
         Tb = np.broadcast_to(T, out_shape)
         dmub = np.broadcast_to(dmu, out_shape)
-        phi = np.empty(out_shape)
-        c = np.empty(out_shape)
-        for uT in np.unique(Tb):
-            m = Tb == uT
-            phi[m], c[m] = self._solve_fixed_T(float(uT), dmub[m])
-        return phi, c
+        phi, c = self._solve_batch(Tb.ravel(), dmub.ravel())
+        return phi.reshape(out_shape), c.reshape(out_shape)
 
     def _find_phi_c(self, T, dmu):
         Ta = np.asarray(T, dtype=float)

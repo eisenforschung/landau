@@ -149,11 +149,13 @@ def assessment_ii_phases():
 
 def _draw(ax, phases, title):
     # Coarse grid, dense in T where the ordered domes live, sparse over the liquid;
-    # the triple-point + Clausius-Clapeyron refiners locate the invariants and trace
-    # the two-phase boundaries from it. The Clausius-Clapeyron step is loosened
+    # the grid solve is vectorised over the whole (T, dmu) mesh in one batch, and the
+    # triple-point + Clausius-Clapeyron refiners locate the invariants and trace the
+    # two-phase boundaries from it. The Clausius-Clapeyron step is loosened
     # (dT_max/dc_max) so the trace is sampled at roughly the Delaunay density rather
-    # than its dense default, and the solver warm-starts each SCF from the nearest
-    # cached solution, so the whole diagram solves in well under 30 s.
+    # than its dense default, and the refinement probes warm-start each SCF from the
+    # nearest cached grid solution. The boundary tracing (not the grid) dominates the
+    # wall-clock; a single assessment refines in a few tens of seconds.
     temperatures = np.concatenate([np.arange(300, 720, 30.0), np.arange(760, 1420, 60.0)])
     mu = np.linspace(-0.7, 0.7, 31)
     refine = [DelaunayTripleRefiner(), ClausiusClapeyronRefiner(dT_max=40, dc_max=0.05, max_steps=120)]
