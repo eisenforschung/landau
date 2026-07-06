@@ -91,7 +91,8 @@ class CompoundEnergyPhase(Phase):
 
     # solver tuning (ClassVar -> never treated as dataclass fields)
     _scf_max_iter: ClassVar[int] = 80   # self-consistent-field iterations per start
-    _scf_damp: ClassVar[float] = 0.5    # mixing factor y <- (1-d) y + d target
+    _scf_damp: ClassVar[float] = 0.5    # initial mixing y <- (1-d) y + d target
+    _scf_damp_min: ClassVar[float] = 0.05  # floor for the per-column adaptive mixing
     _scf_tol: ClassVar[float] = 1e-9    # max|dy| convergence tolerance
     _fd: ClassVar[float] = 1e-6         # finite-difference step for the excess gradient
     _order_tol: ClassVar[float] = 0.05  # min long-range order for a pinned ordered phase to exist
@@ -186,23 +187,40 @@ class CompoundEnergyPhase(Phase):
         ``T`` is a scalar or a ``(len(dmu),)`` array (per-element temperature) and
         ``evals`` the matching ``(M,)`` or ``(len(dmu), M)`` end-member energies.
         Columns are dropped from the working set as they converge, so the iteration
-        cost shrinks toward the few ``(T, dmu)`` that keep oscillating in a spinodal
-        region (where this branch is unstable and loses the ``argmin`` anyway).
+        cost shrinks toward the few ``(T, dmu)`` that keep iterating.
         Returns the stationary site fractions ``y`` of shape ``(len(dmu), S)``.
+
+        The mixing factor is adaptive per column.  Near a spinodal the plain
+        damped map has a fixed-point multiplier below ``-1`` and settles into a
+        period-2 limit cycle straddling the true stationary point (the fcc
+        disordered branch between two ordered domes does this), so it never meets
+        the tolerance and returns a start-dependent, non-stationary value.  When a
+        column's undamped residual flips sign between steps -- the signature of
+        that oscillation -- its mixing is halved (down to ``_scf_damp_min``),
+        which pulls the multiplier back inside the unit circle and the column
+        converges.  Well-behaved columns keep the full ``_scf_damp`` and its
+        faster rate.
         """
         a = np.asarray(self.site_multiplicities)
         N = dmu.size
         Tarr = np.broadcast_to(np.asarray(T, dtype=float), (N,))
         ev = evals if evals.ndim == 2 else np.broadcast_to(evals, (N, evals.shape[-1]))
         kT = kB * Tarr
-        d = self._scf_damp
+        d = np.full(N, self._scf_damp)          # per-column mixing, cut on oscillation
+        prev_delta = np.zeros((N, a.size))       # last undamped residual target - y
         y = np.clip(np.broadcast_to(y0, (N, a.size)).astype(float), 1e-9, 1 - 1e-9)
         active = np.arange(N)  # indices still iterating
         ya = y[active]
         for _ in range(self._scf_max_iter):
             field = self._grad_non_ideal(Tarr[active], ya, ev[active]) / a  # (n_active, S)
             target = se.expit((dmu[active, None] - field) / kT[active, None])
-            y_new = np.clip((1 - d) * ya + d * target, 1e-12, 1 - 1e-12)
+            delta = target - ya
+            # a residual that reversed sign since the previous step is orbiting the
+            # fixed point rather than approaching it -> shrink this column's mixing
+            osc = np.any(delta * prev_delta[active] < 0.0, axis=1)
+            d[active] = np.where(osc, np.maximum(0.5 * d[active], self._scf_damp_min), d[active])
+            prev_delta[active] = delta
+            y_new = np.clip(ya + d[active, None] * delta, 1e-12, 1 - 1e-12)
             if self._groups is not None:  # confine to the ordering's sublattice symmetry
                 for g in self._groups:
                     y_new[:, g] = y_new[:, g].mean(axis=1, keepdims=True)
@@ -214,7 +232,8 @@ class CompoundEnergyPhase(Phase):
                 # so stop refining it now rather than iterate to full convergence
                 done |= self._order_parameter(y_new) < self._order_tol
             if done.any():
-                active = active[~done]
+                keep = ~done
+                active = active[keep]
                 if active.size == 0:
                     break
                 ya = y[active]
