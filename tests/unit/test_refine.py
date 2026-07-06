@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 import pytest
+import shapely
 
 from landau.features import Locus
 from landau.phases import LinePhase, Phase, TemperatureDependentLinePhase
@@ -20,11 +21,13 @@ from landau.refine import (
 )
 from landau.refine import (
     _point_on_line,
+    _simplex_brackets,
     _simplex_straddles,
     _dominated,
     _InterCandidate,
     _delaunay_simplices,
     _simplex_containment,
+    _trace_geom,
 )
 
 
@@ -436,6 +439,70 @@ def test_point_on_line_helper():
     traces2 = (((0.0, 0.0),), ((100.0, 10.0), (200.0, 10.0)))
     assert _point_on_line(150.0, 10.0, traces2, tol_mu=0.01)
     assert not _point_on_line(150.0, 0.0, traces2, tol_mu=0.01)
+
+
+def test_simplex_brackets_returns_mu_T_extents_and_T_centroid():
+    """The (mu_lo, mu_hi, T_lo, T_hi, T_seed) tuple is the seed simplex's
+    mu/T bounding box plus the centroid T that ``_CCBase._trace`` walks
+    from — verified on a hand-built 3-row simplex."""
+    simplex = pd.DataFrame({
+        "T": [100.0, 200.0, 300.0],
+        "mu": [0.5, 0.2, 0.8],
+        "phase": ["A", "B", "A"],
+    })
+    mu_lo, mu_hi, T_lo, T_hi, T_seed = _simplex_brackets(simplex)
+    assert (mu_lo, mu_hi) == (0.2, 0.8)
+    assert (T_lo, T_hi) == (100.0, 300.0)
+    assert T_seed == 200.0  # arithmetic mean of the T column
+
+
+def test_simplex_brackets_row_order_agnostic():
+    """The returned bracket is symmetric in row order; a shuffled simplex
+    yields the same output."""
+    rows = [
+        {"T": 300.0, "mu": 0.8},
+        {"T": 100.0, "mu": 0.5},
+        {"T": 200.0, "mu": 0.2},
+    ]
+    forward = _simplex_brackets(pd.DataFrame(rows))
+    reversed_ = _simplex_brackets(pd.DataFrame(rows[::-1]))
+    assert forward == reversed_
+
+
+def test_simplex_brackets_returns_python_floats():
+    """Every field is a plain ``float`` — the downstream refiners store
+    these as dataclass fields and rely on scalar arithmetic, not numpy
+    scalar types."""
+    simplex = pd.DataFrame({"T": [100, 200], "mu": [0.5, 0.7]})
+    for value in _simplex_brackets(simplex):
+        assert type(value) is float
+
+
+def test_trace_geom_single_point_returns_shapely_point():
+    """A trace that emitted only its seed becomes a ``Point`` so
+    ``_point_on_line`` / ``_simplex_straddles`` can test distance to it
+    without inventing a spurious segment."""
+    geom = _trace_geom([(100.0, 0.5)])
+    assert isinstance(geom, shapely.Point)
+    assert (geom.x, geom.y) == (100.0, 0.5)
+
+
+def test_trace_geom_two_points_returns_linestring_with_input_coords():
+    """A two-point trace becomes a ``LineString`` whose coordinates are
+    exactly the input points, in input order."""
+    pts = [(100.0, 0.5), (200.0, 0.8)]
+    geom = _trace_geom(pts)
+    assert isinstance(geom, shapely.LineString)
+    assert list(geom.coords) == pts
+
+
+def test_trace_geom_three_points_preserves_all_vertices():
+    """Multi-point traces keep every vertex; ``LineString`` is not
+    simplified into a segment between the endpoints."""
+    pts = [(100.0, 0.5), (200.0, 0.8), (300.0, 1.1)]
+    geom = _trace_geom(pts)
+    assert isinstance(geom, shapely.LineString)
+    assert list(geom.coords) == pts
 
 
 def test_clausius_clapeyron_refiner_interphase_idealsolution():
