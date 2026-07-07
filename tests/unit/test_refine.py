@@ -27,7 +27,19 @@ from landau.refine import (
     _simplex_containment,
     _state_row,
     _phase_centroids_xy,
+    _Simplex,
 )
+
+
+def _mk_simplex(*, T, mu, phase=None, c=None):
+    """Build a numpy-backed _Simplex for the direct helper tests."""
+    T = np.asarray(T, float)
+    mu = np.asarray(mu, float)
+    if phase is None:
+        phase = np.array(["x"] * len(T))
+    if c is None:
+        c = np.zeros(len(T))
+    return _Simplex(T=T, mu=mu, phase=np.asarray(phase), c=np.asarray(c, float))
 
 
 def _two_phase_diagram_df(phases):
@@ -678,6 +690,30 @@ def _coarse_df(phases, Ts, mus):
     return pd.DataFrame(rows)
 
 
+def test_delaunay_simplices_yields_numpy_backed_vertices():
+    """``_delaunay_simplices`` yields ``_Simplex`` views whose length-3 numpy
+    arrays reproduce the source rows, with the right phase count per simplex."""
+    phases = _three_phase_system()
+    Ts = np.linspace(220.0, 480.0, 5)
+    mus = np.linspace(-0.05, 0.55, 6)
+    df = _coarse_df(phases, Ts, mus)
+    rows = set(zip(df["T"], df["mu"], df["phase"], df["c"]))
+
+    seen_counts = set()
+    for simplex, n in _delaunay_simplices(df):
+        assert isinstance(simplex, _Simplex)
+        assert len(simplex.T) == len(simplex.mu) == len(simplex.phase) == len(simplex.c) == 3
+        # every vertex is an actual (T, mu, phase, c) row of the input frame
+        for t, m, p, c in zip(simplex.T, simplex.mu, simplex.phase, simplex.c):
+            assert (t, m, p, c) in rows
+        # phase count matches the distinct phase names on the vertices
+        assert n == len(set(simplex.phase))
+        assert list(simplex.unique_phases()) == list(dict.fromkeys(simplex.phase))
+        seen_counts.add(n)
+    # the grid straddles a triple point, so 1-, 2- and 3-phase simplices appear
+    assert seen_counts == {1, 2, 3}
+
+
 def test_delaunay_triple_refiner_deduplicates():
     """Triple refiner emits each triple point exactly once even when
     multiple three-phase Delaunay simplices independently detect it."""
@@ -733,22 +769,22 @@ def test_simplex_containment_scores_ownership():
     when the point is inside, negative outside, and largest for the simplex the
     point is least far outside of — the fallback that attributes a triple point
     landing just past every three-phase simplex to a single owner."""
-    inside = pd.DataFrame({"T": [0.0, 2.0, 0.0], "mu": [0.0, 0.0, 2.0]})
+    inside = _mk_simplex(T=[0.0, 2.0, 0.0], mu=[0.0, 0.0, 2.0])
     # Centroid is strictly inside, edge midpoint sits on the boundary.
     assert _simplex_containment((0.5, 0.5), inside) > 0
     assert np.isclose(_simplex_containment((1.0, 0.0), inside), 0.0)
 
     # A point past the hypotenuse is outside; the simplex it is least far
     # outside of wins ``max``.
-    near = pd.DataFrame({"T": [0.0, 2.0, 0.0], "mu": [0.0, 0.0, 2.0]})
-    far = pd.DataFrame({"T": [0.0, -2.0, 0.0], "mu": [0.0, 0.0, -2.0]})
+    near = _mk_simplex(T=[0.0, 2.0, 0.0], mu=[0.0, 0.0, 2.0])
+    far = _mk_simplex(T=[0.0, -2.0, 0.0], mu=[0.0, 0.0, -2.0])
     point = (1.1, 1.1)
     assert _simplex_containment(point, near) < 0
     assert _simplex_containment(point, far) < _simplex_containment(point, near)
     assert max((near, far), key=lambda s: _simplex_containment(point, s)) is near
 
     # Degenerate (collinear) simplex never wins ownership.
-    line = pd.DataFrame({"T": [0.0, 1.0, 2.0], "mu": [0.0, 1.0, 2.0]})
+    line = _mk_simplex(T=[0.0, 1.0, 2.0], mu=[0.0, 1.0, 2.0])
     assert _simplex_containment((0.5, 0.5), line) == float("-inf")
 
 
@@ -1070,11 +1106,8 @@ def test_state_row_two_phases_differ_only_in_projected_fields():
 def test_phase_centroids_xy_arithmetic_mean_per_phase():
     """A 3-vertex two-phase simplex (A once, B twice) gives A's own vertex
     unchanged and B's the arithmetic mean of its two vertices."""
-    simplex = pd.DataFrame({
-        "phase": ["A", "B", "B"],
-        "T":     [300.0, 300.0, 320.0],
-        "mu":    [0.0,   0.01,  0.02],
-    })
+    simplex = _mk_simplex(
+        phase=["A", "B", "B"], T=[300.0, 300.0, 320.0], mu=[0.0, 0.01, 0.02])
     a_xy, b_xy = _phase_centroids_xy(simplex)
     assert a_xy == pytest.approx((300.0, 0.0))
     assert b_xy == pytest.approx((310.0, 0.015))
@@ -1083,11 +1116,8 @@ def test_phase_centroids_xy_arithmetic_mean_per_phase():
 def test_phase_centroids_xy_returns_plain_tuples_not_arrays():
     """Return type is a tuple of (T, mu) tuples, not numpy arrays, so
     downstream np.array(p1xy) construction works as expected."""
-    simplex = pd.DataFrame({
-        "phase": ["A", "A", "B"],
-        "T":     [100.0, 200.0, 400.0],
-        "mu":    [0.0, 0.0, 0.0],
-    })
+    simplex = _mk_simplex(
+        phase=["A", "A", "B"], T=[100.0, 200.0, 400.0], mu=[0.0, 0.0, 0.0])
     result = _phase_centroids_xy(simplex)
     assert isinstance(result, tuple) and len(result) == 2
     for xy in result:
@@ -1095,15 +1125,12 @@ def test_phase_centroids_xy_returns_plain_tuples_not_arrays():
     assert not isinstance(result[0], np.ndarray)
 
 
-def test_phase_centroids_xy_ordering_matches_groupby_mean():
-    """Ordering matches simplex.groupby("phase").mean() — alphabetical on
-    phase name, not first-appearance order in the simplex rows."""
-    simplex = pd.DataFrame({
-        "phase": ["zeta", "alpha", "zeta"],
-        "T":     [100.0, 500.0, 300.0],
-        "mu":    [0.0, 0.0, 0.0],
-    })
-    expected = simplex.groupby("phase")[["T", "mu"]].mean().to_numpy()
+def test_phase_centroids_xy_ordering_is_alphabetical_by_phase():
+    """Ordering is by phase name (alphabetical), not first-appearance order in
+    the simplex rows — matching the old groupby("phase").mean()."""
+    simplex = _mk_simplex(
+        phase=["zeta", "alpha", "zeta"], T=[100.0, 500.0, 300.0], mu=[0.0, 0.0, 0.0])
     result = _phase_centroids_xy(simplex)
-    assert result[0] == pytest.approx(tuple(expected[0]))
-    assert result[1] == pytest.approx(tuple(expected[1]))
+    # alpha first (its single vertex), then zeta (mean of its two vertices)
+    assert result[0] == pytest.approx((500.0, 0.0))
+    assert result[1] == pytest.approx((200.0, 0.0))
