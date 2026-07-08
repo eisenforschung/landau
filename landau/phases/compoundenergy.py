@@ -95,7 +95,7 @@ class CompoundEnergyPhase(Phase):
     _scf_damp_min: ClassVar[float] = 0.05  # floor for the per-column adaptive mixing
     _scf_tol: ClassVar[float] = 1e-9    # max|dy| convergence tolerance
     _fd: ClassVar[float] = 1e-6         # finite-difference step for the excess gradient
-    _order_tol: ClassVar[float] = 0.05  # min long-range order for a pinned ordered phase to exist
+    _y_margin: ClassVar[float] = 0.02   # pinned sublattices held this far from 0.5 (keeps orderings distinct)
 
     def __post_init__(self):
         a = tuple(float(x) for x in self.site_multiplicities)
@@ -115,16 +115,28 @@ class CompoundEnergyPhase(Phase):
         # A basin-pinned ordered phase -- exactly one ordering and no disordered seed --
         # is confined to that ordering's sublattice symmetry (sublattices sharing the
         # same occupation stay equal, so the solve cannot drift into a different
-        # ordering) and is reported absent where it disorders.  This makes it a distinct
-        # phase that competes cleanly in ``calc_phase_diagram`` instead of relaxing onto
-        # -- and tying with -- the disordered or a neighbouring ordered branch.
+        # ordering) *and* to that ordering's quadrant of site-fraction space: every
+        # B-rich sublattice is clamped above 0.5 and every A-rich one below (by
+        # ``_y_margin``), so the phase cannot relax onto the disordered diagonal or
+        # into a neighbouring ordering.  This makes it a distinct ordered phase whose
+        # free energy is finite and continuous everywhere -- where it is not the ground
+        # state it simply loses the ``argmin`` -- rather than carrying a ``phi = +inf``
+        # "absent" flag, whose discontinuity broke boundary tracing and aliased the
+        # ordered domes' metastable continuations.
         pinned = self.orderings is not None and len(self._corners) == 1 and not self.include_disordered_seed
         groups = None
+        y_lo = np.full(S, 1e-9)
+        y_hi = np.full(S, 1 - 1e-9)
         if pinned:
             pat = np.round(self._corners[0]).astype(int)
             groups = [np.where(pat == v)[0] for v in np.unique(pat)]
+            m = self._y_margin
+            y_lo = np.where(pat == 1, 0.5 + m, 1e-9)
+            y_hi = np.where(pat == 1, 1 - 1e-9, 0.5 - m)
         object.__setattr__(self, "_pinned", pinned)
         object.__setattr__(self, "_groups", groups)
+        object.__setattr__(self, "_y_lo", y_lo)
+        object.__setattr__(self, "_y_hi", y_hi)
         # warm-start cache: rounded T -> (sorted dmu, y*) from the last solve at that
         # T. Refinement probes clustered (T, dmu), so seeding the SCF from the nearest
         # previous solution converges in a few iterations instead of ~40 from a corner.
@@ -206,31 +218,27 @@ class CompoundEnergyPhase(Phase):
         Tarr = np.broadcast_to(np.asarray(T, dtype=float), (N,))
         ev = evals if evals.ndim == 2 else np.broadcast_to(evals, (N, evals.shape[-1]))
         kT = kB * Tarr
+        lo, hi = self._y_lo, self._y_hi          # ordered-quadrant clamp (pinned) or [0,1]
         d = np.full(N, self._scf_damp)          # per-column mixing, cut on oscillation
         prev_delta = np.zeros((N, a.size))       # last undamped residual target - y
-        y = np.clip(np.broadcast_to(y0, (N, a.size)).astype(float), 1e-9, 1 - 1e-9)
+        y = np.clip(np.broadcast_to(y0, (N, a.size)).astype(float), lo, hi)
         active = np.arange(N)  # indices still iterating
         ya = y[active]
         for _ in range(self._scf_max_iter):
             field = self._grad_non_ideal(Tarr[active], ya, ev[active]) / a  # (n_active, S)
             target = se.expit((dmu[active, None] - field) / kT[active, None])
-            delta = target - ya
+            delta = np.clip(target, lo, hi) - ya
             # a residual that reversed sign since the previous step is orbiting the
             # fixed point rather than approaching it -> shrink this column's mixing
             osc = np.any(delta * prev_delta[active] < 0.0, axis=1)
             d[active] = np.where(osc, np.maximum(0.5 * d[active], self._scf_damp_min), d[active])
             prev_delta[active] = delta
-            y_new = np.clip(ya + d[active, None] * delta, 1e-12, 1 - 1e-12)
+            y_new = np.clip(ya + d[active, None] * delta, lo, hi)
             if self._groups is not None:  # confine to the ordering's sublattice symmetry
                 for g in self._groups:
                     y_new[:, g] = y_new[:, g].mean(axis=1, keepdims=True)
             y[active] = y_new
             done = np.max(np.abs(y_new - ya), axis=1) < self._scf_tol
-            if self._groups is not None:
-                # a pinned column seeded ordered that has fallen below _order_tol is
-                # disordering (monotone outside the dome) -> it will be reported absent,
-                # so stop refining it now rather than iterate to full convergence
-                done |= self._order_parameter(y_new) < self._order_tol
             if done.any():
                 keep = ~done
                 active = active[keep]
@@ -240,15 +248,6 @@ class CompoundEnergyPhase(Phase):
             else:
                 ya = y_new
         return y
-
-    def _order_parameter(self, y):
-        """Long-range order of a pinned phase: the largest spread between sublattice groups."""
-        means = [y[..., g].mean(axis=-1) for g in self._groups]
-        op = np.zeros(y.shape[:-1])
-        for i in range(len(means)):
-            for j in range(i + 1, len(means)):
-                op = np.maximum(op, np.abs(means[i] - means[j]))
-        return op
 
     def _warm_seed(self, T, flat):
         """Interpolate the nearest cached solution onto ``flat`` as an SCF seed."""
@@ -262,12 +261,15 @@ class CompoundEnergyPhase(Phase):
         return np.clip(seed, 1e-9, 1 - 1e-9)
 
     def _from_seed(self, T, flat, evals, a, y0):
-        """One SCF solve from ``y0``; returns ``(phi, c, y)`` with pinned-absence applied."""
+        """One SCF solve from ``y0``; returns the semi-grand ``(phi, c, y)``.
+
+        A pinned phase is kept ordered by the site-fraction clamp (its ``y`` never
+        leaves its ordering's quadrant), so ``phi`` is finite everywhere and the
+        phase simply loses the ``argmin`` where it is not the ground state.
+        """
         y = self._scf(T, flat, evals, y0)
         c = y @ a
         phi = self._free_energy(T, y, evals) - flat * c
-        if self._pinned:  # a pinned ordered phase is absent where it has disordered
-            phi = np.where(self._order_parameter(y) < self._order_tol, np.inf, phi)
         return phi, c, y
 
     def _solve_fixed_T(self, T, dmu):
@@ -275,13 +277,9 @@ class CompoundEnergyPhase(Phase):
 
         Runs the SCF map from a warm start (nearest cached solution) plus the corner
         seeds and keeps, per ``dmu``, the site fractions with the lowest ``G - dmu*c``.
-        A pinned phase is confined to a single ordering basin, so its ordered corner
-        already finds that basin; it is solved **cold from the corner only** (no warm
-        start).  Trusting a warm seed for a pinned phase was start-dependent near its
-        dome edge -- a warm seed drawn from a neighbour could steer the confined solve
-        into a disordered result and report the phase *absent* (``phi = +inf``) where
-        it is really present, which then let ``_dominated`` miss it and a Clausius-
-        Clapeyron trace overstep the invariant. The cold corner is deterministic.
+        A pinned phase is confined to one ordering quadrant by the site-fraction clamp,
+        so its ordered corner already finds that basin; it is solved **cold from the
+        corner only** so the result is a deterministic function of ``(T, dmu)``.
         """
         evals = self._endmember_evals(T)
         a = np.asarray(self.site_multiplicities)

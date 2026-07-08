@@ -1501,20 +1501,24 @@ def _cef_aucu_ordered(pattern):
     return CompoundEnergyPhase(name="ord", orderings=(pattern,), include_disordered_seed=False, **_cef_aucu_kwargs())
 
 
-def test_cef_pinned_ordered_absent_in_disordered_region():
-    """A pinned ordered phase reports phi = +inf where it has disordered."""
+def test_cef_pinned_ordered_finite_but_metastable_when_disordered():
+    """The ordered-quadrant clamp keeps a pinned phase finite everywhere; where it
+    has no ordered ground state it simply loses to the disordered phase (no +inf)."""
     l10 = _cef_aucu_ordered((1, 1, 0, 0))
-    # deep in the dilute (disordered) tail the L1_0 ordering does not exist
-    assert not np.isfinite(l10.semigrand_potential(400.0, -0.30))
-    # near its stoichiometry (c ~ 0.5) it exists and is finite
-    assert np.isfinite(l10.semigrand_potential(400.0, 0.0))
+    dis = CompoundEnergyPhase(name="dis", orderings=(), **_cef_aucu_kwargs())
+    # deep in the dilute tail L1_0 is finite but lies above the disordered phase
+    assert np.isfinite(l10.semigrand_potential(400.0, -0.30))
+    assert l10.semigrand_potential(400.0, -0.30) > dis.semigrand_potential(400.0, -0.30)
+    # near its stoichiometry (c ~ 0.5) it orders below the disordered phase
+    assert l10.semigrand_potential(400.0, 0.0) < dis.semigrand_potential(400.0, 0.0)
 
 
 def test_cef_pinned_ordered_phases_do_not_tie():
-    """AuCu3 stays on its own ordering rather than flowing into the L1_0 basin.
+    """AuCu3 stays in its own ordering quadrant rather than flowing into the L1_0 basin.
 
-    Before confinement both the L1_0- and L1_2(AuCu3)-seeded phases relaxed to the
-    same L1_0 minimum at c ~ 0.5 and tied; now AuCu wins strictly there.
+    Without the site-fraction clamp both the L1_0- and L1_2(AuCu3)-seeded phases could
+    relax to the same L1_0 minimum at c ~ 0.5 and tie; the clamp keeps them in
+    distinct quadrants so AuCu wins strictly there.
     """
     l10 = _cef_aucu_ordered((1, 1, 0, 0))
     aucu3 = _cef_aucu_ordered((1, 1, 1, 0))
