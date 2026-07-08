@@ -745,6 +745,23 @@ def test_delaunay_simplices_yields_numpy_backed_vertices():
     assert seen_counts == {1, 2, 3}
 
 
+def test_delaunay_simplices_memoised_per_frame():
+    """Repeated calls on the same frame reuse one tessellation (so the default
+    refiners share it), while a different frame recomputes."""
+    phases = _three_phase_system()
+    Ts = np.linspace(220.0, 480.0, 5)
+    mus = np.linspace(-0.05, 0.55, 6)
+    df = _coarse_df(phases, Ts, mus)
+
+    first = _delaunay_simplices(df)
+    assert _delaunay_simplices(df) is first  # same frame -> cached list reused
+
+    df2 = _coarse_df(phases, Ts, mus)  # equal content, different object
+    other = _delaunay_simplices(df2)
+    assert other is not first  # identity-keyed: not aliased to the old frame
+    assert len(other) == len(first)
+
+
 def test_delaunay_triple_refiner_deduplicates():
     """Triple refiner emits each triple point exactly once even when
     multiple three-phase Delaunay simplices independently detect it."""
