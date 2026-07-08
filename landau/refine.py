@@ -387,6 +387,21 @@ class _Simplex:
         """Distinct phase names in vertex-appearance order."""
         return pd.unique(self.phase)
 
+    def centroids(self) -> dict[str, TMuPoint]:
+        """Map each distinct phase to its vertices' ``(T, mu)`` centroid.
+
+        For a 2-phase simplex (3 vertices, one phase appears once and the
+        other twice) the line between the two centroids is guaranteed to cross
+        the phase boundary inside the simplex, which gives
+        :class:`ClausiusClapeyronRefiner` a reliable seed bracket. Entries are
+        in :meth:`unique_phases` (vertex-appearance) order.
+        """
+        out: dict[str, TMuPoint] = {}
+        for name in self.unique_phases():
+            m = self.phase == name
+            out[str(name)] = (float(self.T[m].mean()), float(self.mu[m].mean()))
+        return out
+
 
 def _delaunay_simplices(df: pd.DataFrame):
     """Yield ``(_Simplex, phase_count)`` for each simplex of the (mu, T) tess."""
@@ -399,23 +414,6 @@ def _delaunay_simplices(df: pd.DataFrame):
     counts = np.array([len(set(x)) for x in phases_arr])
     for s, n in zip(dela.simplices, counts):
         yield _Simplex(T=T[s], mu=mu[s], phase=phase[s], c=c[s]), int(n)
-
-
-def _phase_centroids_xy(simplex: _Simplex) -> tuple[TMuPoint, TMuPoint]:
-    """``((T, mu), (T, mu))`` of each phase's vertex centroids.
-
-    For a 2-phase simplex (3 vertices, one phase appears once and the
-    other twice) the line from one centroid to the other is guaranteed
-    to cross the phase boundary inside the simplex, which gives
-    :class:`ClausiusClapeyronRefiner` a reliable seed bracket. The two
-    centroids follow :meth:`_Simplex.unique_phases` order.
-    """
-    def centroid(name):
-        m = simplex.phase == name
-        return float(simplex.T[m].mean()), float(simplex.mu[m].mean())
-
-    n1, n2 = simplex.unique_phases()
-    return centroid(n1), centroid(n2)
 
 
 def _simplex_containment(point: TMuPoint, simplex: _Simplex) -> float:
@@ -478,8 +476,9 @@ class DelaunayLineRefiner(Refiner):
 
     def solve(self, cand: _SimplexCandidate, phases) -> list[RefinedPoint]:
         cand_df = cand.simplex
-        p1_xy, p2_xy = (np.array(xy) for xy in _phase_centroids_xy(cand_df))
         name1, name2 = cand_df.unique_phases()
+        cents = cand_df.centroids()
+        p1_xy, p2_xy = np.array(cents[name1]), np.array(cents[name2])
         phase1, phase2 = phases[name1], phases[name2]
 
         def project(t):
@@ -1120,7 +1119,8 @@ class ClausiusClapeyronRefiner(_CCBase):
             if mu_hi <= mu_lo:
                 continue
             name1, name2 = simplex.unique_phases()
-            p1xy, p2xy = _phase_centroids_xy(simplex)
+            cents = simplex.centroids()
+            p1xy, p2xy = cents[name1], cents[name2]
             yield _InterCandidate(
                 phase1=name1, phase2=name2,
                 T_seed=T_seed,

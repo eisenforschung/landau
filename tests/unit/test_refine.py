@@ -26,7 +26,6 @@ from landau.refine import (
     _delaunay_simplices,
     _simplex_containment,
     _state_row,
-    _phase_centroids_xy,
     _Simplex,
 )
 
@@ -1097,41 +1096,41 @@ def test_state_row_two_phases_differ_only_in_projected_fields():
     assert row_a["phase"] != row_b["phase"]
 
 
-# -- _phase_centroids_xy ----------------------------------------------------------
+# -- _Simplex.centroids -----------------------------------------------------------
 #
-# `_phase_centroids_xy(simplex)` (refine.py:375) returns ((T, mu), (T, mu)) of
-# each phase's vertex centroids for a two-phase Delaunay simplex.
+# `_Simplex.centroids()` maps each distinct phase to its vertices' (T, mu)
+# centroid; a two-phase simplex yields the two seed-projection endpoints.
 
 
-def test_phase_centroids_xy_arithmetic_mean_per_phase():
+def test_simplex_centroids_arithmetic_mean_per_phase():
     """A 3-vertex two-phase simplex (A once, B twice) gives A's own vertex
     unchanged and B's the arithmetic mean of its two vertices."""
     simplex = _mk_simplex(
         phase=["A", "B", "B"], T=[300.0, 300.0, 320.0], mu=[0.0, 0.01, 0.02])
-    a_xy, b_xy = _phase_centroids_xy(simplex)
-    assert a_xy == pytest.approx((300.0, 0.0))
-    assert b_xy == pytest.approx((310.0, 0.015))
+    cents = simplex.centroids()
+    assert cents["A"] == pytest.approx((300.0, 0.0))
+    assert cents["B"] == pytest.approx((310.0, 0.015))
 
 
-def test_phase_centroids_xy_returns_plain_tuples_not_arrays():
-    """Return type is a tuple of (T, mu) tuples, not numpy arrays, so
-    downstream np.array(p1xy) construction works as expected."""
+def test_simplex_centroids_values_are_plain_float_tuples():
+    """Values are (T, mu) tuples of Python floats, not numpy arrays, so
+    downstream np.array(xy) construction works as expected."""
     simplex = _mk_simplex(
         phase=["A", "A", "B"], T=[100.0, 200.0, 400.0], mu=[0.0, 0.0, 0.0])
-    result = _phase_centroids_xy(simplex)
-    assert isinstance(result, tuple) and len(result) == 2
-    for xy in result:
+    cents = simplex.centroids()
+    assert set(cents) == {"A", "B"}
+    for xy in cents.values():
         assert isinstance(xy, tuple) and len(xy) == 2
-    assert not isinstance(result[0], np.ndarray)
+        assert all(isinstance(v, float) for v in xy)
 
 
-def test_phase_centroids_xy_ordering_follows_unique_phases():
-    """The two centroids come out in _Simplex.unique_phases order (vertex
-    appearance), so the first-appearing phase's centroid is returned first."""
+def test_simplex_centroids_ordering_follows_unique_phases():
+    """Entries are in _Simplex.unique_phases order (vertex appearance), so the
+    first-appearing phase comes first."""
     simplex = _mk_simplex(
         phase=["zeta", "alpha", "zeta"], T=[100.0, 500.0, 300.0], mu=[0.0, 0.0, 0.0])
     assert list(simplex.unique_phases()) == ["zeta", "alpha"]
-    result = _phase_centroids_xy(simplex)
-    # zeta first (mean of its two vertices), then alpha (its single vertex)
-    assert result[0] == pytest.approx((200.0, 0.0))
-    assert result[1] == pytest.approx((500.0, 0.0))
+    cents = simplex.centroids()
+    assert list(cents) == ["zeta", "alpha"]
+    assert cents["zeta"] == pytest.approx((200.0, 0.0))  # mean of two vertices
+    assert cents["alpha"] == pytest.approx((500.0, 0.0))  # single vertex
