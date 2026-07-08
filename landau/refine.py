@@ -368,11 +368,10 @@ class _Simplex:
     """Numpy-backed view of one Delaunay simplex's three vertices.
 
     Yielded by :func:`_delaunay_simplices` in place of a per-simplex
-    ``df.iloc[...]`` DataFrame. Materialising ~960 three-row frames per
-    tessellation was the dominant cost of every Delaunay refiner's
-    ``propose`` (a full ``run`` spends the majority of its time there);
-    slicing the four columns the refiners actually read — ``T``, ``mu``,
-    ``phase``, ``c`` — as length-3 numpy arrays instead is ~40x cheaper.
+    ``df.iloc[...]`` DataFrame. Building one DataFrame per simplex
+    dominated every Delaunay refiner's ``propose`` (and hence ``run``);
+    a numpy-backed view of the four columns the refiners actually read —
+    ``T``, ``mu``, ``phase``, ``c`` — is much cheaper to instantiate.
 
     ``eq=False`` keeps identity semantics (``owner is not tr`` in
     :meth:`DelaunayTripleRefiner.solve` relies on it) and sidesteps the
