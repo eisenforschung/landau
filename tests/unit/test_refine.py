@@ -160,6 +160,38 @@ def test_clausius_clapeyron_refiner_label():
     assert ClausiusClapeyronRefiner.label == "clausius-clapeyron"
 
 
+def test_cc_refiner_trace_aborts_in_dominated_region():
+    """The trace stops when the pair goes metastable past a triple point,
+    instead of walking the whole T range and leaving run() to drop the
+    dominated tail: every point solve() emits is globally stable.
+
+    Regression — without the early abort solve() walks the A-B line across the
+    triple point into C's region and emits dominated points (only filtered
+    later by run())."""
+    phases = _three_phase_system()  # triple point at (T=300, mu=0.2)
+    Ts = np.linspace(220.0, 480.0, 12)
+    mus = np.linspace(-0.05, 0.55, 15)
+    df = _coarse_df(phases, Ts, mus)
+    refiner = ClausiusClapeyronRefiner()
+    cands = list(refiner.propose(df))
+    # Across every coexistence pair, solve() emits only globally stable points:
+    # the trace aborts on domination and a seed projected into a metastable
+    # sliver is not emitted either. Without the abort the metastable tails are
+    # emitted and only dropped later by run().
+    for c in cands:
+        for pt in refiner.solve(c, phases):
+            assert not _dominated(pt, phases)
+
+    # A-B is stable only for T > 300 here (phi_C - phi_A = 0.001*T - 0.3): the
+    # stable side up toward T_max is traced, and the metastable tail below the
+    # triple point is not (without the abort it would reach T_min = 220).
+    ab = [pt for c in cands if {c.phase1, c.phase2} == {"A", "B"}
+          for pt in refiner.solve(c, phases)]
+    assert ab, "grid should contain an A-B two-phase simplex"
+    assert max(pt.T for pt in ab) > 450.0
+    assert min(pt.T for pt in ab) > 285.0
+
+
 # -- dc_max concentration-drift cap ------------------------------------------
 
 # Physical drift slope: c sweeps ~0.8 -> 0.1 across the sampled T range.
