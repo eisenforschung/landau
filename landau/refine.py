@@ -363,28 +363,60 @@ class ScanRefiner(Refiner):
 # -- Delaunay-based refiners --------------------------------------------------
 
 
-def _delaunay_simplices(df: pd.DataFrame):
-    """Yield (simplex_df, phase_count) for each simplex of the (mu, T) tess."""
-    dela = Delaunay(df[["mu", "T"]])
-    phases_arr = df.phase.to_numpy()[dela.simplices]
-    counts = np.array([len(set(x)) for x in phases_arr])
-    for simplex, n in zip(dela.simplices, counts):
-        yield df.iloc[simplex], n
+@dataclass(frozen=True, eq=False)
+class _Simplex:
+    """Numpy-backed view of one Delaunay simplex's three vertices.
 
+    Yielded by :func:`_delaunay_simplices` in place of a per-simplex
+    ``df.iloc[...]`` DataFrame. Building one DataFrame per simplex
+    dominated every Delaunay refiner's ``propose`` (and hence ``run``);
+    a numpy-backed view of the four columns the refiners actually read —
+    ``T``, ``mu``, ``phase``, ``c`` — is much cheaper to instantiate.
 
-def _phase_centroids_xy(simplex: pd.DataFrame) -> tuple[TMuPoint, TMuPoint]:
-    """``((T, mu), (T, mu))`` of each phase's vertex centroids.
-
-    For a 2-phase simplex (3 vertices, one phase appears once and the
-    other twice) the line from one centroid to the other is guaranteed
-    to cross the phase boundary inside the simplex, which gives
-    :class:`ClausiusClapeyronRefiner` a reliable seed bracket.
+    ``eq=False`` keeps identity semantics (``owner is not tr`` in
+    :meth:`DelaunayTripleRefiner.solve` relies on it) and sidesteps the
+    ambiguous-truth-value error a field-wise array ``__eq__`` would raise.
     """
-    by_phase = simplex.groupby("phase")[["T", "mu"]].mean().to_numpy()
-    return tuple(by_phase[0]), tuple(by_phase[1])
+
+    T: np.ndarray
+    mu: np.ndarray
+    phase: np.ndarray
+    c: np.ndarray
+
+    def unique_phases(self) -> np.ndarray:
+        """Distinct phase names in vertex-appearance order."""
+        return pd.unique(self.phase)
+
+    def centroids(self) -> dict[str, TMuPoint]:
+        """Map each distinct phase to its vertices' ``(T, mu)`` centroid.
+
+        For a 2-phase simplex (3 vertices, one phase appears once and the
+        other twice) the line between the two centroids is guaranteed to cross
+        the phase boundary inside the simplex, which gives
+        :class:`ClausiusClapeyronRefiner` a reliable seed bracket. Entries are
+        in :meth:`unique_phases` (vertex-appearance) order.
+        """
+        out: dict[str, TMuPoint] = {}
+        for name in self.unique_phases():
+            m = self.phase == name
+            out[str(name)] = (float(self.T[m].mean()), float(self.mu[m].mean()))
+        return out
 
 
-def _simplex_containment(point: TMuPoint, simplex: pd.DataFrame) -> float:
+def _delaunay_simplices(df: pd.DataFrame):
+    """Yield ``(_Simplex, phase_count)`` for each simplex of the (mu, T) tess."""
+    dela = Delaunay(df[["mu", "T"]])
+    T = df["T"].to_numpy()
+    mu = df["mu"].to_numpy()
+    phase = df["phase"].to_numpy()
+    c = df["c"].to_numpy() if "c" in df.columns else np.zeros(len(df))
+    phases_arr = phase[dela.simplices]
+    counts = np.array([len(set(x)) for x in phases_arr])
+    for s, n in zip(dela.simplices, counts):
+        yield _Simplex(T=T[s], mu=mu[s], phase=phase[s], c=c[s]), int(n)
+
+
+def _simplex_containment(point: TMuPoint, simplex: _Simplex) -> float:
     """Smallest barycentric coordinate of ``(T, mu)`` w.r.t. the triangle.
 
     ``>= 0`` iff the point lies inside (or on an edge of) the simplex; the
@@ -394,7 +426,8 @@ def _simplex_containment(point: TMuPoint, simplex: pd.DataFrame) -> float:
     contained" score: the simplex with the largest value owns the point.
     Returns ``-inf`` for a degenerate (zero-area) simplex so it never wins.
     """
-    (x1, y1), (x2, y2), (x3, y3) = simplex[["T", "mu"]].to_numpy()
+    x1, x2, x3 = (float(v) for v in simplex.T)
+    y1, y2, y3 = (float(v) for v in simplex.mu)
     x, y = point
     det = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3)
     if det == 0:
@@ -407,7 +440,7 @@ def _simplex_containment(point: TMuPoint, simplex: pd.DataFrame) -> float:
 
 @dataclass(frozen=True)
 class _SimplexCandidate:
-    simplex: pd.DataFrame  # 3 rows of the input df
+    simplex: "_Simplex"  # the three vertices of one Delaunay simplex
 
 
 @dataclass(frozen=True)
@@ -419,7 +452,7 @@ class _TripleCandidate:
     located triple point without any cross-call dedup state.
     """
 
-    simplex: pd.DataFrame  # 3 rows of the input df
+    simplex: "_Simplex"  # the three vertices of one Delaunay simplex
     siblings: tuple  # every three-phase simplex, including ``simplex``
 
 
@@ -443,8 +476,9 @@ class DelaunayLineRefiner(Refiner):
 
     def solve(self, cand: _SimplexCandidate, phases) -> list[RefinedPoint]:
         cand_df = cand.simplex
-        p1_xy, p2_xy = cand_df.groupby("phase")[["T", "mu"]].mean().to_numpy()
-        name1, name2 = cand_df.phase.unique()
+        name1, name2 = cand_df.unique_phases()
+        cents = cand_df.centroids()
+        p1_xy, p2_xy = np.array(cents[name1]), np.array(cents[name2])
         phase1, phase2 = phases[name1], phases[name2]
 
         def project(t):
@@ -460,7 +494,7 @@ class DelaunayLineRefiner(Refiner):
         except ValueError:
             warnings.warn(
                 f"Failed to refine triangle between {p1_xy} and {p2_xy} "
-                f"of phases {cand_df.phase.unique()}!",
+                f"of phases {cand_df.unique_phases()}!",
                 stacklevel=2,
             )
             return []
@@ -493,8 +527,8 @@ class DelaunayTripleRefiner(Refiner):
 
     def solve(self, cand: _TripleCandidate, phases) -> list[RefinedPoint]:
         tr = cand.simplex
-        T0, mu0 = tr[["T", "mu"]].mean()
-        names = tuple(tr.phase.unique())
+        T0, mu0 = float(tr.T.mean()), float(tr.mu.mean())
+        names = tuple(tr.unique_phases())
         p1, p2, p3 = (phases[n] for n in names)
 
         def triplemin(x):
@@ -538,18 +572,18 @@ class DelaunayTripleRefiner(Refiner):
 # -- Shared geometry / bookkeeping helpers -----------------------------------
 
 
-def _simplex_brackets(simplex: pd.DataFrame):
+def _simplex_brackets(simplex: "_Simplex"):
     """Bounding box and centroid T of a Delaunay simplex.
 
     Returns ``(mu_lo, mu_hi, T_lo, T_hi, T_seed)``; both refiners use
     these as the seed simplex's mu/T extents and the seed temperature.
     """
     return (
-        float(simplex["mu"].min()),
-        float(simplex["mu"].max()),
-        float(simplex["T"].min()),
-        float(simplex["T"].max()),
-        float(simplex["T"].mean()),
+        float(simplex.mu.min()),
+        float(simplex.mu.max()),
+        float(simplex.T.min()),
+        float(simplex.T.max()),
+        float(simplex.T.mean()),
     )
 
 
@@ -1084,8 +1118,9 @@ class ClausiusClapeyronRefiner(_CCBase):
             mu_lo, mu_hi, T_lo, T_hi, T_seed = _simplex_brackets(simplex)
             if mu_hi <= mu_lo:
                 continue
-            name1, name2 = simplex.phase.unique()
-            p1xy, p2xy = _phase_centroids_xy(simplex)
+            name1, name2 = simplex.unique_phases()
+            cents = simplex.centroids()
+            p1xy, p2xy = cents[name1], cents[name2]
             yield _InterCandidate(
                 phase1=name1, phase2=name2,
                 T_seed=T_seed,
@@ -1220,11 +1255,11 @@ class MiscibilityGapRefiner(_CCBase):
             mu_lo, mu_hi, T_lo, T_hi, T_seed = _simplex_brackets(simplex)
             if mu_hi <= mu_lo:
                 continue
-            c_spread = float(simplex["c"].max() - simplex["c"].min())
+            c_spread = float(simplex.c.max() - simplex.c.min())
             if c_spread < self.c_jump_min:
                 continue
             candidates.append((-c_spread, _GapCandidate(
-                phase=simplex.phase.iloc[0],
+                phase=simplex.phase[0],
                 T_seed=T_seed,
                 mu_bracket=(mu_lo, mu_hi),
                 T_bracket=(T_lo, T_hi),
