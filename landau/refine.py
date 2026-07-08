@@ -876,6 +876,13 @@ class _CCBase(Refiner):
           downright failures (no root in the bracket). Either way the
           trace ends silently here and any points produced so far are
           kept;
+        * walking into a region where a phase outside the pair is more
+          stable (``_dominated``): the pair's line has crossed a triple
+          point and gone metastable, so the walk stops instead of
+          tracing a tail that :meth:`run` would only discard. A stable
+          segment re-emerging past such a gap is picked up by its own
+          seed simplex (whose straddle bbox no longer overlaps this
+          shortened trace);
         * landing on an already-traced segment of the same coexistence
           line (``_point_on_line`` check on ``cand.existing``), to
           avoid retracing.
@@ -938,6 +945,10 @@ class _CCBase(Refiner):
             # straddle dedup downstream decide whether to absorb it.
             return
         T_b = T0 + dT_boot
+        # Abort as soon as the pair goes metastable (see the docstring's
+        # stop conditions) rather than tracing a tail run() would drop.
+        if _dominated(pt, phases):
+            return
         yield pt
         mu_star = step.mu_star
         dmu_dT = (mu_star - mu0) / dT_boot
@@ -996,6 +1007,9 @@ class _CCBase(Refiner):
             dmu_dT = (step.mu_star - mu_star) / dT
             T, mu_star = T_next, step.mu_star
             pt = self._emit(cand, T, step)
+            # Stop once the pair is no longer globally stable here.
+            if _dominated(pt, phases):
+                return
             yield pt
             c_now = self._emitted_concentrations(pt, phases)
             dc_dT = max((abs(a - b) for a, b in zip(c_now, c_prev)),
@@ -1015,7 +1029,11 @@ class _CCBase(Refiner):
         half_width = (mu_hi - mu_lo) / 2.0
         seed_pt = self._emit(cand, T0, step0)
         seed_c = self._emitted_concentrations(seed_pt, phases)
-        out = [seed_pt]
+        # A seed can project just past a triple point into a metastable
+        # region; emit it only if it is globally stable. The traces still run
+        # in both directions and recover the stable segment if the seed sits
+        # just inside a dominated sliver.
+        out = [] if _dominated(seed_pt, phases) else [seed_pt]
         out.extend(self._trace(cand, phases, T0, step0.mu_star, seed_c,
                                half_width, cand.T_max, +1))
         out.extend(self._trace(cand, phases, T0, step0.mu_star, seed_c,
