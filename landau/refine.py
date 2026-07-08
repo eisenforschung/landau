@@ -384,7 +384,7 @@ class _Simplex:
     c: np.ndarray
 
     def unique_phases(self) -> np.ndarray:
-        """Distinct phase names in vertex-appearance order (like ``pd.unique``)."""
+        """Distinct phase names in vertex-appearance order."""
         return pd.unique(self.phase)
 
 
@@ -408,14 +408,13 @@ def _phase_centroids_xy(simplex: _Simplex) -> tuple[TMuPoint, TMuPoint]:
     other twice) the line from one centroid to the other is guaranteed
     to cross the phase boundary inside the simplex, which gives
     :class:`ClausiusClapeyronRefiner` a reliable seed bracket. The two
-    centroids come out ordered by phase name (matching the old
-    ``groupby("phase").mean()``).
+    centroids follow :meth:`_Simplex.unique_phases` order.
     """
     def centroid(name):
         m = simplex.phase == name
         return float(simplex.T[m].mean()), float(simplex.mu[m].mean())
 
-    n1, n2 = np.unique(simplex.phase)
+    n1, n2 = simplex.unique_phases()
     return centroid(n1), centroid(n2)
 
 

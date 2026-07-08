@@ -1125,12 +1125,13 @@ def test_phase_centroids_xy_returns_plain_tuples_not_arrays():
     assert not isinstance(result[0], np.ndarray)
 
 
-def test_phase_centroids_xy_ordering_is_alphabetical_by_phase():
-    """Ordering is by phase name (alphabetical), not first-appearance order in
-    the simplex rows — matching the old groupby("phase").mean()."""
+def test_phase_centroids_xy_ordering_follows_unique_phases():
+    """The two centroids come out in _Simplex.unique_phases order (vertex
+    appearance), so the first-appearing phase's centroid is returned first."""
     simplex = _mk_simplex(
         phase=["zeta", "alpha", "zeta"], T=[100.0, 500.0, 300.0], mu=[0.0, 0.0, 0.0])
+    assert list(simplex.unique_phases()) == ["zeta", "alpha"]
     result = _phase_centroids_xy(simplex)
-    # alpha first (its single vertex), then zeta (mean of its two vertices)
-    assert result[0] == pytest.approx((500.0, 0.0))
-    assert result[1] == pytest.approx((200.0, 0.0))
+    # zeta first (mean of its two vertices), then alpha (its single vertex)
+    assert result[0] == pytest.approx((200.0, 0.0))
+    assert result[1] == pytest.approx((500.0, 0.0))
