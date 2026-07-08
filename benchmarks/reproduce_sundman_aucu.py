@@ -4,25 +4,26 @@
     "A thermodynamic assessment of the Au-Cu system",
     Calphad 22 (1998) 335-354.
 
-The paper gives two assessments.  **Assessment I** (Table 1, eqs 6-9) models the
-fcc-based phases with the four-sublattice Compound Energy Formalism, capturing the
-ordered L1_0 (AuCu) and L1_2 (Au3Cu, AuCu3) superstructures inside the disordered
-A1 matrix (Figs. 1, 3).  **Assessment II** (eq 10) refits the liquid and the
-disordered fcc as plain substitutional solutions -- a better liquidus/solidus fit;
-the paper drops the ordering there, but we keep the ordered phases so the two
-assessments differ only in the disordered/liquid description.
+This reproduces the paper's **Assessment I** (Table 1, eqs 6-9): the fcc-based
+phases are modelled with the four-sublattice Compound Energy Formalism, capturing
+the ordered L1_0 (AuCu) and L1_2 (Au3Cu, AuCu3) superstructures inside the
+disordered A1 matrix (Figs. 1, 3), together with the liquid.  The paper also gives
+an Assessment II that refits the liquid and the disordered fcc as plain
+substitutional solutions (eq 10) and *drops the ordering entirely* -- it is a
+different fit on its own parameters and has no ordered phases, so it is not a
+side-by-side variant of Assessment I and is not drawn here.
 
-The substitutional phases (the shared liquid, eqs 1-3/6, and the Assessment-II fcc,
-eq 10) are built through landau's Calphad-surface path -- ``Surface2DInterpolatingPhase``
-with a ``CalphadSurface2DInterpolator`` (SGTE terminals + polynomial-in-T
-Redlich-Kister) -- rather than a bespoke phase; the four-sublattice CEF phases are
+The liquid (a substitutional solution, eqs 1-3/6) is built through landau's
+Calphad-surface path -- ``Surface2DInterpolatingPhase`` with a
+``CalphadSurface2DInterpolator`` (SGTE terminals + polynomial-in-T Redlich-Kister)
+-- rather than a bespoke phase; the four-sublattice CEF phases are
 ``CompoundEnergyPhase`` instances.  All parameters are given as code, no database
 file is read.
 
 Units: the four-sublattice compound energies and interaction parameters are per
 mole of formula (4 sites) in J/mol, so the per-formula ``G`` is divided by NS=4
-sites; the liquid and Assessment-II fcc are per mole of atoms (1 site).  Everything
-is converted to eV/atom by dividing by 96485.33 J/mol.
+sites; the liquid is per mole of atoms (1 site).  Everything is converted to
+eV/atom by dividing by 96485.33 J/mol.
 
 Run:  python benchmarks/reproduce_sundman_aucu.py
 """
@@ -82,7 +83,7 @@ def _calphad_solution(name, g_a, g_b, rk_coeffs, ncomp=9, nT=40):
 
 
 def _liquid():
-    """The liquid, a substitutional solution shared by both assessments (eqs 1-3, 6)."""
+    """The liquid, a substitutional solution (Assessment I, eqs 1-3, 6)."""
     return _calphad_solution("liquid", _G_liq_Au, _G_liq_Cu,
                              (lambda T: -27900 - T, lambda T: 4730.0 + 0 * T, lambda T: 3500 + 3.5 * T))
 
@@ -135,18 +136,6 @@ def assessment_i_phases():
     return [_liquid(), CompoundEnergyPhase(name="fcc", orderings=(), **_CEF), *_ordered_fcc_phases()]
 
 
-def assessment_ii_phases():
-    """Liquid + a substitutional disordered fcc (eq 10) + the same ordered phases.
-
-    The paper's Assessment II drops the ordering; we keep the ordered phases so the
-    two panels differ only in how the disordered fcc and liquid are described (a
-    plain Redlich-Kister solution here vs the four-sublattice CEF in Assessment I).
-    """
-    fcc = _calphad_solution("fcc", lambda T: 0.0 * T, lambda T: 0.0 * T,
-                            (lambda T: -28000 + 78.8 * T - 10 * T * np.log(T), lambda T: 6000.0 + 0 * T))
-    return [_liquid(), fcc, *_ordered_fcc_phases()]
-
-
 def _draw(ax, phases, title):
     # Coarse grid, dense in T where the ordered domes live, sparse over the liquid;
     # the grid solve is vectorised over the whole (T, dmu) mesh in one batch, and the
@@ -177,16 +166,14 @@ def main():
     print(f"AuCu (L1_0) end-member energy at 300 K: {_G_Au2Cu2(300) * JMOL:8.1f} J/mol-atom  (Fig 5 ~ -9000)")
     print(f"Au melting point (Gliq = Gfcc): {12552.45 / 9.385866:7.1f} K  (paper 1337.33)")
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.8), sharey=True)
-    c1 = _draw(ax1, assessment_i_phases(), "Assessment I (CEF order/disorder fcc)")
-    c2 = _draw(ax2, assessment_ii_phases(), "Assessment II (substitutional fcc + ordering)")
-    fig.suptitle("Au-Cu (Sundman, Fries & Oates 1998)")
+    fig, ax = plt.subplots(figsize=(6, 5))
+    c1 = _draw(ax, assessment_i_phases(),
+               "Au-Cu Assessment I (Sundman, Fries & Oates 1998)")
     fig.tight_layout()
     out = "benchmarks/_aucu_phase_diagram.png"
     fig.savefig(out, dpi=130)
     print(f"wrote {out}")
-    print(f"  Assessment I  stable points: {c1}")
-    print(f"  Assessment II stable points: {c2}")
+    print(f"  Assessment I stable points: {c1}")
 
 
 if __name__ == "__main__":
