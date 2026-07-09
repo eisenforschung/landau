@@ -14,9 +14,11 @@ from landau.refine import (
     MiscibilityGapRefiner,
     DelaunayLineRefiner,
     DelaunayTripleRefiner,
+    Delaunay2DRefiner,
     RefinedPoint,
     RefinedMiscibilityGap,
     ScanRefiner,
+    default_refiners,
 )
 from landau.refine import (
     _point_on_line,
@@ -935,6 +937,71 @@ def test_boundary_id_delaunay_triple_rows_share_id():
     assert "boundary_id" in out.columns
     # One triple point (3 rows) → all rows share the same boundary_id.
     assert out["boundary_id"].nunique() == 1
+
+
+# -- Delaunay2DRefiner (combined) ---------------------------------------------
+
+
+def _refined_rows_key(df):
+    """Order-independent fingerprint of the located transition rows."""
+    return sorted(
+        (r, round(t, 9), round(m, 9), p, round(c, 9))
+        for r, t, m, p, c in zip(df["refined"], df["T"], df["mu"],
+                                 df["phase"], df["c"]))
+
+
+def test_delaunay_2d_refiner_matches_separate_refiners():
+    """The combined refiner emits exactly what DelaunayTriple + CC + gap emit
+    separately, off one shared tessellation, each row keeping its own label."""
+    phases = _three_phase_system()
+    Ts = np.linspace(220.0, 480.0, 12)
+    mus = np.linspace(-0.05, 0.55, 15)
+    df = _coarse_df(phases, Ts, mus)
+
+    separate = pd.concat(
+        [DelaunayTripleRefiner().run(df, phases),
+         ClausiusClapeyronRefiner().run(df, phases),
+         MiscibilityGapRefiner().run(df, phases)],
+        ignore_index=True)
+    combined = Delaunay2DRefiner().run(df, phases)
+
+    assert not combined.empty
+    assert _refined_rows_key(combined) == _refined_rows_key(separate)
+    # both the triple-point and the Clausius-Clapeyron labels survive
+    assert {"delaunay-triple", "clausius-clapeyron"} <= set(combined["refined"])
+
+
+def test_delaunay_2d_refiner_shares_one_tessellation():
+    """propose tessellates once, not once per constituent refiner."""
+    import landau.refine as R
+    phases = _three_phase_system()
+    df = _coarse_df(phases, np.linspace(220.0, 480.0, 6), np.linspace(-0.05, 0.55, 7))
+
+    calls = {"n": 0}
+    orig = R._delaunay_simplices
+    R._delaunay_simplices = lambda d, _o=orig, _c=calls: (_c.__setitem__("n", _c["n"] + 1), _o(d))[1]
+    try:
+        list(Delaunay2DRefiner().propose(df))
+    finally:
+        R._delaunay_simplices = orig
+    assert calls["n"] == 1
+
+
+def test_default_refiners_2d_is_single_combined_refiner():
+    """A 2-D grid defaults to one Delaunay2DRefiner (not three separate)."""
+    phases = _three_phase_system()
+    df = _coarse_df(phases, np.linspace(220.0, 480.0, 6), np.linspace(-0.05, 0.55, 7))
+    refiners = default_refiners(df)
+    assert len(refiners) == 1
+    assert isinstance(refiners[0], Delaunay2DRefiner)
+
+
+def test_delaunay_2d_refiner_accepts_custom_constituents():
+    """Constituent refiners can be swapped (e.g. tuned CC step)."""
+    r = Delaunay2DRefiner(clausius=ClausiusClapeyronRefiner(dT_max=123.0))
+    assert r.clausius.dT_max == 123.0
+    assert isinstance(r.triple, DelaunayTripleRefiner)
+    assert isinstance(r.gap, MiscibilityGapRefiner)
 
 
 # -- ScanRefiner --------------------------------------------------------------
