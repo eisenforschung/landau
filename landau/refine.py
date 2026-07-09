@@ -1273,7 +1273,11 @@ class ClausiusClapeyronRefiner(_CCBase):
             + self._coarse_walk(cand, phases, T0, mu0, cand.T_max, +1, dT_coarse)
         )
         pts = self._densify(cand, phases, coarse)
-        return [self._emit(cand, T, _StepResult(mu_star=mu)) for T, mu in pts]
+        # Emit only globally stable points: the seed can project just past a
+        # triple point into a metastable sliver, and a densified midpoint can
+        # land in one even when its enclosing coarse points are stable.
+        emitted = (self._emit(cand, T, _StepResult(mu_star=mu)) for T, mu in pts)
+        return [pt for pt in emitted if not _dominated(pt, phases)]
 
     def _coarse_walk(self, cand, phases, T0, mu0, T_target, sign, dT_coarse):
         """Walk ``dT_coarse`` steps from the seed to a T bound.
@@ -1281,8 +1285,9 @@ class ClausiusClapeyronRefiner(_CCBase):
         A cheap scalar predictor-corrector (linear mu prediction, isothermal
         :meth:`_refine_step` correction) that just needs to establish where the
         coexistence line runs; :meth:`_densify` fills in the interior. Stops
-        when the corrector can no longer bracket a root (the line has ended) or
-        the bound is reached. Returns the walked ``(T, mu*)`` points in walk
+        when the corrector can no longer bracket a root (the line has ended),
+        the walked point is no longer globally stable (the pair's line has
+        crossed a triple point and gone metastable), or the bound is reached. Returns the walked ``(T, mu*)`` points in walk
         order (excluding the seed).
         """
         half_width = (cand.mu_bracket[1] - cand.mu_bracket[0]) / 2.0
@@ -1313,6 +1318,11 @@ class ClausiusClapeyronRefiner(_CCBase):
                 break
             slope = (step.mu_star - mu) / dT
             T, mu = T_next, step.mu_star
+            # Stop once the pair is no longer globally stable here — the
+            # extent search has crossed a triple point; densification only
+            # needs the stable span.
+            if _dominated(self._emit(cand, T, step), phases):
+                break
             out.append((T, mu))
         return out
 
