@@ -14,6 +14,7 @@ from landau.interpolate.basic import G_calphad
 from itertools import combinations as _combinations
 
 from landau.phases import IdealSolution, InterpolatingPhase, LinePhase, RegularSolution, SlowInterpolatingPhase, FastInterpolatingPhase, TemperatureDependentLinePhase, CompoundEnergyPhase
+from landau.phases.compoundenergy import Sublattice, Endmember, ExcessTerm, RegularSolutionExcess, CallableExcess
 from landau.phases.pointdefects import (
     AbstractPointDefectSublattice,
     ConstantPointDefect,
@@ -1353,8 +1354,8 @@ def _cef_one_sublattice(fA=0.10, fB=-0.20):
     """A single-sublattice binary CEF -- identical model to an IdealSolution."""
     return CompoundEnergyPhase(
         name="cef1",
-        site_multiplicities=(1.0,),
-        endmember_energies={(0,): lambda T, v=fA: v, (1,): lambda T, v=fB: v},
+        sublattices=(Sublattice(1.0),),
+        endmembers=(Endmember((0,), lambda T, v=fA: v), Endmember((1,), lambda T, v=fB: v)),
     )
 
 
@@ -1373,17 +1374,23 @@ def _cef_aucu_kwargs():
         return (3 * u3 + 3 * u4 * T + 3 * u6 * T * np.log(T)) / ns / _CEF_JMOL
 
     by_ncu = {0: lambda T: 0.0, 1: g1, 2: g2, 3: g3, 4: lambda T: 0.0}
-    endmembers = {tuple(int(b) for b in cfg): by_ncu[sum(cfg)] for cfg in np.ndindex(2, 2, 2, 2)}
+    endmembers = tuple(
+        Endmember(tuple(int(b) for b in cfg), by_ncu[sum(cfg)]) for cfg in np.ndindex(2, 2, 2, 2)
+    )
 
-    def excess(y, T):
+    def reciprocal(y, T):
         y = np.asarray(y, dtype=float)
-        e = (3940 + 10.32 * T) * np.sum(y * (1 - y), axis=-1)
+        e = 0.0
         for r, s in _combinations(range(4), 2):
             t, u = (i for i in range(4) if i not in (r, s))
             e = e + (1 - y[..., r]) * y[..., r] * (1 - y[..., s]) * y[..., s] * (-18 * T - 15900 * y[..., t] * y[..., u])
         return e / ns / _CEF_JMOL
 
-    return dict(site_multiplicities=(0.25, 0.25, 0.25, 0.25), endmember_energies=endmembers, excess=excess)
+    excess = (
+        RegularSolutionExcess(lambda T: (3940 + 10.32 * T) / ns / _CEF_JMOL),
+        CallableExcess(reciprocal),
+    )
+    return dict(sublattices=(Sublattice(0.25),) * 4, endmembers=endmembers, excess=excess)
 
 
 def _cef_au_cu_fcc():
@@ -1539,11 +1546,11 @@ def test_cef_liquid_reproduces_melting_points():
     fcc) puts the pure-element liquid at the fcc reference at each melting point."""
     liquid = CompoundEnergyPhase(
         name="liquid",
-        site_multiplicities=(1.0,),
-        endmember_energies={
-            (0,): lambda T: (12552.45 - 9.385866 * T) / _CEF_JMOL,          # Au
-            (1,): lambda T: (12964.735 - 9.511904 * T - 5.83932e-21 * T**7) / _CEF_JMOL,  # Cu
-        },
+        sublattices=(Sublattice(1.0),),
+        endmembers=(
+            Endmember((0,), lambda T: (12552.45 - 9.385866 * T) / _CEF_JMOL),          # Au
+            Endmember((1,), lambda T: (12964.735 - 9.511904 * T - 5.83932e-21 * T**7) / _CEF_JMOL),  # Cu
+        ),
     )
     assert liquid.free_energy(1337.33, [0.0]) == pytest.approx(0.0, abs=2e-5)  # Au, 1337.33 K
     assert liquid.free_energy(1357.77, [1.0]) == pytest.approx(0.0, abs=2e-5)  # Cu, 1357.77 K
@@ -1558,3 +1565,66 @@ def test_cef_hashes_and_compares_by_attributes():
     assert a == b and hash(a) == hash(b)          # same attributes -> equal
     assert a != c and hash(a) != hash(c)          # different orderings -> distinct
     assert len({a, b, c}) == 2                    # usable as dict/set keys
+
+
+# --- CompoundEnergyPhase composable excess terms ---
+
+
+def _reg_L(T):
+    return (2000.0 + 3.0 * T) / _CEF_JMOL
+
+
+def test_regular_solution_excess_gradient_matches_finite_difference():
+    """RegularSolutionExcess supplies the analytic dEG/dy_s."""
+    term = RegularSolutionExcess(_reg_L)
+    y = np.array([[0.2, 0.4, 0.6, 0.8], [0.1, 0.5, 0.5, 0.9], [0.45, 0.55, 0.3, 0.7]])
+    T = 800.0
+    g = term.gradient(y, T)
+    h = 1e-6
+    fd = np.empty_like(y)
+    for s in range(y.shape[1]):
+        yp, ym = y.copy(), y.copy()
+        yp[:, s] += h
+        ym[:, s] -= h
+        fd[:, s] = (term.energy(yp, T) - term.energy(ym, T)) / (2 * h)
+    assert np.allclose(g, fd, atol=1e-8)
+
+
+def test_excess_term_base_finite_difference_matches_analytic_gradient():
+    """The ExcessTerm base (finite-difference) gradient agrees with the analytic one,
+    so a term supplying only energy() is a drop-in for one with a closed form."""
+    term = RegularSolutionExcess(_reg_L)
+    y = np.array([[0.2, 0.4, 0.6, 0.8], [0.3, 0.7, 0.5, 0.1]])
+    T = 950.0
+    analytic = term.gradient(y, T)
+    numeric = ExcessTerm.gradient(term, y, T)  # bypass the analytic override
+    assert np.allclose(analytic, numeric, atol=1e-6)
+
+
+def test_cef_excess_terms_are_summed():
+    """The phase sums its excess terms; two terms equal one term returning their sum."""
+    kw = _cef_aucu_kwargs()  # excess = (RegularSolutionExcess, CallableExcess)
+    reg, recip = kw["excess"]
+    combined = CallableExcess(lambda y, T: reg.energy(y, T) + recip.energy(y, T))
+    two = CompoundEnergyPhase(name="fcc", orderings=(), **kw)
+    one = CompoundEnergyPhase(name="fcc", orderings=(), **{**kw, "excess": (combined,)})
+    y = [0.2, 0.4, 0.6, 0.8]
+    assert two.free_energy(700.0, y) == pytest.approx(one.free_energy(700.0, y), abs=1e-12)
+
+
+def test_cef_analytic_and_callable_excess_agree_in_semigrand_solve():
+    """The analytic-gradient regular term and an equivalent CallableExcess (base
+    finite-difference gradient) drive the SCF to the same stationary point."""
+    kw = _cef_aucu_kwargs()
+    reg, recip = kw["excess"]
+    callable_reg = CallableExcess(lambda y, T: reg.energy(y, T))
+    analytic = CompoundEnergyPhase(name="fcc", orderings=(), **kw)
+    numeric = CompoundEnergyPhase(name="fcc", orderings=(), **{**kw, "excess": (callable_reg, recip)})
+    # above the disordered spinodal c(dmu) is smooth, so the two gradient paths land on
+    # the same stationary point pointwise (near a first-order jump an infinitesimal
+    # gradient difference can flip the argmin; phi stays robust either way).
+    dmu = np.linspace(-0.3, 0.3, 21)
+    assert np.allclose(analytic.concentration(1200.0, dmu), numeric.concentration(1200.0, dmu), atol=1e-6)
+    assert np.allclose(
+        analytic.semigrand_potential(1200.0, dmu), numeric.semigrand_potential(1200.0, dmu), atol=1e-8
+    )

@@ -10,12 +10,21 @@ Sundman, Fries & Oates, *Calphad* **22** (1998) 335 for Au--Cu):
         {}^0G_c(T) \prod_s p_s^{(c)}}_{G_\text{ref}}
         + \underbrace{k_B T \sum_s a_s \big(y_s \ln y_s
         + (1-y_s)\ln(1-y_s)\big)}_{G_\text{ideal}}
-        + {}^EG(\vec y, T)
+        + \underbrace{\sum_i {}^EG_i(\vec y, T)}_{G_\text{excess}}
 
 where ``y_s`` is the site fraction of component B on sublattice ``s``, ``a_s``
-its relative size (``site_multiplicities``, summing to 1), and ``p_s^{(c)} = y_s``
-if end-member ``c`` carries B on sublattice ``s`` else ``1 - y_s``.  The overall
-B concentration is ``c(y) = sum_s a_s y_s``.
+its relative size (summing to 1), and ``p_s^{(c)} = y_s`` if end-member ``c``
+carries B on sublattice ``s`` else ``1 - y_s``.  The overall B concentration is
+``c(y) = sum_s a_s y_s``.
+
+The three ingredients are **composable objects**, in the spirit of the
+point-defect classes: a phase is assembled from a tuple of :class:`Sublattice`
+(each an ``a_s``), a tuple of :class:`Endmember` (each a corner configuration and
+its ``{}^0G_c(T)``), and a tuple of :class:`ExcessTerm` that are summed.  Each
+excess term supplies its own analytic gradient where it has one
+(:class:`RegularSolutionExcess`) and falls back to a finite difference otherwise
+(:class:`CallableExcess`), so the solver reads exact per-term gradients rather
+than one blanket finite difference over an opaque callable.
 
 Semi-grand solve -- one minimisation, straight from site fractions.  The site
 fractions are internal (order) parameters and the semi-grand potential is their
@@ -30,7 +39,7 @@ Setting :math:`\partial_{y_s}[\,G - \Delta\mu\,c\,] = 0` gives the self-consiste
 
 .. math::
 
-    y_s = \sigma\!\Big(\frac{\Delta\mu - a_s^{-1}\,\partial_{y_s}(G_\text{ref}+{}^EG)}{k_B T}\Big),
+    y_s = \sigma\!\Big(\frac{\Delta\mu - a_s^{-1}\,\partial_{y_s}(G_\text{ref}+G_\text{excess})}{k_B T}\Big),
 
 because the ideal term contributes :math:`k_B T\,a_s\,\mathrm{logit}(y_s)`, linear in
 ``logit(y_s)``.  Iterating this map (damped) drives ``y`` to the stationary point of
@@ -43,10 +52,11 @@ holds at the stationary point.  All energies are per atom (eV); convert CALPHAD 
 by dividing by 96485.33.
 """
 
-from dataclasses import dataclass, field
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from functools import lru_cache
 from itertools import product
-from typing import Callable, ClassVar, Mapping
+from typing import Callable, ClassVar
 
 import numpy as np
 import scipy.optimize as so
@@ -54,7 +64,112 @@ import scipy.special as se
 
 from . import Phase, kB, _scalarize
 
-__all__ = ["CompoundEnergyPhase"]
+__all__ = [
+    "CompoundEnergyPhase",
+    "Sublattice",
+    "Endmember",
+    "ExcessTerm",
+    "RegularSolutionExcess",
+    "CallableExcess",
+]
+
+_FD = 1e-6  # finite-difference step for excess gradients without a closed form
+
+
+@dataclass(frozen=True)
+class Sublattice:
+    """One sublattice of a :class:`CompoundEnergyPhase`.
+
+    Args:
+        multiplicity: relative sublattice size ``a_s``.  The phase's
+            multiplicities must sum to 1.
+    """
+
+    multiplicity: float
+
+
+@dataclass(frozen=True)
+class Endmember:
+    """A compound-energy end-member: an ordered corner and its Gibbs energy.
+
+    Args:
+        occupation: length-``S`` configuration tuple (``0`` = A, ``1`` = B on that
+            sublattice) picking one constituent per sublattice.
+        energy: callable ``G(T)`` returning the end-member energy in eV/atom.
+    """
+
+    occupation: tuple[int, ...]
+    energy: Callable[[float], float]
+
+
+@dataclass(frozen=True)
+class ExcessTerm(ABC):
+    """One additive excess-energy contribution ``EG_i(y, T)`` (eV/atom).
+
+    Subclasses implement :meth:`energy`; :meth:`gradient` defaults to a central
+    finite difference in every sublattice but is overridden with the closed form
+    where one exists.  ``y`` has its site fractions on the last axis and must
+    broadcast over any leading axes.
+    """
+
+    @abstractmethod
+    def energy(self, y, T):
+        """Excess energy for ``y`` of shape ``(..., S)`` -> ``(...)`` (eV/atom)."""
+
+    def gradient(self, y, T):
+        """``d EG_i/dy_s`` for ``y`` of shape ``(D, S)`` -> ``(D, S)``.
+
+        Central finite difference in every sublattice, evaluated in one
+        :meth:`energy` call: the ``2*S`` perturbed batches are stacked on a
+        leading axis rather than calling :meth:`energy` ``2*S`` times.
+        """
+        y = np.asarray(y, dtype=float)
+        D, S = y.shape
+        h = _FD
+        P = np.broadcast_to(y, (2, S, D, S)).copy()
+        diag = np.arange(S)
+        P[0, diag, :, diag] = np.clip(y[:, diag].T + h, 1e-12, 1 - 1e-12)
+        P[1, diag, :, diag] = np.clip(y[:, diag].T - h, 1e-12, 1 - 1e-12)
+        ex = self.energy(P, T)  # (2, S, D)
+        denom = P[0, diag, :, diag] - P[1, diag, :, diag]  # (S, D)
+        return ((ex[0] - ex[1]) / denom).T
+
+
+@dataclass(frozen=True)
+class RegularSolutionExcess(ExcessTerm):
+    """Regular-solution excess ``L(T) * sum_s y_s (1 - y_s)`` (eV/atom).
+
+    Args:
+        coefficient: callable ``L(T)`` in eV/atom.
+    """
+
+    coefficient: Callable[[float], float]
+
+    def energy(self, y, T):
+        y = np.asarray(y, dtype=float)
+        return np.asarray(self.coefficient(T)) * np.sum(y * (1 - y), axis=-1)
+
+    def gradient(self, y, T):
+        y = np.asarray(y, dtype=float)
+        return np.asarray(self.coefficient(T), dtype=float)[..., None] * (1 - 2 * y)
+
+
+@dataclass(frozen=True)
+class CallableExcess(ExcessTerm):
+    """Excess energy from an arbitrary callable ``EG(y, T)`` (eV/atom).
+
+    The escape hatch for interactions without a bundled closed form (e.g. a CEF
+    reciprocal term): the gradient is the inherited finite difference.  ``y`` has
+    its site fractions on the last axis and must broadcast over any leading axes.
+
+    Args:
+        function: callable ``EG(y, T)`` in eV/atom.
+    """
+
+    function: Callable[[np.ndarray, float], float]
+
+    def energy(self, y, T):
+        return self.function(y, T)
 
 
 @dataclass(frozen=True)
@@ -63,15 +178,10 @@ class CompoundEnergyPhase(Phase):
 
     Args:
         name: phase name.
-        site_multiplicities: relative sublattice sizes ``a_s`` (must sum to 1).
-        endmember_energies: maps each length-``S`` configuration tuple (``0`` = A,
-            ``1`` = B on that sublattice) to a callable ``G(T)`` returning the
-            end-member energy in eV/atom.  All ``2**S`` configurations must be given.
-        excess: optional excess energy ``EG(y, T)`` in eV/atom.  ``y`` is an array
-            whose last axis is the ``S`` site fractions; it must broadcast over any
-            leading axes (sum reductions over ``axis=-1``, index sublattices as
-            ``y[..., s]``) so the vectorised solve can evaluate it on a whole batch.
-            ``None`` means ideal.
+        sublattices: the sublattices ``(Sublattice(a_0), ...)``; the ``a_s`` must
+            sum to 1.
+        endmembers: the ``2**S`` :class:`Endmember` corners (one per configuration).
+        excess: additive :class:`ExcessTerm` contributions, summed.  Empty = ideal.
         orderings: which ordered end-member corners the solve is seeded from.
             ``None`` (default) uses all ``2**S`` corners, so the phase is the full
             partitioning CEF (global minimum over every ordering).  Pass a single
@@ -83,28 +193,31 @@ class CompoundEnergyPhase(Phase):
             basin-pinned ordered phase so it stays on its ordered branch.
     """
 
-    site_multiplicities: tuple[float, ...] = ()
-    endmember_energies: Mapping[tuple[int, ...], Callable[[float], float]] = field(default_factory=dict)
-    excess: Callable[[np.ndarray, float], float] | None = None
+    sublattices: tuple[Sublattice, ...] = ()
+    endmembers: tuple[Endmember, ...] = ()
+    excess: tuple[ExcessTerm, ...] = ()
     orderings: tuple[tuple[int, ...], ...] | None = None
     include_disordered_seed: bool = True
 
     # solver tuning (ClassVar -> never treated as dataclass fields)
     _scf_max_iter: ClassVar[int] = 80   # max SCF map evaluations per start (2 per Steffensen cycle)
     _scf_tol: ClassVar[float] = 1e-9    # max|dy| convergence tolerance
-    _fd: ClassVar[float] = 1e-6         # finite-difference step for the excess gradient
     _y_margin: ClassVar[float] = 0.02   # pinned sublattices held this far from 0.5 (keeps orderings distinct)
 
     def __post_init__(self):
-        a = tuple(float(x) for x in self.site_multiplicities)
-        object.__setattr__(self, "site_multiplicities", a)
-        object.__setattr__(self, "endmember_energies", tuple(sorted(self.endmember_energies.items())))
-        S = len(a)
-        assert len(self.endmember_energies) == 2**S, f"need 2**S={2**S} end-member energies for {S} sublattices"
-        assert abs(sum(a) - 1) < 1e-9, "site_multiplicities must sum to 1"
-        # config array (1 where B sits), the +/-1 sign per (endmember, sublattice) for
-        # the analytic G_ref gradient, and the ordered corners the solve is seeded from
-        cfg = np.array([c for c, _ in self.endmember_energies], dtype=float)
+        subs = tuple(self.sublattices)
+        object.__setattr__(self, "sublattices", subs)
+        ems = tuple(sorted(self.endmembers, key=lambda e: tuple(e.occupation)))
+        object.__setattr__(self, "endmembers", ems)
+        object.__setattr__(self, "excess", tuple(self.excess))
+        S = len(subs)
+        a = np.array([s.multiplicity for s in subs], dtype=float)
+        assert len(ems) == 2**S, f"need 2**S={2**S} end-members for {S} sublattices"
+        assert abs(a.sum() - 1) < 1e-9, "sublattice multiplicities must sum to 1"
+        object.__setattr__(self, "_a", a)
+        # config array (1 where B sits) and the +/-1 sign per (endmember, sublattice)
+        # for the analytic G_ref gradient, plus the ordered corners the solve seeds from
+        cfg = np.array([e.occupation for e in ems], dtype=float)
         object.__setattr__(self, "_configs", cfg)
         object.__setattr__(self, "_sign", 2.0 * cfg - 1.0)
         seeds = product((0, 1), repeat=S) if self.orderings is None else self.orderings
@@ -144,20 +257,22 @@ class CompoundEnergyPhase(Phase):
 
     @lru_cache(maxsize=2000)
     def _endmember_evals(self, T):
-        """End-member energies at ``T`` in end-member (config-sorted) order."""
-        return np.array([g(T) for _, g in self.endmember_energies])
+        """End-member energies at ``T`` in end-member (occupation-sorted) order."""
+        return np.array([e.energy(T) for e in self.endmembers])
+
+    def _excess_energy(self, y, T):
+        """Summed excess energy ``sum_i EG_i(y, T)`` (0.0 if there are no terms)."""
+        return sum((term.energy(y, T) for term in self.excess), 0.0)
 
     def _free_energy(self, T, y, evals):
         """Gibbs energy ``G(y, T)`` for ``y`` of shape ``(..., S)`` -> ``(...)`` (eV/atom).
 
         ``evals`` is ``(M,)`` for a scalar ``T`` or ``(..., M)`` for a per-element ``T``.
         """
-        a = np.asarray(self.site_multiplicities)
         p = np.where(self._configs == 1, y[..., None, :], 1.0 - y[..., None, :])  # (...,M,S)
         gref = np.sum(p.prod(axis=-1) * evals, axis=-1)  # (...,)  broadcasts evals (M,) or (...,M)
-        gid = -kB * T * ((se.entr(y) + se.entr(1.0 - y)) @ a)
-        gex = self.excess(y, T) if self.excess is not None else 0.0
-        return gref + gid + gex
+        gid = -kB * T * ((se.entr(y) + se.entr(1.0 - y)) @ self._a)
+        return gref + gid + self._excess_energy(y, T)
 
     def free_energy(self, T, y):
         """Gibbs energy at site fractions ``y`` (length ``S``) and temperature ``T`` (eV/atom)."""
@@ -165,29 +280,18 @@ class CompoundEnergyPhase(Phase):
 
     def composition(self, y):
         """Overall B concentration ``sum_s a_s y_s``."""
-        return np.asarray(y, dtype=float) @ np.asarray(self.site_multiplicities)
+        return np.asarray(y, dtype=float) @ self._a
 
     def _grad_non_ideal(self, T, y, evals):
-        """Gradient ``d(G_ref + EG)/dy_s`` for ``y`` of shape ``(..., S)`` -> ``(..., S)``."""
+        """Gradient ``d(G_ref + G_excess)/dy_s`` for ``y`` of shape ``(D, S)`` -> ``(D, S)``."""
         p = np.where(self._configs == 1, y[..., None, :], 1.0 - y[..., None, :])  # (...,M,S)
         # leave-one-out product: prod_{s'!=s} p = (prod_s p) / p_s  (p bounded away from 0)
         loo = p.prod(axis=-1, keepdims=True) / p  # (...,M,S)
         # evals is (M,) for scalar T or (...,M) for per-element T; broadcast either way
         gref = np.sum(evals[..., :, None] * (self._sign * loo), axis=-2)  # (...,S)
-        if self.excess is None:
+        if not self.excess:
             return gref
-        # central finite difference of the excess in every sublattice, in one
-        # excess call: stack the 2*S perturbed batches on a leading axis (excess
-        # broadcasts over it) rather than calling excess 2*S times.
-        h = self._fd
-        D, S = y.shape
-        P = np.broadcast_to(y, (2, S, D, S)).copy()
-        diag = np.arange(S)
-        P[0, diag, :, diag] = np.clip(y[:, diag].T + h, 1e-12, 1 - 1e-12)
-        P[1, diag, :, diag] = np.clip(y[:, diag].T - h, 1e-12, 1 - 1e-12)
-        ex = self.excess(P, T)  # (2, S, D)
-        denom = P[0, diag, :, diag] - P[1, diag, :, diag]  # (S, D)
-        return gref + ((ex[0] - ex[1]) / denom).T
+        return gref + sum(term.gradient(y, T) for term in self.excess)
 
     # --- direct semi-grand solve (one minimisation per start) ----------------
 
@@ -221,7 +325,7 @@ class CompoundEnergyPhase(Phase):
         cycle costs two map evaluations; columns drop from the working set as they
         converge.
         """
-        a = np.asarray(self.site_multiplicities)
+        a = self._a
         N = dmu.size
         Tarr = np.broadcast_to(np.asarray(T, dtype=float), (N,))
         ev = evals if evals.ndim == 2 else np.broadcast_to(evals, (N, evals.shape[-1]))
@@ -280,7 +384,7 @@ class CompoundEnergyPhase(Phase):
         corner only** so the result is a deterministic function of ``(T, dmu)``.
         """
         evals = self._endmember_evals(T)
-        a = np.asarray(self.site_multiplicities)
+        a = self._a
         flat = np.asarray(dmu, dtype=float).ravel()
         if self._pinned:
             starts = [self._corners[0]]
@@ -316,10 +420,10 @@ class CompoundEnergyPhase(Phase):
         corners (no warm start), but the per-``T`` slices are cached into ``_warm`` so
         the later clustered refinement probes still warm-start off the grid.
         """
-        a = np.asarray(self.site_multiplicities)
+        a = self._a
         Tf = np.asarray(T, dtype=float).ravel()
         flat = np.asarray(dmu, dtype=float).ravel()
-        ev = np.stack([np.broadcast_to(g(Tf), Tf.shape) for _, g in self.endmember_energies], axis=-1)
+        ev = np.stack([np.broadcast_to(e.energy(Tf), Tf.shape) for e in self.endmembers], axis=-1)
         corners = ([np.full(a.size, 0.5)] if self.include_disordered_seed else []) + self._corners
         starts = [self._corners[0]] if self._pinned else corners
 
@@ -376,8 +480,8 @@ class CompoundEnergyPhase(Phase):
 
     def _fc_scalar(self, T, c, evals):
         """``f(c, T) = min`` over site fractions at fixed overall composition ``c``."""
-        S = len(self.site_multiplicities)
-        a = np.asarray(self.site_multiplicities)
+        S = len(self.sublattices)
+        a = self._a
         bounds = [(0.0, 1.0)] * S
         constraint = {"type": "eq", "fun": lambda y: float(a @ y) - c}
         best = np.inf

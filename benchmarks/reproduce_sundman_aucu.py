@@ -34,6 +34,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from landau import CompoundEnergyPhase
+from landau.phases.compoundenergy import Sublattice, Endmember, RegularSolutionExcess, CallableExcess
 from landau.phases import Surface2DInterpolatingPhase, TemperatureDependentLinePhase, S
 from landau.interpolate import CalphadSurface2DInterpolator, SGTE
 from landau.calculate import calc_phase_diagram
@@ -105,21 +106,28 @@ def _G_AuCu3(T):
 
 
 _BY_NCU = {0: lambda T: 0.0, 1: _G_Au3Cu, 2: _G_Au2Cu2, 3: _G_AuCu3, 4: lambda T: 0.0}
-_ENDMEMBERS = {tuple(int(b) for b in cfg): _BY_NCU[sum(cfg)] for cfg in np.ndindex(2, 2, 2, 2)}
+_ENDMEMBERS = tuple(
+    Endmember(tuple(int(b) for b in cfg), _BY_NCU[sum(cfg)]) for cfg in np.ndindex(2, 2, 2, 2)
+)
 
 
-def _excess_cef(y, T):
-    """Regular (eq 8) + reciprocal (eq 9) interactions, per atom (eV); broadcasts over y."""
+def _reciprocal_cef(y, T):
+    """The reciprocal (eq 9) interaction, per atom (eV); broadcasts over y."""
     y = np.asarray(y, dtype=float)
-    e_reg = (3940 + 10.32 * T) * np.sum(y * (1 - y), axis=-1)
     e_rec = 0.0
     for r, s in combinations(range(4), 2):
         t, u = (i for i in range(4) if i not in (r, s))
         e_rec = e_rec + (1 - y[..., r]) * y[..., r] * (1 - y[..., s]) * y[..., s] * (-18 * T - 15900 * y[..., t] * y[..., u])
-    return (e_reg + e_rec) / NS / JMOL
+    return e_rec / NS / JMOL
 
 
-_CEF = dict(site_multiplicities=(0.25, 0.25, 0.25, 0.25), endmember_energies=_ENDMEMBERS, excess=_excess_cef)
+# Regular solution (eq 8) with an analytic gradient + the reciprocal term (eq 9) as a
+# callable, summed by the phase; both per atom (eV).
+_EXCESS = (
+    RegularSolutionExcess(lambda T: (3940 + 10.32 * T) / NS / JMOL),
+    CallableExcess(_reciprocal_cef),
+)
+_CEF = dict(sublattices=(Sublattice(0.25),) * 4, endmembers=_ENDMEMBERS, excess=_EXCESS)
 
 
 def _ordered_fcc_phases():
