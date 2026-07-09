@@ -90,9 +90,7 @@ class CompoundEnergyPhase(Phase):
     include_disordered_seed: bool = True
 
     # solver tuning (ClassVar -> never treated as dataclass fields)
-    _scf_max_iter: ClassVar[int] = 80   # self-consistent-field iterations per start
-    _scf_damp: ClassVar[float] = 0.5    # initial mixing y <- (1-d) y + d target
-    _scf_damp_min: ClassVar[float] = 0.05  # floor for the per-column adaptive mixing
+    _scf_max_iter: ClassVar[int] = 80   # max SCF map evaluations per start (2 per Steffensen cycle)
     _scf_tol: ClassVar[float] = 1e-9    # max|dy| convergence tolerance
     _fd: ClassVar[float] = 1e-6         # finite-difference step for the excess gradient
     _y_margin: ClassVar[float] = 0.02   # pinned sublattices held this far from 0.5 (keeps orderings distinct)
@@ -193,64 +191,60 @@ class CompoundEnergyPhase(Phase):
 
     # --- direct semi-grand solve (one minimisation per start) ----------------
 
+    def _fixed_point_step(self, ya, idx, dmu, Tarr, ev, a):
+        """One application of the SCF map ``y -> sigmoid((dmu - grad/a)/kT)`` to the
+        active columns ``idx``, clamped to ``[_y_lo, _y_hi]`` and (for a pinned phase)
+        averaged over each ordering group."""
+        field = self._grad_non_ideal(Tarr[idx], ya, ev[idx]) / a
+        yn = np.clip(se.expit((dmu[idx, None] - field) / (kB * Tarr[idx, None])), self._y_lo, self._y_hi)
+        if self._groups is not None:  # confine to the ordering's sublattice symmetry
+            for g in self._groups:
+                yn[:, g] = yn[:, g].mean(axis=1, keepdims=True)
+        return yn
+
     def _scf(self, T, dmu, evals, y0):
-        """Self-consistent field iteration for one start, vectorised over ``(T, dmu)``.
+        """Solve the SCF fixed point for one start, vectorised over ``(T, dmu)``.
 
         ``T`` is a scalar or a ``(len(dmu),)`` array (per-element temperature) and
         ``evals`` the matching ``(M,)`` or ``(len(dmu), M)`` end-member energies.
-        Columns are dropped from the working set as they converge, so the iteration
-        cost shrinks toward the few ``(T, dmu)`` that keep iterating.
         Returns the stationary site fractions ``y`` of shape ``(len(dmu), S)``.
 
-        The mixing factor is adaptive per column.  Near a spinodal the plain
-        damped map has a fixed-point multiplier below ``-1`` and settles into a
-        period-2 limit cycle straddling the true stationary point (the fcc
-        disordered branch between two ordered domes does this), so it never meets
-        the tolerance and returns a start-dependent, non-stationary value.  When a
-        column's undamped residual flips sign between steps -- the signature of
-        that oscillation -- its mixing is halved (down to ``_scf_damp_min``),
-        which pulls the multiplier back inside the unit circle and the column
-        converges.  Well-behaved columns keep the full ``_scf_damp`` and its
-        faster rate.
+        The plain damped map converges only linearly and, near a spinodal (the fcc
+        disordered branch between two ordered domes), has a fixed-point multiplier
+        below ``-1`` and settles into a period-2 limit cycle.  This uses Steffensen's
+        method -- apply the map twice, then Aitken-``Δ²`` extrapolate -- in the
+        **logit variable** ``u = logit(y)``: the extrapolation is done on ``u`` (which
+        is unbounded, so it can ride through the oscillation and accelerate the linear
+        rate several-fold), and the ``sigmoid`` maps it straight back into ``(0, 1)``
+        so ``y`` can never leave range -- the failure mode of a bare Aitken step.  For
+        a pinned phase ``u`` is confined to its ordering quadrant's logit box.  Each
+        cycle costs two map evaluations; columns drop from the working set as they
+        converge.
         """
         a = np.asarray(self.site_multiplicities)
         N = dmu.size
         Tarr = np.broadcast_to(np.asarray(T, dtype=float), (N,))
         ev = evals if evals.ndim == 2 else np.broadcast_to(evals, (N, evals.shape[-1]))
-        kT = kB * Tarr
-        lo, hi = self._y_lo, self._y_hi          # ordered-quadrant clamp (pinned) or [0,1]
-        d = np.full(N, self._scf_damp)          # per-column mixing, cut on oscillation
-        prev_delta = np.zeros((N, a.size))       # last undamped residual target - y
-        y = np.clip(np.broadcast_to(y0, (N, a.size)).astype(float), lo, hi)
+        ulo, uhi = se.logit(self._y_lo), se.logit(self._y_hi)
+        y = np.clip(np.broadcast_to(y0, (N, a.size)).astype(float), self._y_lo, self._y_hi)
         active = np.arange(N)  # indices still iterating
-        ya = y[active]
-        for _ in range(self._scf_max_iter):
-            field = self._grad_non_ideal(Tarr[active], ya, ev[active]) / a  # (n_active, S)
-            target = se.expit((dmu[active, None] - field) / kT[active, None])
-            delta = np.clip(target, lo, hi) - ya
-            # a residual that reversed sign since the previous step is orbiting the
-            # fixed point -> halve this column's mixing; a column stepping cleanly
-            # toward the fixed point grows its mixing back toward the full rate, so a
-            # single transient overshoot near the ordered corner does not permanently
-            # cripple an otherwise well-behaved solve.
-            osc = np.any(delta * prev_delta[active] < 0.0, axis=1)
-            d[active] = np.where(osc, np.maximum(0.5 * d[active], self._scf_damp_min),
-                                 np.minimum(1.1 * d[active], self._scf_damp))
-            prev_delta[active] = delta
-            y_new = np.clip(ya + d[active, None] * delta, lo, hi)
-            if self._groups is not None:  # confine to the ordering's sublattice symmetry
-                for g in self._groups:
-                    y_new[:, g] = y_new[:, g].mean(axis=1, keepdims=True)
+        for _ in range(self._scf_max_iter // 2):
+            y0a = y[active]
+            y1 = self._fixed_point_step(y0a, active, dmu, Tarr, ev, a)
+            y2 = self._fixed_point_step(y1, active, dmu, Tarr, ev, a)
+            u0, u1, u2 = se.logit(y0a), se.logit(y1), se.logit(y2)
+            denom = u2 - 2.0 * u1 + u0
+            # Aitken extrapolation where the curvature is resolvable, else the plain
+            # second iterate; clip back into the logit box before mapping to y
+            small = np.abs(denom) < 1e-14
+            u_acc = np.where(small, u2, u0 - (u1 - u0) ** 2 / np.where(small, 1.0, denom))
+            y_new = np.clip(se.expit(np.clip(u_acc, ulo, uhi)), self._y_lo, self._y_hi)
             y[active] = y_new
-            done = np.max(np.abs(y_new - ya), axis=1) < self._scf_tol
+            done = np.max(np.abs(y_new - y0a), axis=1) < self._scf_tol
             if done.any():
-                keep = ~done
-                active = active[keep]
+                active = active[~done]
                 if active.size == 0:
                     break
-                ya = y[active]
-            else:
-                ya = y_new
         return y
 
     def _warm_seed(self, T, flat):
