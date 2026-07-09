@@ -49,6 +49,7 @@ from dataclasses import dataclass, field, replace
 from typing import ClassVar, Iterable, Iterator, Mapping, Sequence
 
 import warnings
+import weakref
 
 import numpy as np
 import pandas as pd
@@ -403,8 +404,25 @@ class _Simplex:
         return out
 
 
-def _delaunay_simplices(df: pd.DataFrame):
-    """Yield ``(_Simplex, phase_count)`` for each simplex of the (mu, T) tess."""
+# Last-call memo for _delaunay_simplices: the default refiners each tessellate
+# in their own propose, so on a shared frame the (mu, T) triangulation and all
+# its ~2*N _Simplex objects would be rebuilt once per refiner. Keyed by frame
+# identity via a weakref (so a stale entry can't alias a later frame, and the
+# cached frame is not kept alive); only the most recent frame is retained,
+# which is all refine_phase_diagram needs. Assumes the frame's (mu, T, phase, c)
+# columns are not mutated in place between calls (true within a refine pass).
+_simplex_cache: tuple = (None, None)  # (weakref to df | None, result list)
+
+
+def _delaunay_simplices(df: pd.DataFrame) -> list[tuple["_Simplex", int]]:
+    """``[(_Simplex, phase_count), ...]`` for each simplex of the (mu, T) tess.
+
+    Memoised on the most recent frame (see ``_simplex_cache`` above).
+    """
+    global _simplex_cache
+    ref, cached = _simplex_cache
+    if ref is not None and ref() is df:
+        return cached
     dela = Delaunay(df[["mu", "T"]])
     T = df["T"].to_numpy()
     mu = df["mu"].to_numpy()
@@ -412,8 +430,10 @@ def _delaunay_simplices(df: pd.DataFrame):
     c = df["c"].to_numpy() if "c" in df.columns else np.zeros(len(df))
     phases_arr = phase[dela.simplices]
     counts = np.array([len(set(x)) for x in phases_arr])
-    for s, n in zip(dela.simplices, counts):
-        yield _Simplex(T=T[s], mu=mu[s], phase=phase[s], c=c[s]), int(n)
+    result = [(_Simplex(T=T[s], mu=mu[s], phase=phase[s], c=c[s]), int(n))
+              for s, n in zip(dela.simplices, counts)]
+    _simplex_cache = (weakref.ref(df), result)
+    return result
 
 
 def _simplex_containment(point: TMuPoint, simplex: _Simplex) -> float:
