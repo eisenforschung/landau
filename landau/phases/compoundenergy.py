@@ -34,10 +34,11 @@ Setting :math:`\partial_{y_s}[\,G - \Delta\mu\,c\,] = 0` gives the self-consiste
 
 because the ideal term contributes :math:`k_B T\,a_s\,\mathrm{logit}(y_s)`, linear in
 ``logit(y_s)``.  Iterating this map (damped) drives ``y`` to the stationary point of
-each basin; it is vectorised over the whole ``dmu`` array (one solve per ``T``) and
-run from a disordered start plus every ordered end-member corner, keeping the lowest
-``phi`` per ``dmu`` -- so ordered/disordered coexistence surfaces as ``c(dmu)`` jumps
-without any fixed-composition inner minimisation.  ``c = -partial phi/partial dmu``
+each basin; it is vectorised over the whole ``(T, dmu)`` grid -- a multi-``T`` grid is
+one batched solve per start, not one per ``T`` -- and run from a disordered start plus
+every ordered end-member corner, keeping the lowest ``phi`` per point -- so
+ordered/disordered coexistence surfaces as ``c(dmu)`` jumps without any
+fixed-composition inner minimisation.  ``c = -partial phi/partial dmu``
 holds at the stationary point.  All energies are per atom (eV); convert CALPHAD J/mol
 by dividing by 96485.33.
 """
@@ -89,11 +90,10 @@ class CompoundEnergyPhase(Phase):
     include_disordered_seed: bool = True
 
     # solver tuning (ClassVar -> never treated as dataclass fields)
-    _scf_max_iter: ClassVar[int] = 200  # self-consistent-field iterations per start
-    _scf_damp: ClassVar[float] = 0.5    # mixing factor y <- (1-d) y + d target
-    _scf_tol: ClassVar[float] = 1e-11   # max|dy| convergence tolerance
+    _scf_max_iter: ClassVar[int] = 80   # max SCF map evaluations per start (2 per Steffensen cycle)
+    _scf_tol: ClassVar[float] = 1e-9    # max|dy| convergence tolerance
     _fd: ClassVar[float] = 1e-6         # finite-difference step for the excess gradient
-    _order_tol: ClassVar[float] = 0.05  # min long-range order for a pinned ordered phase to exist
+    _y_margin: ClassVar[float] = 0.02   # pinned sublattices held this far from 0.5 (keeps orderings distinct)
 
     def __post_init__(self):
         a = tuple(float(x) for x in self.site_multiplicities)
@@ -113,16 +113,32 @@ class CompoundEnergyPhase(Phase):
         # A basin-pinned ordered phase -- exactly one ordering and no disordered seed --
         # is confined to that ordering's sublattice symmetry (sublattices sharing the
         # same occupation stay equal, so the solve cannot drift into a different
-        # ordering) and is reported absent where it disorders.  This makes it a distinct
-        # phase that competes cleanly in ``calc_phase_diagram`` instead of relaxing onto
-        # -- and tying with -- the disordered or a neighbouring ordered branch.
+        # ordering) *and* to that ordering's quadrant of site-fraction space: every
+        # B-rich sublattice is clamped above 0.5 and every A-rich one below (by
+        # ``_y_margin``), so the phase cannot relax onto the disordered diagonal or
+        # into a neighbouring ordering.  This makes it a distinct ordered phase whose
+        # free energy is finite and continuous everywhere -- where it is not the ground
+        # state it simply loses the ``argmin`` -- rather than carrying a ``phi = +inf``
+        # "absent" flag, whose discontinuity broke boundary tracing and aliased the
+        # ordered domes' metastable continuations.
         pinned = self.orderings is not None and len(self._corners) == 1 and not self.include_disordered_seed
         groups = None
+        y_lo = np.full(S, 1e-9)
+        y_hi = np.full(S, 1 - 1e-9)
         if pinned:
             pat = np.round(self._corners[0]).astype(int)
             groups = [np.where(pat == v)[0] for v in np.unique(pat)]
+            m = self._y_margin
+            y_lo = np.where(pat == 1, 0.5 + m, 1e-9)
+            y_hi = np.where(pat == 1, 1 - 1e-9, 0.5 - m)
         object.__setattr__(self, "_pinned", pinned)
         object.__setattr__(self, "_groups", groups)
+        object.__setattr__(self, "_y_lo", y_lo)
+        object.__setattr__(self, "_y_hi", y_hi)
+        # warm-start cache: rounded T -> (sorted dmu, y*) from the last solve at that
+        # T. Refinement probes clustered (T, dmu), so seeding the SCF from the nearest
+        # previous solution converges in a few iterations instead of ~40 from a corner.
+        object.__setattr__(self, "_warm", {})
 
     # --- model (vectorised over any leading axes of y) -----------------------
 
@@ -132,10 +148,13 @@ class CompoundEnergyPhase(Phase):
         return np.array([g(T) for _, g in self.endmember_energies])
 
     def _free_energy(self, T, y, evals):
-        """Gibbs energy ``G(y, T)`` for ``y`` of shape ``(..., S)`` -> ``(...)`` (eV/atom)."""
+        """Gibbs energy ``G(y, T)`` for ``y`` of shape ``(..., S)`` -> ``(...)`` (eV/atom).
+
+        ``evals`` is ``(M,)`` for a scalar ``T`` or ``(..., M)`` for a per-element ``T``.
+        """
         a = np.asarray(self.site_multiplicities)
         p = np.where(self._configs == 1, y[..., None, :], 1.0 - y[..., None, :])  # (...,M,S)
-        gref = p.prod(axis=-1) @ evals  # (...,)
+        gref = np.sum(p.prod(axis=-1) * evals, axis=-1)  # (...,)  broadcasts evals (M,) or (...,M)
         gid = -kB * T * ((se.entr(y) + se.entr(1.0 - y)) @ a)
         gex = self.excess(y, T) if self.excess is not None else 0.0
         return gref + gid + gex
@@ -153,79 +172,180 @@ class CompoundEnergyPhase(Phase):
         p = np.where(self._configs == 1, y[..., None, :], 1.0 - y[..., None, :])  # (...,M,S)
         # leave-one-out product: prod_{s'!=s} p = (prod_s p) / p_s  (p bounded away from 0)
         loo = p.prod(axis=-1, keepdims=True) / p  # (...,M,S)
-        gref = np.einsum("m,...ms->...s", evals, self._sign * loo)
+        # evals is (M,) for scalar T or (...,M) for per-element T; broadcast either way
+        gref = np.sum(evals[..., :, None] * (self._sign * loo), axis=-2)  # (...,S)
         if self.excess is None:
             return gref
-        # central finite difference of the (cheap) excess in each sublattice
+        # central finite difference of the excess in every sublattice, in one
+        # excess call: stack the 2*S perturbed batches on a leading axis (excess
+        # broadcasts over it) rather than calling excess 2*S times.
         h = self._fd
-        gex = np.empty_like(y)
-        for s in range(y.shape[-1]):
-            yp = y.copy()
-            ym = y.copy()
-            yp[..., s] = np.clip(yp[..., s] + h, 1e-12, 1 - 1e-12)
-            ym[..., s] = np.clip(ym[..., s] - h, 1e-12, 1 - 1e-12)
-            gex[..., s] = (self.excess(yp, T) - self.excess(ym, T)) / (yp[..., s] - ym[..., s])
-        return gref + gex
+        D, S = y.shape
+        P = np.broadcast_to(y, (2, S, D, S)).copy()
+        diag = np.arange(S)
+        P[0, diag, :, diag] = np.clip(y[:, diag].T + h, 1e-12, 1 - 1e-12)
+        P[1, diag, :, diag] = np.clip(y[:, diag].T - h, 1e-12, 1 - 1e-12)
+        ex = self.excess(P, T)  # (2, S, D)
+        denom = P[0, diag, :, diag] - P[1, diag, :, diag]  # (S, D)
+        return gref + ((ex[0] - ex[1]) / denom).T
 
     # --- direct semi-grand solve (one minimisation per start) ----------------
 
-    def _scf(self, T, dmu, evals, y0):
-        """Self-consistent field iteration for one start, vectorised over ``dmu``.
+    def _fixed_point_step(self, ya, idx, dmu, Tarr, ev, a):
+        """One application of the SCF map ``y -> sigmoid((dmu - grad/a)/kT)`` to the
+        active columns ``idx``, clamped to ``[_y_lo, _y_hi]`` and (for a pinned phase)
+        averaged over each ordering group."""
+        field = self._grad_non_ideal(Tarr[idx], ya, ev[idx]) / a
+        yn = np.clip(se.expit((dmu[idx, None] - field) / (kB * Tarr[idx, None])), self._y_lo, self._y_hi)
+        if self._groups is not None:  # confine to the ordering's sublattice symmetry
+            for g in self._groups:
+                yn[:, g] = yn[:, g].mean(axis=1, keepdims=True)
+        return yn
 
+    def _scf(self, T, dmu, evals, y0):
+        """Solve the SCF fixed point for one start, vectorised over ``(T, dmu)``.
+
+        ``T`` is a scalar or a ``(len(dmu),)`` array (per-element temperature) and
+        ``evals`` the matching ``(M,)`` or ``(len(dmu), M)`` end-member energies.
         Returns the stationary site fractions ``y`` of shape ``(len(dmu), S)``.
+
+        The plain damped map converges only linearly and, near a spinodal (the fcc
+        disordered branch between two ordered domes), has a fixed-point multiplier
+        below ``-1`` and settles into a period-2 limit cycle.  This uses Steffensen's
+        method -- apply the map twice, then Aitken-``Δ²`` extrapolate -- in the
+        **logit variable** ``u = logit(y)``: the extrapolation is done on ``u`` (which
+        is unbounded, so it can ride through the oscillation and accelerate the linear
+        rate several-fold), and the ``sigmoid`` maps it straight back into ``(0, 1)``
+        so ``y`` can never leave range -- the failure mode of a bare Aitken step.  For
+        a pinned phase ``u`` is confined to its ordering quadrant's logit box.  Each
+        cycle costs two map evaluations; columns drop from the working set as they
+        converge.
         """
         a = np.asarray(self.site_multiplicities)
-        kT = kB * T
-        d = self._scf_damp
-        y = np.clip(np.broadcast_to(y0, (dmu.size, a.size)).astype(float), 1e-9, 1 - 1e-9)
-        for _ in range(self._scf_max_iter):
-            field = self._grad_non_ideal(T, y, evals) / a  # (D,S)
-            target = se.expit((dmu[:, None] - field) / kT)
-            y_new = np.clip((1 - d) * y + d * target, 1e-12, 1 - 1e-12)
-            if self._groups is not None:  # confine to the ordering's sublattice symmetry
-                for g in self._groups:
-                    y_new[:, g] = y_new[:, g].mean(axis=1, keepdims=True)
-            if np.max(np.abs(y_new - y)) < self._scf_tol:
-                return y_new
-            y = y_new
+        N = dmu.size
+        Tarr = np.broadcast_to(np.asarray(T, dtype=float), (N,))
+        ev = evals if evals.ndim == 2 else np.broadcast_to(evals, (N, evals.shape[-1]))
+        ulo, uhi = se.logit(self._y_lo), se.logit(self._y_hi)
+        y = np.clip(np.broadcast_to(y0, (N, a.size)).astype(float), self._y_lo, self._y_hi)
+        active = np.arange(N)  # indices still iterating
+        for _ in range(self._scf_max_iter // 2):
+            y0a = y[active]
+            y1 = self._fixed_point_step(y0a, active, dmu, Tarr, ev, a)
+            y2 = self._fixed_point_step(y1, active, dmu, Tarr, ev, a)
+            u0, u1, u2 = se.logit(y0a), se.logit(y1), se.logit(y2)
+            denom = u2 - 2.0 * u1 + u0
+            # Aitken extrapolation where the curvature is resolvable, else the plain
+            # second iterate; clip back into the logit box before mapping to y
+            small = np.abs(denom) < 1e-14
+            u_acc = np.where(small, u2, u0 - (u1 - u0) ** 2 / np.where(small, 1.0, denom))
+            y_new = np.clip(se.expit(np.clip(u_acc, ulo, uhi)), self._y_lo, self._y_hi)
+            y[active] = y_new
+            done = np.max(np.abs(y_new - y0a), axis=1) < self._scf_tol
+            if done.any():
+                active = active[~done]
+                if active.size == 0:
+                    break
         return y
 
-    def _order_parameter(self, y):
-        """Long-range order of a pinned phase: the largest spread between sublattice groups."""
-        means = [y[..., g].mean(axis=-1) for g in self._groups]
-        op = np.zeros(y.shape[:-1])
-        for i in range(len(means)):
-            for j in range(i + 1, len(means)):
-                op = np.maximum(op, np.abs(means[i] - means[j]))
-        return op
+    def _warm_seed(self, T, flat):
+        """Interpolate the nearest cached solution onto ``flat`` as an SCF seed."""
+        if not self._warm:
+            return None
+        Tc = min(self._warm, key=lambda t: abs(t - T))
+        if abs(Tc - T) > 40.0:
+            return None
+        mu_c, y_c = self._warm[Tc]
+        seed = np.stack([np.interp(flat, mu_c, y_c[:, s]) for s in range(y_c.shape[1])], axis=1)
+        return np.clip(seed, 1e-9, 1 - 1e-9)
+
+    def _from_seed(self, T, flat, evals, a, y0):
+        """One SCF solve from ``y0``; returns the semi-grand ``(phi, c, y)``.
+
+        A pinned phase is kept ordered by the site-fraction clamp (its ``y`` never
+        leaves its ordering's quadrant), so ``phi`` is finite everywhere and the
+        phase simply loses the ``argmin`` where it is not the ground state.
+        """
+        y = self._scf(T, flat, evals, y0)
+        c = y @ a
+        phi = self._free_energy(T, y, evals) - flat * c
+        return phi, c, y
 
     def _solve_fixed_T(self, T, dmu):
         """Semi-grand ``(phi, c)`` for one ``T`` and a whole ``dmu`` array.
 
-        Runs the SCF map from the disordered start plus every ordered corner and
-        keeps, per ``dmu``, the site fractions with the lowest ``G - dmu*c``.
+        Runs the SCF map from a warm start (nearest cached solution) plus the corner
+        seeds and keeps, per ``dmu``, the site fractions with the lowest ``G - dmu*c``.
+        A pinned phase is confined to one ordering quadrant by the site-fraction clamp,
+        so its ordered corner already finds that basin; it is solved **cold from the
+        corner only** so the result is a deterministic function of ``(T, dmu)``.
         """
         evals = self._endmember_evals(T)
         a = np.asarray(self.site_multiplicities)
         flat = np.asarray(dmu, dtype=float).ravel()
-        starts = ([np.full(a.size, 0.5)] if self.include_disordered_seed else []) + self._corners
+        if self._pinned:
+            starts = [self._corners[0]]
+        else:
+            warm = self._warm_seed(T, flat)
+            corners = ([np.full(a.size, 0.5)] if self.include_disordered_seed else []) + self._corners
+            starts = ([warm] if warm is not None else []) + corners
 
         best_phi = np.full(flat.size, np.inf)
         best_c = np.zeros(flat.size)
+        best_y = None
         for y0 in starts:
-            y = self._scf(T, flat, evals, y0)
-            c = y @ a
-            phi = self._free_energy(T, y, evals) - flat * c
-            if self._pinned:  # a pinned ordered phase is absent where it has disordered
-                phi = np.where(self._order_parameter(y) < self._order_tol, np.inf, phi)
+            phi, c, y = self._from_seed(T, flat, evals, a, y0)
             take = phi < best_phi
             best_phi[take] = phi[take]
             best_c[take] = c[take]
+            best_y = y.copy() if best_y is None else best_y
+            best_y[take] = y[take]
+
+        # cache this solve for warm-starting nearby probes (bounded ring of temperatures)
+        if len(self._warm) >= 12:
+            self._warm.pop(next(iter(self._warm)))
+        order = np.argsort(flat)
+        self._warm[round(float(T))] = (flat[order], best_y[order])
         return best_phi.reshape(np.shape(dmu)), best_c.reshape(np.shape(dmu))
 
-    @lru_cache(maxsize=512)
+    def _solve_batch(self, T, dmu):
+        """Semi-grand ``(phi, c)`` for per-element ``T`` and ``dmu`` (same 1-D shape).
+
+        The array-``T`` analogue of :meth:`_solve_fixed_T`: one batched SCF over the
+        whole ``(T, dmu)`` grid from the corner seeds, vectorised in ``T`` as well so a
+        multi-``T`` grid is one solve per start instead of one per unique ``T``.  Cold
+        corners (no warm start), but the per-``T`` slices are cached into ``_warm`` so
+        the later clustered refinement probes still warm-start off the grid.
+        """
+        a = np.asarray(self.site_multiplicities)
+        Tf = np.asarray(T, dtype=float).ravel()
+        flat = np.asarray(dmu, dtype=float).ravel()
+        ev = np.stack([np.broadcast_to(g(Tf), Tf.shape) for _, g in self.endmember_energies], axis=-1)
+        corners = ([np.full(a.size, 0.5)] if self.include_disordered_seed else []) + self._corners
+        starts = [self._corners[0]] if self._pinned else corners
+
+        best_phi = np.full(flat.size, np.inf)
+        best_c = np.zeros(flat.size)
+        best_y = None
+        for y0 in starts:
+            phi, c, y = self._from_seed(Tf, flat, ev, a, y0)
+            take = phi < best_phi
+            best_phi[take] = phi[take]
+            best_c[take] = c[take]
+            best_y = y.copy() if best_y is None else best_y
+            best_y[take] = y[take]
+
+        # cache each unique-T slice so later scalar-T refinement probes warm-start
+        for uT in np.unique(Tf):
+            if len(self._warm) >= 12:
+                self._warm.pop(next(iter(self._warm)))
+            m = Tf == uT
+            order = np.argsort(flat[m])
+            self._warm[round(float(uT))] = (flat[m][order], best_y[m][order])
+        return best_phi.reshape(np.shape(dmu)), best_c.reshape(np.shape(dmu))
+
+    @lru_cache(maxsize=50000)
     def _find_phi_c_cached(self, t_shape, t_bytes, d_shape, d_bytes):
-        """Solve and cache by raw ``(T, dmu)`` bytes; group array ``T`` by unique value."""
+        """Solve and cache by raw ``(T, dmu)`` bytes; array ``T`` solves in one batch."""
         T = np.frombuffer(t_bytes, dtype=float).reshape(t_shape)
         dmu = np.frombuffer(d_bytes, dtype=float).reshape(d_shape)
         out_shape = np.broadcast_shapes(t_shape, d_shape)
@@ -234,12 +354,8 @@ class CompoundEnergyPhase(Phase):
             return np.broadcast_to(phi, out_shape).copy(), np.broadcast_to(c, out_shape).copy()
         Tb = np.broadcast_to(T, out_shape)
         dmub = np.broadcast_to(dmu, out_shape)
-        phi = np.empty(out_shape)
-        c = np.empty(out_shape)
-        for uT in np.unique(Tb):
-            m = Tb == uT
-            phi[m], c[m] = self._solve_fixed_T(float(uT), dmub[m])
-        return phi, c
+        phi, c = self._solve_batch(Tb.ravel(), dmub.ravel())
+        return phi.reshape(out_shape), c.reshape(out_shape)
 
     def _find_phi_c(self, T, dmu):
         Ta = np.asarray(T, dtype=float)
