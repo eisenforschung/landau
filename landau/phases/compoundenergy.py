@@ -229,9 +229,13 @@ class CompoundEnergyPhase(Phase):
             target = se.expit((dmu[active, None] - field) / kT[active, None])
             delta = np.clip(target, lo, hi) - ya
             # a residual that reversed sign since the previous step is orbiting the
-            # fixed point rather than approaching it -> shrink this column's mixing
+            # fixed point -> halve this column's mixing; a column stepping cleanly
+            # toward the fixed point grows its mixing back toward the full rate, so a
+            # single transient overshoot near the ordered corner does not permanently
+            # cripple an otherwise well-behaved solve.
             osc = np.any(delta * prev_delta[active] < 0.0, axis=1)
-            d[active] = np.where(osc, np.maximum(0.5 * d[active], self._scf_damp_min), d[active])
+            d[active] = np.where(osc, np.maximum(0.5 * d[active], self._scf_damp_min),
+                                 np.minimum(1.1 * d[active], self._scf_damp))
             prev_delta[active] = delta
             y_new = np.clip(ya + d[active, None] * delta, lo, hi)
             if self._groups is not None:  # confine to the ordering's sublattice symmetry
