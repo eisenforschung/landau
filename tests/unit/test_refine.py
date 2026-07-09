@@ -972,14 +972,26 @@ def test_delaunay_2d_refiner_matches_separate_refiners():
 
 
 def test_delaunay_2d_refiner_shares_one_tessellation():
-    """propose tessellates once, not once per constituent refiner."""
+    """run (and propose) tessellate once, not once per constituent refiner."""
     import landau.refine as R
     phases = _three_phase_system()
     df = _coarse_df(phases, np.linspace(220.0, 480.0, 6), np.linspace(-0.05, 0.55, 7))
 
-    calls = {"n": 0}
-    orig = R._delaunay_simplices
-    R._delaunay_simplices = lambda d, _o=orig, _c=calls: (_c.__setitem__("n", _c["n"] + 1), _o(d))[1]
+    def counting():
+        calls = {"n": 0}
+        orig = R._delaunay_simplices
+        R._delaunay_simplices = lambda d, _o=orig, _c=calls: (
+            _c.__setitem__("n", _c["n"] + 1), _o(d))[1]
+        return calls, orig
+
+    calls, orig = counting()
+    try:
+        Delaunay2DRefiner().run(df, phases)
+    finally:
+        R._delaunay_simplices = orig
+    assert calls["n"] == 1  # one tessellation for all three constituents
+
+    calls, orig = counting()
     try:
         list(Delaunay2DRefiner().propose(df))
     finally:

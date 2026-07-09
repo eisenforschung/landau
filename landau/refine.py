@@ -37,10 +37,11 @@ The two Clausius-Clapeyron refiners share their skeleton via the
 private :class:`_CCBase` ABC; see the comment block right above it
 for a quick algorithm overview aimed at new readers.
 
-:meth:`Refiner.run` is split into ``propose`` (candidate generation)
-and ``_run_candidates`` (locate + emit) so :class:`Delaunay2DRefiner`
-can drive each constituent refiner with candidates it proposed off the
-shared tessellation.
+Each Delaunay-based refiner splits its ``propose`` body into a
+``_candidates(df, simplices)`` generator and exposes a
+:meth:`Refiner.run_one` (``propose``-signature-preserving) that runs it
+off a *given* tessellation, so :class:`Delaunay2DRefiner` can build the
+tessellation once and drive all three from it.
 
 Writing a new refiner
 ---------------------
@@ -253,14 +254,8 @@ class Refiner(ABC):
     label: ClassVar[str]
 
     @abstractmethod
-    def propose(self, df: pd.DataFrame, simplices=None):
-        """Yield candidate objects to be handed to :meth:`solve`.
-
-        ``simplices`` is an optional precomputed
-        ``[(_Simplex, phase_count), ...]`` list (see :func:`_delaunay_simplices`).
-        :class:`Delaunay2DRefiner` passes it so the tessellation is built once
-        and shared; a refiner that needs it and is given ``None`` builds its own.
-        """
+    def propose(self, df: pd.DataFrame):
+        """Yield candidate objects to be handed to :meth:`solve`."""
 
     @abstractmethod
     def solve(
@@ -277,11 +272,32 @@ class Refiner(ABC):
         """propose → solve → filter → dataframe."""
         return self._run_candidates(self.propose(df), phases)
 
+    def run_one(self, df: pd.DataFrame, simplices,
+                phases: Mapping[str, Phase]) -> pd.DataFrame:
+        """Run this refiner off an already-computed (mu, T) tessellation.
+
+        Same as :meth:`run` but takes the shared ``simplices`` list instead of
+        re-tessellating, so :class:`Delaunay2DRefiner` can drive its three
+        constituent refiners from one tessellation. Only the Delaunay-based
+        refiners implement :meth:`_candidates`.
+        """
+        return self._run_candidates(self._candidates(df, simplices), phases)
+
+    def _candidates(self, df: pd.DataFrame, simplices):
+        """Turn a precomputed tessellation into candidates (Delaunay refiners).
+
+        The body of :meth:`propose` for the tessellation-based refiners lives
+        here so both ``propose`` (which tessellates ``df`` itself) and
+        :meth:`run_one` (given a shared tessellation) reuse it.
+        """
+        raise NotImplementedError
+
     def _run_candidates(self, cands, phases: Mapping[str, Phase]) -> pd.DataFrame:
         """solve → filter → dataframe for an already-proposed candidate stream.
 
-        Split out of :meth:`run` so :class:`Delaunay2DRefiner` can drive a
-        refiner with candidates it proposed off a shared tessellation.
+        Split out of :meth:`run` so :meth:`run_one` (and hence
+        :class:`Delaunay2DRefiner`) can drive a refiner with candidates it
+        proposed off a shared tessellation.
         """
         rows: list[dict] = []
         boundary_id = 0
@@ -335,7 +351,7 @@ class ScanRefiner(Refiner):
         self.other = "T" if by == "mu" else "mu"
         self.label = by
 
-    def propose(self, df: pd.DataFrame, simplices=None) -> Iterator[_ScanCandidate]:
+    def propose(self, df: pd.DataFrame) -> Iterator[_ScanCandidate]:
         for other_val, group in df.groupby(self.other):
             g = group.sort_values(self.by).reset_index(drop=True)
             change = g.index[g.phase != g.phase.shift(-1).ffill()]
@@ -440,16 +456,6 @@ def _delaunay_simplices(df: pd.DataFrame) -> list[tuple["_Simplex", int]]:
             for s, n in zip(dela.simplices, counts)]
 
 
-def _simplices_for(df: pd.DataFrame, simplices):
-    """Precomputed simplices if given, else tessellate ``df`` fresh.
-
-    Lets :class:`Delaunay2DRefiner` build the (mu, T) tessellation once and
-    share it across its constituent refiners, each of which would otherwise
-    rebuild it in its own ``propose``.
-    """
-    return _delaunay_simplices(df) if simplices is None else simplices
-
-
 def _simplex_containment(point: TMuPoint, simplex: _Simplex) -> float:
     """Smallest barycentric coordinate of ``(T, mu)`` w.r.t. the triangle.
 
@@ -503,8 +509,11 @@ class DelaunayLineRefiner(Refiner):
 
     label = "delaunay"
 
-    def propose(self, df: pd.DataFrame, simplices=None) -> Iterator[_SimplexCandidate]:
-        for simplex, n in _simplices_for(df, simplices):
+    def propose(self, df: pd.DataFrame) -> Iterator[_SimplexCandidate]:
+        return self._candidates(df, _delaunay_simplices(df))
+
+    def _candidates(self, df, simplices) -> Iterator[_SimplexCandidate]:
+        for simplex, n in simplices:
             if n == 2:
                 yield _SimplexCandidate(simplex=simplex)
 
@@ -554,8 +563,11 @@ class DelaunayTripleRefiner(Refiner):
 
     label = "delaunay-triple"
 
-    def propose(self, df: pd.DataFrame, simplices=None) -> Iterator[_TripleCandidate]:
-        siblings = tuple(simplex for simplex, n in _simplices_for(df, simplices) if n == 3)
+    def propose(self, df: pd.DataFrame) -> Iterator[_TripleCandidate]:
+        return self._candidates(df, _delaunay_simplices(df))
+
+    def _candidates(self, df, simplices) -> Iterator[_TripleCandidate]:
+        siblings = tuple(simplex for simplex, n in simplices if n == 3)
         for simplex in siblings:
             yield _TripleCandidate(simplex=simplex, siblings=siblings)
 
@@ -1161,10 +1173,13 @@ class ClausiusClapeyronRefiner(_CCBase):
 
     label = "clausius-clapeyron"
 
-    def propose(self, df: pd.DataFrame, simplices=None) -> Iterator[_InterCandidate]:
+    def propose(self, df: pd.DataFrame) -> Iterator[_InterCandidate]:
+        return self._candidates(df, _delaunay_simplices(df))
+
+    def _candidates(self, df, simplices) -> Iterator[_InterCandidate]:
         T_min = float(df["T"].min())
         T_max = float(df["T"].max())
-        for simplex, n in _simplices_for(df, simplices):
+        for simplex, n in simplices:
             if n != 2:
                 continue
             mu_lo, mu_hi, T_lo, T_hi, T_seed = _simplex_brackets(simplex)
@@ -1294,14 +1309,17 @@ class MiscibilityGapRefiner(_CCBase):
         self.gap_close = gap_close
         self.gap_share_min = gap_share_min
 
-    def propose(self, df: pd.DataFrame, simplices=None) -> Iterator[_GapCandidate]:
+    def propose(self, df: pd.DataFrame) -> Iterator[_GapCandidate]:
+        return self._candidates(df, _delaunay_simplices(df))
+
+    def _candidates(self, df, simplices) -> Iterator[_GapCandidate]:
         T_min = float(df["T"].min())
         T_max = float(df["T"].max())
         # Yield widest-c-spread simplex first: the most reliable
         # simplex seeds the trace, and neighbouring ones get straddle-
         # skipped on subsequent iterations.
         candidates: list[tuple[float, _GapCandidate]] = []
-        for simplex, n in _simplices_for(df, simplices):
+        for simplex, n in simplices:
             if n != 1:
                 continue
             mu_lo, mu_hi, T_lo, T_hi, T_seed = _simplex_brackets(simplex)
@@ -1391,9 +1409,9 @@ class Delaunay2DRefiner(Refiner):
     the (mu, T) tessellation and its ``_Simplex`` objects are built once instead
     of once per refiner.
 
-    :meth:`propose` yields ``(refiner, candidate)`` pairs off the shared
-    tessellation; :meth:`run` buckets them back per refiner so each keeps its
-    own locate-and-emit bookkeeping — the Clausius-Clapeyron straddle dedup, the
+    :meth:`run` tessellates once and calls each constituent refiner's
+    :meth:`~Refiner.run_one` on that shared tessellation, so each keeps its own
+    locate-and-emit bookkeeping — the Clausius-Clapeyron straddle dedup, the
     triple-point owner attribution — and its own ``refined`` label. The emitted
     rows are identical to running the three refiners separately.
     """
@@ -1407,25 +1425,22 @@ class Delaunay2DRefiner(Refiner):
         self.gap = gap if gap is not None else MiscibilityGapRefiner()
         self._refiners = (self.triple, self.clausius, self.gap)
 
-    def propose(self, df: pd.DataFrame, simplices=None):
-        simplices = _simplices_for(df, simplices)
+    def propose(self, df: pd.DataFrame):
+        """Yield ``(refiner, candidate)`` pairs off one shared tessellation."""
+        simplices = _delaunay_simplices(df)
         for refiner in self._refiners:
-            for cand in refiner.propose(df, simplices):
+            for cand in refiner._candidates(df, simplices):
                 yield refiner, cand
 
     def solve(self, cand, phases: Mapping[str, Phase]):
         refiner, inner = cand
         return refiner.solve(inner, phases)
 
-    def run(self, df: pd.DataFrame, phases: Mapping[str, Phase],
-            simplices=None) -> pd.DataFrame:
-        simplices = _simplices_for(df, simplices)
-        buckets: dict = {refiner: [] for refiner in self._refiners}
-        for refiner, cand in self.propose(df, simplices):
-            buckets[refiner].append(cand)
+    def run(self, df: pd.DataFrame, phases: Mapping[str, Phase]) -> pd.DataFrame:
+        simplices = _delaunay_simplices(df)
         frames = [
             out for refiner in self._refiners
-            if not (out := refiner._run_candidates(buckets[refiner], phases)).empty
+            if not (out := refiner.run_one(df, simplices, phases)).empty
         ]
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
