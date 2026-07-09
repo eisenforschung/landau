@@ -7,13 +7,19 @@ speed the refiner up, and the numbers here say why. It becomes a win only for a
 phase whose ``semigrand_potential`` genuinely batches over an *array of
 distinct T* with non-trivial per-element cost.
 
-Three measurements, run from the repo root with
-``python benchmarks/bench_cc_vectorized.py``:
+Four measurements, run from the repo root with
+``python benchmarks/bench_cc_vectorized.py``. The old-vs-new end-to-end table
+in the PR description is measurement 0 run once on ``main`` and once on this
+branch (same machine).
+
+0. **end-to-end.** Best-of-5 ``refine_phase_diagram`` with only the CC refiner,
+   on a cheap (``IdealSolution``) and an expensive (``FastInterpolatingPhase``)
+   two-phase system, with the emitted point count.
 
 1. **propose vs. trace (cheap phase).** On an ``IdealSolution`` solid/liquid
-   grid, ``propose`` (Delaunay + a ``df.iloc[simplex]`` per simplex) dominates;
-   the trace's ``semigrand_potential`` calls are a minority. Vectorizing the
-   trace cannot move a number the refiner is not spending time on.
+   grid, how the wall-clock splits between ``propose`` and the trace. Since
+   #335 (numpy-backed ``_Simplex``) ``propose`` is a few percent and the
+   trace's ``semigrand_potential`` calls dominate.
 
 2. **eval attribution (expensive phase).** On a ``FastInterpolatingPhase`` pair
    the expensive ``_solve_fixed_T`` calls are counted by refiner call site. They
@@ -70,6 +76,19 @@ def fast_system():
             name=name, phases=lps, add_entropy=True, interpolator=RedlichKister(2))
     a, b = mk("alpha", -2.0, 1.0 * kB), mk("beta", -1.9, 2.6 * kB)
     return [a, b], {"alpha": a, "beta": b}
+
+
+def end_to_end():
+    print("[0] end-to-end refine_phase_diagram, CC refiner only (best of 5)")
+    for label, system in [("IdealSolution", ideal_system),
+                          ("FastInterpolatingPhase", fast_system)]:
+        phases, mapping = system()
+        df = calc_phase_diagram(phases, Ts=Ts, mu=mus, refine=False, keep_unstable=False)
+        out = refine_phase_diagram(df, mapping, refiners=[ClausiusClapeyronRefiner()])
+        cc = out[out["refined"] == "clausius-clapeyron"]
+        t = _best(lambda: refine_phase_diagram(df, mapping, refiners=[ClausiusClapeyronRefiner()]))
+        print(f"    {label:22s} {t * 1e3:7.1f} ms   "
+              f"output points: {cc.groupby(['T', 'mu']).ngroups}")
 
 
 def propose_vs_trace():
@@ -136,6 +155,8 @@ def densification_batching():
 
 
 def main() -> None:
+    end_to_end()
+    print()
     propose_vs_trace()
     print()
     eval_attribution()
