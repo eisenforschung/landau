@@ -22,9 +22,10 @@ branch (same machine).
    trace's ``semigrand_potential`` calls dominate.
 
 2. **eval attribution (expensive phase).** On a ``FastInterpolatingPhase`` pair
-   the expensive ``_solve_fixed_T`` calls are counted by refiner call site. They
-   land almost entirely in the *scalar* coarse walk / seed root-finding
-   (``<lambda>`` inside ``_refine_step``), not in the vectorized densification.
+   the expensive ``_solve_fixed_T`` calls are counted per refiner stage
+   (seed root-find / extent walk / densification). Runs on ``main`` too, where
+   the stages are ``_seed_step`` and ``_trace`` — comparing the two runs shows
+   where this branch spends evals the sequential tracer does not.
 
 3. **densification batching (vectorizing phase).** For ``IdealSolution`` —
    which broadcasts ``semigrand_potential`` over ``T`` — the densification's
@@ -110,13 +111,14 @@ def eval_attribution():
     df = calc_phase_diagram(phases, Ts=Ts, mu=mus, refine=False, keep_unstable=False)
     site = Counter()
     orig = FastInterpolatingPhase._solve_fixed_T
+    # attribute each eval to the innermost refiner stage on the stack; the
+    # last two names cover the sequential tracer on main so the measurement
+    # compares across checkouts
+    stages = ("_seed_step", "_coarse_walk", "_densify", "_trace")
 
     def counted(self, T, dmu):
-        last = "?"
-        for fr in traceback.extract_stack():
-            if "refine.py" in fr.filename:
-                last = fr.name
-        site[last] += 1
+        names = [fr.name for fr in traceback.extract_stack() if "refine.py" in fr.filename]
+        site[next((n for n in reversed(names) if n in stages), "?")] += 1
         return orig(self, T, dmu)
 
     FastInterpolatingPhase._solve_fixed_T = counted
