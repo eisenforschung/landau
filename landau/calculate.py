@@ -68,8 +68,7 @@ def _f_excess_tangent_chord(dd: pd.DataFrame) -> pd.Series:
     from a line phase sitting exactly at ``c = 1`` (``f`` is convex with slope
     ``mu`` in ``c``, so the partial-coverage phase sits below its own tangent
     value at the endpoint).  For a line phase located exactly at an endpoint
-    both expressions reduce to ``f``.  Falls back to the raw ``f`` at the
-    extreme sample when no phase reaches the endpoint window.
+    both expressions reduce to ``f``.
 
     Drops ``mu = +-inf`` rows before computing.  Designed to be applied per
     temperature via :func:`_apply_series`.
@@ -90,10 +89,6 @@ def _f_excess_tangent_chord(dd: pd.DataFrame) -> pd.Series:
             f0 = min(f0, tangent0[g["c"].idxmin()])
         if g["c"].max() >= hi_thr:
             f1 = min(f1, tangent1[g["c"].idxmax()])
-    if not np.isfinite(f0):
-        f0 = dd.loc[dd["c"].idxmin(), "f"]
-    if not np.isfinite(f1):
-        f1 = dd.loc[dd["c"].idxmax(), "f"]
     return dd.f - (f0 * (1 - dd.c) + f1 * dd.c)
 
 
