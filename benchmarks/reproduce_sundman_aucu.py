@@ -34,7 +34,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from landau import CompoundEnergyPhase
-from landau.phases.compoundenergy import Sublattice, Endmember, RegularSolutionExcess, CallableExcess
+from landau.phases.compoundenergy import Endmember, RegularSolutionExcess, CallableExcess
 from landau.phases import Surface2DInterpolatingPhase, TemperatureDependentLinePhase, S
 from landau.interpolate import CalphadSurface2DInterpolator, SGTE
 from landau.calculate import calc_phase_diagram
@@ -121,13 +121,15 @@ def _reciprocal_cef(y, T):
     return e_rec / NS / JMOL
 
 
-# Regular solution (eq 8) with an analytic gradient + the reciprocal term (eq 9) as a
-# callable, summed by the phase; both per atom (eV).
+# Regular solution (eq 8, over all four sublattices) with an analytic gradient + the
+# reciprocal term (eq 9, coupling all four) as a callable, summed by the phase; both
+# per atom (eV).
+_ALL = (0, 1, 2, 3)
 _EXCESS = (
-    RegularSolutionExcess(lambda T: (3940 + 10.32 * T) / NS / JMOL),
-    CallableExcess(_reciprocal_cef),
+    RegularSolutionExcess(_ALL, lambda T: (3940 + 10.32 * T) / NS / JMOL),
+    CallableExcess(_ALL, _reciprocal_cef),
 )
-_CEF = dict(sublattices=(Sublattice(0.25),) * 4, endmembers=_ENDMEMBERS, excess=_EXCESS)
+_CEF = dict(site_multiplicities=(0.25, 0.25, 0.25, 0.25), endmembers=_ENDMEMBERS, excess=_EXCESS)
 
 
 def _ordered_fcc_phases():

@@ -17,11 +17,20 @@ its relative size (summing to 1), and ``p_s^{(c)} = y_s`` if end-member ``c``
 carries B on sublattice ``s`` else ``1 - y_s``.  The overall B concentration is
 ``c(y) = sum_s a_s y_s``.
 
-The three ingredients are **composable objects**, in the spirit of the
-point-defect classes: a phase is assembled from a tuple of :class:`Sublattice`
-(each an ``a_s``), a tuple of :class:`Endmember` (each a corner configuration and
-its ``{}^0G_c(T)``), and a tuple of :class:`ExcessTerm` that are summed.  Each
-excess term supplies its own analytic gradient where it has one
+The energy contributions are **composable objects**, in the spirit of the
+point-defect classes.  The ``S`` sublattices are just their multiplicities
+``(a_0, ..., a_{S-1})`` -- a bare scalar per sublattice, no wrapper class.  On top
+sit a tuple of :class:`Endmember` (each a corner configuration and its
+``{}^0G_c(T)``) and a tuple of :class:`ExcessTerm` that are summed.  End-members
+and excess terms are not per-sublattice: an end-member is a *corner*, a product
+over **all** ``S`` sublattices, and an excess term couples whichever sublattices
+it names (``(0, 1, 2, 3)`` for one over all four, ``(0, 2)`` for a two-sublattice
+reciprocal, ...).  The phase validates this attachment structurally -- the
+end-members must cover every one of the ``2**S`` corners exactly once, and no
+excess term may reference a sublattice outside ``range(S)`` or duplicate another's
+``(type, sublattices)`` key -- so a phase can never be assembled from an
+incomplete corner set or handed an incompatible / double-counted excess term.
+Each excess term supplies its own analytic gradient where it has one
 (:class:`RegularSolutionExcess`) and falls back to a finite difference otherwise
 (:class:`CallableExcess`), so the solver reads exact per-term gradients rather
 than one blanket finite difference over an opaque callable.
@@ -66,7 +75,6 @@ from . import Phase, kB, _scalarize
 
 __all__ = [
     "CompoundEnergyPhase",
-    "Sublattice",
     "Endmember",
     "ExcessTerm",
     "RegularSolutionExcess",
@@ -74,18 +82,6 @@ __all__ = [
 ]
 
 _FD = 1e-6  # finite-difference step for excess gradients without a closed form
-
-
-@dataclass(frozen=True)
-class Sublattice:
-    """One sublattice of a :class:`CompoundEnergyPhase`.
-
-    Args:
-        multiplicity: relative sublattice size ``a_s``.  The phase's
-            multiplicities must sum to 1.
-    """
-
-    multiplicity: float
 
 
 @dataclass(frozen=True)
@@ -106,11 +102,26 @@ class Endmember:
 class ExcessTerm(ABC):
     """One additive excess-energy contribution ``EG_i(y, T)`` (eV/atom).
 
+    ``sublattices`` are the indices, in the phase's full ``S``-sublattice site-
+    fraction space, that this term couples -- e.g. ``(0, 1, 2, 3)`` for a term over
+    all four, ``(1,)`` for one acting on a single sublattice, ``(0, 2)`` for a
+    reciprocal-style coupling of two.  It is how and where the term attaches to the
+    space, and the host :class:`CompoundEnergyPhase` uses it to reject terms
+    structurally: every index must lie in ``range(S)`` (no term referencing a
+    sublattice the phase does not have), and no two terms may share the same
+    ``(type, sublattices)`` key (no duplicate / double-counted contribution).
+
     Subclasses implement :meth:`energy`; :meth:`gradient` defaults to a central
     finite difference in every sublattice but is overridden with the closed form
     where one exists.  ``y`` has its site fractions on the last axis and must
     broadcast over any leading axes.
     """
+
+    sublattices: tuple[int, ...]
+
+    def _key(self):
+        """Identity for duplicate detection: type + the sublattices it couples."""
+        return (type(self).__name__, tuple(sorted(self.sublattices)))
 
     @abstractmethod
     def energy(self, y, T):
@@ -137,9 +148,12 @@ class ExcessTerm(ABC):
 
 @dataclass(frozen=True)
 class RegularSolutionExcess(ExcessTerm):
-    """Regular-solution excess ``L(T) * sum_s y_s (1 - y_s)`` (eV/atom).
+    """Regular-solution excess ``L(T) * sum_{s in sublattices} y_s (1 - y_s)`` (eV/atom).
+
+    Acts only on its ``sublattices`` (analytic gradient there, zero elsewhere).
 
     Args:
+        sublattices: the sublattice indices this term mixes.
         coefficient: callable ``L(T)`` in eV/atom.
     """
 
@@ -147,11 +161,15 @@ class RegularSolutionExcess(ExcessTerm):
 
     def energy(self, y, T):
         y = np.asarray(y, dtype=float)
-        return np.asarray(self.coefficient(T)) * np.sum(y * (1 - y), axis=-1)
+        idx = np.asarray(self.sublattices, dtype=int)
+        return np.asarray(self.coefficient(T)) * np.sum(y[..., idx] * (1 - y[..., idx]), axis=-1)
 
     def gradient(self, y, T):
         y = np.asarray(y, dtype=float)
-        return np.asarray(self.coefficient(T), dtype=float)[..., None] * (1 - 2 * y)
+        idx = np.asarray(self.sublattices, dtype=int)
+        g = np.zeros_like(y)
+        g[..., idx] = np.asarray(self.coefficient(T), dtype=float)[..., None] * (1 - 2 * y[..., idx])
+        return g
 
 
 @dataclass(frozen=True)
@@ -159,10 +177,14 @@ class CallableExcess(ExcessTerm):
     """Excess energy from an arbitrary callable ``EG(y, T)`` (eV/atom).
 
     The escape hatch for interactions without a bundled closed form (e.g. a CEF
-    reciprocal term): the gradient is the inherited finite difference.  ``y`` has
-    its site fractions on the last axis and must broadcast over any leading axes.
+    reciprocal term): the gradient is the inherited finite difference.  ``sublattices``
+    declares which sublattices the ``function`` couples (its footprint in the full
+    space, used for compatibility/duplicate checks); the callable itself receives the
+    whole ``y`` array, whose site fractions are on the last axis and must broadcast
+    over any leading axes.
 
     Args:
+        sublattices: the sublattice indices the ``function`` couples.
         function: callable ``EG(y, T)`` in eV/atom.
     """
 
@@ -178,10 +200,14 @@ class CompoundEnergyPhase(Phase):
 
     Args:
         name: phase name.
-        sublattices: the sublattices ``(Sublattice(a_0), ...)``; the ``a_s`` must
-            sum to 1.
-        endmembers: the ``2**S`` :class:`Endmember` corners (one per configuration).
+        site_multiplicities: the sublattice sizes ``(a_0, ..., a_{S-1})``; must sum
+            to 1.  There are ``S`` sublattices.
+        endmembers: the :class:`Endmember` corners.  Must cover every one of the
+            ``2**S`` configurations exactly once (validated).
         excess: additive :class:`ExcessTerm` contributions, summed.  Empty = ideal.
+            Each term names the ``sublattices`` it couples; the phase rejects a term
+            attaching to a sublattice outside ``range(S)`` or duplicating another
+            term's ``(type, sublattices)`` key.
         orderings: which ordered end-member corners the solve is seeded from.
             ``None`` (default) uses all ``2**S`` corners, so the phase is the full
             partitioning CEF (global minimum over every ordering).  Pass a single
@@ -193,7 +219,7 @@ class CompoundEnergyPhase(Phase):
             basin-pinned ordered phase so it stays on its ordered branch.
     """
 
-    sublattices: tuple[Sublattice, ...] = ()
+    site_multiplicities: tuple[float, ...] = ()
     endmembers: tuple[Endmember, ...] = ()
     excess: tuple[ExcessTerm, ...] = ()
     orderings: tuple[tuple[int, ...], ...] | None = None
@@ -205,19 +231,32 @@ class CompoundEnergyPhase(Phase):
     _y_margin: ClassVar[float] = 0.02   # pinned sublattices held this far from 0.5 (keeps orderings distinct)
 
     def __post_init__(self):
-        subs = tuple(self.sublattices)
-        object.__setattr__(self, "sublattices", subs)
+        a = np.array([float(x) for x in self.site_multiplicities], dtype=float)
+        object.__setattr__(self, "site_multiplicities", tuple(a.tolist()))
         ems = tuple(sorted(self.endmembers, key=lambda e: tuple(e.occupation)))
         object.__setattr__(self, "endmembers", ems)
         object.__setattr__(self, "excess", tuple(self.excess))
-        S = len(subs)
-        a = np.array([s.multiplicity for s in subs], dtype=float)
-        assert len(ems) == 2**S, f"need 2**S={2**S} end-members for {S} sublattices"
-        assert abs(a.sum() - 1) < 1e-9, "sublattice multiplicities must sum to 1"
+        S = a.size
+        assert abs(a.sum() - 1) < 1e-9, "site multiplicities must sum to 1"
+        # end-members must cover every corner of the S-cube exactly once
+        occ = [tuple(int(v) for v in e.occupation) for e in ems]
+        assert all(len(o) == S for o in occ), f"each end-member occupation must have length S={S}"
+        assert len(set(occ)) == len(occ), "duplicate end-member occupations"
+        assert set(occ) == set(product((0, 1), repeat=S)), \
+            f"end-members must cover all 2**S={2**S} corners"
+        # excess terms must attach to real sublattices and not duplicate one another,
+        # so a phase can never be handed an incompatible or double-counted term
+        seen = set()
+        for term in self.excess:
+            assert all(0 <= i < S for i in term.sublattices), \
+                f"excess term {term!r} attaches to a sublattice outside range({S})"
+            key = term._key()
+            assert key not in seen, f"duplicate excess term {key}"
+            seen.add(key)
         object.__setattr__(self, "_a", a)
         # config array (1 where B sits) and the +/-1 sign per (endmember, sublattice)
         # for the analytic G_ref gradient, plus the ordered corners the solve seeds from
-        cfg = np.array([e.occupation for e in ems], dtype=float)
+        cfg = np.array(occ, dtype=float)
         object.__setattr__(self, "_configs", cfg)
         object.__setattr__(self, "_sign", 2.0 * cfg - 1.0)
         seeds = product((0, 1), repeat=S) if self.orderings is None else self.orderings
@@ -480,8 +519,8 @@ class CompoundEnergyPhase(Phase):
 
     def _fc_scalar(self, T, c, evals):
         """``f(c, T) = min`` over site fractions at fixed overall composition ``c``."""
-        S = len(self.sublattices)
         a = self._a
+        S = a.size
         bounds = [(0.0, 1.0)] * S
         constraint = {"type": "eq", "fun": lambda y: float(a @ y) - c}
         best = np.inf
