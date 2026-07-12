@@ -1093,6 +1093,50 @@ def test_lte_phase_phi_bounded_by_tangent_extension():
     assert phase.semigrand_potential(T, 0.6) > -2.0  # bounded by the tangent line
 
 
+def test_pointdefected_phase_scalar_contract():
+    """PointDefectedPhase.semigrand_potential/concentration collapse to plain
+    Python scalars for scalar (T, dmu), matching every other phase's contract."""
+    _, phase = _lte_b2_phase()
+    phi = phase.semigrand_potential(300.0, 0.1)
+    c = phase.concentration(300.0, 0.1)
+    assert not isinstance(phi, np.ndarray)
+    assert not isinstance(c, np.ndarray)
+    assert 0.0 <= c <= 1.0
+
+
+def test_pointdefected_phase_array_dmu_shape():
+    """Array dmu at scalar T broadcasts through the per-T sublattice loop."""
+    _, phase = _lte_b2_phase()
+    dmu = np.linspace(-0.6, 0.6, 11)
+    phi = phase.semigrand_potential(300.0, dmu)
+    c = phase.concentration(300.0, dmu)
+    assert phi.shape == (11,)
+    assert c.shape == (11,)
+    assert np.all((c >= 0.0) & (c <= 1.0))
+
+
+def test_pointdefected_phase_array_T_shape():
+    """Array T at scalar dmu exercises the per-unique-T loop in _phi_c."""
+    _, phase = _lte_b2_phase()
+    T = np.array([300.0, 600.0, 1200.0])
+    phi = phase.semigrand_potential(T, 0.1)
+    c = phase.concentration(T, 0.1)
+    assert phi.shape == (3,)
+    assert c.shape == (3,)
+    assert np.all((c >= 0.0) & (c <= 1.0))
+
+
+def test_pointdefected_phase_array_T_and_dmu_shape():
+    """Both T and dmu as same-shaped arrays broadcast elementwise."""
+    _, phase = _lte_b2_phase()
+    T = np.array([300.0, 600.0, 1200.0])
+    dmu = np.array([-0.2, 0.0, 0.2])
+    phi = phase.semigrand_potential(T, dmu)
+    c = phase.concentration(T, dmu)
+    assert phi.shape == (3,)
+    assert c.shape == (3,)
+
+
 @settings(max_examples=75, deadline=None)
 @given(
     e1=st.floats(0.3, 1.0),
