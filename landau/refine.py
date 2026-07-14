@@ -1100,6 +1100,75 @@ class _CCBase(Refiner):
 
 
 # -- Inter-phase coexistence --------------------------------------------------
+#
+# ClausiusClapeyronRefiner traces its coexistence line differently from the
+# shared _CCBase._trace used by MiscibilityGapRefiner: it walks a very coarse
+# grid to find the line's extent, then recursively halves every interval that
+# is still coarser than the dc_max resolution target, solving all of one
+# level's new midpoints in a single vectorized semigrand_potential pass. The
+# two helpers below are the vectorized primitives that makes that batching
+# possible.
+
+
+def _eval_over_arrays(fn, Ts, mus):
+    """Evaluate a vectorized phase method over paired ``(T, mu)`` arrays.
+
+    Most phases broadcast ``semigrand_potential`` / ``concentration`` over both
+    arguments, so a single call handles a whole array of temperatures. Some
+    phases (e.g. :class:`~landau.phases.RegularSolution`, which keys an internal
+    fit on a *scalar* ``T``) cannot take an array ``T`` and raise; fall back to
+    an elementwise loop for those so the vectorized tracer stays correct, just
+    without the speedup, on any phase.
+    """
+    Ts = np.asarray(Ts, dtype=float)
+    mus = np.asarray(mus, dtype=float)
+    try:
+        out = np.asarray(fn(Ts, mus), dtype=float)
+        if out.shape == Ts.shape:
+            return out
+    except Exception:
+        pass
+    return np.array(
+        [float(fn(float(t), float(m))) for t, m in zip(Ts.ravel(), mus.ravel())]
+    ).reshape(Ts.shape)
+
+
+def _bisect_vectorized(g, lo, hi, xtol=1e-10, max_iter=100, max_expand=40):
+    """Locate one sign-change root of ``g`` per element, all at once.
+
+    ``g`` maps a float array (shape of ``lo`` / ``hi``) to ``g(mu)`` for each
+    element; every bisection iteration is a single vectorized call, so N
+    coexistence chemical potentials at N temperatures cost one pass each rather
+    than N scalar root-finds. Elements whose bracket does not contain a sign
+    change — after a bounded symmetric expansion — come back ``NaN`` so the
+    caller can drop them (a midpoint where the coexistence line does not
+    actually pass).
+    """
+    lo = np.array(lo, dtype=float)
+    hi = np.array(hi, dtype=float)
+    glo = g(lo)
+    ghi = g(hi)
+    for _ in range(max_expand):
+        bad = (np.sign(glo) == np.sign(ghi)) & (glo != 0.0) & (ghi != 0.0)
+        if not bad.any():
+            break
+        width = hi - lo
+        lo = np.where(bad, lo - width, lo)
+        hi = np.where(bad, hi + width, hi)
+        glo = g(lo)
+        ghi = g(hi)
+    valid = np.sign(glo) != np.sign(ghi)
+    for _ in range(max_iter):
+        if np.all(hi - lo <= xtol):
+            break
+        mid = 0.5 * (lo + hi)
+        gm = g(mid)
+        left = np.sign(gm) == np.sign(glo)
+        lo = np.where(left, mid, lo)
+        glo = np.where(left, gm, glo)
+        hi = np.where(~left, mid, hi)
+        ghi = np.where(~left, gm, ghi)
+    return np.where(valid, 0.5 * (lo + hi), np.nan)
 
 
 @dataclass(frozen=True)
@@ -1124,28 +1193,184 @@ class _InterCandidate:
 
 
 class ClausiusClapeyronRefiner(_CCBase):
-    """Predictor-corrector tracer of two-phase coexistence lines.
+    """Coarse-then-refine tracer of two-phase coexistence lines.
 
-    For each two-phase Delaunay simplex, projects across the line
-    between the two phases' vertex centroids to land a seed point on
-    the boundary, then walks T in both directions via isothermal
-    root-finding on ``phi1 - phi2``. The default ``_dT_adapt`` keeps
-    each step's mu drift bounded by the seed bracket's half-width.
+    For each two-phase Delaunay simplex, projects across the line between the
+    two phases' vertex centroids to land a seed point on the boundary. Rather
+    than walking the whole line one adaptive step at a time (the shared
+    :meth:`_CCBase._trace` used by :class:`MiscibilityGapRefiner`), it:
+
+    1. **walks a very coarse grid** — fixed ``dT_max`` steps in both T
+       directions (:meth:`_coarse_walk`) — to find the line's extent as a
+       sparse ``(T, mu*)`` polyline, then
+    2. **recursively doubles the point density** (:meth:`_densify`): every round
+       bisects, in T, each interval still coarser than the ``dc_max`` resolution
+       target and locates *all* those midpoints' coexistence chemical potentials
+       in one vectorized :func:`_bisect_vectorized` pass over
+       ``semigrand_potential``.
+
+    Locating many boundary points per pass instead of one per
+    ``scipy.optimize.root_scalar`` call is the speedup; see
+    ``benchmarks/bench_cc_vectorized.py``.
 
     Parameters
     ----------
     dT_max : float
-        Maximum allowed temperature step (K). See :class:`_CCBase`.
+        Coarse-walk temperature step (K) and the coarsest final spacing —
+        intervals are never left wider than this. See :class:`_CCBase`.
     dT_min : float
-        Minimum temperature step / bootstrap step (K). See
+        See :class:`_CCBase`. **Inert for this refiner:** ``dc_max`` drives the
+        subdivision and overrides any T-step floor (as its cap did for the
+        sequential tracer), so the finest spacing is set by ``dc_max`` down to
+        an absolute ``_dT_floor``, not by ``dT_min``.
+    dc_max : float
+        Per-interval concentration-drift *resolution target*: an interval is
+        subdivided while the plotted concentration moves more than this across
+        it. This is the sole driver of refinement below ``dT_max``. See
         :class:`_CCBase`.
-    dc_max, dc_min : float
-        Per-step concentration-drift cap / floor. See :class:`_CCBase`.
+    dc_min : float
+        See :class:`_CCBase`. **Inert for this refiner:** its purpose — capping
+        the sampling density at the ``dT_max`` scale where c is flat — is met by
+        construction, because the coarse-first walk starts at ``dT_max`` and
+        only ever refines *finer* where ``dc_max`` demands.
     max_steps : int
-        Hard cap on steps per trace direction. See :class:`_CCBase`.
+        Hard cap on coarse-walk steps per direction. See :class:`_CCBase`.
+
+    Notes
+    -----
+    ``dT_min`` and ``dc_min`` stay accepted (both still live for
+    :class:`MiscibilityGapRefiner`, which shares :class:`_CCBase`) so the
+    constructor signature is unchanged, but neither affects this refiner's
+    sampling.
     """
 
     label = "clausius-clapeyron"
+
+    # The coarse walk lays down at most ~2*_n_coarse scalar root-finds across
+    # the whole T span; the vectorized densification does the rest. Its step is
+    # never finer than dT_max (that is the densification's job), so the coarse
+    # pass stays cheap regardless of the target resolution.
+    _n_coarse: ClassVar[int] = 8
+    # Absolute smallest interval the densification will bisect, so the recursion
+    # always terminates even when dc_max can never be met (matches the sequential
+    # tracer's 1e-3 absolute floor). _max_levels bounds the recursion depth.
+    _dT_floor: ClassVar[float] = 1e-3
+    _max_levels: ClassVar[int] = 60
+
+    def solve(self, cand, phases):
+        seed = self._seed_step(cand, phases)
+        if seed is None:
+            return []
+        T0, step0 = seed
+        mu0 = step0.mu_star
+        # Coarse-walk step: span/_n_coarse, but never finer than dT_max so the
+        # scalar pass never does the densification's work.
+        dT_coarse = max(self.dT_max,
+                        (cand.T_max - cand.T_min) / self._n_coarse)
+        coarse = (
+            self._coarse_walk(cand, phases, T0, mu0, cand.T_min, -1, dT_coarse)[::-1]
+            + [(T0, mu0)]
+            + self._coarse_walk(cand, phases, T0, mu0, cand.T_max, +1, dT_coarse)
+        )
+        pts = self._densify(cand, phases, coarse)
+        # Emit only globally stable points: the seed can project just past a
+        # triple point into a metastable sliver, and a densified midpoint can
+        # land in one even when its enclosing coarse points are stable.
+        emitted = (self._emit(cand, T, _StepResult(mu_star=mu)) for T, mu in pts)
+        return [pt for pt in emitted if not _dominated(pt, phases)]
+
+    def _coarse_walk(self, cand, phases, T0, mu0, T_target, sign, dT_coarse):
+        """Walk ``dT_coarse`` steps from the seed to a T bound.
+
+        A cheap scalar predictor-corrector (linear mu prediction, isothermal
+        :meth:`_refine_step` correction) that just needs to establish where the
+        coexistence line runs; :meth:`_densify` fills in the interior. Stops
+        when the corrector can no longer bracket a root (the line has ended),
+        the walked point is no longer globally stable (the pair's line has
+        crossed a triple point and gone metastable), or the bound is reached. Returns the walked ``(T, mu*)`` points in walk
+        order (excluding the seed).
+        """
+        half_width = (cand.mu_bracket[1] - cand.mu_bracket[0]) / 2.0
+        out: list[TMuPoint] = []
+        T, mu, slope = T0, mu0, 0.0
+        for _ in range(self.max_steps):
+            if sign * (T_target - T) <= 1e-12:
+                break
+            dT = sign * dT_coarse
+            if sign * (T + dT - T_target) > 0:
+                dT = T_target - T
+            T_next = T + dT
+            mu_pred = self._predict_mu(mu, slope, dT)
+            # A coarse step can move mu* well outside a fixed bracket, so widen
+            # it until the corrector brackets a root (up to a few doublings)
+            # before giving up and ending the trace.
+            bracket = max(half_width, abs(slope * dT) * 2.0)
+            step = None
+            for _ in range(12):
+                try:
+                    step = self._refine_step(
+                        cand, phases, T_next,
+                        mu_pred - bracket, mu_pred + bracket)
+                    break
+                except ValueError:
+                    bracket *= 2.0
+            if step is None:
+                break
+            slope = (step.mu_star - mu) / dT
+            T, mu = T_next, step.mu_star
+            # Stop once the pair is no longer globally stable here — the
+            # extent search has crossed a triple point; densification only
+            # needs the stable span.
+            if _dominated(self._emit(cand, T, step), phases):
+                break
+            out.append((T, mu))
+        return out
+
+    def _densify(self, cand, phases, coarse):
+        """Recursively halve every interval coarser than ``dT_max`` or ``dc_max``.
+
+        Each round recomputes the plotted concentration drift over every
+        adjacent interval of the current polyline, flags those wider than
+        ``dT_max`` or drifting more than ``dc_max`` (down to the absolute
+        ``_dT_floor``), bisects them in T, and solves all the new midpoints'
+        coexistence chemical potentials in one vectorized pass. Midpoints where
+        no coexistence root is bracketed come back ``NaN`` and are dropped.
+        Iterates until no interval needs splitting, so a boundary curved in c
+        gets dense sampling while one flat in c stays at the coarse ``dT_max``
+        spacing.
+        """
+        p1, p2 = phases[cand.phase1], phases[cand.phase2]
+        half_width = (cand.mu_bracket[1] - cand.mu_bracket[0]) / 2.0
+        pts = sorted(coarse)
+        for _ in range(self._max_levels):
+            Ts = np.array([t for t, _ in pts])
+            mus = np.array([m for _, m in pts])
+            cA = _eval_over_arrays(p1.concentration, Ts, mus)
+            cB = _eval_over_arrays(p2.concentration, Ts, mus)
+            dc = np.maximum(np.abs(np.diff(cA)), np.abs(np.diff(cB)))
+            dT = np.diff(Ts)
+            split = ((dc > self.dc_max) | (dT > self.dT_max)) & (dT > 2 * self._dT_floor)
+            if not split.any():
+                break
+            i = np.nonzero(split)[0]
+            Tm = 0.5 * (Ts[i] + Ts[i + 1])
+            lo = np.minimum(mus[i], mus[i + 1])
+            hi = np.maximum(mus[i], mus[i + 1])
+            # bracket each midpoint's mu* by the enclosing samples, padded so a
+            # boundary flat in mu (lo == hi) still straddles the root
+            pad = np.maximum(hi - lo, half_width)
+
+            def g(mu, Tm=Tm):
+                return (_eval_over_arrays(p1.semigrand_potential, Tm, mu)
+                        - _eval_over_arrays(p2.semigrand_potential, Tm, mu))
+
+            mu_mid = _bisect_vectorized(g, lo - pad, hi + pad)
+            new = [(float(t), float(m))
+                   for t, m in zip(Tm, mu_mid) if np.isfinite(m)]
+            if not new:
+                break
+            pts = sorted(pts + new)
+        return pts
 
     def propose(self, df: pd.DataFrame) -> Iterator[_InterCandidate]:
         T_min = float(df["T"].min())

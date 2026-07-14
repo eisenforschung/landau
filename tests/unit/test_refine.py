@@ -27,6 +27,8 @@ from landau.refine import (
     _simplex_containment,
     _state_row,
     _Simplex,
+    _eval_over_arrays,
+    _bisect_vectorized,
 )
 
 
@@ -124,6 +126,131 @@ def test_clausius_clapeyron_refiner_traces_coexistence(two_phase_system):
         assert abs(phi_a - phi_b) < 1e-7
 
 
+# -- vectorized densification primitives -------------------------------------
+
+
+def test_bisect_vectorized_finds_all_roots_in_one_pass():
+    """Each element's sign-change root is located to tolerance simultaneously."""
+    roots = np.array([-0.3, 0.0, 0.7, 2.5])
+
+    def g(mu):
+        return mu - roots  # independent linear root per element
+
+    lo = roots - 1.0
+    hi = roots + 1.0
+    out = _bisect_vectorized(g, lo, hi)
+    np.testing.assert_allclose(out, roots, atol=1e-9)
+
+
+def test_bisect_vectorized_expands_bracket_for_root_outside():
+    """A root outside the initial bracket is recovered by the symmetric
+    expansion instead of being dropped."""
+    def g(mu):
+        return mu - np.array([5.0])  # root far outside [-1, 1]
+
+    out = _bisect_vectorized(g, np.array([-1.0]), np.array([1.0]))
+    np.testing.assert_allclose(out, [5.0], atol=1e-9)
+
+
+def test_bisect_vectorized_nan_when_no_sign_change():
+    """An element whose function never changes sign comes back NaN so the
+    caller can drop that midpoint."""
+    def g(mu):
+        # element 0 has a root at 0.5; element 1 is strictly positive
+        return np.array([mu[0] - 0.5, mu[1] ** 2 + 1.0])
+
+    out = _bisect_vectorized(g, np.array([0.0, -1.0]), np.array([1.0, 1.0]))
+    assert np.isclose(out[0], 0.5, atol=1e-9)
+    assert np.isnan(out[1])
+
+
+def test_eval_over_arrays_vectorized_phase_single_call():
+    """A phase that broadcasts over T is evaluated in one call."""
+    ph = LinePhase(name="A", fixed_concentration=0.3, line_energy=-1.0, line_entropy=1e-4)
+    Ts = np.array([300.0, 600.0, 900.0])
+    mus = np.array([0.01, 0.0, -0.02])
+    got = _eval_over_arrays(ph.semigrand_potential, Ts, mus)
+    want = np.array([float(ph.semigrand_potential(t, m)) for t, m in zip(Ts, mus)])
+    np.testing.assert_allclose(got, want)
+    assert got.shape == Ts.shape
+
+
+def test_eval_over_arrays_falls_back_for_scalar_only_phase():
+    """A phase that raises on an array T (like a scalar-T-fitted model) still
+    evaluates correctly via the elementwise fallback."""
+
+    class _ScalarOnlyPhase:
+        name = "s"
+
+        def semigrand_potential(self, T, mu):
+            # rejects arrays the way an lru_cache-on-scalar-T fit would
+            if np.asarray(T).ndim > 0:
+                raise TypeError("scalar T only")
+            return -0.5 * mu - 1e-3 * T
+
+        def concentration(self, T, mu):
+            return 0.5
+
+    ph = _ScalarOnlyPhase()
+    Ts = np.array([300.0, 600.0])
+    mus = np.array([0.01, -0.01])
+    got = _eval_over_arrays(ph.semigrand_potential, Ts, mus)
+    want = np.array([ph.semigrand_potential(float(t), float(m)) for t, m in zip(Ts, mus)])
+    np.testing.assert_allclose(got, want)
+
+
+def _ideal_solid_liquid():
+    """Solid/liquid ideal-solution binary (from notebooks/IdealSolution.ipynb)."""
+    from scipy.constants import Boltzmann, eV
+    from landau.phases import LinePhase, IdealSolution
+
+    kB = Boltzmann / eV
+    solid = IdealSolution(
+        "solid",
+        LinePhase("A", 0, -2.0, 1.0 * kB),
+        LinePhase("B", 1, -3.0, 1.5 * kB),
+    )
+    liquid = IdealSolution(
+        "liquid",
+        LinePhase("A(l)", 0, -1.9, 2.5 * kB),
+        LinePhase("B(l)", 1, -2.9, 2.2 * kB),
+    )
+    return solid, liquid
+
+
+def _cc_rows(solid, liquid, dc_max):
+    from landau.calculate import calc_phase_diagram, refine_phase_diagram
+
+    Ts = np.linspace(200, 1800, 25)
+    mus = np.linspace(-0.3, 0.3, 21)
+    coarse = calc_phase_diagram(
+        [solid, liquid], Ts=Ts, mu=mus, refine=False, keep_unstable=False)
+    out = refine_phase_diagram(
+        coarse, {"solid": solid, "liquid": liquid},
+        refiners=[ClausiusClapeyronRefiner(dc_max=dc_max)])
+    return out[out["refined"] == "clausius-clapeyron"]
+
+
+def test_cc_densify_matches_root_finding_on_curved_c_boundary():
+    """The vectorized densification lands its refined midpoints on the true
+    coexistence line to bisection tolerance, and dc_max controls the density."""
+    solid, liquid = _ideal_solid_liquid()
+    cc = _cc_rows(solid, liquid, dc_max=0.01)
+    locs = cc.groupby(["T", "mu"]).size().reset_index()
+    assert len(locs) > 10
+    # Every emitted point sits on the coexistence condition phi_solid ==
+    # phi_liquid to bisection tolerance (converted from mu to phi via the
+    # local slope, so ~1e-10 in mu is well under 1e-7 in phi).
+    for T_val, mu_val in zip(locs["T"], locs["mu"]):
+        gap = float(solid.semigrand_potential(T_val, mu_val)
+                    - liquid.semigrand_potential(T_val, mu_val))
+        assert abs(gap) < 1e-7
+    # Tightening dc_max increases the sampling density on the curved boundary.
+    loose = _cc_rows(solid, liquid, dc_max=1e9).groupby(["T", "mu"]).ngroups
+    tight = _cc_rows(solid, liquid, dc_max=1e-3).groupby(["T", "mu"]).ngroups
+    assert tight > loose
+
+
 def test_clausius_clapeyron_refiner_skips_straddling_simplices(two_phase_system):
     """Many Delaunay simplices straddle the same coexistence line; the
     refiner should trace it once and skip the rest."""
@@ -143,17 +270,21 @@ def test_clausius_clapeyron_refiner_skips_straddling_simplices(two_phase_system)
     assert n_points < 3 * T_span / refiner.dT_max
 
 
-def test_clausius_clapeyron_refiner_respects_dT_min(two_phase_system):
+def test_clausius_clapeyron_refiner_coarse_spacing_is_dT_max(two_phase_system):
+    """The coarse walk samples a flat-in-c boundary at exactly dT_max: the two
+    fixed-c line phases never trip dc_max, so nothing is refined below the
+    coarse grid (and dT_min is inert for this refiner)."""
     phases, mapping = two_phase_system
     df = _two_phase_diagram_df(phases)
     refiner = ClausiusClapeyronRefiner(dT_min=20.0, dT_max=50.0)
     out = refiner.run(df, mapping)
     Ts = np.sort(out["T"].unique())
     dTs = np.diff(Ts)
-    # Median step honors dT_min; the only exceptions are the truncation
-    # at each trace's boundary toward T_min / T_max.
-    assert np.median(dTs) >= 20.0
-    assert np.median(dTs) <= 50.0
+    # Interior steps are exactly dT_max; only the two steps truncated at the
+    # T_min / T_max ends are smaller, so the median is dT_max and nothing
+    # exceeds it.
+    assert np.median(dTs) == pytest.approx(50.0)
+    assert dTs.max() <= 50.0 + 1e-9
 
 
 def test_clausius_clapeyron_refiner_label():
@@ -284,7 +415,12 @@ def test_cc_refiner_dc_max_noop_on_constant_c_boundary():
     assert len(tight) == len(loose)
 
 
-# -- dc_min concentration-drift floor ----------------------------------------
+# -- coarse-first density: dT_max cap and inert dT_min / dc_min --------------
+#
+# ClausiusClapeyronRefiner walks a coarse grid and only refines finer where
+# dc_max demands, so a boundary flat in c is never sampled below the dT_max
+# spacing -- the density ceiling the sequential tracer's dc_min provided is now
+# met by construction, and dT_min / dc_min are inert for this refiner.
 
 
 @dataclass(frozen=True)
@@ -296,8 +432,8 @@ class _SteepMuFlatCPhase(Phase):
     boundary whose mu-slope is set by ``k`` alone. ``concentration`` is
     defined independently as a near-flat ``c0 + cslope * (T - T0)``; the toy
     need not satisfy ``c = -dphi/dmu``, so the boundary can be steep in mu
-    (``_dT_adapt`` pins the step at ``dT_min``) while c barely drifts —
-    exactly the regime the ``dc_min`` density ceiling targets.
+    while c barely drifts — the regime where a flat-in-c boundary must not be
+    over-sampled just because it is steep in mu.
     """
 
     a: float = 0.0
@@ -323,9 +459,8 @@ def _steep_candidate(T_min=840.0, T_max=860.0, T_c=850.0):
 
 
 def _solve_steep(dc_min, cslope=1e-3, K=0.025):
-    # mu* = K * (T - 850); |dmu/dT| = K, so _dT_adapt = half_width / K = 2 K,
-    # finer than dT_max = 5 K (the boundary is over-sampled) yet the dT_min
-    # bootstrap shift K * 1 = 0.025 stays inside the half-width bracket.
+    # mu* = K * (T - 850) is steep in mu, but c drifts only cslope per K; the
+    # coarse dT_max = 5 K walk samples it without over-refining.
     A = _SteepMuFlatCPhase(name="A", a=1.0, k=0.0, c0=0.5, cslope=cslope)
     B = _SteepMuFlatCPhase(name="B", a=0.0, k=K, c0=0.2, cslope=0.0)
     pts = ClausiusClapeyronRefiner(dc_min=dc_min).solve(
@@ -333,38 +468,28 @@ def _solve_steep(dc_min, cslope=1e-3, K=0.025):
     return A, sorted(pts, key=lambda p: p.T)
 
 
-def test_cc_refiner_dc_min_floors_concentration_drift():
-    """On a steep-in-mu, flat-in-c boundary the floor grows each steady step
-    until the plotted concentration drifts exactly dc_min (capped at dT_max)."""
-    A, pts = _solve_steep(dc_min=4e-3)
-    assert len(pts) > 4  # genuinely traced
-    order = np.argsort([p.T for p in pts])
-    Ts = np.array([p.T for p in pts])[order]
-    cs = np.array([float(A.concentration(p.T, p.mu)) for p in pts])[order]
-    # Steady steps sit on the floor: dT = dc_min / cslope = 4 K, dc = dc_min.
-    # Nothing drifts more (dc_max is slack, dT_max = 5 K is not reached); the
-    # bootstrap and the truncated end steps drift less.
-    assert np.abs(np.diff(cs)).max() == pytest.approx(4e-3, abs=1e-9)
-    assert np.diff(Ts).max() == pytest.approx(4.0, abs=1e-9)
+def test_cc_refiner_coarse_walk_caps_flat_c_density():
+    """A boundary steep in mu but flat in c is sampled at the coarse dT_max
+    spacing, not finer: the coarse-first walk caps the density by construction,
+    with no dc_min needed."""
+    A, pts = _solve_steep(dc_min=0.0)  # dc_min off
+    assert len(pts) >= 5  # genuinely traced across the window
+    Ts = np.array([p.T for p in pts])
+    # Coarsest-possible spacing is dT_max = 5 K everywhere; nothing is finer
+    # because dc (= cslope * dT = 5e-3) never exceeds the default dc_max = 0.01.
+    assert np.diff(Ts).max() == pytest.approx(5.0, abs=1e-9)
+    cs = np.array([float(A.concentration(p.T, p.mu)) for p in pts])
+    assert np.abs(np.diff(cs)).max() < 0.01
 
 
-def test_cc_refiner_dc_min_thins_oversampled_boundary():
-    """Without the floor the over-sampled steep-in-mu boundary steps at the
-    bare _dT_adapt size; the floor coarsens it to fewer points."""
-    _, dense = _solve_steep(dc_min=0.0)
-    _, thin = _solve_steep(dc_min=4e-3)
-    # Regime check: with the floor off every step is the 2 K _dT_adapt size.
-    assert np.diff(sorted(p.T for p in dense)).max() == pytest.approx(2.0, abs=1e-9)
-    assert len(thin) < len(dense)
-
-
-def test_cc_refiner_dc_min_noop_when_drift_already_met():
-    """A boundary whose bare step already drifts past dc_min never engages the
-    floor: identical point count whether it is set or off."""
-    _, off = _solve_steep(dc_min=0.0, cslope=3e-3)
-    _, on = _solve_steep(dc_min=4e-3, cslope=3e-3)
-    assert len(off) > 4  # genuinely traced
+def test_cc_refiner_dc_min_is_inert():
+    """dc_min has no effect on this refiner: setting it far above the drift
+    yields the identical sampling as leaving it off."""
+    _, off = _solve_steep(dc_min=0.0)
+    _, on = _solve_steep(dc_min=0.05)
+    assert len(off) >= 5
     assert len(on) == len(off)
+    np.testing.assert_allclose([p.T for p in on], [p.T for p in off])
 
 
 def _solve_steep_caps(dc_max, dc_min, cslope):
@@ -375,22 +500,22 @@ def _solve_steep_caps(dc_max, dc_min, cslope):
     return A, sorted(pts, key=lambda p: p.T)
 
 
-def test_cc_refiner_dc_max_takes_precedence_over_dc_min():
-    """The max bound wins: a dc_min set above dc_max still cannot drive a step
-    past the dc_max cap, so the per-step drift is pinned at dc_max."""
-    # dc_min = 0.05 alone wants dT = 0.05 / 4e-3 = 12.5 K (clamped to dT_max),
-    # but dc_max = 0.01 caps the drift at dT = 0.01 / 4e-3 = 2.5 K.
+def test_cc_refiner_dc_max_caps_drift_regardless_of_dc_min():
+    """dc_max subdivides an interval until the plotted concentration drift falls
+    under the cap, independent of the (inert) dc_min."""
+    # Coarse 5 K steps drift cslope * 5 = 0.02 > dc_max = 0.01, so each interval
+    # is halved once to 2.5 K where the drift is exactly 0.01; dc_min is inert.
     A, pts = _solve_steep_caps(dc_max=0.01, dc_min=0.05, cslope=4e-3)
     assert len(pts) > 4
     cs = np.array([float(A.concentration(p.T, p.mu)) for p in pts])
     assert np.abs(np.diff(cs)).max() == pytest.approx(0.01, abs=1e-9)
 
 
-def test_cc_refiner_dT_max_bounds_dc_min_floor():
-    """The dc_min floor never oversteps dT_max even when the drift target
-    would call for a larger step."""
-    # dc_min = 0.05 wants dT = 50 K with cslope = 1e-3; dc_max = 1.0 is slack,
-    # so only dT_max = 5 K bounds the step.
+def test_cc_refiner_flat_c_stays_at_dT_max():
+    """When dc_max is slack the boundary stays at the coarse dT_max spacing —
+    the coarse walk never oversteps or undershoots it."""
+    # cslope = 1e-3 drifts only 5e-3 over a 5 K step, well under dc_max = 1.0,
+    # so no interval is subdivided and the spacing is exactly dT_max = 5 K.
     _, pts = _solve_steep_caps(dc_max=1.0, dc_min=0.05, cslope=1e-3)
     assert len(pts) > 4
     Ts = np.sort([p.T for p in pts])
