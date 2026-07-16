@@ -536,6 +536,50 @@ def test_surface_phase_free_energy_is_convex():
         assert d2.min() >= -CONVEX_ATOL
 
 
+def test_surface_phase_scalar_contract():
+    """Surface2DInterpolatingPhase.semigrand_potential/concentration collapse to
+    plain Python scalars for scalar (T, dmu), matching every other phase's
+    contract (the class inherits FastInterpolatingPhase's solver unchanged, but
+    had no direct pin of this for the surface-slicing path)."""
+    lines, crange = _intermetallic_line_phases()
+    phase = Surface2DInterpolatingPhase(
+        "im", lines, concentration_range=crange, add_entropy=False,
+        surface_interpolator=SoftplusSurface2DInterpolator())
+    phi = phase.semigrand_potential(500.0, 0.05)
+    c = phase.concentration(500.0, 0.05)
+    assert not isinstance(phi, np.ndarray)
+    assert not isinstance(c, np.ndarray)
+    assert crange[0] <= c <= crange[1]
+
+
+def test_surface_phase_array_dmu_shape():
+    """Array dmu at scalar T broadcasts through the per-T slice solve."""
+    lines, crange = _intermetallic_line_phases()
+    phase = Surface2DInterpolatingPhase(
+        "im", lines, concentration_range=crange, add_entropy=False,
+        surface_interpolator=SoftplusSurface2DInterpolator())
+    dmu = np.linspace(-0.2, 0.2, 11)
+    phi = phase.semigrand_potential(500.0, dmu)
+    c = phase.concentration(500.0, dmu)
+    assert phi.shape == (11,)
+    assert c.shape == (11,)
+    assert np.all((c >= crange[0] - 1e-6) & (c <= crange[1] + 1e-6))
+
+
+def test_surface_phase_array_T_shape():
+    """Array T at scalar dmu exercises a fresh surface slice per temperature."""
+    lines, crange = _intermetallic_line_phases()
+    phase = Surface2DInterpolatingPhase(
+        "im", lines, concentration_range=crange, add_entropy=False,
+        surface_interpolator=SoftplusSurface2DInterpolator())
+    T = np.array([450.0, 600.0, 750.0])
+    phi = phase.semigrand_potential(T, 0.05)
+    c = phase.concentration(T, 0.05)
+    assert phi.shape == (3,)
+    assert c.shape == (3,)
+    assert np.all((c >= crange[0] - 1e-6) & (c <= crange[1] + 1e-6))
+
+
 def test_standardize_centers_scales_and_guards_constant():
     """``_standardize`` centres on the mean and scales by the std, returning the
     shift/scale needed to reproduce the transform; a constant input falls back to
