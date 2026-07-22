@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from hypothesis.extra.numpy import arrays, mutually_broadcastable_shapes
 from numpy.testing import assert_allclose
 from scipy.constants import Boltzmann, eV
 
@@ -1091,6 +1092,33 @@ def test_lte_phase_phi_bounded_by_tangent_extension():
     )
     assert raw_phi < -100.0  # the divergence being guarded against
     assert phase.semigrand_potential(T, 0.6) > -2.0  # bounded by the tangent line
+
+
+@given(data=st.data())
+@settings(deadline=None)
+def test_pointdefected_phase_broadcasts_shapes(data):
+    """PointDefectedPhase.semigrand_potential/concentration follow the same
+    scalar/array broadcast contract as every other phase: random mutually
+    broadcastable (T, dmu) shapes -- including T arrays, which exercise the
+    per-unique-T loop in _phi_c -- collapse a scalar result to a plain Python
+    scalar and otherwise match the broadcast result shape."""
+    _, phase = _lte_b2_phase()
+    shapes = data.draw(mutually_broadcastable_shapes(num_shapes=2, max_dims=3, max_side=3))
+    T = data.draw(arrays(float, shapes.input_shapes[0], elements=st.floats(100.0, 2000.0)))
+    dmu = data.draw(arrays(float, shapes.input_shapes[1], elements=st.floats(-0.6, 0.6)))
+
+    phi = phase.semigrand_potential(T, dmu)
+    c = phase.concentration(T, dmu)
+
+    expected_shape = shapes.result_shape
+    if expected_shape == ():
+        assert not isinstance(phi, np.ndarray)
+        assert not isinstance(c, np.ndarray)
+    else:
+        assert phi.shape == expected_shape
+        assert c.shape == expected_shape
+    assert np.all((np.asarray(c) >= 0.0) & (np.asarray(c) <= 1.0))
+    assert np.all(np.isfinite(np.asarray(phi)))
 
 
 @settings(max_examples=75, deadline=None)
