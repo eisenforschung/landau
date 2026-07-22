@@ -975,11 +975,11 @@ def test_scan_refiner_splits_dominated_crossing_T_scan():
 # -- _dominated ---------------------------------------------------------------
 #
 # `_dominated(pt, phases)` is the predicate every refiner's run() uses to drop
-# a refined transition whose phases are not globally stable at (pt.T, pt.mu):
-# True iff some phase outside pt.phase_names() has a strictly lower phi there.
-# The cases below cover each branch of that contract orthogonally: empty rival
-# set, lower / equal / higher rival, the strictness of "<", the size-3 own set,
-# and the own-set filter that hides supposedly-dominating coexisting phases.
+# a refined transition that isn't a valid piece of the global phase boundary
+# at (pt.T, pt.mu). The cases below cover each branch of that contract
+# orthogonally: empty rival set, lower / equal / higher rival, the strictness
+# of "<", an absent (phi = +inf) own phase, a triple whose own phases don't
+# share one potential, an outside dominator in a triple, and multiple rivals.
 
 
 def _dom_phases(*specs):
@@ -1018,6 +1018,22 @@ def test_dominated_rival_equal_phi_returns_false():
     phases = _dom_phases(("A", 0.0, 0.0), ("B", 1.0, 0.0), ("C", 0.5, 0.0))
     pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B"))
     assert _dominated(pt, phases) is False
+
+
+def test_dominated_outside_rival_between_own_potentials_returns_true():
+    """Two-phase boundary with unequal own potentials (phi_A=0, phi_B=0.5;
+    allowed since the coexistence-tolerance check only applies to triples).
+    Rival X sits at 0.3 - strictly between the two own potentials, so it beats
+    B but not A. The old code compared against ``next(iter(own))``, an
+    arbitrary member of the ``own`` *set*: whether this candidate survived
+    depended on which own phase that happened to be. Comparing against
+    ``max(own_phi)`` instead asks "does X beat the least-stable own phase" -
+    X beats B, so the own set is not the top-2 most stable and this must be
+    dominated regardless of ``own``'s (hash-determined, not caller-controlled)
+    iteration order."""
+    phases = _dom_phases(("A", 0.0, 0.0), ("B", 1.0, 0.5), ("X", 0.5, 0.3))
+    pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B"))
+    assert _dominated(pt, phases) is True
 
 
 def test_dominated_own_phase_below_others_returns_true():
