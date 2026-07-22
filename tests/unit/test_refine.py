@@ -27,6 +27,7 @@ from landau.refine import (
     _simplex_containment,
     _state_row,
     _Simplex,
+    _StepResult,
 )
 
 
@@ -1183,3 +1184,34 @@ def test_simplex_centroids_ordering_follows_unique_phases():
     assert list(cents) == ["zeta", "alpha"]
     assert cents["zeta"] == pytest.approx((200.0, 0.0))  # mean of two vertices
     assert cents["alpha"] == pytest.approx((500.0, 0.0))  # single vertex
+
+
+# -- _CCBase._predict_mu / default _dT_adapt -----------------------------------
+#
+# Shared predictor and step scaler for both ClausiusClapeyronRefiner and
+# MiscibilityGapRefiner (refine.py:819, refine.py:837). Only the override in
+# MiscibilityGapRefiner is exercised by the miscibility-gap pipeline tests;
+# these pin the base defaults directly via a concrete subclass instance.
+
+
+def test_predict_mu_linear_extrapolation():
+    """Default predictor is plain linear extrapolation: mu* + dmu/dT * dT."""
+    refiner = ClausiusClapeyronRefiner()
+    assert refiner._predict_mu(0.5, 0.02, 3.0) == pytest.approx(0.56)
+
+
+def test_dT_adapt_default_half_width_over_slope():
+    """Default step size is half_width / |dmu_dT|; the sign of dmu_dT does
+    not matter since only its magnitude is used."""
+    refiner = ClausiusClapeyronRefiner()
+    step = _StepResult(mu_star=0.0, extra=None)
+    assert refiner._dT_adapt(step, 0.02, half_width=0.1) == pytest.approx(5.0)
+    assert refiner._dT_adapt(step, -0.02, half_width=0.1) == pytest.approx(5.0)
+
+
+def test_dT_adapt_slope_floor_at_zero():
+    """A flat coexistence line (dmu_dT == 0) does not divide by zero; the
+    slope is floored at 1e-9 so the step saturates at half_width / 1e-9."""
+    refiner = ClausiusClapeyronRefiner()
+    step = _StepResult(mu_star=0.0, extra=None)
+    assert refiner._dT_adapt(step, 0.0, half_width=0.1) == pytest.approx(1e8)
