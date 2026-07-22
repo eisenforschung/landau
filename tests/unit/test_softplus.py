@@ -4,7 +4,7 @@ from hypothesis import HealthCheck, given, settings, strategies as st
 
 from landau.interpolate import SoftplusFit
 from landau.interpolate.basic import ConcentrationInterpolator, TemperatureInterpolator
-from landau.interpolate.softplus import _sigmoid, _softplus
+from landau.interpolate.softplus import _knee_position, _sigmoid, _smoothv_seed, _softplus, _split
 
 
 # Maximum allowed deviation between fit and truth, as a fraction of ``ptp(y)``.
@@ -148,3 +148,33 @@ class TestSoftplusPrimitive:
         h = 1e-5
         fd = (_softplus(t + h) - _softplus(t - h)) / (2 * h)
         np.testing.assert_allclose(_sigmoid(t), fd, atol=1e-6)
+
+
+class TestSmoothVSeed:
+    """Convex-well-aware per-slice seed against a synthetic V-well."""
+
+    def _v_well(self, c0=0.2):
+        cn = np.linspace(-1.0, 1.0, 41)
+        return cn, np.abs(cn - c0)
+
+    def test_opposite_slope_pair(self):
+        cn, H = self._v_well()
+        _, b, _, _ = _split(_smoothv_seed(cn, H, 2), 2)
+        np.testing.assert_array_equal(b, [12.0, -12.0])
+
+    def test_knee_ties_to_negative_knee_position(self):
+        cn, H = self._v_well()
+        c0 = _knee_position(cn, H)
+        _, _, c, _ = _split(_smoothv_seed(cn, H, 2), 2)
+        np.testing.assert_array_equal(c, [-c0, -c0])
+
+    def test_offset_is_median(self):
+        cn, H = self._v_well()
+        _, _, _, off = _split(_smoothv_seed(cn, H, 2), 2)
+        assert off == np.median(H)
+
+    def test_extra_terms_start_inert(self):
+        cn, H = self._v_well()
+        a, b, _, _ = _split(_smoothv_seed(cn, H, 4), 4)
+        np.testing.assert_array_equal(a[2:], [1e-4, 1e-4])
+        np.testing.assert_array_equal(b[2:], [12.0, 12.0])
