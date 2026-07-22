@@ -550,3 +550,11 @@ def test_standardize_centers_scales_and_guards_constant():
     xn0, _, scale0 = _standardize(np.full(5, 7.0))
     assert scale0 == 1.0
     np.testing.assert_allclose(xn0, 0.0)
+
+
+def test_standardize_single_element_input():
+    """A lone point has zero spread, so it takes the same ``x.std() or 1.0``
+    fallback as a constant array."""
+    xn, shift, scale = _standardize(np.array([500.0]))
+    assert (shift, scale) == (500.0, 1.0)
+    np.testing.assert_allclose(xn, 0.0)
