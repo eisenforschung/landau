@@ -3,6 +3,15 @@
 Notable changes to **landau.py**, newest first. Per-PR detail lives in the
 [GitHub releases](https://github.com/eisenforschung/landau/releases).
 
+## [1.11.1](https://github.com/eisenforschung/landau/compare/1.11.0...1.11.1) (2026-07-23)
+
+
+### Performance Improvements
+
+* **refine:** abort CC trace when the pair goes metastable ([#340](https://github.com/eisenforschung/landau/issues/340)) ([49879d1](https://github.com/eisenforschung/landau/commit/49879d1c6a6b0288a75753f2fa7fceafbf1474d5))
+* **refine:** numpy-backed _Simplex instead of per-simplex df.iloc ([#335](https://github.com/eisenforschung/landau/issues/335)) ([049f069](https://github.com/eisenforschung/landau/commit/049f06935f1a584b1d063795c830fcd86bb5f295))
+* **refine:** share one Delaunay tessellation across refiners ([#341](https://github.com/eisenforschung/landau/issues/341)) ([26a295b](https://github.com/eisenforschung/landau/commit/26a295bb664d9c156669fa06f7979aa786a6fc0c))
+
 ## [1.11.0](https://github.com/eisenforschung/landau/compare/1.10.0...1.11.0) (2026-07-06)
 
 
