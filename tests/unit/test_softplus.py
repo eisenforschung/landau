@@ -4,7 +4,7 @@ from hypothesis import HealthCheck, given, settings, strategies as st
 
 from landau.interpolate import SoftplusFit
 from landau.interpolate.basic import ConcentrationInterpolator, TemperatureInterpolator
-from landau.interpolate.softplus import _sigmoid, _softplus
+from landau.interpolate.softplus import _flat, _sigmoid, _softplus, _split, _terms, _terms_jac
 
 
 # Maximum allowed deviation between fit and truth, as a fraction of ``ptp(y)``.
@@ -148,3 +148,72 @@ class TestSoftplusPrimitive:
         h = 1e-5
         fd = (_softplus(t + h) - _softplus(t - h)) / (2 * h)
         np.testing.assert_allclose(_sigmoid(t), fd, atol=1e-6)
+
+
+class TestSoftplusTerms:
+    """Direct tests for the module-level softplus sum model (:func:`_terms`) and
+    its parameter Jacobian (:func:`_terms_jac`) -- the shared evaluation used by
+    :class:`SoftplusFit`, the per-slice seed fit, and the fitted surface slice.
+    """
+
+    def test_single_term_reproduces_formula(self):
+        cn = np.linspace(-2.0, 2.0, 11)
+        a, b, c, offset = 1.5, 3.0, -0.4, 0.7
+        expected = a * _softplus(b * (cn + c)) + offset
+        np.testing.assert_allclose(_terms(cn, [a], [b], [c], offset), expected, atol=1e-14)
+
+    def test_two_terms_reproduces_hand_summed(self):
+        cn = np.linspace(-2.0, 2.0, 11)
+        a, b, c, offset = [1.5, 0.8], [3.0, -2.0], [0.1, -0.4], 0.3
+        expected = (
+            a[0] * _softplus(b[0] * (cn + c[0]))
+            + a[1] * _softplus(b[1] * (cn + c[1]))
+            + offset
+        )
+        np.testing.assert_allclose(_terms(cn, a, b, c, offset), expected, atol=1e-14)
+
+    def test_jacobian_column_count(self):
+        cn = np.linspace(-1.0, 1.0, 5)
+        n = 3
+        J = _terms_jac(cn, np.ones(n), np.ones(n), np.zeros(n))
+        assert J.shape == (cn.size, 3 * n + 1)
+
+    def test_jacobian_offset_column_is_ones(self):
+        cn = np.linspace(-1.0, 1.0, 5)
+        J = _terms_jac(cn, [1.2, 0.4], [2.0, -1.5], [0.2, -0.3])
+        np.testing.assert_array_equal(J[:, -1], np.ones(cn.size))
+
+    @pytest.mark.parametrize("a,b,c,offset", [
+        ([1.5, 0.8], [3.0, -2.0], [0.1, -0.4], 0.3),
+        ([0.5, 2.0], [1.0, 5.0], [-1.0, 0.6], -1.2),
+        ([2.5, 0.2], [-4.0, 8.0], [0.9, -0.9], 0.0),
+    ])
+    def test_jacobian_matches_finite_difference(self, a, b, c, offset):
+        """Central-difference Jacobian of :func:`_terms` wrt the flat parameter
+        vector, checked column-by-column against :func:`_terms_jac`."""
+        cn = np.linspace(-2.0, 2.0, 15)
+        n = 2
+        p0 = _flat(a, b, c, offset)
+
+        def model(p):
+            return _terms(cn, *_split(p, n))
+
+        h = 1e-6
+        fd = np.empty((cn.size, p0.size))
+        for i in range(p0.size):
+            step = np.zeros_like(p0)
+            step[i] = h
+            fd[:, i] = (model(p0 + step) - model(p0 - step)) / (2 * h)
+
+        sa, sb, sc, _ = _split(p0, n)
+        np.testing.assert_allclose(_terms_jac(cn, sa, sb, sc), fd, atol=1e-6)
+
+    def test_zero_terms_model_is_constant_offset(self):
+        cn = np.linspace(-2.0, 2.0, 9)
+        np.testing.assert_allclose(_terms(cn, [], [], [], 0.7), np.full(cn.size, 0.7), atol=1e-14)
+
+    def test_zero_terms_jacobian_is_ones_column(self):
+        cn = np.linspace(-2.0, 2.0, 9)
+        J = _terms_jac(cn, [], [], [])
+        assert J.shape == (cn.size, 1)
+        np.testing.assert_array_equal(J, np.ones((cn.size, 1)))
