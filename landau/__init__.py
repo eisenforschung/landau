@@ -8,6 +8,7 @@ from .phases import (
     SlowInterpolatingPhase,
     FastInterpolatingPhase,
     Surface2DInterpolatingPhase,
+    CompoundEnergyPhase,
     AsePhase,
 )
 
