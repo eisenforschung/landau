@@ -16,6 +16,7 @@ import pytest
 from matplotlib.patches import Polygon
 from matplotlib.testing.decorators import check_figures_equal, remove_ticks_and_titles
 
+import shapely
 from shapely import Polygon as ShapelyPolygon
 from shapely.ops import polylabel
 
@@ -23,6 +24,7 @@ from landau import plot as plot_mod
 from landau.plot import (
     _add_inline_polygon_labels,
     _largest_inscribed_circle_center,
+    _shapely_polygon,
     _text_with_outline,
     get_phase_colors,
     get_polygons,
@@ -278,6 +280,80 @@ def test_text_with_outline_forwards_kwargs():
     assert matplotlib.colors.to_rgba(t.get_color()) == matplotlib.colors.to_rgba("red")
     assert t.get_horizontalalignment() == "center"
     plt.close(fig)
+
+
+# --- _shapely_polygon ---------------------------------------------------------
+
+
+def test_shapely_polygon_valid_polygon_returned_unchanged():
+    coords = np.array([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+    poly = _shapely_polygon(coords)
+    assert isinstance(poly, ShapelyPolygon)
+    assert poly.area == pytest.approx(1.0)
+
+
+def test_shapely_polygon_repairs_self_intersection_to_single_polygon():
+    """A self-intersecting outline whose repair stays one connected piece.
+
+    Unlike a plain bowtie (two triangles meeting at a point, which splits
+    into a `MultiPolygon` — see the sibling test below), this outline's
+    self-intersection resolves under `shapely.make_valid`'s default
+    ("linework") algorithm to a single `Polygon`, so `_shapely_polygon`
+    returns it directly without hitting the `MultiPolygon` largest-lobe pick.
+    """
+    coords = np.array(
+        [(0, 0), (4, 0), (4, 4), (1, 4), (1, 1), (5, 1), (5, 5), (0, 5), (0, 0)],
+        dtype=float,
+    )
+    raw = ShapelyPolygon(coords)
+    assert not raw.is_valid
+    repaired = shapely.make_valid(raw)
+    assert repaired.geom_type == "Polygon"
+
+    poly = _shapely_polygon(coords)
+    assert isinstance(poly, ShapelyPolygon)
+    assert poly.area == pytest.approx(repaired.area)
+
+
+def test_shapely_polygon_repair_splits_picks_larger_lobe():
+    """A bowtie whose two triangles have unequal area: the larger one wins."""
+    coords = np.array([(0.0, 0.0), (6.0, 3.0), (6.0, 0.0), (0.0, 1.0), (0.0, 0.0)])
+    raw = ShapelyPolygon(coords)
+    assert not raw.is_valid
+    repaired = shapely.make_valid(raw)
+    assert repaired.geom_type == "MultiPolygon"
+    lobe_areas = sorted(g.area for g in repaired.geoms)
+    assert lobe_areas[0] != lobe_areas[1]  # genuinely unequal, not a tie
+
+    poly = _shapely_polygon(coords)
+    assert isinstance(poly, ShapelyPolygon)
+    assert poly.area == pytest.approx(lobe_areas[-1])
+
+
+@pytest.mark.parametrize(
+    "coords",
+    [
+        pytest.param(np.array([(0.0, 0.0), (0.5, 0.5), (1.0, 1.0)]), id="collinear"),
+        pytest.param(np.empty((0, 2)), id="empty"),
+    ],
+)
+def test_shapely_polygon_degenerate_input_returns_none(coords):
+    assert _shapely_polygon(coords) is None
+
+
+def test_shapely_polygon_too_few_points_raises():
+    """A single coordinate cannot form even a degenerate ring.
+
+    `shapely.Polygon` rejects fewer than 3 (distinct) points with a
+    `ValueError` rather than yielding an empty/zero-area geometry, so
+    `_shapely_polygon` has no `None` branch to intercept this case. Real
+    callers never hit it: both call sites hand it coordinates already
+    validated upstream (matplotlib patches built from
+    `AbstractPolyMethod._to_mpl_polygon`, which itself rejects `<3` exterior
+    coords).
+    """
+    with pytest.raises(ValueError):
+        _shapely_polygon(np.array([(0.0, 0.0)]))
 
 
 def test_inscribed_circle_center_of_unit_square_is_centroid():
