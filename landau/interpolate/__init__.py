@@ -5,6 +5,8 @@ from .basic import (
     NumericalDerivative,
     TemperatureInterpolator,
     ConcentrationInterpolator,
+    SurfaceInterpolator,
+    FittedSurface,
     PolyFit,
     SplineFit,
     PolynomialInterpolation,
@@ -12,11 +14,21 @@ from .basic import (
     SGTEInterpolation,
     RedlichKister,
     RedlichKisterInterpolation,
+    CalphadFittedSurface,
+    CalphadSurface2DInterpolator,
     StitchedFit,
 )
 
-from .softplus import SoftplusFit
-from .whitney import WhitneyTemperatureInterpolator
+from .softplus import (
+    SoftplusFit,
+    SoftplusFittedSurface,
+    SoftplusSurface2DInterpolator,
+)
+from .whitney import (
+    WhitneyTemperatureInterpolator,
+    WhitneyFittedSurface,
+    WhitneySurface2DInterpolator,
+)
 
 __all__ = [
     "G_calphad",
@@ -25,6 +37,8 @@ __all__ = [
     "NumericalDerivative",
     "TemperatureInterpolator",
     "ConcentrationInterpolator",
+    "SurfaceInterpolator",
+    "FittedSurface",
     "PolyFit",
     "SplineFit",
     "PolynomialInterpolation",
@@ -32,7 +46,13 @@ __all__ = [
     "SGTEInterpolation",
     "RedlichKister",
     "RedlichKisterInterpolation",
+    "CalphadFittedSurface",
+    "CalphadSurface2DInterpolator",
     "StitchedFit",
     "SoftplusFit",
+    "SoftplusFittedSurface",
+    "SoftplusSurface2DInterpolator",
     "WhitneyTemperatureInterpolator",
+    "WhitneyFittedSurface",
+    "WhitneySurface2DInterpolator",
 ]

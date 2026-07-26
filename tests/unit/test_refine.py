@@ -28,7 +28,21 @@ from landau.refine import (
     _delaunay_simplices,
     _simplex_containment,
     _trace_geom,
+    _state_row,
+    _Simplex,
+    _StepResult,
 )
+
+
+def _mk_simplex(*, T, mu, phase=None, c=None):
+    """Build a numpy-backed _Simplex for the direct helper tests."""
+    T = np.asarray(T, float)
+    mu = np.asarray(mu, float)
+    if phase is None:
+        phase = np.array(["x"] * len(T))
+    if c is None:
+        c = np.zeros(len(T))
+    return _Simplex(T=T, mu=mu, phase=np.asarray(phase), c=np.asarray(c, float))
 
 
 def _two_phase_diagram_df(phases):
@@ -148,6 +162,38 @@ def test_clausius_clapeyron_refiner_respects_dT_min(two_phase_system):
 
 def test_clausius_clapeyron_refiner_label():
     assert ClausiusClapeyronRefiner.label == "clausius-clapeyron"
+
+
+def test_cc_refiner_trace_aborts_in_dominated_region():
+    """The trace stops when the pair goes metastable past a triple point,
+    instead of walking the whole T range and leaving run() to drop the
+    dominated tail: every point solve() emits is globally stable.
+
+    Regression — without the early abort solve() walks the A-B line across the
+    triple point into C's region and emits dominated points (only filtered
+    later by run())."""
+    phases = _three_phase_system()  # triple point at (T=300, mu=0.2)
+    Ts = np.linspace(220.0, 480.0, 12)
+    mus = np.linspace(-0.05, 0.55, 15)
+    df = _coarse_df(phases, Ts, mus)
+    refiner = ClausiusClapeyronRefiner()
+    cands = list(refiner.propose(df))
+    # Across every coexistence pair, solve() emits only globally stable points:
+    # the trace aborts on domination and a seed projected into a metastable
+    # sliver is not emitted either. Without the abort the metastable tails are
+    # emitted and only dropped later by run().
+    for c in cands:
+        for pt in refiner.solve(c, phases):
+            assert not _dominated(pt, phases)
+
+    # A-B is stable only for T > 300 here (phi_C - phi_A = 0.001*T - 0.3): the
+    # stable side up toward T_max is traced, and the metastable tail below the
+    # triple point is not (without the abort it would reach T_min = 220).
+    ab = [pt for c in cands if {c.phase1, c.phase2} == {"A", "B"}
+          for pt in refiner.solve(c, phases)]
+    assert ab, "grid should contain an A-B two-phase simplex"
+    assert max(pt.T for pt in ab) > 450.0
+    assert min(pt.T for pt in ab) > 285.0
 
 
 # -- dc_max concentration-drift cap ------------------------------------------
@@ -743,6 +789,47 @@ def _coarse_df(phases, Ts, mus):
     return pd.DataFrame(rows)
 
 
+def test_delaunay_simplices_yields_numpy_backed_vertices():
+    """``_delaunay_simplices`` yields ``_Simplex`` views whose length-3 numpy
+    arrays reproduce the source rows, with the right phase count per simplex."""
+    phases = _three_phase_system()
+    Ts = np.linspace(220.0, 480.0, 5)
+    mus = np.linspace(-0.05, 0.55, 6)
+    df = _coarse_df(phases, Ts, mus)
+    rows = set(zip(df["T"], df["mu"], df["phase"], df["c"]))
+
+    seen_counts = set()
+    for simplex, n in _delaunay_simplices(df):
+        assert isinstance(simplex, _Simplex)
+        assert len(simplex.T) == len(simplex.mu) == len(simplex.phase) == len(simplex.c) == 3
+        # every vertex is an actual (T, mu, phase, c) row of the input frame
+        for t, m, p, c in zip(simplex.T, simplex.mu, simplex.phase, simplex.c):
+            assert (t, m, p, c) in rows
+        # phase count matches the distinct phase names on the vertices
+        assert n == len(set(simplex.phase))
+        assert list(simplex.unique_phases()) == list(dict.fromkeys(simplex.phase))
+        seen_counts.add(n)
+    # the grid straddles a triple point, so 1-, 2- and 3-phase simplices appear
+    assert seen_counts == {1, 2, 3}
+
+
+def test_delaunay_simplices_memoised_per_frame():
+    """Repeated calls on the same frame reuse one tessellation (so the default
+    refiners share it), while a different frame recomputes."""
+    phases = _three_phase_system()
+    Ts = np.linspace(220.0, 480.0, 5)
+    mus = np.linspace(-0.05, 0.55, 6)
+    df = _coarse_df(phases, Ts, mus)
+
+    first = _delaunay_simplices(df)
+    assert _delaunay_simplices(df) is first  # same frame -> cached list reused
+
+    df2 = _coarse_df(phases, Ts, mus)  # equal content, different object
+    other = _delaunay_simplices(df2)
+    assert other is not first  # identity-keyed: not aliased to the old frame
+    assert len(other) == len(first)
+
+
 def test_delaunay_triple_refiner_deduplicates():
     """Triple refiner emits each triple point exactly once even when
     multiple three-phase Delaunay simplices independently detect it."""
@@ -798,22 +885,22 @@ def test_simplex_containment_scores_ownership():
     when the point is inside, negative outside, and largest for the simplex the
     point is least far outside of — the fallback that attributes a triple point
     landing just past every three-phase simplex to a single owner."""
-    inside = pd.DataFrame({"T": [0.0, 2.0, 0.0], "mu": [0.0, 0.0, 2.0]})
+    inside = _mk_simplex(T=[0.0, 2.0, 0.0], mu=[0.0, 0.0, 2.0])
     # Centroid is strictly inside, edge midpoint sits on the boundary.
     assert _simplex_containment((0.5, 0.5), inside) > 0
     assert np.isclose(_simplex_containment((1.0, 0.0), inside), 0.0)
 
     # A point past the hypotenuse is outside; the simplex it is least far
     # outside of wins ``max``.
-    near = pd.DataFrame({"T": [0.0, 2.0, 0.0], "mu": [0.0, 0.0, 2.0]})
-    far = pd.DataFrame({"T": [0.0, -2.0, 0.0], "mu": [0.0, 0.0, -2.0]})
+    near = _mk_simplex(T=[0.0, 2.0, 0.0], mu=[0.0, 0.0, 2.0])
+    far = _mk_simplex(T=[0.0, -2.0, 0.0], mu=[0.0, 0.0, -2.0])
     point = (1.1, 1.1)
     assert _simplex_containment(point, near) < 0
     assert _simplex_containment(point, far) < _simplex_containment(point, near)
     assert max((near, far), key=lambda s: _simplex_containment(point, s)) is near
 
     # Degenerate (collinear) simplex never wins ownership.
-    line = pd.DataFrame({"T": [0.0, 1.0, 2.0], "mu": [0.0, 1.0, 2.0]})
+    line = _mk_simplex(T=[0.0, 1.0, 2.0], mu=[0.0, 1.0, 2.0])
     assert _simplex_containment((0.5, 0.5), line) == float("-inf")
 
 
@@ -1078,3 +1165,120 @@ def test_dominated_picks_any_lower_rival_among_many():
     )
     pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B"))
     assert _dominated(pt, phases) is True
+
+
+# -- _state_row -----------------------------------------------------------------
+#
+# `_state_row(phase, T, mu)` (refine.py:183) projects one phase at one (T, mu)
+# to the dict `RefinedPoint.to_rows` consumes.
+
+
+def test_state_row_projects_exact_values():
+    """The dict carries T, mu, phi, c, phase with the exact values the phase
+    reports at that point."""
+    phase = LinePhase(name="A", fixed_concentration=0.3, line_energy=0.1, line_entropy=1e-4)
+    T, mu = 500.0, 0.02
+    row = _state_row(phase, T, mu)
+    assert row.keys() == {"T", "mu", "phi", "c", "phase"}
+    assert row["T"] == T
+    assert row["mu"] == mu
+    assert row["phi"] == phase.semigrand_potential(T, mu)
+    assert row["c"] == phase.concentration(T, mu)
+    assert row["phase"] == phase.name
+
+
+def test_state_row_passes_T_and_mu_through_unchanged():
+    """T and mu are not rounded or cast; an int and a numpy scalar survive
+    as the exact objects passed in."""
+    phase = LinePhase(name="A", fixed_concentration=0.5, line_energy=0.0)
+    T = 400
+    mu = np.float64(0.0123456789)
+    row = _state_row(phase, T, mu)
+    assert row["T"] is T
+    assert row["mu"] is mu
+
+
+def test_state_row_two_phases_differ_only_in_projected_fields():
+    """Two distinct phases at the same (T, mu) produce two dicts that agree
+    on T and mu and differ only in phi, c, phase."""
+    T, mu = 600.0, -0.01
+    a = LinePhase(name="A", fixed_concentration=0.2, line_energy=0.05)
+    b = LinePhase(name="B", fixed_concentration=0.8, line_energy=-0.05)
+    row_a = _state_row(a, T, mu)
+    row_b = _state_row(b, T, mu)
+    assert row_a["T"] == row_b["T"] == T
+    assert row_a["mu"] == row_b["mu"] == mu
+    assert row_a["phi"] != row_b["phi"]
+    assert row_a["c"] != row_b["c"]
+    assert row_a["phase"] != row_b["phase"]
+
+
+# -- _Simplex.centroids -----------------------------------------------------------
+#
+# `_Simplex.centroids()` maps each distinct phase to its vertices' (T, mu)
+# centroid; a two-phase simplex yields the two seed-projection endpoints.
+
+
+def test_simplex_centroids_arithmetic_mean_per_phase():
+    """A 3-vertex two-phase simplex (A once, B twice) gives A's own vertex
+    unchanged and B's the arithmetic mean of its two vertices."""
+    simplex = _mk_simplex(
+        phase=["A", "B", "B"], T=[300.0, 300.0, 320.0], mu=[0.0, 0.01, 0.02])
+    cents = simplex.centroids()
+    assert cents["A"] == pytest.approx((300.0, 0.0))
+    assert cents["B"] == pytest.approx((310.0, 0.015))
+
+
+def test_simplex_centroids_values_are_plain_float_tuples():
+    """Values are (T, mu) tuples of Python floats, not numpy arrays, so
+    downstream np.array(xy) construction works as expected."""
+    simplex = _mk_simplex(
+        phase=["A", "A", "B"], T=[100.0, 200.0, 400.0], mu=[0.0, 0.0, 0.0])
+    cents = simplex.centroids()
+    assert set(cents) == {"A", "B"}
+    for xy in cents.values():
+        assert isinstance(xy, tuple) and len(xy) == 2
+        assert all(isinstance(v, float) for v in xy)
+
+
+def test_simplex_centroids_ordering_follows_unique_phases():
+    """Entries are in _Simplex.unique_phases order (vertex appearance), so the
+    first-appearing phase comes first."""
+    simplex = _mk_simplex(
+        phase=["zeta", "alpha", "zeta"], T=[100.0, 500.0, 300.0], mu=[0.0, 0.0, 0.0])
+    assert list(simplex.unique_phases()) == ["zeta", "alpha"]
+    cents = simplex.centroids()
+    assert list(cents) == ["zeta", "alpha"]
+    assert cents["zeta"] == pytest.approx((200.0, 0.0))  # mean of two vertices
+    assert cents["alpha"] == pytest.approx((500.0, 0.0))  # single vertex
+
+
+# -- _CCBase._predict_mu / default _dT_adapt -----------------------------------
+#
+# Shared predictor and step scaler for both ClausiusClapeyronRefiner and
+# MiscibilityGapRefiner (refine.py:819, refine.py:837). Only the override in
+# MiscibilityGapRefiner is exercised by the miscibility-gap pipeline tests;
+# these pin the base defaults directly via a concrete subclass instance.
+
+
+def test_predict_mu_linear_extrapolation():
+    """Default predictor is plain linear extrapolation: mu* + dmu/dT * dT."""
+    refiner = ClausiusClapeyronRefiner()
+    assert refiner._predict_mu(0.5, 0.02, 3.0) == pytest.approx(0.56)
+
+
+def test_dT_adapt_default_half_width_over_slope():
+    """Default step size is half_width / |dmu_dT|; the sign of dmu_dT does
+    not matter since only its magnitude is used."""
+    refiner = ClausiusClapeyronRefiner()
+    step = _StepResult(mu_star=0.0, extra=None)
+    assert refiner._dT_adapt(step, 0.02, half_width=0.1) == pytest.approx(5.0)
+    assert refiner._dT_adapt(step, -0.02, half_width=0.1) == pytest.approx(5.0)
+
+
+def test_dT_adapt_slope_floor_at_zero():
+    """A flat coexistence line (dmu_dT == 0) does not divide by zero; the
+    slope is floored at 1e-9 so the step saturates at half_width / 1e-9."""
+    refiner = ClausiusClapeyronRefiner()
+    step = _StepResult(mu_star=0.0, extra=None)
+    assert refiner._dT_adapt(step, 0.0, half_width=0.1) == pytest.approx(1e8)
