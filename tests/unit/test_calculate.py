@@ -13,6 +13,7 @@ from landau.calculate import (
     _border_edges,
     _f_excess_tangent_chord,
     _join_phase_unit,
+    _rescale_T,
     _split_phase_unit,
     _split_stable,
     _semigrand_average_concentration,
@@ -63,6 +64,26 @@ def test_find_one_point_no_root():
     # Search in interval (1, 10) where there is no root and signs are the same (all positive)
     with pytest.raises(ValueError, match=r"f\(a\) and f\(b\) must have different signs"):
         find_one_point(phase1, phase2, mock_potential, (1, 10))
+
+
+# --- _rescale_T tests ---
+
+def test_rescale_T_normal_range():
+    t = pd.Series([300.0, 500.0, 700.0])
+    rescaled = _rescale_T(t)
+    np.testing.assert_allclose(rescaled, [0.0, 0.5, 1.0])
+
+
+def test_rescale_T_all_equal_input_unchanged():
+    t = pd.Series([300.0, 300.0, 300.0])
+    rescaled = _rescale_T(t)
+    pd.testing.assert_series_equal(rescaled, t)
+
+
+def test_rescale_T_single_element_input_unchanged():
+    t = pd.Series([500.0])
+    rescaled = _rescale_T(t)
+    pd.testing.assert_series_equal(rescaled, t)
 
 
 # --- cluster_T_c tests ---
