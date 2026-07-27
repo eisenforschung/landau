@@ -4,7 +4,16 @@ from hypothesis import HealthCheck, given, settings, strategies as st
 
 from landau.interpolate import SoftplusFit
 from landau.interpolate.basic import ConcentrationInterpolator, TemperatureInterpolator
-from landau.interpolate.softplus import _sigmoid, _softplus
+from landau.interpolate.softplus import (
+    _flat,
+    _sigmoid,
+    _softplus,
+    _softplus_inv,
+    _split,
+    _terms,
+    _terms_dc,
+    _terms_jac,
+)
 
 
 # Maximum allowed deviation between fit and truth, as a fraction of ``ptp(y)``.
@@ -148,3 +157,149 @@ class TestSoftplusPrimitive:
         h = 1e-5
         fd = (_softplus(t + h) - _softplus(t - h)) / (2 * h)
         np.testing.assert_allclose(_sigmoid(t), fd, atol=1e-6)
+
+
+# Shared tolerance for finite-difference derivative checks against the analytic
+# helpers.  ``h = 1e-6`` gives a central-difference truncation error of order
+# ``h**2 = 1e-12`` on smooth softplus; the residual is dominated by float64
+# round-off, which sits well under 1e-7 on the moderate-range parameter grids
+# used here.
+_FD_ATOL = 1e-7
+_FD_STEP = 1e-6
+
+
+class TestFlatSplit:
+    """Pack/unpack round-trip between per-term arrays and the flat parameter vector."""
+
+    def test_flat_layout_interleaves_terms_then_offset(self):
+        p = _flat([1.0, 2.0], [3.0, 4.0], [5.0, 6.0], 7.0)
+        # Layout is [a_0, b_0, c_0, a_1, b_1, c_1, offset].
+        np.testing.assert_array_equal(p, [1.0, 3.0, 5.0, 2.0, 4.0, 6.0, 7.0])
+
+    def test_split_inverts_flat(self):
+        a_in, b_in, c_in = [1.5, -2.5], [3.0, 4.5], [-0.3, 0.7]
+        off_in = 0.25
+        a, b, c, off = _split(_flat(a_in, b_in, c_in, off_in), 2)
+        np.testing.assert_array_equal(a, a_in)
+        np.testing.assert_array_equal(b, b_in)
+        np.testing.assert_array_equal(c, c_in)
+        assert off == off_in
+
+    def test_flat_zero_terms_is_offset_only(self):
+        p = _flat([], [], [], 3.14)
+        np.testing.assert_array_equal(p, [3.14])
+        a, b, c, off = _split(p, 0)
+        assert a.size == 0 and b.size == 0 and c.size == 0
+        assert off == 3.14
+
+
+class TestTerms:
+    """Value and c-derivative of the sum-of-softplus model."""
+
+    def test_n_one_matches_scalar_formula(self):
+        cn = np.linspace(-1.0, 1.0, 11)
+        a, b, c, off = 1.5, 2.0, 0.3, -0.25
+        expected = off + a * _softplus(b * (cn + c))
+        np.testing.assert_allclose(_terms(cn, [a], [b], [c], off), expected, atol=1e-14)
+
+    def test_n_two_sums_contributions(self):
+        cn = np.linspace(-1.0, 1.0, 11)
+        a = [1.5, 0.8]
+        b = [2.0, -3.0]
+        c = [0.3, -0.1]
+        off = 0.5
+        expected = off + sum(ai * _softplus(bi * (cn + ci)) for ai, bi, ci in zip(a, b, c))
+        np.testing.assert_allclose(_terms(cn, a, b, c, off), expected, atol=1e-14)
+
+    def test_zero_softplus_terms_returns_constant_offset(self):
+        cn = np.linspace(-1.0, 1.0, 5)
+        np.testing.assert_array_equal(
+            _terms(cn, [], [], [], 4.2),
+            np.full_like(cn, 4.2),
+        )
+
+    def test_scalar_input_produces_scalar_shape(self):
+        # ``_terms`` uses ``np.shape(cn)`` for the output shape, so a scalar
+        # input must produce a 0-d array (the surface slice call site relies on
+        # this via ``_scalarize``).
+        out = _terms(0.0, [1.0], [2.0], [0.0], 0.0)
+        assert np.ndim(out) == 0
+
+    def test_dc_matches_central_difference(self):
+        cn = np.linspace(-1.0, 1.0, 21)
+        a, b, c = [1.5, 0.8], [2.0, -3.0], [0.3, -0.1]
+        fd = (_terms(cn + _FD_STEP, a, b, c, 0.0) - _terms(cn - _FD_STEP, a, b, c, 0.0)) / (
+            2 * _FD_STEP
+        )
+        np.testing.assert_allclose(_terms_dc(cn, a, b, c), fd, atol=_FD_ATOL)
+
+
+class TestTermsJac:
+    """Analytic parameter Jacobian of the sum-of-softplus model."""
+
+    def _params(self):
+        return dict(
+            a=np.array([1.5, 0.8]),
+            b=np.array([2.0, -3.0]),
+            c=np.array([0.3, -0.1]),
+            off=0.5,
+        )
+
+    def test_shape_is_len_cn_by_three_n_plus_one(self):
+        cn = np.linspace(-1.0, 1.0, 7)
+        p = self._params()
+        J = _terms_jac(cn, p["a"], p["b"], p["c"])
+        assert J.shape == (cn.size, 3 * len(p["a"]) + 1)
+
+    def test_offset_column_is_ones(self):
+        cn = np.linspace(-1.0, 1.0, 7)
+        p = self._params()
+        J = _terms_jac(cn, p["a"], p["b"], p["c"])
+        np.testing.assert_array_equal(J[:, -1], np.ones(cn.size))
+
+    def test_columns_match_finite_diff_of_terms(self):
+        # Central-difference every parameter (``a``, ``b``, ``c`` per term, then
+        # the offset) and check the corresponding Jacobian column.  This catches
+        # any chain-rule mistake in the analytic construction.
+        cn = np.linspace(-1.0, 1.0, 21)
+        p = self._params()
+        J = _terms_jac(cn, p["a"], p["b"], p["c"])
+        flat = _flat(p["a"], p["b"], p["c"], p["off"])
+        n = len(p["a"])
+        h = _FD_STEP
+        for k in range(flat.size):
+            plus = flat.copy()
+            plus[k] += h
+            minus = flat.copy()
+            minus[k] -= h
+            fd = (_terms(cn, *_split(plus, n)) - _terms(cn, *_split(minus, n))) / (2 * h)
+            np.testing.assert_allclose(
+                J[:, k], fd, atol=_FD_ATOL, err_msg=f"column {k} mismatch"
+            )
+
+
+class TestSoftplusInv:
+    """Inverse of the softplus link used to constrain amplitudes non-negative."""
+
+    @settings(deadline=None, suppress_health_check=[HealthCheck.too_slow])
+    @given(a=st.floats(min_value=1e-3, max_value=5.0))
+    def test_round_trip_on_moderate_range(self, a):
+        assert _softplus(_softplus_inv(a)) == pytest.approx(a, abs=1e-12)
+
+    def test_finite_for_large_input(self):
+        # ``log(expm1(a))`` overflows for ``a`` past ~700; the ``log1p``-based
+        # form documented in the ``_softplus_inv`` docstring must stay finite
+        # and round-trip to ``a`` (softplus is ~identity there).
+        a = 1000.0
+        alpha = _softplus_inv(a)
+        assert np.isfinite(alpha)
+        assert _softplus(alpha) == pytest.approx(a, abs=1e-9)
+
+    def test_clamps_nonpositive_input(self):
+        # Softplus is strictly positive so its inverse is undefined at ``a<=0``.
+        # The helper clamps to ``1e-12`` rather than returning ``-inf`` / ``nan``,
+        # keeping downstream ``_bseed`` seeds finite when the fitted amplitude
+        # is numerically zero.
+        assert np.isfinite(_softplus_inv(0.0))
+        assert np.isfinite(_softplus_inv(-1.0))
+        assert _softplus_inv(-1.0) == _softplus_inv(0.0)
