@@ -9,7 +9,8 @@ from pyiron_snippets.import_alarm import ImportAlarm
 import shapely
 import numpy as np
 import pandas as pd
-from matplotlib.patches import Polygon
+from matplotlib.patches import Polygon, PathPatch
+from matplotlib.path import Path
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import pairwise_distances
 from sklearn.decomposition import PCA
@@ -27,10 +28,13 @@ class AbstractPolyMethod(abc.ABC):
         over groups of columns `phase` and `phase_unit`."""
         return df
 
-    def make(self, dd: pd.DataFrame, variables: list[str] = ["c", "T"]) -> shapely.Polygon | None:
-        """Turn the subset of the full data belonging to one phase region into
-        a buffered shapely polygon.  Conversion to matplotlib happens in
-        :meth:`apply`."""
+    def _prepare_points(
+            self, dd: pd.DataFrame, variables: list[str]
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, StandardScaler] | None:
+        """Sort, finite-filter, dedupe and standardise the per-phase point
+        cloud.  Returns the scaled coordinates together with the parallel
+        ``border`` / ``segment_label`` arrays and the fitted scaler, or ``None``
+        when nothing is left."""
         border = dd["border"].to_numpy() if "border" in dd.columns else np.zeros(len(dd), dtype=bool)
         segment_label = dd["border_segment"].to_numpy() if "border_segment" in dd.columns else np.ones(len(dd), dtype=int)
 
@@ -57,6 +61,16 @@ class AbstractPolyMethod(abc.ABC):
 
         scaler = StandardScaler()
         pp_scaled = scaler.fit_transform(pp)
+        return pp_scaled, border, segment_label, scaler
+
+    def make(self, dd: pd.DataFrame, variables: list[str] = ["c", "T"]) -> shapely.Polygon | None:
+        """Turn the subset of the full data belonging to one phase region into
+        a buffered shapely polygon.  Conversion to matplotlib happens in
+        :meth:`apply`."""
+        prepared = self._prepare_points(dd, variables)
+        if prepared is None:
+            return None
+        pp_scaled, border, segment_label, scaler = prepared
 
         # check for c-degenerate line phase
         points = shapely.MultiPoint(pp_scaled)
@@ -100,13 +114,33 @@ class AbstractPolyMethod(abc.ABC):
         pass
 
     def apply(self, df: pd.DataFrame, variables: list[str] = ["c", "T"]) -> pd.Series:
+        # Capture label regions before prepare(), which some methods mutate df in.
+        regions = self._label_regions(df, variables)
         shapes = self.prepare(df).groupby(['phase', 'phase_unit']).apply(
                 self.make, variables=variables, include_groups=False
 
         ).dropna()
         shapes = shapes[~shapes.map(lambda s: s.is_empty)]
         trimmed = self._trim_overlaps(shapes)
-        return trimmed.map(self._to_mpl_polygon).dropna()
+        polys = trimmed.map(self._to_mpl_polygon).dropna()
+        if regions is not None:
+            for key, patch in polys.items():
+                region = regions.get(key)
+                if region is not None:
+                    patch._label_region = region
+        return polys
+
+    def _label_regions(self, df: pd.DataFrame, variables: list[str]) -> dict | None:
+        """Filled regions used only for inline-label placement, keyed by
+        ``(phase, phase_unit)``.
+
+        ``None`` (the default) means the drawn polygon is used for label
+        placement -- its pole of inaccessibility -- which is what every filled
+        poly method wants.  A method that draws something other than the region
+        itself (e.g. :class:`BufferedSegments`, which strokes only the border)
+        overrides this to supply a stand-in region.
+        """
+        return None
 
     def _trim_overlaps(self, shapes: pd.Series) -> pd.Series:
         """Symmetrically subtract pairwise overlap between buffered polygons.
@@ -414,7 +448,99 @@ def _segment_tsp_polygon(
     return shapely.Polygon(coords)
 
 
-__all__ = ["Concave", "Segments"]
+@dataclass
+class BufferedSegments(Segments):
+    """Draw a thin, uniformly thick border tracing a phase region.
+
+    Like :class:`Segments` this works off refined phase boundaries, but instead
+    of stitching the border segments into a single ring it unions them and
+    strokes the result as a fixed-width line.  The union is what avoids the
+    brittle stitching: no ordering heuristic or TSP is involved, so the border
+    cannot self-intersect and stays robust for phases stable at the edges of the
+    diagram where :class:`Segments` struggles.
+
+    The border is stroked with a line width in points, so it stays uniformly
+    thick everywhere irrespective of boundary orientation, axis aspect or phase
+    -- unlike a buffered band, whose on-screen width varies with all three.
+
+    Requires that phase diagram data was generated with `refine=True`.
+    """
+    thickness: float = 2.0
+    """Width of the border line, in points."""
+
+    def make(self, dd: pd.DataFrame, variables: list[str] = ["c", "T"]) -> shapely.Geometry | None:
+        prepared = self._prepare_points(dd, variables)
+        if prepared is None:
+            return None
+        pp_scaled, border, segment_label, scaler = prepared
+        geom = self._make(pp_scaled, border, segment_label)
+        if geom is None or geom.is_empty:
+            return None
+        return shapely.transform(geom, scaler.inverse_transform)
+
+    def _make(self, pp: np.ndarray, border: np.ndarray, segment_label: np.ndarray) -> shapely.Geometry | None:
+        if np.all(segment_label == 1):
+            raise ValueError("BufferedSegments requires refined phase boundaries (segment_label must be provided)!")
+        segments = _segments_from_labels(pp, segment_label)
+        lines = [shapely.LineString(seg) for seg in segments if len(seg) >= 2]
+        if not lines:
+            return None
+        return shapely.union_all(lines)
+
+    def _trim_overlaps(self, shapes: pd.Series) -> pd.Series:
+        # Adjacent phases share a boundary, so their borders coincide there by
+        # design; there is nothing to trim between strokes.
+        return shapes
+
+    def _label_regions(self, df: pd.DataFrame, variables: list[str]) -> dict:
+        """Stand-in region per ``(phase, phase_unit)`` for label placement.
+
+        The stroke draws only the border, so there is no filled polygon for the
+        label code to anchor in.  Use the convex hull of the phase's stable
+        sample points: approximate (a wrapping region's hull bulges past it) but
+        robust, and close enough to seat the label inside the region.
+        """
+        regions = {}
+        for key, g in df.groupby(["phase", "phase_unit"]):
+            pts = g[variables].to_numpy()
+            pts = pts[np.isfinite(pts).all(axis=1)]
+            if len(pts) == 0:
+                continue
+            hull = shapely.convex_hull(shapely.MultiPoint(pts))
+            if isinstance(hull, shapely.Polygon) and not hull.is_empty:
+                regions[key] = hull
+            elif not hull.is_empty:
+                # Line phase: collinear (or single) stable points have no 2-D
+                # hull.  Thicken to a thin sliver so the label still seats at
+                # the line's midpoint instead of being dropped.
+                sliver = hull.buffer(self.min_c_width / 2)
+                if isinstance(sliver, shapely.Polygon) and not sliver.is_empty:
+                    regions[key] = sliver
+        return regions
+
+    def _to_mpl_polygon(self, shape: shapely.Geometry) -> PathPatch | None:
+        if shape is None or shape.is_empty:
+            return None
+        if isinstance(shape, shapely.MultiLineString):
+            lines = list(shape.geoms)
+        elif isinstance(shape, shapely.LineString):
+            lines = [shape]
+        else:
+            return None
+        vertices: list[np.ndarray] = []
+        codes: list[int] = []
+        for line in lines:
+            coords = np.asarray(line.coords)
+            if len(coords) < 2:
+                continue
+            vertices.append(coords)
+            codes.extend([Path.MOVETO] + [Path.LINETO] * (len(coords) - 1))
+        if not vertices:
+            return None
+        return PathPatch(Path(np.concatenate(vertices), codes), fill=False, linewidth=self.thickness)
+
+
+__all__ = ["Concave", "Segments", "BufferedSegments"]
 
 
 with ImportAlarm("'python_tsp' package required for PythonTsp.  Install from conda or pip.") as python_tsp_alarm:
@@ -540,6 +666,7 @@ def handle_poly_method(poly_method, **kwargs):
     allowed = {
                 'concave': Concave(**kwargs, ratio=ratio),
                 'segments': Segments(**kwargs),
+                'buffered-segments': BufferedSegments(**kwargs),
     }
     if 'PythonTsp' in __all__:
         allowed['tsp'] = PythonTsp(**kwargs)
