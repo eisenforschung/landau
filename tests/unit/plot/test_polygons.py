@@ -22,6 +22,7 @@ from shapely.ops import polylabel
 from landau import plot as plot_mod
 from landau.plot import (
     _add_inline_polygon_labels,
+    _group_overlapping_intervals,
     _largest_inscribed_circle_center,
     _text_with_outline,
     get_phase_colors,
@@ -668,3 +669,51 @@ def test_get_and_plot_polygons_pipeline_deterministic(fig_test, fig_ref):
         ax=ax_test,
     )
     remove_ticks_and_titles(fig_test)
+
+
+# --- _group_overlapping_intervals --------------------------------------------
+# Helper used by ``_add_inline_polygon_labels`` to decide which off-polygon
+# labels share a horizontal-extent group and therefore need a vertical spread
+# pass.  The behaviour is pure (list of ``(lo, hi)`` in, list-of-index-lists
+# out), so pin it directly with tiny cases instead of only through the polygon
+# rendering paths.
+
+
+def test_group_overlapping_intervals_empty():
+    assert _group_overlapping_intervals([]) == []
+
+
+def test_group_overlapping_intervals_singleton():
+    assert _group_overlapping_intervals([(0.0, 1.0)]) == [[0]]
+
+
+def test_group_overlapping_intervals_disjoint_pair():
+    assert _group_overlapping_intervals([(0.0, 1.0), (3.0, 4.0)]) == [[0], [1]]
+
+
+def test_group_overlapping_intervals_overlapping_pair():
+    assert _group_overlapping_intervals([(0.0, 2.0), (1.0, 3.0)]) == [[0, 1]]
+
+
+def test_group_overlapping_intervals_transitive_chain():
+    # The middle interval bridges an outer pair that wouldn't overlap on their
+    # own, so all three land in a single group.
+    assert _group_overlapping_intervals([(0.0, 2.0), (1.0, 4.0), (3.0, 5.0)]) == [[0, 1, 2]]
+
+
+def test_group_overlapping_intervals_gap_merges_near_touching():
+    intervals = [(0.0, 1.0), (1.5, 2.5)]
+    assert _group_overlapping_intervals(intervals, gap=0.0) == [[0], [1]]
+    assert _group_overlapping_intervals(intervals, gap=1.0) == [[0, 1]]
+
+
+def test_group_overlapping_intervals_touching_intervals_share_group():
+    # ``lo_i > hi + gap`` is strict, so the shared endpoint at ``gap=0`` keeps
+    # the two intervals in the same group.
+    assert _group_overlapping_intervals([(0.0, 1.0), (1.0, 2.0)]) == [[0, 1]]
+
+
+def test_group_overlapping_intervals_indices_track_original_order():
+    # Result lists the original indices in start-sorted order, so an unsorted
+    # input still produces valid indices into ``intervals``.
+    assert _group_overlapping_intervals([(3.0, 4.0), (0.0, 1.0)]) == [[1], [0]]
