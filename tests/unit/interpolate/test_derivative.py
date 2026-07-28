@@ -6,6 +6,8 @@ derivative.
 """
 
 import numpy as np
+from hypothesis import given, strategies as st
+from hypothesis.extra.numpy import arrays
 
 from landau.interpolate.basic import NumericalDerivative
 
@@ -50,3 +52,20 @@ def test_scalar_and_array_shape_contract():
     x = np.linspace(1, 4, 6)
     array_out = d(x)
     assert array_out.shape == x.shape
+
+
+@given(
+    coeffs=arrays(
+        dtype=float,
+        shape=st.integers(min_value=1, max_value=6),  # order < 6, i.e. degree <= 5
+        elements=st.floats(min_value=-10, max_value=10, allow_nan=False, allow_infinity=False),
+    )
+)
+def test_derivative_matches_random_polynomial(coeffs):
+    def poly(x):
+        return np.polyval(coeffs[::-1], x)
+
+    d = NumericalDerivative(poly)
+    x = np.linspace(1, 4, 9)  # interior, away from x=0 where relative step degenerates
+    analytic = np.polyval(np.polyder(coeffs[::-1]), x)
+    assert np.allclose(d(x), analytic, atol=1e-4)
