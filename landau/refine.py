@@ -598,6 +598,8 @@ def _simplex_brackets(simplex: "_Simplex"):
     Returns ``(mu_lo, mu_hi, T_lo, T_hi, T_seed)``; both refiners use
     these as the seed simplex's mu/T extents and the seed temperature.
     """
+    if not isinstance(simplex, _Simplex):
+        raise TypeError(f"_simplex_brackets expects a _Simplex, got {type(simplex).__name__}")
     return (
         float(simplex.mu.min()),
         float(simplex.mu.max()),
