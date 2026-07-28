@@ -490,12 +490,8 @@ def test_point_on_line_helper():
 def test_simplex_brackets_returns_mu_T_extents_and_T_centroid():
     """The (mu_lo, mu_hi, T_lo, T_hi, T_seed) tuple is the seed simplex's
     mu/T bounding box plus the centroid T that ``_CCBase._trace`` walks
-    from — verified on a hand-built 3-row simplex."""
-    simplex = pd.DataFrame({
-        "T": [100.0, 200.0, 300.0],
-        "mu": [0.5, 0.2, 0.8],
-        "phase": ["A", "B", "A"],
-    })
+    from — verified on a hand-built 3-vertex simplex."""
+    simplex = _mk_simplex(T=[100.0, 200.0, 300.0], mu=[0.5, 0.2, 0.8], phase=["A", "B", "A"])
     mu_lo, mu_hi, T_lo, T_hi, T_seed = _simplex_brackets(simplex)
     assert (mu_lo, mu_hi) == (0.2, 0.8)
     assert (T_lo, T_hi) == (100.0, 300.0)
@@ -503,15 +499,12 @@ def test_simplex_brackets_returns_mu_T_extents_and_T_centroid():
 
 
 def test_simplex_brackets_row_order_agnostic():
-    """The returned bracket is symmetric in row order; a shuffled simplex
+    """The returned bracket is symmetric in vertex order; a shuffled simplex
     yields the same output."""
-    rows = [
-        {"T": 300.0, "mu": 0.8},
-        {"T": 100.0, "mu": 0.5},
-        {"T": 200.0, "mu": 0.2},
-    ]
-    forward = _simplex_brackets(pd.DataFrame(rows))
-    reversed_ = _simplex_brackets(pd.DataFrame(rows[::-1]))
+    T = [300.0, 100.0, 200.0]
+    mu = [0.8, 0.5, 0.2]
+    forward = _simplex_brackets(_mk_simplex(T=T, mu=mu))
+    reversed_ = _simplex_brackets(_mk_simplex(T=T[::-1], mu=mu[::-1]))
     assert forward == reversed_
 
 
@@ -519,7 +512,7 @@ def test_simplex_brackets_returns_python_floats():
     """Every field is a plain ``float`` — the downstream refiners store
     these as dataclass fields and rely on scalar arithmetic, not numpy
     scalar types."""
-    simplex = pd.DataFrame({"T": [100, 200], "mu": [0.5, 0.7]})
+    simplex = _mk_simplex(T=[100, 200], mu=[0.5, 0.7])
     for value in _simplex_brackets(simplex):
         assert type(value) is float
 
