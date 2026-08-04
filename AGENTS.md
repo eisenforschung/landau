@@ -43,24 +43,39 @@ Python `>=3.11,<3.14`. Extras: `test`, `constraints`, `fast-tsp`, `python-tsp`, 
 ## Conventions (hard constraints)
 
 - **Pandas 2/3 compat**. Every `groupby().apply()` must pass `include_groups=False`. Do not drop pandas 2 support.
+
 - **`shapely>=2.1`** required — `AbstractPolyMethod.make` uses `make_valid(method="structure")`.
+
 - **Module names: no underscores.** `asewrapper`, not `ase_wrapper`.
+
 - **Frozen dataclass + ABC** for `Phase` and `Interpolator` subclasses (immutable, structurally hashable). `Refiner` subclasses are plain mutable; `AbstractPolyMethod` is non-frozen.
+
 - **Optional-dep gating** uses `pyiron_snippets.import_alarm.ImportAlarm`. In tests use module-wide `pytestmark = pytest.mark.skipif(ImportAlarm(...).message is not None, ...)` (whole-file dep) or per-test `@pytest.mark.skipif` against a `try/except`-set flag (mixed deps). Bare `try/except ImportError` is not enough.
+
 - **`distance_threshold`** is a required kwarg on `cluster_T_c` / `cluster_T_c_mu` / `cluster`; user-facing `cluster_phase` and `get_polygons` default it to `0.5`.
 
 ## Working style (project house rules)
 
 - Match a terse, imperative tone in commits, PRs, and comments. No marketing language, no apologies, no `**bold**` headline numbers in PR bodies, no `[Fix this →]` action links. Plain technical reports.
+
 - **Evidence over claims.** Cite a commit hash, file path, test count, or command output for any claim. Numbers in a PR body come with a script in `benchmarks/` in the same PR. For physics/numerics, prefer saying nothing over saying something unverified.
+
 - **Comments and docstrings reflect only the current state.** No "old vs new", no rejected alternatives, no narration of the PR's evolution.
+
 - **One purpose per PR.** Split notebooks, benchmarks, refactors, and unrelated fixes into their own PRs. If a PR grows a second concept, propose splitting before pushing more.
+
 - **Minimal change.** Reuse existing helpers (numpy, scipy, shapely, matplotlib.testing, pyiron_snippets) before writing a new one. Don't introduce abstractions for hypothetical future requirements.
+
 - **Tests assert tight conditions** that a degenerate or constant solution would fail. Loose `atol=0.05` "it ran" tests get rejected. Use Hypothesis for round-trip recovery on fits.
+
 - **Git: rebase, never merge.** Merge commits are disabled on GitHub. Rebase onto `origin/main` and force-push to keep history linear.
+
 - **Conventional Commits drive releases.** `release-please` (`.github/workflows/release-please.yml`, PR #225) reads conventional-commit messages on `main` to open release PRs; non-conforming messages are ignored by the release tooling. Use `feat:`/`fix:`/`docs:`/`test:`/`chore:`/`refactor:`, `!` or `BREAKING CHANGE:` for breaks.
+
 - **Do not commit** `.hypothesis/`, `_version.py`, stray top-level scripts, duplicate exploratory files.
+
 - **Keep PR body in sync with the diff.** When review feedback invalidates a claim in the body, edit the body — never leave a stale claim standing.
+
 - **Notebooks** are committed with executed outputs only.
 
 ## Deeper context
