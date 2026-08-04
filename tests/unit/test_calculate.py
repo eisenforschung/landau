@@ -373,6 +373,66 @@ def test_guess_mu_range_endpoints_match_reported_concentrations(T):
     assert _semigrand_average_concentration(phases, T, mus.max()) == pytest.approx(c1, abs=3e-3)
 
 
+# --- _semigrand_average_concentration tests ---
+
+
+def test_semigrand_average_concentration_single_phase_scalar():
+    # A single phase's weight collapses to 1, so the average is just its own c.
+    phase = LinePhase("A", fixed_concentration=0.3, line_energy=0.0)
+    assert _semigrand_average_concentration([phase], T=500, mu=1.7) == pytest.approx(0.3)
+
+
+def test_semigrand_average_concentration_single_phase_array():
+    phase = LinePhase("A", fixed_concentration=0.3, line_energy=0.0)
+    mu = np.linspace(-5, 5, 7)
+    result = _semigrand_average_concentration([phase], T=500, mu=mu)
+    assert result.shape == mu.shape
+    np.testing.assert_allclose(result, 0.3)
+
+
+def test_semigrand_average_concentration_coexistence_is_arithmetic_mean():
+    # Equal energies and c=0/c=1 endpoints put coexistence exactly at mu=0:
+    # phi_a = phi_b = 0, so both phases carry weight 0.5 and the average is
+    # the plain arithmetic mean of the two concentrations.
+    a = LinePhase("A", fixed_concentration=0.0, line_energy=0.0)
+    b = LinePhase("B", fixed_concentration=1.0, line_energy=0.0)
+    assert _semigrand_average_concentration([a, b], T=300, mu=0.0) == pytest.approx(0.5)
+
+
+def test_semigrand_average_concentration_collapses_onto_dominant_phase():
+    # Far from coexistence (mu=0) at low T, the exponential weighting is
+    # essentially a hard argmin: the average should sit on the dominant
+    # phase's own concentration.
+    a = LinePhase("A", fixed_concentration=0.0, line_energy=0.0)
+    b = LinePhase("B", fixed_concentration=1.0, line_energy=0.0)
+    assert _semigrand_average_concentration([a, b], T=10, mu=5.0) == pytest.approx(1.0, abs=1e-6)
+    assert _semigrand_average_concentration([a, b], T=10, mu=-5.0) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_semigrand_average_concentration_numerical_stability_guard():
+    # One phase (dom) is far more stable than the other (normal) at every
+    # sampled mu: without the phis - phis.min(axis=0) shift, exp(-phi / kB T)
+    # would overflow to inf for the very negative phi and corrupt the
+    # normalisation into nan. With the shift the result stays exactly on the
+    # dominant phase's concentration, and no overflow/invalid FP error fires.
+    dom = LinePhase("dom", fixed_concentration=0.7, line_energy=-1e6)
+    normal = LinePhase("normal", fixed_concentration=0.2, line_energy=0.0)
+    mu = np.array([-1.0, 0.0, 1.0])
+    with np.errstate(over="raise", invalid="raise"):
+        result = _semigrand_average_concentration([dom, normal], T=300, mu=mu)
+    assert np.all(np.isfinite(result))
+    np.testing.assert_allclose(result, 0.7)
+
+
+def test_semigrand_average_concentration_array_mu_shape_contract():
+    a = LinePhase("A", fixed_concentration=0.0, line_energy=0.0)
+    b = LinePhase("B", fixed_concentration=1.0, line_energy=0.1)
+    mu = np.linspace(-3, 3, 11)
+    result = _semigrand_average_concentration([a, b], T=300, mu=mu)
+    assert result.shape == mu.shape
+    assert np.isscalar(_semigrand_average_concentration([a, b], T=300, mu=0.5))
+
+
 # --- _split_stable tests ---
 
 
