@@ -1154,6 +1154,63 @@ def test_lte_contribution_phi_c_consistency_property(e1, e2, s1, n1, n2, eta, T,
     assert_allclose(direct, fd, rtol=1e-5, atol=1e-7)
 
 
+# --- ConstantPointDefect.excess_free_energy / AbstractPointDefectSublattice._get_zes tests ---
+
+
+class _MinimalSublattice(AbstractPointDefectSublattice):
+    """Identity hooks so ``_get_zes`` output is observable directly, without
+    going through either concrete subclass's combiner."""
+
+    def _site_log_partition(self, zes_sum):
+        return zes_sum
+
+    def _site_normalization(self, zes_sum):
+        return zes_sum
+
+
+def test_constant_point_defect_excess_free_energy_at_T0_drops_entropy_term():
+    d = ConstantPointDefect("d", excess_energy=0.42, excess_entropy=2e-4, excess_solutes=1)
+    assert d.excess_free_energy(0.0) == pytest.approx(d.excess_energy)
+
+
+def test_constant_point_defect_excess_free_energy_slope_is_minus_entropy():
+    """The T-slope of excess_free_energy recovers -excess_entropy (checks the sign)."""
+    d = ConstantPointDefect("d", excess_energy=0.42, excess_entropy=2e-4, excess_solutes=1)
+    T1, T2 = 300.0, 900.0
+    slope = (d.excess_free_energy(T2) - d.excess_free_energy(T1)) / (T2 - T1)
+    assert slope == pytest.approx(-d.excess_entropy)
+
+
+def test_get_zes_single_defect_at_zero_dmu_matches_closed_form():
+    d = ConstantPointDefect("d", excess_energy=0.35, excess_entropy=0.0, excess_solutes=1)
+    sub = _MinimalSublattice(name="s", sublattice=0, sublattice_fraction=1.0, defects=[d])
+    T = 500.0
+    z = sub._get_zes(T, 0.0)
+    expected = np.exp(-d.excess_free_energy(T) / kB / T)
+    assert z.shape == (1,)
+    assert_allclose(z[0], expected, rtol=1e-12)
+
+
+def test_get_zes_dmu_shift_by_free_energy_over_solutes_gives_unit_z():
+    """dmu = [g]/[n] shifts the exponent to zero: pins the sign and magnitude of
+    the n_i * dmu term."""
+    d = ConstantPointDefect("d", excess_energy=0.28, excess_entropy=0.0, excess_solutes=2)
+    sub = _MinimalSublattice(name="s", sublattice=0, sublattice_fraction=1.0, defects=[d])
+    T = 700.0
+    dmu = d.excess_free_energy(T) / d.excess_solutes
+    z = sub._get_zes(T, dmu)
+    assert_allclose(z[0], 1.0, rtol=1e-12)
+
+
+def test_get_zes_shape_with_multiple_defects_and_array_dmu():
+    d1 = ConstantPointDefect("d1", excess_energy=0.3, excess_entropy=0.0, excess_solutes=1)
+    d2 = ConstantPointDefect("d2", excess_energy=0.5, excess_entropy=0.0, excess_solutes=0)
+    sub = _MinimalSublattice(name="s", sublattice=0, sublattice_fraction=1.0, defects=[d1, d2])
+    dmu = np.linspace(-0.1, 0.1, 7)
+    z = sub._get_zes(600.0, dmu)
+    assert z.shape == (2, 7)
+
+
 # ---------------------------------------------------------------------------
 # Back-compat re-exports of the pre-split point-defect API. The classes moved to
 # landau.phases.pointdefects; the names below stay importable from landau.phases
