@@ -26,9 +26,9 @@ Python `>=3.11,<3.14`. Extras: `test`, `constraints`, `fast-tsp`, `python-tsp`, 
 | Path | What's there |
 |------|--------------|
 | `landau/calculate.py` | `calc_phase_diagram` (its `refine=` accepts `True` / `False` / `Sequence[Refiner]`; every output row carries a `locus` column populated from `landau.features.Locus`), `refine_phase_diagram`, `guess_mu_range`, `get_transitions`, clustering helpers |
-| `landau/phases/` | `Phase` ABC, `AbstractLinePhase`, `LinePhase`, `TemperatureDependentLinePhase` (deprecated shim `TemperatureDepandantLinePhase` — `@deprecate`, removal at 2.0 — kept for back-compat), `IdealSolution`, `RegularSolution`, `InterpolatingPhase`, `SlowInterpolatingPhase`, `FastInterpolatingPhase` (the default solution-phase choice; `SlowInterpolatingPhase` stays as the per-scalar `scipy.optimize.brute` reference oracle), `Surface2DInterpolatingPhase` (fits one `f(T, c)` surface globally then slices per-T, replacing the per-T 1-D refit — PR #321). Sibling modules: `pointdefects.py` (`AbstractPointDefect`, `AbstractPointDefectSublattice`, `ConstantPointDefect`, `PointDefectSublattice`, `LowTemperatureExpansionSublattice`, `PointDefectedPhase`; the pre-split public API — `AbstractPointDefect` as a plain alias, `ConstantPointDefect`/`PointDefectSublattice`/`PointDefectedPhase` behind `@deprecate` shims — is re-exported through `phases/__init__.py`; import `AbstractPointDefectSublattice`/`LowTemperatureExpansionSublattice` from `landau.phases.pointdefects` directly) and `asewrapper.py` (`AsePhase`). User-facing classes are re-exported from `landau/__init__.py` |
-| `landau/interpolate/` | 1-D `Interpolator` strategies (`Interpolator.fit(x, y) → Interpolation`; `Interpolation.deriv() → Interpolation` returns `f'`, analytic for `PolyFit`/`SGTE`/`RedlichKister`, numerical-default for closure-wrapped fits — `FastInterpolatingPhase` needs the analytic first derivative): `PolyFit`, `SplineFit`, `SGTE`, `RedlichKister`, `StitchedFit`, `SoftplusFit`, `WhitneyTemperatureInterpolator` (the sklearn-style `WhitneyRBFInterpolator` it wraps is not re-exported). 2-D surface strategies (`SurfaceInterpolator.fit(T, c, H) → FittedSurface`; `FittedSurface.slice_at(T) → Interpolation` — the surface is fitted globally once and sliced per-T, plugged into `Surface2DInterpolatingPhase` via `surface_interpolator=`; PR #321): `CalphadSurface2DInterpolator` (SGTE terminals + poly-in-T Redlich-Kister — needs c=0/c=1 terminal phases), `SoftplusSurface2DInterpolator` (softplus-link amplitudes, provably convex fixed-T slices — no terminal requirement, good for intermetallics), `WhitneySurface2DInterpolator` (Whitney-extended RBF over all `(T, c, H)` — no terminal requirement); paired `CalphadFittedSurface`/`SoftplusFittedSurface`/`WhitneyFittedSurface` helpers |
-| `landau/refine.py` | `Refiner` ABC + `ScanRefiner`, `DelaunayLineRefiner`, `DelaunayTripleRefiner`, `ClausiusClapeyronRefiner`, `MiscibilityGapRefiner`; the last two share `_CCBase` (keyword-only ctors: `dT_max=5.0, dT_min=1.0, dc_max=0.01, dc_min=0.0, max_steps=500`). Delaunay refiners' `propose()` yields candidate objects (`_SimplexCandidate` / `_TripleCandidate`) wrapping a numpy-backed `_Simplex` view (`.unique_phases()`, `.centroids()`) — `_delaunay_simplices(df)` returns the underlying `list[tuple[_Simplex, int]]` (PR #335); `_delaunay_simplices(df)` memoises the tessellation + `_Simplex` list on the most recent frame (weakref-identity key, module-level `_simplex_cache`) so the default 2-D refiners share one Delaunay per refine pass instead of re-triangulating per refiner (PR #341; pinned by `test_delaunay_simplices_memoised_per_frame`); `_CCBase._trace` aborts as soon as an emitted point is `_dominated` (pair crossed a triple point into the metastable tail, PR #340). `default_refiners(df)` selects the set — 2-D grid → Triple + CC + MiscibilityGap; 1-D scan → matching `ScanRefiner` |
+| `landau/phases/` | `Phase` ABC, `AbstractLinePhase`, `LinePhase`, `TemperatureDependentLinePhase` (typo alias `TemperatureDepandantLinePhase` kept behind `@deprecate`, removal at 2.0), `IdealSolution`, `RegularSolution`, `InterpolatingPhase`, `SlowInterpolatingPhase` (per-scalar `scipy.optimize.brute` reference oracle), `FastInterpolatingPhase` (vectorised subclass — the default user-facing solution phase), `Surface2DInterpolatingPhase` (fits one `f(T, c)` surface globally, slices per-T). Sibling modules: `pointdefects.py` (`AbstractPointDefect`, `AbstractPointDefectSublattice`, `ConstantPointDefect`, `PointDefectSublattice`, `LowTemperatureExpansionSublattice`, `PointDefectedPhase`) and `asewrapper.py` (`AsePhase`). `phases/__init__.py` re-exports the pre-split point-defect names — `AbstractPointDefect` as a plain alias, `ConstantPointDefect`/`PointDefectSublattice`/`PointDefectedPhase` behind `@deprecate` shims. Post-split names (`AbstractPointDefectSublattice`, `LowTemperatureExpansionSublattice`) are **not** re-exported — import from `landau.phases.pointdefects` directly. User-facing classes are also re-exported from `landau/__init__.py` |
+| `landau/interpolate/` | 1-D `Interpolator` strategies (`Interpolator.fit(x, y) → Interpolation`; `Interpolation.deriv() → Interpolation`, analytic for `PolyFit`/`SGTE`/`RedlichKister`, `NumericalDerivative` central difference otherwise — `FastInterpolatingPhase` uses the first derivative): `PolyFit`, `SplineFit`, `SGTE`, `RedlichKister`, `StitchedFit`, `SoftplusFit`, `WhitneyTemperatureInterpolator` (the sklearn-style `WhitneyRBFInterpolator` it wraps is not re-exported). 2-D surface strategies (`SurfaceInterpolator.fit(T, c, H) → FittedSurface`; `FittedSurface.slice_at(T) → Interpolation`; consumed by `Surface2DInterpolatingPhase(surface_interpolator=...)`, required kwarg): `CalphadSurface2DInterpolator` (SGTE terminals + poly-in-T Redlich-Kister — needs c=0/c=1 terminal phases), `SoftplusSurface2DInterpolator` (softplus-link amplitudes, provably convex fixed-T slices — no terminal requirement, good for intermetallics), `WhitneySurface2DInterpolator` (Whitney-extended RBF — no terminal requirement); paired `CalphadFittedSurface`/`SoftplusFittedSurface`/`WhitneyFittedSurface` helpers. The `_scalarize(x)` 0-d → Python scalar helper also lives here (in `basic.py`) so `landau.phases` and `SplineFit` can share it without a cycle |
+| `landau/refine.py` | `Refiner` ABC + `ScanRefiner`, `DelaunayLineRefiner`, `DelaunayTripleRefiner`, `ClausiusClapeyronRefiner`, `MiscibilityGapRefiner`; the last two share `_CCBase` (keyword-only ctors: `dT_max=5.0, dT_min=1.0, dc_max=0.01, dc_min=0.0, max_steps=500`). Delaunay refiners' `propose()` yields candidate objects (`_SimplexCandidate` / `_TripleCandidate`) wrapping a numpy-backed `_Simplex` view (`.unique_phases()`, `.centroids()`); `_delaunay_simplices(df) → list[tuple[_Simplex, int]]` memoises tessellation on the most recent frame via weakref-identity keying (module-level `_simplex_cache`), so the default 2-D refiners share one Delaunay per refine pass. `_CCBase._trace` aborts as soon as an emitted point is `_dominated` (pair crossed a triple point into the metastable tail). `default_refiners(df)`: 2-D grid → `DelaunayTripleRefiner` + `ClausiusClapeyronRefiner` + `MiscibilityGapRefiner`; 1-D scan → matching `ScanRefiner`(s). `DelaunayLineRefiner` is opt-in. `RefinedPoint` / `RefinedMiscibilityGap` carry `boundary_id: int` — refined rows are tagged by coexistence line |
 | `landau/plot.py` | `plot_phase_diagram`, `plot_mu_phase_diagram`, 1d variants, `plot_excess_free_energy`, `get_polygons` |
 | `landau/poly.py` | Point-cloud → polygon: `Concave`, `Segments`, optional `PythonTsp` / `FastTsp` / segment variants |
 | `landau/resample.py` | `resample_borders`, `RandomlyShiftedPhase` — bootstrap-style border resampling |
@@ -77,6 +77,42 @@ Python `>=3.11,<3.14`. Extras: `test`, `constraints`, `fast-tsp`, `python-tsp`, 
 - **Keep PR body in sync with the diff.** When review feedback invalidates a claim in the body, edit the body — never leave a stale claim standing.
 
 - **Notebooks** are committed with executed outputs only.
+
+## Design themes
+
+Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [`CLAUDE.md`](CLAUDE.md). Fetch the issue before re-litigating.
+
+**Active**
+
+- **#116 refactor umbrella** — long-running sweep splitting big functions and pinning private helpers with direct unit tests. Sub-issues open at the time of writing: #376 (`SGTEInterpolation.deriv()`), #377 (`_scalarize`), #386 (`_rbf_gradient` in `interpolate/whitney.py`), #388 (`_semigrand_average_concentration` in `calculate.py`), #389 (`_curve_obstacles` in `plot.py`), #390 (`ConstantPointDefect.excess_free_energy` + `AbstractPointDefectSublattice._get_zes`).
+
+- **#137 `phases/__init__.py` split** — `pointdefects.py` and `asewrapper.py` already split out; further splits (line vs solution vs interpolating) are the open direction. `phases/__init__.py` is still ~980 lines.
+
+- **#332 phase free-energy parametrization is indirect** — both `InterpolatingPhase` and `Surface2DInterpolatingPhase` reach `f(c[, T])` through a sample-and-refit round-trip. Open direction: an optional "just give me a callable" builder path so a `.tdb` importer (#138) or bespoke model can skip it. Parked with #137.
+
+- **#138 TDB file import** — scoping; feeds #332.
+
+- **#34, #60 plot/calc API 2.0 refactor** — axes-as-arg for `plot_{mu,}_phase_diagram` + broader rearrangement for 2.0.
+
+- **#39 entropy/enthalpy methods on phases** — blocks the diagnostic + EEC transfer in #339 and item 5 of the mapping notes in #337.
+
+- **#337, #339 CALPHAD-side design notes** — mapping/ZPF-line ideas (Sundman/Dupin/Hallstedt Calphad 75 2021) and equal-entropy criterion (Sundman et al. Calphad 68 2020). Design conversations, no code planned.
+
+- **#344 collapse CEF Au-Cu into one partitioning fcc phase with `MiscibilityGapRefiner`** — blocked on `MiscibilityGapRefiner`'s per-step scan cost.
+
+- **#81 analytic SRO models** — prototype `QuasiChemicalPhase` (PR #123) was closed without merging; still open.
+
+- **#33 fast Legendre transforms**, **#59 autodiff for `concentration`** — stretch goals; no owner.
+
+- **#62 flat → `src/` layout**, **#70 hypothesis strategies for polygon tests are weak** — long-standing.
+
+**Out of scope**
+
+- Dropping pandas 2 support (PR #93, #113).
+
+- Speculative "might be useful" work — parked, not landed (PR #129).
+
+- Underscored module names — use `asewrapper`, not `ase_wrapper` (PR #68).
 
 ## Deeper context
 
