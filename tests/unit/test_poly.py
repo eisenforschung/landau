@@ -38,66 +38,84 @@ except ImportError:
 
 
 @st.composite
+def _phase_region(draw, phase, unit):
+    # One (phase, phase_unit) group, traced as a smooth curve in a scalar
+    # parameter `t` so that c, T and mu correlate with each other instead of
+    # being drawn independently -- border points then look like a plausible
+    # phase-region outline (as calc_phase_diagram would produce) rather than
+    # unstructured noise.
+    n_border = draw(st.integers(min_value=4, max_value=10))
+    n_interior = draw(st.integers(min_value=0, max_value=3))
+    n_points = n_border + n_interior
+    t = np.sort(
+        draw(
+            st.lists(
+                st.floats(min_value=0, max_value=1, allow_nan=False, allow_infinity=False),
+                min_size=n_points,
+                max_size=n_points,
+                unique=True,
+            )
+        )
+    )
+
+    T0 = draw(st.floats(min_value=0, max_value=800, allow_nan=False, allow_infinity=False))
+    T_amp = draw(st.floats(min_value=0, max_value=200, allow_nan=False, allow_infinity=False))
+    mu0 = draw(st.floats(min_value=-8, max_value=8, allow_nan=False, allow_infinity=False))
+    mu_amp = draw(st.floats(min_value=0, max_value=2, allow_nan=False, allow_infinity=False))
+    c0 = draw(st.floats(min_value=0.3, max_value=0.7, allow_nan=False, allow_infinity=False))
+    c_amp = draw(st.floats(min_value=0, max_value=0.29, allow_nan=False, allow_infinity=False))
+
+    T = T0 + T_amp * t
+    mu = mu0 + mu_amp * (2 * t - 1)
+    c = c0 + c_amp * np.sin(2 * np.pi * t)
+
+    border = np.zeros(n_points, dtype=bool)
+    border[:n_border] = True
+
+    return pd.DataFrame(
+        {
+            "c": c,
+            "T": T,
+            "mu": mu,
+            "border": border,
+            "phase": phase,
+            "phase_unit": unit,
+            "refined": border,
+            "phase_id": f"{phase}_{unit}",
+        }
+    )
+
+
+@st.composite
 def poly_dataframe(draw):
-    # Strategy to generate DataFrames suitable for testing poly methods
-    n_points = draw(st.integers(min_value=5, max_value=20))
-    data = {
-        "c": draw(
-            st.lists(
-                st.floats(
-                    min_value=0, max_value=1, allow_nan=False, allow_infinity=False
-                ),
-                min_size=n_points,
-                max_size=n_points,
-            )
-        ),
-        "T": draw(
-            st.lists(
-                st.floats(
-                    min_value=0, max_value=1000, allow_nan=False, allow_infinity=False
-                ),
-                min_size=n_points,
-                max_size=n_points,
-            )
-        ),
-        "mu": draw(
-            st.lists(
-                st.floats(
-                    min_value=-10, max_value=10, allow_nan=False, allow_infinity=False
-                ),
-                min_size=n_points,
-                max_size=n_points,
-            )
-        ),
-        "border": draw(st.lists(st.booleans(), min_size=n_points, max_size=n_points)),
-        "phase": draw(
-            st.lists(st.sampled_from(["A", "B"]), min_size=n_points, max_size=n_points)
-        ),
-        "phase_unit": draw(
-            st.lists(
-                st.integers(min_value=0, max_value=2),
-                min_size=n_points,
-                max_size=n_points,
-            )
-        ),
-        "refined": draw(st.lists(st.booleans(), min_size=n_points, max_size=n_points)),
-        "phase_id": draw(
-            st.lists(
-                st.sampled_from(["A_0", "A_1", "B_0"]),
-                min_size=n_points,
-                max_size=n_points,
-            )
-        ),
+    # Strategy to generate DataFrames suitable for testing poly methods.
+    # Each phase gets one or two disconnected regions (simulating a phase
+    # stable in separate windows); regions are concatenated below.
+    groups = {
+        phase: [draw(_phase_region(phase, unit)) for unit in range(draw(st.integers(min_value=1, max_value=2)))]
+        for phase in ("A", "B")
     }
-    # Ensure some border points
-    data["border"][0] = True
-    data["border"][1] = True
+    region_list = [g for regions in groups.values() for g in regions]
+    offsets = np.cumsum([0] + [len(g) for g in region_list[:-1]])
+    df = pd.concat(region_list, ignore_index=True)
 
-    # For Segments, we need some structure to not have it completely empty
-    data["mu"][1] = data["mu"][0]
-    data["T"][1] = data["T"][0]
+    # Segments (and its TSP variants) reduce border points via get_transitions,
+    # which pairs rows sharing (mu, T) across different phases into a
+    # coexistence point. Force a few such pairs between the first region of
+    # each phase so those poly methods have real structure to stitch,
+    # matching how a genuine two-phase boundary looks in calc_phase_diagram
+    # output.
+    a0, b0 = groups["A"][0], groups["B"][0]
+    a_offset, b_offset = offsets[0], offsets[len(groups["A"])]
+    a_borders = a_offset + a0.index[a0["border"]].to_numpy()
+    b_borders = b_offset + b0.index[b0["border"]].to_numpy()
+    n_pairs = draw(st.integers(min_value=1, max_value=min(3, len(a_borders), len(b_borders))))
+    a_idx = draw(st.permutations(list(a_borders)))[:n_pairs]
+    b_idx = draw(st.permutations(list(b_borders)))[:n_pairs]
+    for ai, bi in zip(a_idx, b_idx):
+        df.loc[bi, ["mu", "T"]] = df.loc[ai, ["mu", "T"]].to_numpy()
 
-    return pd.DataFrame(data)
+    return df
 
 
 @settings(deadline=None)
