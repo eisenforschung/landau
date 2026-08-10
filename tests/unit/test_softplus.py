@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+import scipy
 from hypothesis import HealthCheck, given, settings, strategies as st
 
 from landau.interpolate import SoftplusFit
@@ -7,6 +8,7 @@ from landau.interpolate.basic import ConcentrationInterpolator, TemperatureInter
 from landau.interpolate.softplus import (
     _flat,
     _knee_position,
+    _scipy_at_least,
     _sigmoid,
     _smoothv_seed,
     _softplus,
@@ -333,3 +335,39 @@ class TestSmoothVSeed:
         a, b, _, _ = _split(_smoothv_seed(cn, H, 4), 4)
         np.testing.assert_array_equal(a[2:], [1e-4, 1e-4])
         np.testing.assert_array_equal(b[2:], [12.0, 12.0])
+
+
+class TestScipyAtLeast:
+    """Version-comparison gate that picks the ``lm`` vs ``trf`` least-squares
+    solver for the softplus surface fit (``_LM_HAS_INTERNAL_SCALING``).  On a
+    garbled ``scipy.__version__`` the helper must fall back to the conservative
+    ``False`` so the older-scipy solver path is used."""
+
+    def test_returns_true_at_equality(self, monkeypatch):
+        monkeypatch.setattr(scipy, "__version__", "1.16.0")
+        assert _scipy_at_least(1, 16) is True
+
+    def test_returns_true_when_version_exceeds_threshold(self, monkeypatch):
+        monkeypatch.setattr(scipy, "__version__", "2.0.5")
+        assert _scipy_at_least(1, 16) is True
+
+    def test_returns_false_when_minor_below_threshold(self, monkeypatch):
+        monkeypatch.setattr(scipy, "__version__", "1.15.99")
+        assert _scipy_at_least(1, 16) is False
+
+    def test_ignores_trailing_version_components(self, monkeypatch):
+        # Only the first two dot-separated parts are read; suffixes on later
+        # components (pre-release tags, dev suffixes, git hashes) must not
+        # leak into the comparison.
+        monkeypatch.setattr(scipy, "__version__", "1.16.0rc1")
+        assert _scipy_at_least(1, 16) is True
+
+    def test_returns_false_on_non_numeric_version_string(self, monkeypatch):
+        # ``int("garbled")`` raises ``ValueError`` -> conservative ``False``.
+        monkeypatch.setattr(scipy, "__version__", "garbled.version")
+        assert _scipy_at_least(1, 16) is False
+
+    def test_returns_false_when_version_attribute_missing(self, monkeypatch):
+        # ``scipy.__version__`` missing -> ``AttributeError`` -> ``False``.
+        monkeypatch.delattr(scipy, "__version__", raising=False)
+        assert _scipy_at_least(1, 16) is False
