@@ -84,7 +84,7 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
 **Active**
 
-- **#116 refactor umbrella** — long-running sweep splitting big functions and pinning private helpers with direct unit tests. Sub-issues open at the time of writing: #376 (`SGTEInterpolation.deriv()`), #377 (`_scalarize`), #386 (`_rbf_gradient` in `interpolate/whitney.py`), #388 (`_semigrand_average_concentration` in `calculate.py`), #389 (`_curve_obstacles` in `plot.py`), #390 (`ConstantPointDefect.excess_free_energy` + `AbstractPointDefectSublattice._get_zes`).
+- **#116 refactor umbrella** — long-running sweep splitting big functions and pinning private helpers with direct unit tests. Sub-issues open at the time of writing: #376 (`SGTEInterpolation.deriv()`), #377 (`_scalarize`), #386 (`_rbf_gradient` in `interpolate/whitney.py`), #388 (`_semigrand_average_concentration` in `calculate.py`), #389 (`_curve_obstacles` in `plot.py`), #390 (`ConstantPointDefect.excess_free_energy` + `AbstractPointDefectSublattice._get_zes`), #398 (`_CallableInterpolation` in `interpolate/basic.py`), #399 (dedup the empty-`tdf` branch of `get_transitions` in `calculate.py`), #400 (`_delaunay_simplices` cache flip on a fresh frame). PR #397 tracks a matching pin for `_scipy_at_least` without a numbered sub-issue.
 
 - **#137 `phases/__init__.py` split** — `pointdefects.py` and `asewrapper.py` already split out; further splits (line vs solution vs interpolating) are the open direction. `phases/__init__.py` is still ~980 lines.
 
