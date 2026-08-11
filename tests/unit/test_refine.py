@@ -823,6 +823,22 @@ def test_delaunay_simplices_memoised_per_frame():
     assert len(other) == len(first)
 
 
+def test_delaunay_simplices_cache_flips_on_fresh_frame():
+    """Once a second frame has taken the one-slot cache, revisiting the first
+    frame must recompute rather than returning the stale cached list."""
+    phases = _three_phase_system()
+    Ts = np.linspace(220.0, 480.0, 5)
+    mus = np.linspace(-0.05, 0.55, 6)
+    df = _coarse_df(phases, Ts, mus)
+    df2 = _coarse_df(phases, Ts, mus)  # equal content, different object
+
+    first = _delaunay_simplices(df)
+    _delaunay_simplices(df2)  # flips the cache onto df2
+
+    third = _delaunay_simplices(df)
+    assert third is not first  # cache now keyed on df2, so df misses and recomputes
+
+
 def test_delaunay_triple_refiner_deduplicates():
     """Triple refiner emits each triple point exactly once even when
     multiple three-phase Delaunay simplices independently detect it."""
