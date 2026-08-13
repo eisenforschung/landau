@@ -84,7 +84,7 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
 **Active**
 
-- **#116 refactor umbrella** — long-running sweep splitting big functions and pinning private helpers with direct unit tests. Sub-issues open at the time of writing: #376 (`SGTEInterpolation.deriv()`), #377 (`_scalarize`), #386 (`_rbf_gradient` in `interpolate/whitney.py`), #388 (`_semigrand_average_concentration` in `calculate.py`), #389 (`_curve_obstacles` in `plot.py`), #390 (`ConstantPointDefect.excess_free_energy` + `AbstractPointDefectSublattice._get_zes`), #398 (`_CallableInterpolation` in `interpolate/basic.py`), #399 (dedup the empty-`tdf` branch of `get_transitions` in `calculate.py`), #400 (`_delaunay_simplices` cache flip on a fresh frame). PR #397 tracks a matching pin for `_scipy_at_least` without a numbered sub-issue.
+- **#116 refactor umbrella** — long-running sweep splitting big functions and pinning private helpers with direct unit tests. Sub-issues open at the time of writing (open PRs in flight noted; check before duplicating): #376 (`SGTEInterpolation.deriv()`, PR #382), #377 (`_scalarize`, PR #384), #386 (`_rbf_gradient` in `interpolate/whitney.py`, PR #387), #388 (`_semigrand_average_concentration` in `calculate.py`, PR #391), #389 (`_curve_obstacles` in `plot.py`, PR #393), #390 (`ConstantPointDefect.excess_free_energy` + `AbstractPointDefectSublattice._get_zes`, PR #394), #398 (`_CallableInterpolation` in `interpolate/basic.py` — no PR yet), #399 (dedup the empty-`tdf` branch of `get_transitions` in `calculate.py` — no PR yet), #400 (`_delaunay_simplices` cache flip on a fresh frame, PR #401). PR #397 tracks a matching pin for `_scipy_at_least` without a numbered sub-issue.
 
 - **#137 `phases/__init__.py` split** — `pointdefects.py` and `asewrapper.py` already split out; further splits (line vs solution vs interpolating) are the open direction. `phases/__init__.py` is still ~980 lines.
 
@@ -104,7 +104,7 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
 - **#33 fast Legendre transforms**, **#59 autodiff for `concentration`** — stretch goals; no owner.
 
-- **#62 flat → `src/` layout**, **#70 hypothesis strategies for polygon tests are weak** — long-standing.
+- **#62 flat → `src/` layout**, **#70 hypothesis strategies for polygon tests are weak** (PR #395 in flight) — long-standing.
 
 **Out of scope**
 
