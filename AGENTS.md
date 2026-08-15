@@ -96,7 +96,7 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
   - #398 (`_CallableInterpolation` in `interpolate/basic.py`, PR #404)
 
-  - #399 (dedup the empty-`tdf` branch of `get_transitions` in `calculate.py` — no PR yet)
+  - #399 (empty-`tdf` branch of `get_transitions` in `calculate.py`, PR #406 — the branch cannot be removed, `groupby().apply()` raises on an empty grouped frame; the PR instead fixes its dtype mismatch with typed empty `Series`)
 
   - #400 (`_delaunay_simplices` cache flip on a fresh frame, PR #401)
 
