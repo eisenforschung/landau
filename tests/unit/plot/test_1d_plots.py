@@ -1511,3 +1511,132 @@ def test_phase_visible_segment_crosses_band():
 def test_phase_visible_empty_or_nan():
     assert _phase_visible_in_band([np.nan, np.nan], 0.0, 1.0) is False
     assert _phase_visible_in_band([], 0.0, 1.0) is False
+
+
+# ---------------------------------------------------------------------------
+# _AXES_1D — the per-cut configuration of the shared 1d plotting body
+# ---------------------------------------------------------------------------
+
+
+def _cut_df(scan_col):
+    """Two-phase scan along ``scan_col`` with one interior transition at x=2.
+
+    Adds the column held fixed along the cut (a single value, as the guard in
+    :func:`_plot_1d_phase_diagram` demands) to the frame shared with the bridging
+    tests.
+    """
+    df = _two_phase_transition_df(scan_col).drop(columns="_seg_id")
+    df[{"T": "mu", "mu": "T"}[scan_col]] = 0.0 if scan_col == "T" else 1000.0
+    return df
+
+
+def _transition_label(ax, text):
+    """The single transition-annotation Text on *ax* reading ``text``."""
+    matches = [t for t in ax.texts if t.get_text() == text]
+    assert len(matches) == 1, f"expected one {text!r} label, got {len(matches)}"
+    return matches[0]
+
+
+CUTS = [(plot_1d_mu_phase_diagram, "mu"), (plot_1d_T_phase_diagram, "T")]
+
+
+@pytest.mark.parametrize("plot,scan_col,xlabel", [
+    (plot_1d_mu_phase_diagram, "mu", "Chemical Potential Difference [eV]"),
+    (plot_1d_T_phase_diagram, "T", "Temperature [K]"),
+])
+def test_1d_xlabel_names_the_cut_axis(plot, scan_col, xlabel):
+    fig, ax = plt.subplots()
+    try:
+        plot(_cut_df(scan_col), ax=ax)
+        assert ax.get_xlabel() == xlabel
+    finally:
+        plt.close(fig)
+
+
+@pytest.mark.parametrize("plot,scan_col,ylabel", [
+    (plot_1d_mu_phase_diagram, "mu", "Semi-grandcanonical Potential [eV/atom]"),
+    (plot_1d_T_phase_diagram, "T", "Semi-grandcanonical potential [eV/atom]"),
+])
+def test_1d_ylabel_without_reference_phase(plot, scan_col, ylabel):
+    fig, ax = plt.subplots()
+    try:
+        plot(_cut_df(scan_col), ax=ax)
+        assert ax.get_ylabel() == ylabel
+    finally:
+        plt.close(fig)
+
+
+@pytest.mark.parametrize("plot,scan_col", CUTS)
+def test_1d_ylabel_names_the_reference_phase(plot, scan_col):
+    fig, ax = plt.subplots()
+    try:
+        plot(_cut_df(scan_col), ax=ax, reference_phase="A")
+        assert ax.get_ylabel().endswith("\nrelative to A [eV/atom]")
+    finally:
+        plt.close(fig)
+
+
+@pytest.mark.parametrize("plot,scan_col,label", [
+    (plot_1d_mu_phase_diagram, "mu", r"$\Delta\mu = 2.000\,\mathrm{eV}$"),
+    (plot_1d_T_phase_diagram, "T", r"$T = 2\,\mathrm{K}$"),
+])
+def test_1d_transition_annotated_in_cut_units(plot, scan_col, label):
+    fig, ax = plt.subplots()
+    try:
+        plot(_cut_df(scan_col), ax=ax)
+        _transition_label(ax, label)
+    finally:
+        plt.close(fig)
+
+
+@pytest.mark.parametrize("plot,scan_col,label,sign", [
+    (plot_1d_mu_phase_diagram, "mu", r"$\Delta\mu = 2.000\,\mathrm{eV}$", -1),
+    (plot_1d_T_phase_diagram, "T", r"$T = 2\,\mathrm{K}$", +1),
+])
+def test_1d_transition_label_offset_to_its_configured_side(plot, scan_col, label, sign):
+    """mu labels are biased left of their line, T labels right of it."""
+    fig, ax = plt.subplots()
+    try:
+        plot(_cut_df(scan_col), ax=ax)
+        x = _transition_label(ax, label).get_position()[0]
+        assert sign * (x - 2.0) > 0, f"{label!r} at x={x} is on the wrong side of 2.0"
+    finally:
+        plt.close(fig)
+
+
+def _transition_lines(ax):
+    """x positions of the dotted vertical transition markers on *ax*."""
+    return [line.get_xdata()[0] for line in ax.lines if line.get_linestyle() == ":"]
+
+
+@pytest.mark.parametrize("plot,scan_col", CUTS)
+def test_1d_transition_marked_at_the_border_row(plot, scan_col):
+    fig, ax = plt.subplots()
+    try:
+        plot(_cut_df(scan_col), ax=ax)
+        assert _transition_lines(ax) == [2]
+    finally:
+        plt.close(fig)
+
+
+@pytest.mark.parametrize("plot,scan_col", CUTS)
+def test_1d_mark_transitions_false_draws_no_transition_line(plot, scan_col):
+    fig, ax = plt.subplots()
+    try:
+        plot(_cut_df(scan_col), ax=ax, mark_transitions=False)
+        assert _transition_lines(ax) == []
+    finally:
+        plt.close(fig)
+
+
+@pytest.mark.parametrize("plot,scan_col,message", [
+    (plot_1d_mu_phase_diagram, "mu", "more than one temperature"),
+    (plot_1d_T_phase_diagram, "T", "more than one chemical potential"),
+])
+def test_1d_rejects_several_values_of_the_fixed_variable(plot, scan_col, message):
+    """Each cut refuses a frame spanning more than one value of the other variable."""
+    df = _cut_df(scan_col)
+    fixed_col = {"T": "mu", "mu": "T"}[scan_col]
+    df.loc[df.index[0], fixed_col] += 1.0
+    with pytest.raises(ValueError, match=message):
+        plot(df)

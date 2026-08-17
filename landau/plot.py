@@ -1,3 +1,5 @@
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Literal
 from warnings import warn
 
@@ -955,6 +957,106 @@ def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True, yl
         _place_side_labels(ax, df, scan_col, phase_colors, top_texts)
 
 
+@dataclass(frozen=True)
+class _Axis1D:
+    """Everything that differs between the two 1d phase diagrams.
+
+    The body of :func:`_plot_1d_phase_diagram` is the same for both cuts; only the
+    column held fixed along the cut, the axis texts and the transition annotation
+    depend on which variable is scanned.
+    """
+
+    fixed_col: str
+    fixed_error: str
+    xlabel: str
+    ylabel_stem: str
+    transition_label: Callable[[float], str]
+    transition_side: Literal["left", "right"]
+
+
+_AXES_1D = {
+    "mu": _Axis1D(
+        fixed_col="T",
+        fixed_error="data contains more than one temperature!",
+        xlabel="Chemical Potential Difference [eV]",
+        ylabel_stem="Semi-grandcanonical Potential",
+        transition_label=lambda mu: rf"$\Delta\mu = {mu:.03f}\,\mathrm{{eV}}$",
+        transition_side="left",
+    ),
+    "T": _Axis1D(
+        fixed_col="mu",
+        fixed_error="Data contains more than one chemical potential!",
+        xlabel="Temperature [K]",
+        ylabel_stem="Semi-grandcanonical potential",
+        transition_label=lambda T: rf"$T = {T:.0f}\,\mathrm{{K}}$",
+        transition_side="right",
+    ),
+}
+
+
+def _plot_1d_phase_diagram(
+        df,
+        scan_col,
+        ax=None,
+        mark_transitions=True,
+        reference_phase=None,
+        top_labels=True,
+        side_labels=True,
+        ylim=None):
+    """Draw the semi-grandcanonical potential of every phase along a 1d cut.
+
+    Shared body of :func:`plot_1d_mu_phase_diagram` and
+    :func:`plot_1d_T_phase_diagram`; ``scan_col`` selects the cut axis and, via
+    :data:`_AXES_1D`, its texts and transition annotation.
+    """
+    axis = _AXES_1D[scan_col]
+    if len(df[axis.fixed_col].unique()) > 1:
+        raise ValueError(axis.fixed_error)
+    if ax is None:
+        fig, ax = plt.subplots()
+
+    df = df.sort_values(scan_col).copy()
+
+    if reference_phase is not None:
+        df = _subtract_reference_phase(df, scan_col, reference_phase)
+
+    df["_seg_id"] = _assign_segment_ids(df, scan_col=scan_col)
+    sns.lineplot(
+        data=_bridge_unstable_segments(df, scan_col=scan_col),
+        x=scan_col, y='phi',
+        hue='phase', hue_order=sorted(df.phase.unique()),
+        style='stable', style_order=[True, False],
+        units='_seg_id', estimator=None, errorbar=None,
+        ax=ax,
+    )
+
+    _add_1d_phase_legend(ax, df, scan_col=scan_col, top_labels=top_labels, side_labels=side_labels, ylim=ylim)
+
+    if 'border' not in df.columns:
+        return ax
+
+    if mark_transitions:
+        # The marker dot stays in data coords and is simply clipped if the crossing
+        # lies outside the window; the labels are placed (and spread) by
+        # _place_transition_labels.
+        positions, labels = [], []
+        for xt, dd in df.query(f"{scan_col}.min()<{scan_col}<{scan_col}.max() and border").groupby(scan_col):
+            ft = dd['phi'].iloc[0]
+            ax.axvline(xt, color='k', linestyle='dotted', alpha=.5)
+            ax.scatter(xt, ft, marker='o', c='k', zorder=10)
+            positions.append(xt)
+            labels.append(axis.transition_label(xt))
+        _place_transition_labels(ax, positions, labels, side=axis.transition_side)
+
+    ax.set_xlabel(axis.xlabel)
+    ylabel = f"{axis.ylabel_stem} [eV/atom]"
+    if reference_phase is not None:
+        ylabel = f"{axis.ylabel_stem}\nrelative to {reference_phase} [eV/atom]"
+    ax.set_ylabel(ylabel)
+
+    return ax
+
+
 def plot_1d_mu_phase_diagram(
         df,
         ax=None,
@@ -998,50 +1100,17 @@ def plot_1d_mu_phase_diagram(
             The Axes object with the phase diagram plot.
     """
 
-    if len(df['T'].unique()) > 1:
-        raise ValueError("data contains more than one temperature!")
-    if ax is None:
-        fig, ax = plt.subplots()
-
-    df = df.sort_values("mu").copy()
-
-    if reference_phase is not None:
-        df = _subtract_reference_phase(df, "mu", reference_phase)
-
-    df["_seg_id"] = _assign_segment_ids(df, scan_col="mu")
-    sns.lineplot(
-        data=_bridge_unstable_segments(df, scan_col="mu"),
-        x='mu', y='phi',
-        hue='phase', hue_order=sorted(df.phase.unique()),
-        style='stable', style_order=[True, False],
-        units='_seg_id', estimator=None, errorbar=None,
+    return _plot_1d_phase_diagram(
+        df,
+        "mu",
         ax=ax,
+        mark_transitions=mark_transitions,
+        reference_phase=reference_phase,
+        top_labels=top_labels,
+        side_labels=side_labels,
+        ylim=ylim,
     )
 
-    _add_1d_phase_legend(ax, df, scan_col="mu", top_labels=top_labels, side_labels=side_labels, ylim=ylim)
-
-    if 'border' not in df.columns:
-        return ax
-
-    if mark_transitions:
-        # The marker dot stays in data coords and is simply clipped if the crossing
-        # lies outside the window; the labels are placed (and spread) by
-        # _place_transition_labels.
-        positions, labels = [], []
-        for mt, dd in df.query("mu.min()<mu<mu.max() and border").groupby("mu"):
-            ft = dd['phi'].iloc[0]
-            ax.axvline(mt, color='k', linestyle='dotted', alpha=.5)
-            ax.scatter(mt, ft, marker='o', c='k', zorder=10)
-            positions.append(mt)
-            labels.append(rf"$\Delta\mu = {mt:.03f}\,\mathrm{{eV}}$")
-        _place_transition_labels(ax, positions, labels, side="left")
-    ax.set_xlabel("Chemical Potential Difference [eV]")
-    ylabel = "Semi-grandcanonical Potential [eV/atom]"
-    if reference_phase is not None:
-        ylabel = f"Semi-grandcanonical Potential\nrelative to {reference_phase} [eV/atom]"
-    ax.set_ylabel(ylabel)
-
-    return ax
 
 def plot_1d_T_phase_diagram(
         df,
@@ -1086,53 +1155,16 @@ def plot_1d_T_phase_diagram(
             The Axes object with the phase diagram plot.
     """
 
-    if len(df.mu.unique()) > 1:
-        raise ValueError("Data contains more than one chemical potential!")
-
-    if ax is None:
-        fig, ax = plt.subplots()
-
-    df = df.copy()
-
-    if reference_phase is not None:
-        df = _subtract_reference_phase(df, "T", reference_phase)
-
-    df["_seg_id"] = _assign_segment_ids(df, scan_col="T")
-
-    sns.lineplot(
-        data=_bridge_unstable_segments(df, scan_col="T"),
-        x='T', y='phi',
-        hue='phase', hue_order=sorted(df.phase.unique()),
-        style='stable', style_order=[True, False],
-        units='_seg_id', estimator=None, errorbar=None,
+    return _plot_1d_phase_diagram(
+        df,
+        "T",
         ax=ax,
+        mark_transitions=mark_transitions,
+        reference_phase=reference_phase,
+        top_labels=top_labels,
+        side_labels=side_labels,
+        ylim=ylim,
     )
-
-    _add_1d_phase_legend(ax, df, scan_col="T", top_labels=top_labels, side_labels=side_labels, ylim=ylim)
-
-    if 'border' not in df.columns:
-        return ax
-
-    if mark_transitions:
-        # The marker dot stays in data coords and is simply clipped if the crossing
-        # lies outside the window; the labels are placed (and spread) by
-        # _place_transition_labels.
-        positions, labels = [], []
-        for Tt, dd in df.query("T.min()<T<T.max() and border").groupby("T"):
-            ft = dd['phi'].iloc[0]
-            ax.axvline(Tt, color='k', linestyle='dotted', alpha=.5)
-            ax.scatter(Tt, ft, marker='o', c='k', zorder=10)
-            positions.append(Tt)
-            labels.append(rf"$T = {Tt:.0f}\,\mathrm{{K}}$")
-        _place_transition_labels(ax, positions, labels, side="right")
-
-    ax.set_xlabel("Temperature [K]")
-    ylabel = "Semi-grandcanonical potential [eV/atom]"
-    if reference_phase is not None:
-        ylabel = f"Semi-grandcanonical potential\nrelative to {reference_phase} [eV/atom]"
-    ax.set_ylabel(ylabel)
-
-    return ax
 
 
 # ---------------------------------------------------------------------------
