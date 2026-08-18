@@ -1275,3 +1275,48 @@ def test_dT_adapt_slope_floor_at_zero():
     refiner = ClausiusClapeyronRefiner()
     step = _StepResult(mu_star=0.0, extra=None)
     assert refiner._dT_adapt(step, 0.0, half_width=0.1) == pytest.approx(1e8)
+
+
+# -- _CCBase._emitted_concentrations -------------------------------------------
+#
+# The subclass-agnostic hook the dc_max/dc_min density caps in _trace read
+# their concentration drift from (refine.py:870). Two branches: a
+# RefinedMiscibilityGap plots its two pre-computed branch concentrations;
+# a RefinedPoint plots one branch per coexisting phase, queried from `phases`.
+
+
+def test_emitted_concentrations_gap_returns_stored_pair():
+    """RefinedMiscibilityGap: the stored c_left/c_right pass through unchanged,
+    not re-queried from the phase."""
+    refiner = ClausiusClapeyronRefiner()
+    gap = RefinedMiscibilityGap(T=400.0, mu=0.0, phase="p", c_left=0.1, c_right=0.9)
+    assert refiner._emitted_concentrations(gap, {}) == (0.1, 0.9)
+
+
+def test_emitted_concentrations_point_queries_each_coexisting_phase():
+    """RefinedPoint: one concentration per phase in pt.phases order, matching
+    a direct concentration(T, mu) call on each phase."""
+    refiner = ClausiusClapeyronRefiner()
+    phases = {
+        "A": LinePhase(name="A", fixed_concentration=0.2, line_energy=0.0),
+        "B": LinePhase(name="B", fixed_concentration=0.7, line_energy=1.0),
+    }
+    pt = RefinedPoint(T=500.0, mu=0.05, phases=("A", "B"))
+    got = refiner._emitted_concentrations(pt, phases)
+    expected = tuple(phases[n].concentration(pt.T, pt.mu) for n in pt.phases)
+    assert got == pytest.approx(expected)
+    assert got == pytest.approx((0.2, 0.7))
+
+
+def test_emitted_concentrations_returns_plain_floats():
+    """Both branches collapse to plain float, not numpy scalars, since the
+    caller does arithmetic against dc_max."""
+    refiner = ClausiusClapeyronRefiner()
+    gap = RefinedMiscibilityGap(T=400.0, mu=0.0, phase="p", c_left=0.1, c_right=0.9)
+    for c in refiner._emitted_concentrations(gap, {}):
+        assert type(c) is float
+
+    phases = {"A": LinePhase(name="A", fixed_concentration=0.2, line_energy=0.0)}
+    pt = RefinedPoint(T=500.0, mu=0.05, phases=("A",))
+    for c in refiner._emitted_concentrations(pt, phases):
+        assert type(c) is float
