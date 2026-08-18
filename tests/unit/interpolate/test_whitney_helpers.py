@@ -7,6 +7,7 @@ from landau.interpolate.whitney import (
     _in_interval,
     _project_to_hull,
     _project_to_interval,
+    _rbf_gradient,
 )
 
 ATOL = 1e-9
@@ -89,3 +90,46 @@ class TestProjectToHull:
         x_b = _project_to_hull(np.array([-3.0, 0.5]), unit_square_hull)
         assert x_b.shape == (2,)
         np.testing.assert_allclose(x_b, [0.0, 0.5], atol=1e-6)
+
+
+class TestRbfGradient:
+    """Central finite-difference gradient of any callable ``(N, D) -> (N,)``.
+
+    Downstream ``_rbf_gradient`` is called on a fitted ``RBFInterpolator``, but
+    the helper only relies on that interface, so the tests use plain lambdas
+    with a known analytic gradient.
+    """
+
+    def test_constant_function_has_zero_gradient(self):
+        # f(x + eps) == f(x - eps) exactly, so the numerator vanishes on
+        # every axis regardless of eps or dimension.
+        f = lambda X: np.full(X.shape[0], 3.14)  # noqa: E731
+        np.testing.assert_allclose(
+            _rbf_gradient(f, np.array([0.5, -1.0, 2.0]), eps=0.1),
+            np.zeros(3),
+            atol=ATOL,
+        )
+
+    def test_linear_function_recovers_coefficients(self):
+        # Central difference is exact for polynomials of degree <= 2, so
+        # a linear f(x) = a . x returns its coefficient vector to machine
+        # precision independent of the step size.
+        a = np.array([2.0, -3.0, 0.5])
+        f = lambda X: X @ a  # noqa: E731
+        np.testing.assert_allclose(
+            _rbf_gradient(f, np.array([0.7, 1.3, -0.4]), eps=1e-2),
+            a,
+            atol=ATOL,
+        )
+
+    def test_quadratic_isotropic_gradient_is_exact(self):
+        # grad(0.5 * x . x) = x, again exact under central difference.
+        f = lambda X: 0.5 * np.einsum("ni,ni->n", X, X)  # noqa: E731
+        x = np.array([0.3, -0.6, 1.1, 2.0])
+        np.testing.assert_allclose(_rbf_gradient(f, x, eps=1e-3), x, atol=ATOL)
+
+    @pytest.mark.parametrize("D", [1, 2, 4])
+    def test_output_shape_matches_input_dim(self, D):
+        f = lambda X: np.zeros(X.shape[0])  # noqa: E731
+        grad = _rbf_gradient(f, np.zeros(D), eps=0.1)
+        assert grad.shape == (D,)
