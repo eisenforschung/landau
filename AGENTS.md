@@ -34,6 +34,7 @@ Python `>=3.11,<3.14`. Extras: `test`, `constraints`, `fast-tsp`, `python-tsp`, 
 | `landau/resample.py` | `resample_borders`, `RandomlyShiftedPhase` — bootstrap-style border resampling |
 | `landau/features.py` | `Locus` `StrEnum` (`INTERIOR`/`BOUNDARY`/`TRIPLE`) backing the `locus` column of `calc_phase_diagram` output; imported as `from landau.features import Locus` (not re-exported from package root) |
 | `benchmarks/` | Scripts backing any number cited in a PR body (see Working style); committed alongside the PR that introduces the number |
+| `scripts/` | `cc_demo.py` (+ rendered PNG) — standalone Clausius-Clapeyron tracing demo on an analytic sub-regular solution, compared against brute-force isothermal refinement; not part of the test suite |
 | `tests/unit/` | Filenames mirror what's under test; `interpolate/`, `phases/`, `plot/` are subdirectories, the rest are flat (`test_calculate.py`, `test_refine.py`, `test_poly.py`, `test_resample.py`, `test_softplus.py`, `test_whitney.py`, `test_phases.py`) |
 | `tests/regression/` | Bug pins — names contain issue numbers or descriptive labels |
 | `tests/integration/test_border_coverage.py` | Polygon-coverage smoke test across every `poly_method` × axis pair |
@@ -100,7 +101,13 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
   - #400 (`_delaunay_simplices` cache flip on a fresh frame, PR #401)
 
-  PR #397 tracks a matching pin for `_scipy_at_least` without a numbered sub-issue. Closed since the last pass: #376 (`SGTEInterpolation.deriv()`) by PR #382; #377 (`_scalarize`) by PR #384, which added `tests/unit/interpolate/test_basic_helpers.py`.
+  - #411 (1d plotters draw empty axis labels on a frame without a `border` column — the early `return` that guards transition marking sits above the `set_xlabel`/`set_ylabel` calls; fix is scoping the guard to the marking block. Only bites hand-built frames; `calc_phase_diagram` always emits the column)
+
+  - #412 (`show=` on both 1d plotters is accepted, undocumented, and never read — `PlotGallery.ipynb` passes `show=False` expecting suppression of a `plt.show()` that is never called; issue leans `@deprecate` + notebook update over honouring it, matching the 2d plotters)
+
+  - #413 (`_CCBase._emitted_concentrations` in `refine.py`, PR #414)
+
+  PR #397 tracks a matching pin for `_scipy_at_least` without a numbered sub-issue. PR #410 (also no numbered sub-issue) extracts the duplicated 40-line body of the two 1d plotters into a shared `_plot_1d_phase_diagram(df, scan_col, ...)` plus per-cut frozen `_Axis1D` records in `_AXES_1D`, mirroring how `_plot_phase_diagram` serves the 2d pair; #411/#412 were filed off it as follow-ups. Closed since the last pass: #376 (`SGTEInterpolation.deriv()`) by PR #382; #377 (`_scalarize`) by PR #384, which added `tests/unit/interpolate/test_basic_helpers.py`.
 
 - **#137 `phases/__init__.py` split** — `pointdefects.py` and `asewrapper.py` already split out; further splits (line vs solution vs interpolating) are the open direction. `phases/__init__.py` is still ~980 lines.
 
