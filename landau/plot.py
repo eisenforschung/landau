@@ -966,15 +966,14 @@ class _Axis1D:
     """Everything that differs between the two 1d phase diagrams.
 
     The body of :func:`_plot_1d_phase_diagram` is the same for both cuts; only the
-    column held fixed along the cut, the x label and the transition annotation
-    depend on which variable is scanned.
+    column held fixed along the cut, the x label and the text of the transition
+    annotation depend on which variable is scanned.
     """
 
     fixed_col: str
     fixed_error: str
     xlabel: str
     transition_label: Callable[[float], str]
-    transition_side: Literal["left", "right"]
 
 
 _AXES_1D = {
@@ -983,14 +982,12 @@ _AXES_1D = {
         fixed_error="Data contains more than one temperature!",
         xlabel="Chemical Potential Difference [eV]",
         transition_label=lambda mu: rf"$\Delta\mu = {mu:.03f}\,\mathrm{{eV}}$",
-        transition_side="left",
     ),
     "T": _Axis1D(
         fixed_col="mu",
         fixed_error="Data contains more than one chemical potential!",
         xlabel="Temperature [K]",
         transition_label=lambda T: rf"$T = {T:.0f}\,\mathrm{{K}}$",
-        transition_side="right",
     ),
 }
 
@@ -1047,7 +1044,7 @@ def _plot_1d_phase_diagram(
             ax.scatter(xt, ft, marker='o', c='k', zorder=10)
             positions.append(xt)
             labels.append(axis.transition_label(xt))
-        _place_transition_labels(ax, positions, labels, side=axis.transition_side)
+        _place_transition_labels(ax, positions, labels, side="left")
 
     ax.set_xlabel(axis.xlabel)
     ylabel = f"{_YLABEL_1D} [eV/atom]"

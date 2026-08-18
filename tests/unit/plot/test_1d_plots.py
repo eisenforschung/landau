@@ -1587,17 +1587,17 @@ def test_1d_transition_annotated_in_cut_units(plot, scan_col, label):
         plt.close(fig)
 
 
-@pytest.mark.parametrize("plot,scan_col,label,sign", [
-    (plot_1d_mu_phase_diagram, "mu", r"$\Delta\mu = 2.000\,\mathrm{eV}$", -1),
-    (plot_1d_T_phase_diagram, "T", r"$T = 2\,\mathrm{K}$", +1),
+@pytest.mark.parametrize("plot,scan_col,label", [
+    (plot_1d_mu_phase_diagram, "mu", r"$\Delta\mu = 2.000\,\mathrm{eV}$"),
+    (plot_1d_T_phase_diagram, "T", r"$T = 2\,\mathrm{K}$"),
 ])
-def test_1d_transition_label_offset_to_its_configured_side(plot, scan_col, label, sign):
-    """mu labels are biased left of their line, T labels right of it."""
+def test_1d_transition_label_offset_left_of_its_line(plot, scan_col, label):
+    """Both cuts bias the transition label to the left of its line."""
     fig, ax = plt.subplots()
     try:
         plot(_cut_df(scan_col), ax=ax)
         x = _transition_label(ax, label).get_position()[0]
-        assert sign * (x - 2.0) > 0, f"{label!r} at x={x} is on the wrong side of 2.0"
+        assert x < 2.0, f"{label!r} at x={x} is not left of its line at 2.0"
     finally:
         plt.close(fig)
 
