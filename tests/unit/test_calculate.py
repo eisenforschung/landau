@@ -8,6 +8,7 @@ from landau.calculate import (
     cluster,
     cluster_T_c,
     cluster_T_c_mu,
+    get_transitions,
     reduce,
     _apply_series,
     _border_edges,
@@ -728,3 +729,23 @@ def test_f_excess_tangent_chord_preserves_input_index():
     dd.index = [100, 200, 300]
     out = _f_excess_tangent_chord(dd)
     assert list(out.index) == [100, 200, 300]
+
+
+# --- get_transitions direct tests ---
+
+
+def test_get_transitions_empty_frame():
+    """No border rows: transition_unit/border_segment must carry the same dtypes as the populated path."""
+    df = pd.DataFrame(
+        {
+            "mu": pd.Series(dtype=float),
+            "T": pd.Series(dtype=float),
+            "c": pd.Series(dtype=float),
+            "phase": pd.Series(dtype=object),
+            "border": pd.Series(dtype=bool),
+        }
+    )
+    tdf = get_transitions(df)
+    assert tdf.empty
+    assert tdf["transition_unit"].dtype.kind == "i"
+    assert tdf["border_segment"].dtype == object

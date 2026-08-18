@@ -391,7 +391,7 @@ def get_transitions(df):
         )
         tdf["border_segment"] = _join_phase_unit(tdf["transition"], tdf["transition_unit"])
     else:
-        tdf["transition_unit"] = []
-        tdf["border_segment"] = []
+        tdf["transition_unit"] = pd.Series(dtype=np.intp)
+        tdf["border_segment"] = pd.Series(dtype=object)
 
     return tdf
