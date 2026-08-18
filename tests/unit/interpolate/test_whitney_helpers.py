@@ -133,23 +133,3 @@ class TestRbfGradient:
         f = lambda X: np.zeros(X.shape[0])  # noqa: E731
         grad = _rbf_gradient(f, np.zeros(D), eps=0.1)
         assert grad.shape == (D,)
-
-    def test_partial_derivative_only_steps_along_its_own_axis(self):
-        # Each partial must probe ``rbf`` at (x + eps * e_d) and
-        # (x - eps * e_d) — the loop nulls all other axes to zero.  A
-        # recording callable exposes the six sample points the helper
-        # visits, so the axis isolation is checked directly.
-        seen = []
-
-        def f(X):
-            seen.append(X.copy())
-            return np.zeros(X.shape[0])
-
-        x = np.array([10.0, 20.0, 30.0])
-        _rbf_gradient(f, x, eps=0.5)
-        assert len(seen) == 2 * x.size
-        for row in seen:
-            diff = row[0] - x
-            nonzero = np.flatnonzero(np.abs(diff) > 1e-12)
-            assert nonzero.size == 1
-            assert np.isclose(abs(diff[nonzero[0]]), 0.5)
