@@ -1553,15 +1553,13 @@ def test_1d_xlabel_names_the_cut_axis(plot, scan_col, xlabel):
         plt.close(fig)
 
 
-@pytest.mark.parametrize("plot,scan_col,ylabel", [
-    (plot_1d_mu_phase_diagram, "mu", "Semi-grandcanonical Potential [eV/atom]"),
-    (plot_1d_T_phase_diagram, "T", "Semi-grandcanonical potential [eV/atom]"),
-])
-def test_1d_ylabel_without_reference_phase(plot, scan_col, ylabel):
+@pytest.mark.parametrize("plot,scan_col", CUTS)
+def test_1d_ylabel_without_reference_phase(plot, scan_col):
+    """Both cuts plot the same quantity on y, so they carry the same label."""
     fig, ax = plt.subplots()
     try:
         plot(_cut_df(scan_col), ax=ax)
-        assert ax.get_ylabel() == ylabel
+        assert ax.get_ylabel() == "Semi-grandcanonical Potential [eV/atom]"
     finally:
         plt.close(fig)
 
@@ -1571,7 +1569,7 @@ def test_1d_ylabel_names_the_reference_phase(plot, scan_col):
     fig, ax = plt.subplots()
     try:
         plot(_cut_df(scan_col), ax=ax, reference_phase="A")
-        assert ax.get_ylabel().endswith("\nrelative to A [eV/atom]")
+        assert ax.get_ylabel() == "Semi-grandcanonical Potential\nRelative to A [eV/atom]"
     finally:
         plt.close(fig)
 
@@ -1630,8 +1628,8 @@ def test_1d_mark_transitions_false_draws_no_transition_line(plot, scan_col):
 
 
 @pytest.mark.parametrize("plot,scan_col,message", [
-    (plot_1d_mu_phase_diagram, "mu", "more than one temperature"),
-    (plot_1d_T_phase_diagram, "T", "more than one chemical potential"),
+    (plot_1d_mu_phase_diagram, "mu", "Data contains more than one temperature"),
+    (plot_1d_T_phase_diagram, "T", "Data contains more than one chemical potential"),
 ])
 def test_1d_rejects_several_values_of_the_fixed_variable(plot, scan_col, message):
     """Each cut refuses a frame spanning more than one value of the other variable."""

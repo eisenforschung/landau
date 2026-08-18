@@ -957,19 +957,22 @@ def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True, yl
         _place_side_labels(ax, df, scan_col, phase_colors, top_texts)
 
 
+# Both cuts plot the same quantity on y, so only the x side is per-cut.
+_YLABEL_1D = "Semi-grandcanonical Potential"
+
+
 @dataclass(frozen=True)
 class _Axis1D:
     """Everything that differs between the two 1d phase diagrams.
 
     The body of :func:`_plot_1d_phase_diagram` is the same for both cuts; only the
-    column held fixed along the cut, the axis texts and the transition annotation
+    column held fixed along the cut, the x label and the transition annotation
     depend on which variable is scanned.
     """
 
     fixed_col: str
     fixed_error: str
     xlabel: str
-    ylabel_stem: str
     transition_label: Callable[[float], str]
     transition_side: Literal["left", "right"]
 
@@ -977,9 +980,8 @@ class _Axis1D:
 _AXES_1D = {
     "mu": _Axis1D(
         fixed_col="T",
-        fixed_error="data contains more than one temperature!",
+        fixed_error="Data contains more than one temperature!",
         xlabel="Chemical Potential Difference [eV]",
-        ylabel_stem="Semi-grandcanonical Potential",
         transition_label=lambda mu: rf"$\Delta\mu = {mu:.03f}\,\mathrm{{eV}}$",
         transition_side="left",
     ),
@@ -987,7 +989,6 @@ _AXES_1D = {
         fixed_col="mu",
         fixed_error="Data contains more than one chemical potential!",
         xlabel="Temperature [K]",
-        ylabel_stem="Semi-grandcanonical potential",
         transition_label=lambda T: rf"$T = {T:.0f}\,\mathrm{{K}}$",
         transition_side="right",
     ),
@@ -1049,9 +1050,9 @@ def _plot_1d_phase_diagram(
         _place_transition_labels(ax, positions, labels, side=axis.transition_side)
 
     ax.set_xlabel(axis.xlabel)
-    ylabel = f"{axis.ylabel_stem} [eV/atom]"
+    ylabel = f"{_YLABEL_1D} [eV/atom]"
     if reference_phase is not None:
-        ylabel = f"{axis.ylabel_stem}\nrelative to {reference_phase} [eV/atom]"
+        ylabel = f"{_YLABEL_1D}\nRelative to {reference_phase} [eV/atom]"
     ax.set_ylabel(ylabel)
 
     return ax
