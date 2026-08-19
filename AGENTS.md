@@ -87,27 +87,17 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
 - **#116 refactor umbrella** — long-running sweep splitting big functions and pinning private helpers with direct unit tests. Sub-issues open at the time of writing (open PRs in flight noted; check before duplicating):
 
-  - #386 (`_rbf_gradient` in `interpolate/whitney.py`, PR #387)
-
   - #388 (`_semigrand_average_concentration` in `calculate.py`, PR #391)
-
-  - #389 (`_curve_obstacles` in `plot.py`, PR #393)
 
   - #390 (`ConstantPointDefect.excess_free_energy` + `AbstractPointDefectSublattice._get_zes`, PR #394)
 
-  - #398 (`_CallableInterpolation` in `interpolate/basic.py`, PR #404)
-
-  - #399 (empty-`tdf` branch of `get_transitions` in `calculate.py`, PR #406 — the branch cannot be removed, `groupby().apply()` raises on an empty grouped frame; the PR instead fixes its dtype mismatch with typed empty `Series`)
-
-  - #400 (`_delaunay_simplices` cache flip on a fresh frame, PR #401)
-
-  - #411 (1d plotters draw empty axis labels on a frame without a `border` column — the early `return` that guards transition marking sits above the `set_xlabel`/`set_ylabel` calls; fix is scoping the guard to the marking block. Only bites hand-built frames; `calc_phase_diagram` always emits the column)
+  - #411 (1d plotters draw empty axis labels on a frame without a `border` column — the early `return` that guards transition marking sits above the `set_xlabel`/`set_ylabel` calls; fix is scoping the guard to the marking block. Only bites hand-built frames; `calc_phase_diagram` always emits the column. PR #416)
 
   - #412 (`show=` on both 1d plotters is accepted, undocumented, and never read — `PlotGallery.ipynb` passes `show=False` expecting suppression of a `plt.show()` that is never called; issue leans `@deprecate` + notebook update over honouring it, matching the 2d plotters)
 
   - #413 (`_CCBase._emitted_concentrations` in `refine.py`, PR #414)
 
-  PR #397 tracks a matching pin for `_scipy_at_least` without a numbered sub-issue. PR #410 (also no numbered sub-issue) extracts the duplicated 40-line body of the two 1d plotters into a shared `_plot_1d_phase_diagram(df, scan_col, ...)` plus per-cut frozen `_Axis1D` records in `_AXES_1D`, mirroring how `_plot_phase_diagram` serves the 2d pair; #411/#412 were filed off it as follow-ups. Closed since the last pass: #376 (`SGTEInterpolation.deriv()`) by PR #382; #377 (`_scalarize`) by PR #384, which added `tests/unit/interpolate/test_basic_helpers.py`.
+  Closed since the last pass: #386 (`_rbf_gradient`) by PR #387; #389 (`_curve_obstacles`) by PR #393, adding `tests/unit/plot/test_curve_obstacles.py`; #398 (`_CallableInterpolation`) by PR #404, adding `tests/unit/interpolate/test_callable_interpolation.py`; #399 (`get_transitions` empty-`tdf` branch) by PR #406 (the branch cannot be removed, `groupby().apply()` raises on an empty grouped frame; the fix types the empty `transition_unit`/`border_segment` columns to match the populated path); #400 (`_delaunay_simplices` cache flip) by PR #401; PR #397 (`_scipy_at_least` pins, in `tests/unit/test_softplus.py`) landed without a numbered sub-issue. PR #410 (also no numbered sub-issue) landed too: the two 1d plotters now share `_plot_1d_phase_diagram(df, scan_col, ...)` parameterized by per-cut frozen `_Axis1D` records in `_AXES_1D`, mirroring how `_plot_phase_diagram` serves the 2d pair; #411/#412 were filed off it as follow-ups.
 
 - **#137 `phases/__init__.py` split** — `pointdefects.py` and `asewrapper.py` already split out; further splits (line vs solution vs interpolating) are the open direction. `phases/__init__.py` is still ~980 lines.
 
