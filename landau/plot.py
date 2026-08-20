@@ -1055,6 +1055,7 @@ def _plot_1d_phase_diagram(
     return ax
 
 
+@deprecate(show="No longer read; figure display is left to the caller")
 def plot_1d_mu_phase_diagram(
         df,
         ax=None,
@@ -1110,6 +1111,7 @@ def plot_1d_mu_phase_diagram(
     )
 
 
+@deprecate(show="No longer read; figure display is left to the caller")
 def plot_1d_T_phase_diagram(
         df,
         ax=None,
