@@ -1653,9 +1653,15 @@ def test_1d_show_kwarg_is_deprecated(plot, scan_col):
 
 @pytest.mark.parametrize("plot,scan_col", CUTS)
 def test_1d_omitting_show_kwarg_does_not_warn(plot, scan_col, recwarn):
+    """Only look for the `show=` deprecation itself; the plotting call chain
+
+    (matplotlib/seaborn/pandas, at whatever versions are installed) may raise
+    unrelated warnings of its own, e.g. a pyparsing `parseString` deprecation
+    from matplotlib's fontconfig parsing on the minimum-dependency floor.
+    """
     fig, ax = plt.subplots()
     try:
         plot(_cut_df(scan_col), ax=ax)
-        assert not any(issubclass(w.category, DeprecationWarning) for w in recwarn.list)
+        assert not any("show" in str(w.message) for w in recwarn.list if issubclass(w.category, DeprecationWarning))
     finally:
         plt.close(fig)
