@@ -1030,10 +1030,7 @@ def _plot_1d_phase_diagram(
 
     _add_1d_phase_legend(ax, df, scan_col=scan_col, top_labels=top_labels, side_labels=side_labels, ylim=ylim)
 
-    if 'border' not in df.columns:
-        return ax
-
-    if mark_transitions:
+    if mark_transitions and 'border' in df.columns:
         # The marker dot stays in data coords and is simply clipped if the crossing
         # lies outside the window; the labels are placed (and spread) by
         # _place_transition_labels.

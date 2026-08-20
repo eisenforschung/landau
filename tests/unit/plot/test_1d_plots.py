@@ -1574,6 +1574,25 @@ def test_1d_ylabel_names_the_reference_phase(plot, scan_col):
         plt.close(fig)
 
 
+@pytest.mark.parametrize("plot,scan_col,xlabel", [
+    (plot_1d_mu_phase_diagram, "mu", "Chemical Potential Difference [eV]"),
+    (plot_1d_T_phase_diagram, "T", "Temperature [K]"),
+])
+def test_1d_labels_set_without_border_column(plot, scan_col, xlabel):
+    """A frame with no 'border' column still gets its axis labels (issue #411).
+
+    Only the transition marking (which needs 'border') is skipped; the labels
+    below it in the function body must not be skipped along with it.
+    """
+    fig, ax = plt.subplots()
+    try:
+        plot(_cut_df(scan_col).drop(columns="border"), ax=ax)
+        assert ax.get_xlabel() == xlabel
+        assert ax.get_ylabel() == "Semi-grandcanonical Potential [eV/atom]"
+    finally:
+        plt.close(fig)
+
+
 @pytest.mark.parametrize("plot,scan_col,label", [
     (plot_1d_mu_phase_diagram, "mu", r"$\Delta\mu = 2.000\,\mathrm{eV}$"),
     (plot_1d_T_phase_diagram, "T", r"$T = 2\,\mathrm{K}$"),
