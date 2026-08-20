@@ -93,7 +93,7 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
   - #411 (1d plotters draw empty axis labels on a frame without a `border` column — the early `return` that guards transition marking sits above the `set_xlabel`/`set_ylabel` calls; fix is scoping the guard to the marking block. Only bites hand-built frames; `calc_phase_diagram` always emits the column. PR #416)
 
-  - #412 (`show=` on both 1d plotters is accepted, undocumented, and never read — `PlotGallery.ipynb` passes `show=False` expecting suppression of a `plt.show()` that is never called; issue leans `@deprecate` + notebook update over honouring it, matching the 2d plotters)
+  - #412 (`show=` on both 1d plotters is accepted, undocumented, and never read — `PlotGallery.ipynb` passes `show=False` expecting suppression of a `plt.show()` that is never called; issue leans `@deprecate` + notebook update over honouring it, matching the 2d plotters. PR #418)
 
   - #413 (`_CCBase._emitted_concentrations` in `refine.py`, PR #414)
 
