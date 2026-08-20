@@ -1638,3 +1638,24 @@ def test_1d_rejects_several_values_of_the_fixed_variable(plot, scan_col, message
     df.loc[df.index[0], fixed_col] += 1.0
     with pytest.raises(ValueError, match=message):
         plot(df)
+
+
+@pytest.mark.parametrize("plot,scan_col", CUTS)
+def test_1d_show_kwarg_is_deprecated(plot, scan_col):
+    """`show=` never affected the plot (#412); passing it explicitly now warns."""
+    fig, ax = plt.subplots()
+    try:
+        with pytest.warns(DeprecationWarning):
+            plot(_cut_df(scan_col), ax=ax, show=False)
+    finally:
+        plt.close(fig)
+
+
+@pytest.mark.parametrize("plot,scan_col", CUTS)
+def test_1d_omitting_show_kwarg_does_not_warn(plot, scan_col, recwarn):
+    fig, ax = plt.subplots()
+    try:
+        plot(_cut_df(scan_col), ax=ax)
+        assert not any(issubclass(w.category, DeprecationWarning) for w in recwarn.list)
+    finally:
+        plt.close(fig)
