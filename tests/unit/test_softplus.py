@@ -6,6 +6,8 @@ from hypothesis import HealthCheck, given, settings, strategies as st
 from landau.interpolate import SoftplusFit
 from landau.interpolate.basic import ConcentrationInterpolator, TemperatureInterpolator
 from landau.interpolate.softplus import (
+    _fit_slice,
+    _fit_softplus,
     _flat,
     _knee_position,
     _scipy_at_least,
@@ -24,6 +26,13 @@ from landau.interpolate.softplus import (
 # Generous enough to cope with scipy patch-version differences in the
 # trust-region step but tight enough to assert a real fit.
 RECOVERY_TOL = 0.03
+
+# The same measure for the solver-level helpers, which are seeded close to the
+# truth and fit noiseless in-family data, so they converge far tighter.
+SOLVER_RECOVERY_TOL = 0.005
+
+# Absolute tolerance on parameters recovered from noiseless in-family data.
+PARAM_ATOL = 1e-6
 
 
 def _truth(x, params):
@@ -371,3 +380,115 @@ class TestScipyAtLeast:
         # ``scipy.__version__`` missing -> ``AttributeError`` -> ``False``.
         monkeypatch.delattr(scipy, "__version__", raising=False)
         assert _scipy_at_least(1, 16) is False
+
+
+class TestFitSoftplus:
+    """Bounded least-squares solver shared by ``SoftplusFit.fit`` and ``_fit_slice``."""
+
+    N = 2
+    TRUE = _flat([0.8, 0.5], [10.0, -6.0], [-0.2, -0.2], 0.3)
+    SEED = _flat([0.5, 0.5], [8.0, -8.0], [-0.1, -0.1], 0.0)
+
+    def _data(self):
+        cn = np.linspace(-1.0, 1.0, 61)
+        return cn, _terms(cn, *_split(self.TRUE, self.N))
+
+    def _bounds(self, bmax=50.0, kmax=2.0):
+        return (
+            _flat(np.zeros(self.N), np.full(self.N, -bmax), np.full(self.N, -kmax), -np.inf),
+            _flat(np.full(self.N, np.inf), np.full(self.N, bmax), np.full(self.N, kmax), np.inf),
+        )
+
+    def test_recovers_in_family_parameters(self):
+        cn, y = self._data()
+        res = _fit_softplus(cn, y, self.SEED, self._bounds(), max_nfev=500, x_scale="jac")
+        np.testing.assert_allclose(res.x, self.TRUE, atol=PARAM_ATOL)
+
+    def test_infeasible_seed_is_clipped_into_bounds(self):
+        # ``least_squares`` raises ValueError('Initial guess is outside of provided
+        # bounds') on an infeasible ``x0``; the helper clips instead, so callers can
+        # pass a data-driven seed without pre-checking it against the bounds.
+        cn, y = self._data()
+        bounds = self._bounds()
+        infeasible = _flat([-5.0, -5.0], [100.0, -100.0], [-9.0, -9.0], 0.0)
+        res = _fit_softplus(cn, y, infeasible, bounds, max_nfev=500, x_scale="jac")
+        assert np.all(res.x >= bounds[0]) and np.all(res.x <= bounds[1])
+
+    def test_bounds_constrain_the_solution(self):
+        # The truth needs |b| up to 10; bounding the slope at 3 must pin both
+        # slopes on the bound rather than let the solver walk past it.
+        cn, y = self._data()
+        seed = _flat([0.5, 0.5], [1.0, -1.0], [-0.1, -0.1], 0.0)
+        res = _fit_softplus(cn, y, seed, self._bounds(bmax=3.0), max_nfev=500, x_scale="jac")
+        _, b, _, _ = _split(res.x, self.N)
+        np.testing.assert_allclose(np.abs(b), 3.0, atol=1e-9)
+
+    def test_max_nfev_caps_the_solver(self):
+        cn, y = self._data()
+        res = _fit_softplus(cn, y, self.SEED, self._bounds(), max_nfev=1, x_scale="jac")
+        assert res.nfev == 1
+        np.testing.assert_array_equal(res.x, self.SEED)
+
+    def test_robust_loss_down_weights_an_outlier(self):
+        # One grossly corrupted point: the default linear loss chases it, a robust
+        # loss with a small ``f_scale`` does not.  Both are compared against the
+        # uncorrupted truth on the remaining points.
+        cn, y = self._data()
+        corrupted = y.copy()
+        corrupted[30] += 20.0
+        clean = np.ones(cn.size, bool)
+        clean[30] = False
+
+        def rms(res):
+            return float(np.sqrt(np.mean((_terms(cn, *_split(res.x, self.N))[clean] - y[clean]) ** 2)))
+
+        bounds = self._bounds()
+        linear = _fit_softplus(cn, corrupted, self.SEED, bounds, max_nfev=500, x_scale="jac")
+        robust = _fit_softplus(
+            cn, corrupted, self.SEED, bounds,
+            loss="soft_l1", f_scale=0.05, max_nfev=500, x_scale="jac",
+        )
+        assert rms(robust) < SOLVER_RECOVERY_TOL * float(np.ptp(y))
+        assert rms(robust) < 0.1 * rms(linear)
+
+
+class TestFitSlice:
+    """Per-slice seed fit: smooth-V seed plus the graduated-sharpness polish."""
+
+    KNEE = 0.2
+
+    def _v_well(self):
+        cn = np.linspace(-1.0, 1.0, 41)
+        return cn, 0.5 * np.abs(cn - self.KNEE) + 0.05
+
+    def test_recovers_a_v_well(self):
+        cn, H = self._v_well()
+        a, b, c, off = _fit_slice(cn, H, 2, max_nfev=200)
+        rms = float(np.sqrt(np.mean((_terms(cn, a, b, c, off) - H) ** 2)))
+        assert rms < SOLVER_RECOVERY_TOL * float(np.ptp(H))
+
+    def test_places_both_knees_at_the_well_bottom(self):
+        # The model's knee for term i sits at ``cn = -c[i]``; both arms of the
+        # smooth-V must land on the corner of the well.
+        cn, H = self._v_well()
+        _, _, c, _ = _fit_slice(cn, H, 2, max_nfev=200)
+        np.testing.assert_allclose(-c, self.KNEE, atol=0.01)
+
+    def test_bmax_bounds_the_fitted_slope(self):
+        # The sharp corner wants |b| ~ 100; ``bmax`` has to cap it.
+        cn, H = self._v_well()
+        _, b, _, _ = _fit_slice(cn, H, 2, max_nfev=200, bmax=5.0)
+        assert np.all(np.abs(b) <= 5.0)
+
+    def test_amplitudes_stay_non_negative(self):
+        # Amplitudes are bounded below by zero so the fitted slice stays convex,
+        # including the redundant terms of an over-parametrised fit.
+        cn, H = self._v_well()
+        a, _, _, _ = _fit_slice(cn, H, 4, max_nfev=200)
+        assert np.all(a >= 0.0)
+
+    def test_returns_per_term_arrays_and_a_scalar_offset(self):
+        cn, H = self._v_well()
+        a, b, c, off = _fit_slice(cn, H, 3, max_nfev=200)
+        assert a.shape == b.shape == c.shape == (3,)
+        assert isinstance(off, float)
