@@ -93,9 +93,13 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
   - #413 (`_CCBase._emitted_concentrations` in `refine.py`, PR #414)
 
-  Closed 2026-08-20: #411 by PR #416 — the border-column guard in `_plot_1d_phase_diagram` is scoped to the transition-marking block instead of returning early, so axis labels are always set (only ever bit hand-built frames; `calc_phase_diagram` always emits the column). #412 by PR #418 — `show=` on both 1d wrappers is now marked `@deprecate` ("No longer read; figure display is left to the caller") rather than honoured, and the two dead `show=False` call sites were dropped from `PlotGallery.ipynb`.
+  - #423 (`_CachedResidual` in `interpolate/softplus.py`)
 
-  Closed since the pass before: #386 (`_rbf_gradient`) by PR #387; #389 (`_curve_obstacles`) by PR #393, adding `tests/unit/plot/test_curve_obstacles.py`; #398 (`_CallableInterpolation`) by PR #404, adding `tests/unit/interpolate/test_callable_interpolation.py`; #399 (`get_transitions` empty-`tdf` branch) by PR #406 (the branch cannot be removed, `groupby().apply()` raises on an empty grouped frame; the fix types the empty `transition_unit`/`border_segment` columns to match the populated path); #400 (`_delaunay_simplices` cache flip) by PR #401; PR #397 (`_scipy_at_least` pins, in `tests/unit/test_softplus.py`) landed without a numbered sub-issue. PR #410 (also no numbered sub-issue) landed too: the two 1d plotters now share `_plot_1d_phase_diagram(df, scan_col, ...)` parameterized by per-cut frozen `_Axis1D` records in `_AXES_1D`, mirroring how `_plot_phase_diagram` serves the 2d pair; #411/#412 were filed off it as follow-ups.
+  - #424 (`SoftplusSurface2DInterpolator._unpack` / `_n_params` / `_const_init` in `interpolate/softplus.py`)
+
+  - #425 (`_label_fits` in `plot.py`)
+
+  PR #422 is in flight without a numbered sub-issue (direct tests for `_fit_softplus` / `_fit_slice`). Closed sub-issues are recorded one cohort per line in [`CLAUDE.md`](CLAUDE.md)'s #116 section — check there before re-picking one.
 
 - **#137 `phases/__init__.py` split** — `pointdefects.py` and `asewrapper.py` already split out; further splits (line vs solution vs interpolating) are the open direction. `phases/__init__.py` is still ~980 lines.
 
