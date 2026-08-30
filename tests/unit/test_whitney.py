@@ -162,6 +162,23 @@ class TestWhitneyTemperatureInterpolator:
         pred = fn(t_ext)
         assert np.all(np.isfinite(pred))
 
+    def test_scalar_input_returns_python_scalar(self):
+        """Scalar T in, Python scalar out (#428): ``atleast_1d`` used to leak a shape-(1,) array."""
+        T, y = self._make_data()
+        fn = WhitneyTemperatureInterpolator(smoothing=0.0).fit(T, y)
+        pred = fn(500.0)
+        assert isinstance(pred, float)
+        np.testing.assert_allclose(pred, fn(np.array([500.0]))[0], rtol=1e-12, atol=0)
+
+    def test_output_shape_follows_input_shape(self):
+        """The closure is shape-preserving for 0-d, 1-d and 2-d input."""
+        T, y = self._make_data()
+        fn = WhitneyTemperatureInterpolator(smoothing=0.0).fit(T, y)
+        t = np.array([[400.0, 500.0], [600.0, 700.0]])
+        assert np.shape(fn(np.array(500.0))) == ()
+        assert fn(t.ravel()).shape == (4,)
+        np.testing.assert_allclose(fn(t), fn(t.ravel()).reshape(2, 2), rtol=1e-12, atol=0)
+
     def test_is_temperature_interpolator(self):
         """WhitneyTemperatureInterpolator should be a TemperatureInterpolator."""
         from landau.interpolate.basic import TemperatureInterpolator
