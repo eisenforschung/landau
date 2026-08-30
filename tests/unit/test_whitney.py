@@ -162,19 +162,16 @@ class TestWhitneyTemperatureInterpolator:
         assert callable(fn)
 
     def test_interpolation_interior(self):
-        """Predictions at training temperatures should be close to targets."""
+        """``smoothing=0`` interpolates, so the fit reproduces its own training data
+        to machine precision (measured 1e-16 relative).
+
+        That is why a residual against the training data cannot gate fit quality
+        the way it can for ``PolyFit`` — it is ~0 by construction (#428).
+        """
         T, y = self._make_data()
         fn = WhitneyTemperatureInterpolator(smoothing=0.0).fit(T, y)
-        pred = fn(T)
-        np.testing.assert_allclose(pred, y, atol=1e-4)
-
-    def test_extrapolation_finite(self):
-        """Predictions outside training range should be finite."""
-        T, y = self._make_data()
-        fn = WhitneyTemperatureInterpolator().fit(T, y)
-        t_ext = np.array([100.0, 2000.0])
-        pred = fn(t_ext)
-        assert np.all(np.isfinite(pred))
+        rms = np.sqrt(np.mean((fn(T) - y) ** 2))
+        assert rms < 1e-13 * np.abs(y).max()
 
     def test_scalar_input_returns_python_scalar(self):
         """Scalar T in, Python scalar out (#428): ``atleast_1d`` used to leak a shape-(1,) array."""
@@ -202,6 +199,55 @@ class TestWhitneyTemperatureInterpolator:
             # ravelling the input ravels the output identically: the values are
             # laid out by position, not merely counted
             np.testing.assert_array_equal(np.ravel(out), temperature_fit(t.ravel()))
+    @staticmethod
+    def _einstein(T, theta=350.0, n=3, E0=-3.0):
+        """Einstein-oscillator free energy per atom: concave in T, S -> 0 as T -> 0."""
+        from scipy.constants import Boltzmann, eV
+
+        kB = Boltzmann / eV
+        T = np.asarray(T, float)
+        return E0 + 0.5 * n * kB * theta + n * kB * T * np.log1p(-np.exp(-theta / T))
+
+    def test_extension_freezes_the_entropy_at_each_boundary(self):
+        """Outside the data the extension is exactly linear, so ``S = -f'(T_b)`` is
+        frozen at the *nearest* boundary — a different slope below the data than above.
+
+        Subsumes a plain finiteness check on the extrapolated range: a non-finite
+        prediction makes the slope spread ``nan`` and fails the linearity assertion.
+        """
+        T = np.linspace(100.0, 600.0, 60)
+        fn = WhitneyTemperatureInterpolator(smoothing=0.0).fit(T, self._einstein(T))
+
+        below = np.linspace(10.0, 90.0, 20)
+        above = np.linspace(650.0, 2000.0, 28)
+        slope_below = np.diff(fn(below)) / np.diff(below)
+        slope_above = np.diff(fn(above)) / np.diff(above)
+
+        # a curved extension, or one that reverted to the RBF, spreads these
+        assert np.ptp(slope_below) < 1e-12
+        assert np.ptp(slope_above) < 1e-12
+        # each side freezes its own boundary slope: S(100 K) is far below S(600 K)
+        # for a third-law free energy, so one global slope would fail this
+        assert abs(slope_below.mean()) < 0.2 * abs(slope_above.mean())
+
+        # against the exact dF/dT(T_b). The RBF's edge error is 0.9% at the upper
+        # boundary; it is larger at the lower one, where the data curves hardest
+        T_b = T.max()
+        true_slope = (self._einstein(T_b + 1e-3) - self._einstein(T_b - 1e-3)) / 2e-3
+        np.testing.assert_allclose(slope_above.mean(), true_slope, rtol=2e-2)
+
+    def test_extension_bounds_a_concave_free_energy_from_above(self):
+        """F(T) is concave, so the tangent extension over-estimates it (#428 docs note)."""
+        T = np.linspace(100.0, 600.0, 60)
+        F = self._einstein(T)
+        whitney = WhitneyTemperatureInterpolator(smoothing=0.0).fit(T, F)
+
+        T_ext = np.linspace(650.0, 2000.0, 28)
+        F_true = self._einstein(T_ext)
+
+        assert np.all(whitney(T_ext) >= F_true)
+        # the gap is the entropy the real system keeps gaining, and it grows
+        assert np.all(np.diff(whitney(T_ext) - F_true) > 0)
 
     def test_is_temperature_interpolator(self):
         """WhitneyTemperatureInterpolator should be a TemperatureInterpolator."""

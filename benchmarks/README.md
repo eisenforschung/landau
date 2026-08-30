@@ -43,3 +43,4 @@ Isolates the `ClausiusClapeyronRefiner` sampling-density regime that the
 concentration still sweeps.  Reports the point count and worst per-step
 concentration jump for the old defaults (`dT_max=50`, no drift cap) vs the
 new defaults (`dT_max=5`, `dc_max=0.01`); `--plot` writes the c-T scatter.
+

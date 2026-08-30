@@ -303,6 +303,28 @@ class WhitneyTemperatureInterpolator(TemperatureInterpolator):
     degree : int, default=2
     epsilon : float, default=1.0
     grad_eps : float, default=1e-4
+
+    Notes
+    -----
+    **The extension is a constant-entropy continuation.**  Outside the data the
+    value is ``f(T_b) + f'(T_b) (T - T_b)`` at the nearest boundary ``T_b``, so
+    the extrapolated region carries the fitted entropy ``S = -f'(T_b)`` frozen at
+    its boundary value.  For a free energy that is the physically right default,
+    and it is the reason to reach for this class over :class:`~.PolyFit`, which
+    leaves the data range like a polynomial of its degree.
+
+    It also means the extrapolated free energy is an **upper bound** on the true
+    one: ``F(T)`` is concave in ``T`` (``d2F/dT2 = -C/T <= 0`` for a
+    non-negative heat capacity), so the tangent at ``T_b`` lies above it.  The
+    gap grows with distance from the data — it is the entropy the real system
+    keeps gaining past ``T_b`` and the frozen ``S`` does not — and the bound
+    holds up to the error in the fitted boundary slope.  So read an extrapolated
+    value as an over-estimate — the true free energy is no *higher* than it — and
+    record how far each fit is carried past its data.
+
+    **A residual against the training data cannot gate fit quality.**  With the
+    default ``smoothing=0`` the RBF interpolates, so that residual is ~0 by
+    construction.
     """
 
     kernel: str = "thin_plate_spline"
