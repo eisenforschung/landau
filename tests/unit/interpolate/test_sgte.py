@@ -34,12 +34,10 @@ def test_deriv_log_branch():
     assert np.allclose(interp.deriv()(T), np.log(T) + 1.0)
 
 
-def test_deriv_scalar_and_array_shape_contract():
-    interp = SGTEInterpolation((0.5, 5.0, 3.0, 2.0))
-    scalar_out = interp.deriv()(10.0)
-    assert np.ndim(scalar_out) == 0
-    assert np.isclose(scalar_out, 0.5 * (np.log(10.0) + 1.0) + 3.0 + 4.0 * 10.0)
+def test_deriv_with_polynomial_terms():
+    """dG/dT for the full T*ln(T) + polynomial form.
 
-    T = np.linspace(50, 500, 5)
-    array_out = interp.deriv()(T)
-    assert array_out.shape == T.shape
+    Shapes are covered for every interpolator in test_shape_contract.py.
+    """
+    interp = SGTEInterpolation((0.5, 5.0, 3.0, 2.0))
+    assert np.isclose(interp.deriv()(10.0), 0.5 * (np.log(10.0) + 1.0) + 3.0 + 4.0 * 10.0)
