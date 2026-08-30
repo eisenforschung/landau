@@ -3,6 +3,7 @@ import pytest
 from hypothesis import given, strategies as st
 from hypothesis.extra.numpy import array_shapes, arrays
 
+from landau.interpolate import PolyFit
 from landau.interpolate.whitney import WhitneyRBFInterpolator, WhitneyTemperatureInterpolator
 
 
@@ -202,6 +203,69 @@ class TestWhitneyTemperatureInterpolator:
             # ravelling the input ravels the output identically: the values are
             # laid out by position, not merely counted
             np.testing.assert_array_equal(np.ravel(out), temperature_fit(t.ravel()))
+    @staticmethod
+    def _einstein(T, theta=350.0, n=3, E0=-3.0):
+        """Einstein-oscillator free energy per atom: concave in T, S -> 0 as T -> 0."""
+        from scipy.constants import Boltzmann, eV
+
+        kB = Boltzmann / eV
+        T = np.asarray(T, float)
+        return E0 + 0.5 * n * kB * theta + n * kB * T * np.log1p(-np.exp(-theta / T))
+
+    def test_extension_is_constant_entropy(self):
+        """Outside the data the extension is exactly linear, so S = -f'(T_b) is frozen.
+
+        A curved extension (or one that reverted to the RBF) would spread the
+        finite-difference slopes far beyond this.
+        """
+        T = np.linspace(100.0, 600.0, 60)
+        fn = WhitneyTemperatureInterpolator(smoothing=0.0).fit(T, self._einstein(T))
+
+        T_ext = np.linspace(650.0, 2000.0, 28)
+        slopes = np.diff(fn(T_ext)) / np.diff(T_ext)
+
+        assert np.ptp(slopes) < 1e-12
+        # the frozen slope is the fit's boundary derivative; it carries the RBF's
+        # edge error against the exact dF/dT(T_b), measured at 0.9% on this case
+        T_b = T.max()
+        true_slope = (self._einstein(T_b + 1e-3) - self._einstein(T_b - 1e-3)) / 2e-3
+        np.testing.assert_allclose(slopes.mean(), true_slope, rtol=2e-2)
+
+    def test_extension_bounds_a_concave_free_energy_from_above(self):
+        """F(T) is concave, so the tangent extension over-estimates it (#428 docs note).
+
+        Numbers in ``benchmarks/bench_whitney_extension.py``; a polynomial fit
+        carried the same distance has no bound at all, which is the contrast
+        that makes the guarantee worth documenting.
+        """
+        T = np.linspace(100.0, 600.0, 60)
+        F = self._einstein(T)
+        whitney = WhitneyTemperatureInterpolator(smoothing=0.0).fit(T, F)
+        poly = PolyFit(8).fit(T, F)
+
+        T_ext = np.linspace(650.0, 2000.0, 28)
+        F_true = self._einstein(T_ext)
+
+        assert np.all(whitney(T_ext) >= F_true)
+        # the gap is the entropy the real system keeps gaining, and it grows
+        gap = whitney(T_ext) - F_true
+        assert np.all(np.diff(gap) > 0)
+        assert gap[-1] > 0.2
+        # PolyFit(8) is not bounded either way over the same range
+        assert poly(T_ext).min() < -100.0
+
+    def test_training_residual_is_zero_by_construction(self):
+        """``smoothing=0`` interpolates, so a residual-against-own-input check
+        cannot gate fit quality — it is at machine precision (#428 docs note)."""
+        T = np.linspace(100.0, 600.0, 60)
+        F = self._einstein(T)
+        whitney = WhitneyTemperatureInterpolator(smoothing=0.0).fit(T, F)
+
+        whitney_rms = np.sqrt(np.mean((whitney(T) - F) ** 2))
+        poly_rms = np.sqrt(np.mean((PolyFit(8).fit(T, F)(T) - F) ** 2))
+
+        assert whitney_rms < 1e-14
+        assert poly_rms > 1e3 * whitney_rms
 
     def test_is_temperature_interpolator(self):
         """WhitneyTemperatureInterpolator should be a TemperatureInterpolator."""
