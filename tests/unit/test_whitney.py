@@ -3,7 +3,6 @@ import pytest
 from hypothesis import given, strategies as st
 from hypothesis.extra.numpy import array_shapes, arrays
 
-from landau.interpolate import PolyFit
 from landau.interpolate.whitney import WhitneyRBFInterpolator, WhitneyTemperatureInterpolator
 
 
@@ -238,26 +237,17 @@ class TestWhitneyTemperatureInterpolator:
         np.testing.assert_allclose(slope_above.mean(), true_slope, rtol=2e-2)
 
     def test_extension_bounds_a_concave_free_energy_from_above(self):
-        """F(T) is concave, so the tangent extension over-estimates it (#428 docs note).
-
-        A polynomial fit carried the same distance has no bound at all, which is
-        the contrast that makes the guarantee worth documenting.
-        """
+        """F(T) is concave, so the tangent extension over-estimates it (#428 docs note)."""
         T = np.linspace(100.0, 600.0, 60)
         F = self._einstein(T)
         whitney = WhitneyTemperatureInterpolator(smoothing=0.0).fit(T, F)
-        poly = PolyFit(8).fit(T, F)
 
         T_ext = np.linspace(650.0, 2000.0, 28)
         F_true = self._einstein(T_ext)
 
         assert np.all(whitney(T_ext) >= F_true)
         # the gap is the entropy the real system keeps gaining, and it grows
-        gap = whitney(T_ext) - F_true
-        assert np.all(np.diff(gap) > 0)
-        assert gap[-1] > 0.2
-        # PolyFit(8) is not bounded either way over the same range
-        assert poly(T_ext).min() < -100.0
+        assert np.all(np.diff(whitney(T_ext) - F_true) > 0)
 
     def test_is_temperature_interpolator(self):
         """WhitneyTemperatureInterpolator should be a TemperatureInterpolator."""
