@@ -322,7 +322,9 @@ class WhitneyTemperatureInterpolator(TemperatureInterpolator):
 
         Returns
         -------
-        callable : (M,) ndarray -> (M,) ndarray
+        Interpolation
+            ``f(T)``, shape-preserving: scalar in, Python scalar out;
+            ``(M,)`` in, ``(M,)`` ndarray out.
         """
         T = np.asarray(T, dtype=float).reshape(-1, 1)
         y = np.asarray(y, dtype=float)
@@ -335,8 +337,8 @@ class WhitneyTemperatureInterpolator(TemperatureInterpolator):
         ).fit(T, y)
 
         def predict(t):
-            t = np.atleast_1d(np.asarray(t, dtype=float)).reshape(-1, 1)
-            return interp.predict(t)
+            t_arr = np.asarray(t, dtype=float)
+            return _scalarize(interp.predict(t_arr.reshape(-1, 1)).reshape(t_arr.shape))
 
         return _CallableInterpolation(predict)
 
