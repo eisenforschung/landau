@@ -1,5 +1,3 @@
-from functools import cache
-
 import numpy as np
 import pytest
 from hypothesis import given, strategies as st
@@ -8,12 +6,13 @@ from hypothesis.extra.numpy import array_shapes, arrays
 from landau.interpolate.whitney import WhitneyRBFInterpolator, WhitneyTemperatureInterpolator
 
 
-@cache
-def _temperature_fit():
+@pytest.fixture(scope="module")
+def temperature_fit():
     """One Whitney fit shared by the shape-contract property test.
 
     ``@given`` re-runs its body ~100 times and fitting is the slow part; the
-    interpolation is immutable, so one fit serves every draw.
+    interpolation is immutable, so one fit serves every draw.  Module scope also
+    keeps hypothesis' function-scoped-fixture health check quiet.
     """
     T = np.linspace(300, 1000, 25)
     return WhitneyTemperatureInterpolator(smoothing=0.0).fit(T, -T * np.log(T) + 0.01 * T)
@@ -192,10 +191,9 @@ class TestWhitneyTemperatureInterpolator:
             elements=st.floats(min_value=50.0, max_value=2000.0),
         )
     )
-    def test_output_shape_follows_input_shape(self, t):
+    def test_output_shape_follows_input_shape(self, temperature_fit, t):
         """The closure preserves any input shape, 0-d included, in and outside the data."""
-        fn = _temperature_fit()
-        out = fn(t)
+        out = temperature_fit(t)
 
         assert np.shape(out) == t.shape
         if t.ndim == 0:
@@ -203,7 +201,7 @@ class TestWhitneyTemperatureInterpolator:
         else:
             # ravelling the input ravels the output identically: the values are
             # laid out by position, not merely counted
-            np.testing.assert_array_equal(np.ravel(out), fn(t.ravel()))
+            np.testing.assert_array_equal(np.ravel(out), temperature_fit(t.ravel()))
 
     def test_is_temperature_interpolator(self):
         """WhitneyTemperatureInterpolator should be a TemperatureInterpolator."""
