@@ -343,25 +343,26 @@ class RedlichKisterInterpolation(Interpolation):
 
     @staticmethod
     def _eval_mix(x, *L):
-        pre = x * (1 - x)
-        if isinstance(x, np.ndarray):
-            vam = np.vander((2 * x - 1), N=len(L), increasing=True)
-            return pre * np.einsum("ij,j->i", vam, L)
-        else:
-            return pre * sum(Li * (2 * x - 1) ** i for i, Li in enumerate(L))
+        # np.vander takes 1-D only, so flatten and restore the caller's shape; that
+        # keeps the scalar-in/scalar-out contract for a 0-d array and works in N-D.
+        # curve_fit passes 1-D and gets 1-D back, unchanged.
+        x_arr = np.asarray(x, dtype=float)
+        flat = x_arr.ravel()
+        pre = flat * (1 - flat)
+        vam = np.vander(2 * flat - 1, N=len(L), increasing=True)
+        return _scalarize((pre * np.einsum("ij,j->i", vam, L)).reshape(x_arr.shape))
 
     @staticmethod
     def _eval_mix_derivative(x, *L):
-        pre = x * (1 - x)
-        xi = 2 * x - 1
+        x_arr = np.asarray(x, dtype=float)
+        flat = x_arr.ravel()
+        pre = flat * (1 - flat)
+        xi = 2 * flat - 1
         x2 = xi**2
         # k=0: algebraically simplifies (0 - xi^2)*xi^(-1) = -xi, avoids 0^(-1) at x=0.5
         terms = [-xi] + [(2 * k * pre - x2) * xi ** (k - 1) for k in range(1, len(L))]
         ds = np.stack(terms)
-        if len(ds.shape) == 1:
-            return (L * ds).sum()
-        else:
-            return np.transpose(L) @ ds
+        return _scalarize((np.asarray(L) @ ds).reshape(x_arr.shape))
 
     # def fit_derivative(self, c, mu, f0=0, c0=0):
     #     """

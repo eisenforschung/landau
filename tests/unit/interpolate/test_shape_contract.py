@@ -9,10 +9,6 @@ and one phase backed by it among phases returning plain scalars made
 ``calc_phase_diagram`` raise an "inhomogeneous shape" ``ValueError``.  A test that
 exercises one interpolator cannot see that class of breakage, so the property runs
 against all of them here, and against each :meth:`~.Interpolation.deriv` too.
-
-``RedlichKister`` is the one that does not hold the full contract today; its current
-limits are pinned in :func:`test_redlich_kister_takes_only_scalars_and_1d` rather
-than swept under an xfail.
 """
 
 import numpy as np
@@ -46,10 +42,6 @@ CASES = {
     "RedlichKister(3) in c": (RedlichKister(3), C, F_C),
 }
 
-# every case but RedlichKister, which np.vander limits to 1-D (see module docstring)
-SHAPE_PRESERVING = [name for name in CASES if not name.startswith("RedlichKister")]
-
-
 @pytest.fixture(scope="module")
 def fits():
     """Fit each interpolator once; ``@given`` re-runs its body ~100 times."""
@@ -60,7 +52,7 @@ def _branch(interpolation, derivative):
     return interpolation.deriv() if derivative else interpolation
 
 
-@pytest.mark.parametrize("name", SHAPE_PRESERVING)
+@pytest.mark.parametrize("name", list(CASES))
 @pytest.mark.parametrize("derivative", [False, True], ids=["f", "deriv"])
 @given(
     unit=arrays(
@@ -90,11 +82,7 @@ def test_output_shape_matches_input_shape(fits, name, derivative, unit):
 @pytest.mark.parametrize("name", list(CASES))
 @pytest.mark.parametrize("derivative", [False, True], ids=["f", "deriv"])
 def test_python_scalar_in_scalar_out(fits, name, derivative):
-    """A plain Python float in gives a 0-d value out, usable by ``float()``.
-
-    Every interpolator holds this one, RedlichKister included — it is the 0-d
-    *array* spelling of a scalar that it rejects.
-    """
+    """A plain Python float in gives a 0-d value out, usable by ``float()``."""
     interpolation, lo, hi = fits[name]
     f = _branch(interpolation, derivative)
 
@@ -102,25 +90,3 @@ def test_python_scalar_in_scalar_out(fits, name, derivative):
 
     assert np.ndim(out) == 0
     assert np.isfinite(float(out))
-
-
-@pytest.mark.parametrize("derivative", [False, True], ids=["f", "deriv"])
-def test_redlich_kister_takes_only_scalars_and_1d(fits, derivative):
-    """``RedlichKisterInterpolation`` evaluates through ``np.vander``, which is 1-D only.
-
-    Scalars and 1-D arrays work; a 0-d array — what ``np.asarray(scalar)`` gives,
-    the spelling #428 was about — and anything 2-D raise ``ValueError``.  Pinned so
-    the gap stays visible and this test fails loudly once it is closed.
-    """
-    interpolation, _, _ = fits["RedlichKister(3) in c"]
-    f = _branch(interpolation, derivative)
-
-    assert np.shape(f(np.full(3, 0.5))) == (3,)
-    assert np.ndim(f(0.5)) == 0
-
-    with pytest.raises(ValueError):
-        f(np.full((2, 2), 0.5))
-    if not derivative:
-        # deriv() happens to survive a 0-d array; __call__ does not
-        with pytest.raises(ValueError):
-            f(np.asarray(0.5))
