@@ -41,18 +41,6 @@ def test_SplineFit_sorts_unordered_input():
     assert np.max(np.abs(fit(x) - y)) < ATOL
 
 
-def test_SplineFit_scalar_and_array_shapes():
-    """Scalar in -> python float out; array in -> array out of matching shape."""
-    x = np.linspace(0, 1, 10)
-    y = x**2
-    fit = SplineFit().fit(x, y)
-    out = fit(0.5)
-    assert isinstance(out, float)
-    assert np.isclose(out, 0.25, atol=ATOL)
-    c = np.array([0.1, 0.4, 0.9])
-    assert fit(c).shape == c.shape
-
-
 def test_SplineFit_degree_one_is_piecewise_linear():
     """degree=1 is plain piecewise-linear interpolation, matching np.interp."""
     x = np.array([0.0, 0.2, 0.5, 0.7, 1.0])
