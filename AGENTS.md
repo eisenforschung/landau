@@ -115,6 +115,10 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
 - **#344 collapse CEF Au-Cu into one partitioning fcc phase with `MiscibilityGapRefiner`** — blocked on `MiscibilityGapRefiner`'s per-step scan cost.
 
+- **#428 `WhitneyTemperatureInterpolator` scalar-shape bug** — the `predict` closure in `fit` promotes scalar `T` via `atleast_1d` and never squeezes, returning a shape-`(1,)` array where `PolyFit`/`SGTE` return scalars; one Whitney-backed phase among ordinary phases makes `calc_phase_diagram` raise an "inhomogeneous shape" `ValueError` that names neither Whitney nor the phase. Fix sketched in the issue (squeeze on scalar input); it also asks for a regression test running `calc_phase_diagram` over line phases built with *each* `TemperatureInterpolator`.
+
+- **#427 SGTE is the wrong default for QHA/phonon `F(T)`** — the `T·ln(T)` term makes `S = -dG/dT` diverge as `T → 0`, so quantum-harmonic data (which includes `T = 0`) fits badly enough to shift a melting point ~+10 K with the default `SGTE(3)`; `PolyFit(8)` is the workaround. Preferred fix is upstream: a solid-state QHA `ThermoChem` consumed via `AsePhase` (validated `QuasiHarmonicCrystalThermo` prototype in the issue, headed for ASE); landau's side is at most a docs note / `T = 0` warning.
+
 - **#81 analytic SRO models** — prototype `QuasiChemicalPhase` (PR #123) was closed without merging; still open.
 
 - **#33 fast Legendre transforms**, **#59 autodiff for `concentration`** — stretch goals; no owner.
