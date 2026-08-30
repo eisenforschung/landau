@@ -324,10 +324,7 @@ class WhitneyTemperatureInterpolator(TemperatureInterpolator):
 
     **A residual against the training data cannot gate fit quality.**  With the
     default ``smoothing=0`` the RBF interpolates, so that residual is ~0 by
-    construction (``1e-16`` eV RMS on the case in
-    ``benchmarks/bench_whitney_extension.py``, against ``1e-6`` eV for
-    ``PolyFit(8)``).  Distance carried past the data is the diagnostic to keep
-    instead.
+    construction.
     """
 
     kernel: str = "thin_plate_spline"

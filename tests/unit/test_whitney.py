@@ -163,19 +163,16 @@ class TestWhitneyTemperatureInterpolator:
         assert callable(fn)
 
     def test_interpolation_interior(self):
-        """Predictions at training temperatures should be close to targets."""
+        """``smoothing=0`` interpolates, so the fit reproduces its own training data
+        to machine precision (measured 1e-16 relative).
+
+        That is why a residual against the training data cannot gate fit quality
+        the way it can for ``PolyFit`` — it is ~0 by construction (#428).
+        """
         T, y = self._make_data()
         fn = WhitneyTemperatureInterpolator(smoothing=0.0).fit(T, y)
-        pred = fn(T)
-        np.testing.assert_allclose(pred, y, atol=1e-4)
-
-    def test_extrapolation_finite(self):
-        """Predictions outside training range should be finite."""
-        T, y = self._make_data()
-        fn = WhitneyTemperatureInterpolator().fit(T, y)
-        t_ext = np.array([100.0, 2000.0])
-        pred = fn(t_ext)
-        assert np.all(np.isfinite(pred))
+        rms = np.sqrt(np.mean((fn(T) - y) ** 2))
+        assert rms < 1e-13 * np.abs(y).max()
 
     def test_scalar_input_returns_python_scalar(self):
         """Scalar T in, Python scalar out (#428): ``atleast_1d`` used to leak a shape-(1,) array."""
@@ -212,31 +209,39 @@ class TestWhitneyTemperatureInterpolator:
         T = np.asarray(T, float)
         return E0 + 0.5 * n * kB * theta + n * kB * T * np.log1p(-np.exp(-theta / T))
 
-    def test_extension_is_constant_entropy(self):
-        """Outside the data the extension is exactly linear, so S = -f'(T_b) is frozen.
+    def test_extension_freezes_the_entropy_at_each_boundary(self):
+        """Outside the data the extension is exactly linear, so ``S = -f'(T_b)`` is
+        frozen at the *nearest* boundary — a different slope below the data than above.
 
-        A curved extension (or one that reverted to the RBF) would spread the
-        finite-difference slopes far beyond this.
+        Subsumes a plain finiteness check on the extrapolated range: a non-finite
+        prediction makes the slope spread ``nan`` and fails the linearity assertion.
         """
         T = np.linspace(100.0, 600.0, 60)
         fn = WhitneyTemperatureInterpolator(smoothing=0.0).fit(T, self._einstein(T))
 
-        T_ext = np.linspace(650.0, 2000.0, 28)
-        slopes = np.diff(fn(T_ext)) / np.diff(T_ext)
+        below = np.linspace(10.0, 90.0, 20)
+        above = np.linspace(650.0, 2000.0, 28)
+        slope_below = np.diff(fn(below)) / np.diff(below)
+        slope_above = np.diff(fn(above)) / np.diff(above)
 
-        assert np.ptp(slopes) < 1e-12
-        # the frozen slope is the fit's boundary derivative; it carries the RBF's
-        # edge error against the exact dF/dT(T_b), measured at 0.9% on this case
+        # a curved extension, or one that reverted to the RBF, spreads these
+        assert np.ptp(slope_below) < 1e-12
+        assert np.ptp(slope_above) < 1e-12
+        # each side freezes its own boundary slope: S(100 K) is far below S(600 K)
+        # for a third-law free energy, so one global slope would fail this
+        assert abs(slope_below.mean()) < 0.2 * abs(slope_above.mean())
+
+        # against the exact dF/dT(T_b). The RBF's edge error is 0.9% at the upper
+        # boundary; it is larger at the lower one, where the data curves hardest
         T_b = T.max()
         true_slope = (self._einstein(T_b + 1e-3) - self._einstein(T_b - 1e-3)) / 2e-3
-        np.testing.assert_allclose(slopes.mean(), true_slope, rtol=2e-2)
+        np.testing.assert_allclose(slope_above.mean(), true_slope, rtol=2e-2)
 
     def test_extension_bounds_a_concave_free_energy_from_above(self):
         """F(T) is concave, so the tangent extension over-estimates it (#428 docs note).
 
-        Numbers in ``benchmarks/bench_whitney_extension.py``; a polynomial fit
-        carried the same distance has no bound at all, which is the contrast
-        that makes the guarantee worth documenting.
+        A polynomial fit carried the same distance has no bound at all, which is
+        the contrast that makes the guarantee worth documenting.
         """
         T = np.linspace(100.0, 600.0, 60)
         F = self._einstein(T)
@@ -253,19 +258,6 @@ class TestWhitneyTemperatureInterpolator:
         assert gap[-1] > 0.2
         # PolyFit(8) is not bounded either way over the same range
         assert poly(T_ext).min() < -100.0
-
-    def test_training_residual_is_zero_by_construction(self):
-        """``smoothing=0`` interpolates, so a residual-against-own-input check
-        cannot gate fit quality — it is at machine precision (#428 docs note)."""
-        T = np.linspace(100.0, 600.0, 60)
-        F = self._einstein(T)
-        whitney = WhitneyTemperatureInterpolator(smoothing=0.0).fit(T, F)
-
-        whitney_rms = np.sqrt(np.mean((whitney(T) - F) ** 2))
-        poly_rms = np.sqrt(np.mean((PolyFit(8).fit(T, F)(T) - F) ** 2))
-
-        assert whitney_rms < 1e-14
-        assert poly_rms > 1e3 * whitney_rms
 
     def test_is_temperature_interpolator(self):
         """WhitneyTemperatureInterpolator should be a TemperatureInterpolator."""
