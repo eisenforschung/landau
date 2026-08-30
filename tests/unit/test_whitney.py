@@ -1,7 +1,22 @@
+from functools import cache
+
 import numpy as np
 import pytest
+from hypothesis import given, strategies as st
+from hypothesis.extra.numpy import array_shapes, arrays
 
 from landau.interpolate.whitney import WhitneyRBFInterpolator, WhitneyTemperatureInterpolator
+
+
+@cache
+def _temperature_fit():
+    """One Whitney fit shared by the shape-contract property test.
+
+    ``@given`` re-runs its body ~100 times and fitting is the slow part; the
+    interpolation is immutable, so one fit serves every draw.
+    """
+    T = np.linspace(300, 1000, 25)
+    return WhitneyTemperatureInterpolator(smoothing=0.0).fit(T, -T * np.log(T) + 0.01 * T)
 
 
 class TestWhitneyRBFInterpolator:
@@ -170,14 +185,25 @@ class TestWhitneyTemperatureInterpolator:
         assert isinstance(pred, float)
         np.testing.assert_allclose(pred, fn(np.array([500.0]))[0], rtol=1e-12, atol=0)
 
-    def test_output_shape_follows_input_shape(self):
-        """The closure is shape-preserving for 0-d, 1-d and 2-d input."""
-        T, y = self._make_data()
-        fn = WhitneyTemperatureInterpolator(smoothing=0.0).fit(T, y)
-        t = np.array([[400.0, 500.0], [600.0, 700.0]])
-        assert np.shape(fn(np.array(500.0))) == ()
-        assert fn(t.ravel()).shape == (4,)
-        np.testing.assert_allclose(fn(t), fn(t.ravel()).reshape(2, 2), rtol=1e-12, atol=0)
+    @given(
+        t=arrays(
+            dtype=float,
+            shape=array_shapes(min_dims=0, max_dims=3, min_side=1, max_side=4),
+            elements=st.floats(min_value=50.0, max_value=2000.0),
+        )
+    )
+    def test_output_shape_follows_input_shape(self, t):
+        """The closure preserves any input shape, 0-d included, in and outside the data."""
+        fn = _temperature_fit()
+        out = fn(t)
+
+        assert np.shape(out) == t.shape
+        if t.ndim == 0:
+            assert isinstance(out, float)
+        else:
+            # ravelling the input ravels the output identically: the values are
+            # laid out by position, not merely counted
+            np.testing.assert_array_equal(np.ravel(out), fn(t.ravel()))
 
     def test_is_temperature_interpolator(self):
         """WhitneyTemperatureInterpolator should be a TemperatureInterpolator."""
