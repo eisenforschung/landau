@@ -41,78 +41,23 @@ needs_ase = pytest.mark.skipif(not HAS_ASE, reason="ASE is not installed")
 # Cross-process / load-order probe
 # ---------------------------------------------------------------------------
 
-#: Digests every representative object twice: once before fleche has loaded its
-#: entry points (so the built-in dataclass path is all that is available) and
-#: once after (so the hooks are live).  Reported as JSON on stdout.
-_PROBE = r"""
-import json, warnings
-warnings.filterwarnings("ignore")
-import numpy as np
-from fleche.digest import digest, Indigestible, load_entry_points
-from landau import (LinePhase, TemperatureDependentLinePhase, IdealSolution, RegularSolution,
-                    FastInterpolatingPhase, PolyFit, SGTE, RedlichKister, SplineFit)
-from landau.interpolate import NumericalDerivative
-from landau.phases import pointdefects as pdf
-import landau.refine as R
-import landau.poly as P
-
-T = np.linspace(100, 1000, 20)
-A = TemperatureDependentLinePhase("A", 0.0, T, -T * 1e-3, SGTE(3))
-B = TemperatureDependentLinePhase("B", 1.0, T, -T * 1.1e-3, SGTE(3))
-M = TemperatureDependentLinePhase("M", 0.5, T, -T * 1.2e-3 - 0.05, SGTE(3))
-L = LinePhase("L", 0.3, -0.1, 1e-4)
-d = pdf.ConstantPointDefect("d", 0.1, 1e-4, 0.5)
-sl = pdf.PointDefectSublattice("s", 0, 1.0, [d])
-
-def build():
-    o = {
-        "LinePhase": L,
-        "TemperatureDependentLinePhase": A,
-        "IdealSolution": IdealSolution("I", A, B),
-        "RegularSolution": RegularSolution("R", [A, M, B]),
-        "FastInterpolatingPhase": FastInterpolatingPhase("F", [A, M, B]),
-        "PolyFit": PolyFit(3),
-        "SGTE": SGTE(3),
-        "RedlichKister": RedlichKister(3),
-        "SplineFit": SplineFit(),
-        "PolynomialInterpolation": PolyFit(3).fit(T, T * 2.0),
-        "SGTEInterpolation": SGTE(3).fit(T, -T * 1e-3),
-        "NumericalDerivative": NumericalDerivative(PolyFit(3).fit(T, T * 2.0)),
-        "ConstantPointDefect": d,
-        "PointDefectSublattice": sl,
-        "PointDefectedPhase": pdf.PointDefectedPhase("PD", L, [sl]),
-        "ScanRefiner": R.ScanRefiner("mu"),
-        "DelaunayTripleRefiner": R.DelaunayTripleRefiner(),
-        "ClausiusClapeyronRefiner": R.ClausiusClapeyronRefiner(),
-        "MiscibilityGapRefiner": R.MiscibilityGapRefiner(),
-        "Concave": P.Concave(),
-        "Segments": P.Segments(),
-    }
-    try:
-        from ase.thermochemistry import HarmonicThermo
-        from landau import AsePhase
-        o["AsePhase"] = AsePhase("ase", 0.0, HarmonicThermo(np.array([0.01, 0.02, 0.03])))
-    except Exception:
-        pass
-    return o
-
-def one(v):
-    try:
-        return str(digest(v))
-    except Indigestible:
-        return "REFUSED"
-
-cold = {k: one(v) for k, v in build().items()}
-load_entry_points()
-warm = {k: one(v) for k, v in build().items()}
-print(json.dumps({"cold": cold, "warm": warm}))
-"""
+#: The probe runs as a script, not through a process pool: a pool cannot
+#: guarantee two different hash seeds, which is the whole point of the check.
+#: ``ProcessPoolExecutor``'s default context on Linux for Python < 3.14 is
+#: ``fork``, whose children inherit the parent's salt outright; ``forkserver``
+#: children all share the forkserver's one salt.  Only ``spawn`` gives each
+#: worker its own, and even that collapses to a single salt when
+#: ``PYTHONHASHSEED`` is set in the environment, as a reproducible test run may
+#: well do.  Every one of those cases makes the assertions below vacuously true,
+#: so the seeds are set explicitly here and checked in
+#: :func:`test_probe_runs_really_had_different_hash_seeds`.
+_PROBE = os.path.join(os.path.dirname(__file__), "flecheprobe.py")
 
 
 def _run_probe(hashseed):
     env = dict(os.environ, PYTHONHASHSEED=str(hashseed))
     out = subprocess.run(
-        [sys.executable, "-c", _PROBE], env=env, capture_output=True, text=True, check=True
+        [sys.executable, _PROBE], env=env, capture_output=True, text=True, check=True
     )
     return json.loads(out.stdout)
 
@@ -144,6 +89,17 @@ def test_digests_do_not_depend_on_entry_point_load_order(probes):
     """
     for probe in probes:
         assert probe["cold"] == probe["warm"]
+
+
+def test_probe_runs_really_had_different_hash_seeds(probes):
+    """Guard against a vacuous pass.
+
+    Both properties below compare digests from two interpreters.  If the two
+    runs shared a hash seed, a salted digest would agree trivially and the
+    checks would pass with the bug present.
+    """
+    first, second = probes
+    assert first["salt"] != second["salt"]
 
 
 def test_probe_covers_the_public_object_model(probes):
