@@ -5,10 +5,10 @@ Einstein solid, a planted Vinet curve -- on hand-built spectra.  This runs the r
 thing: fcc Cu, nine volumes, EMT forces, phonopy force constants and a 12^3 mesh, and
 checks it against the two external references such a calculation has.
 
-1. The mode sum is phonopy's own.  A spectrum is presented to
-   :class:`~phonopy.phonon.thermal_properties.ThermalProperties` through the attributes
-   it reads off a q-point mesh, so the free energy must come back *identical* to what
-   the live :class:`~phonopy.Phonopy` object reports, not close to it.
+1. The mode sum is phonopy's own.  The phase resets the temperature on the caller's
+   :class:`~phonopy.phonon.thermal_properties.ThermalProperties` and reads the result
+   back, so the free energy must come back *identical* to what a freshly run
+   :class:`~phonopy.Phonopy` reports, not close to it.
 
 2. The volume minimisation reaches :class:`~phonopy.api_qha.PhonopyQHA`'s answer.  Both
    fit an equation of state through the same per-volume free energies and minimise it,
@@ -28,7 +28,7 @@ Needs the ``phonopy`` and ``ase`` extras; the ``test`` extra pulls in both.  Run
 import numpy as np
 import pytest
 import scipy.optimize as so
-from numpy.testing import assert_array_equal
+from numpy.testing import assert_allclose, assert_array_equal
 from pyiron_snippets.import_alarm import ImportAlarm
 
 from landau.interpolate import SGTE, PolyFit
@@ -43,7 +43,7 @@ with ImportAlarm() as qha_alarm:
     from phonopy.physical_units import get_physical_units
     from phonopy.structure.atoms import PhonopyAtoms
 
-    from landau.phases.quasiharmonic import PhononSpectrum, PhonopyQuasiHarmonicPhase
+    from landau.phases.quasiharmonic import PhonopyQuasiHarmonicPhase
 
 pytestmark = pytest.mark.skipif(qha_alarm.message is not None, reason="phonopy and ase are not installed")
 
@@ -57,7 +57,12 @@ CA_SLOPE = 0.0227e-3  # eV/atom/K
 
 
 def quasi_harmonic_copper(a):
-    """One sampled volume: EMT static energy, phonopy force constants and a mesh."""
+    """One sampled volume: EMT static energy, phonopy force constants and a mesh.
+
+    Thermal properties are the caller's to run -- that is where the mesh, the statistics
+    and the mode cutoff are chosen -- so this stops at the mesh and the tests below run
+    them with the statistics they are about.
+    """
     atoms = bulk("Cu", "fcc", a=a, cubic=True)
     atoms.calc = EMT()
     energy = atoms.get_potential_energy()
@@ -85,57 +90,74 @@ def quasi_harmonic_copper(a):
     phonon.produce_force_constants()
     phonon.symmetrize_force_constants()
     phonon.run_mesh(MESH, is_gamma_center=True)
-    return phonon, energy, len(atoms)
+    return phonon, energy
 
 
 @pytest.fixture(scope="module")
 def copper():
-    """Nine volumes of fcc Cu, as live Phonopy objects and as the spectra taken off them.
-
-    The conventional cell holds four atoms and reduces to one primitive atom, so this is
-    also the case where the spectrum and the static energy carry different atom counts.
-    """
-    volumes = [quasi_harmonic_copper(a) for a in LATTICE_CONSTANTS]
-    spectra = tuple(PhononSpectrum.from_phonopy(p, energy=e, atoms_per_cell=n) for p, e, n in volumes)
-    assert spectra[0].atoms_per_cell == 4 and spectra[0].atoms_per_primitive_cell == 1
-    return volumes, spectra
+    """Nine volumes of fcc Cu as live Phonopy objects, with their EMT static energies."""
+    return [quasi_harmonic_copper(a) for a in LATTICE_CONSTANTS]
 
 
-def phonopy_thermal_properties(phonon, classical):
-    """phonopy's own free energy, entropy and heat capacity over the shared temperatures.
+def phonopy_thermal_properties(phonon, classical, temperatures=TEMPERATURES):
+    """phonopy's own free energy, entropy and heat capacity over ``temperatures``.
 
     Read off the ``thermal_properties`` tuple rather than the same-named attributes, which
-    phonopy 3 does not carry.
+    phonopy 3 does not carry.  Each call replaces ``phonon.thermal_properties`` with a new
+    object, so a phase already built keeps the one it was given.
     """
-    phonon.run_thermal_properties(temperatures=TEMPERATURES, classical=classical)
+    phonon.run_thermal_properties(temperatures=temperatures, classical=classical)
     _, free_energy, entropy, heat_capacity = phonon.thermal_properties.thermal_properties
     return free_energy, entropy, heat_capacity
 
 
+def copper_phase(copper, classical=False):
+    """A phase over those volumes, with the statistics the caller picks when running.
+
+    The conventional cell holds four atoms and reduces to one primitive atom, so this is
+    also the case where the phonons and the static energy carry different atom counts.
+    """
+    for phonon, _ in copper:
+        phonon.run_thermal_properties(temperatures=TEMPERATURES, classical=classical)
+    phase = PhonopyQuasiHarmonicPhase.from_phonopy(
+        "Cu", 0.0, [p for p, _ in copper], [e for _, e in copper]
+    )
+    assert phase.atoms_per_cell == 4 and phase.atoms_per_primitive_cell == 1
+    # the volumes are sampled in ascending order and all are stable, so the rows of
+    # volume_free_energies line up with the inputs as given
+    assert_allclose(phase.sampled_volumes, phase.volumes_per_atom, rtol=0, atol=0)
+    return phase
+
+
 @pytest.mark.parametrize("classical", [False, True])
 def test_mode_sum_is_phonopys_own(copper, classical):
-    volumes, spectra = copper
+    phase = copper_phase(copper, classical)
     to_ev = 1 / get_physical_units().EvTokJmol
-    for (phonon, _, _), spectrum in zip(volumes, spectra, strict=True):
-        free_energy, _, _ = phonopy_thermal_properties(phonon, classical)
-        reference = free_energy * to_ev / spectrum.atoms_per_primitive_cell
-        # identical, not close: the shim hands phonopy's kernel the same arrays a live
-        # mesh would, so any difference at all means a convention diverged
-        assert_array_equal(spectrum.vibrational_free_energy(TEMPERATURES, classical=classical), reference)
+    static = np.array(phase.energies_per_atom)
+    for T in (0.0, 300.0, 900.0, 1200.0):
+        reference = np.array(
+            [phonopy_thermal_properties(phonon, classical, [T])[0][0] for phonon, _ in copper]
+        )
+        # identical, not close: the phase resets the temperature on phonopy's own object
+        # and reads its own kernel back, so any difference at all means something diverged
+        assert_array_equal(
+            phase.volume_free_energies(T),
+            static + reference * to_ev / phase.atoms_per_primitive_cell,
+        )
 
 
 @pytest.mark.parametrize("classical", [False, True])
 def test_volume_minimisation_matches_phonopy_qha(copper, classical):
-    volumes, spectra = copper
-    per_primitive = spectra[0].atoms_per_primitive_cell
-    per_volume = [phonopy_thermal_properties(phonon, classical) for phonon, _, _ in volumes]
+    per_volume = [phonopy_thermal_properties(phonon, classical) for phonon, _ in copper]
     # PhonopyQHA wants each quantity shaped (n_temperatures, n_volumes)
     free_energy, entropy, heat_capacity = (np.array(q).T for q in zip(*per_volume, strict=True))
+    phase = copper_phase(copper, classical)
+    per_primitive = phase.atoms_per_primitive_cell
     # PhonopyQHA is deprecated in phonopy 4 in favour of an API phonopy 3 does not carry;
     # it is present across the whole supported range, which the replacement is not
     qha = PhonopyQHA(
-        volumes=np.array([s.volume_per_atom for s in spectra]) * per_primitive,
-        electronic_energies=np.array([s.static_energy_per_atom for s in spectra]) * per_primitive,
+        volumes=np.array(phase.volumes_per_atom) * per_primitive,
+        electronic_energies=np.array(phase.energies_per_atom) * per_primitive,
         temperatures=TEMPERATURES,
         free_energy=free_energy,
         entropy=entropy,
@@ -148,7 +170,6 @@ def test_volume_minimisation_matches_phonopy_qha(copper, classical):
     T = TEMPERATURES[: len(reference_G)]
     assert len(T) > 0.9 * len(TEMPERATURES)
 
-    phase = PhonopyQuasiHarmonicPhase("Cu", 0.0, spectra=spectra, classical=classical)
     G = phase.line_free_energy(T)
     V = phase.equilibrium_volume(T)
     assert np.isfinite(G).all()
@@ -185,8 +206,7 @@ def test_fit_residual_displaces_a_shallow_crossing(copper, interpolator, residua
     ``-r(crossing) / CA_SLOPE``.  Exact while the shift is small enough that ``r`` barely
     changes across it, which is why only the accurate fit is held to it.
     """
-    _, spectra = copper
-    phase = PhonopyQuasiHarmonicPhase("Cu", 0.0, spectra=spectra)
+    phase = copper_phase(copper)
     sampled = phase.line_free_energy(TEMPERATURES)
     fitted = TemperatureDependentLinePhase(
         "fitted",

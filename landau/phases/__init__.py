@@ -36,7 +36,6 @@ __all__ = [
     "PointDefectSublattice",
     "PointDefectedPhase",
     "AsePhase",
-    "PhononSpectrum",
     "PhonopyQuasiHarmonicPhase",
 ]
 
@@ -982,4 +981,4 @@ def PointDefectedPhase(*args, **kwargs):
 
 
 from .asewrapper import AsePhase
-from .quasiharmonic import PhononSpectrum, PhonopyQuasiHarmonicPhase
+from .quasiharmonic import PhonopyQuasiHarmonicPhase

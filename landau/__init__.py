@@ -9,7 +9,6 @@ from .phases import (
     FastInterpolatingPhase,
     Surface2DInterpolatingPhase,
     AsePhase,
-    PhononSpectrum,
     PhonopyQuasiHarmonicPhase,
 )
 
