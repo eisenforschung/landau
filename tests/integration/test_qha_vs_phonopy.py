@@ -102,9 +102,14 @@ def copper():
 
 
 def phonopy_thermal_properties(phonon, classical):
-    """phonopy's own ``ThermalProperties`` over the shared temperature list."""
+    """phonopy's own free energy, entropy and heat capacity over the shared temperatures.
+
+    Read off the ``thermal_properties`` tuple rather than the same-named attributes, which
+    phonopy 3 does not carry.
+    """
     phonon.run_thermal_properties(temperatures=TEMPERATURES, classical=classical)
-    return phonon.thermal_properties
+    _, free_energy, entropy, heat_capacity = phonon.thermal_properties.thermal_properties
+    return free_energy, entropy, heat_capacity
 
 
 @pytest.mark.parametrize("classical", [False, True])
@@ -112,7 +117,7 @@ def test_mode_sum_is_phonopys_own(copper, classical):
     volumes, spectra = copper
     to_ev = 1 / get_physical_units().EvTokJmol
     for (phonon, _, _), spectrum in zip(volumes, spectra, strict=True):
-        free_energy = phonopy_thermal_properties(phonon, classical).thermal_properties[1]
+        free_energy, _, _ = phonopy_thermal_properties(phonon, classical)
         reference = free_energy * to_ev / spectrum.atoms_per_primitive_cell
         # identical, not close: the shim hands phonopy's kernel the same arrays a live
         # mesh would, so any difference at all means a convention diverged
@@ -123,10 +128,9 @@ def test_mode_sum_is_phonopys_own(copper, classical):
 def test_volume_minimisation_matches_phonopy_qha(copper, classical):
     volumes, spectra = copper
     per_primitive = spectra[0].atoms_per_primitive_cell
-    free_energy, entropy, heat_capacity = (
-        np.array([getattr(phonopy_thermal_properties(phonon, classical), name) for phonon, _, _ in volumes]).T
-        for name in ("free_energy", "entropy", "heat_capacity")
-    )
+    per_volume = [phonopy_thermal_properties(phonon, classical) for phonon, _, _ in volumes]
+    # PhonopyQHA wants each quantity shaped (n_temperatures, n_volumes)
+    free_energy, entropy, heat_capacity = (np.array(q).T for q in zip(*per_volume, strict=True))
     # PhonopyQHA is deprecated in phonopy 4 in favour of an API phonopy 3 does not carry;
     # it is present across the whole supported range, which the replacement is not
     qha = PhonopyQHA(
