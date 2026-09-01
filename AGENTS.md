@@ -93,11 +93,17 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
   - #413 (`_CCBase._emitted_concentrations` in `refine.py`, PR #414)
 
-  - #423 (`_CachedResidual` in `interpolate/softplus.py`)
+  - #423 (`_CachedResidual` in `interpolate/softplus.py`, PR #434)
 
   - #424 (`SoftplusSurface2DInterpolator._unpack` / `_n_params` / `_const_init` in `interpolate/softplus.py`)
 
   - #425 (`_label_fits` in `plot.py`)
+
+  - #435 (`Surface2DInterpolatingPhase._gather_training_data` in `phases/__init__.py`)
+
+  - #436 (`FastInterpolatingPhase._find_phi_c_cached` in `phases/__init__.py`)
+
+  - #437 (`SoftplusSurface2DInterpolator._solver_kwargs` / `_vandermonde` in `interpolate/softplus.py`)
 
   PR #422 (direct tests for `_fit_softplus` / `_fit_slice`) merged 2026-08-30 without a numbered sub-issue. Closed sub-issues are recorded one cohort per line in [`CLAUDE.md`](CLAUDE.md)'s #116 section — check there before re-picking one.
 
@@ -116,6 +122,8 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 - **#344 collapse CEF Au-Cu into one partitioning fcc phase with `MiscibilityGapRefiner`** — blocked on `MiscibilityGapRefiner`'s per-step scan cost.
 
 - **#427 SGTE is the wrong default for QHA/phonon `F(T)`** — the `T·ln(T)` term makes `S = -dG/dT` diverge as `T → 0`, so quantum-harmonic data (which includes `T = 0`) fits badly enough to shift a melting point ~+10 K with the default `SGTE(3)`; `PolyFit(8)` is the workaround. Preferred fix is upstream: a solid-state QHA `ThermoChem` consumed via `AsePhase` (validated `QuasiHarmonicCrystalThermo` prototype in the issue, headed for ASE); landau's side is at most a docs note / `T = 0` warning.
+
+- **#438 `AbstractLinePhase.__hash__` is process-local** — the precomputed `_hash` (`phases/__init__.py`) mixes `hash(array.tobytes())`, and Python salts `hash(bytes)` per interpreter: equality/hash are correct within a process, but any phase-derived key persisted across processes (a disk cache, a memoised artifact) silently misses on every new interpreter. Suggested fixes in the issue: a stable `hashlib`-based `content_key()` alongside `__hash__`, or at minimum a docstring note; the issue carries a fleche `add_hook` digest recipe against `AbstractLinePhase` as the user-side workaround.
 
 - **#81 analytic SRO models** — prototype `QuasiChemicalPhase` (PR #123) was closed without merging; still open.
 
