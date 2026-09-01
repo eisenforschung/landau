@@ -1,9 +1,9 @@
-"""Digest hooks that make landau objects usable as arguments to cached functions.
+"""Digest hooks that let landau objects be passed to fleche-cached functions.
 
 `fleche <https://github.com/pmrv/fleche>`_ keys its cache on a content digest of
-every argument.  This module registers digest hooks for the landau types fleche
-cannot digest on its own, under the ``fleche`` entry point group, so installing
-landau is all it takes -- no imports, no :func:`fleche.digest.add_hook` calls::
+every argument.  Installing landau registers these hooks under the ``fleche``
+entry point group, so no imports and no :func:`fleche.digest.add_hook` calls are
+needed::
 
     from fleche import fleche
     from landau.calculate import calc_phase_diagram
@@ -12,64 +12,31 @@ landau is all it takes -- no imports, no :func:`fleche.digest.add_hook` calls::
     def diagram(phases, Ts, mu, refiners):
         return calc_phase_diagram(phases, Ts, mu, refine=refiners)
 
-landau itself never imports fleche; this module is loaded only by fleche's entry
-point loader.
-
-:func:`landau_digest` is exported for reuse: a custom phase or refiner that
-fleche cannot digest -- one that is not a dataclass, or one whose fields it does
-not understand -- can be covered with
+landau never imports fleche; this module is loaded only by fleche's entry point
+loader.  :func:`landau_digest` is exported for reuse on a custom type, via
 ``add_hook((MyPhase, landau_digest))``.
 
-What is hooked, and what deliberately is not
---------------------------------------------
+Only types fleche cannot digest itself are hooked: :class:`~landau.refine.Refiner`
+and :class:`~landau.interpolate.FittedSurface` (plain classes, and no subclass of
+either is a dataclass), the three plain
+:class:`~landau.interpolate.Interpolation` classes, and
+:class:`~landau.phases.asewrapper.AsePhase` (a dataclass, but holding an opaque
+ASE ``ThermoChem``).  Everything fleche already handles -- every
+:class:`~landau.phases.Phase`, ``Interpolator``, ``SurfaceInterpolator``,
+point-defect class and ``AbstractPolyMethod`` -- is left to its dataclass walk
+deliberately: fleche loads entry points lazily, on the first value it cannot
+digest, so hooking one of those would give it one digest before that happens and
+another after, making the cache key depend on call order.
 
-fleche already digests a frozen dataclass by walking its declared fields, which
-covers every :class:`~landau.phases.Phase`,
-:class:`~landau.interpolate.Interpolator`,
-:class:`~landau.interpolate.SurfaceInterpolator`, point-defect class and
-:class:`~landau.poly.AbstractPolyMethod` in landau.  Those get **no hook**, on
-purpose: fleche loads entry points lazily, only after it meets a value it cannot
-digest, so a type it can already handle would be digested one way before the
-first :exc:`~fleche.digest.Indigestible` in a process and another way after.
-The resulting cache key would depend on call order.  Hooks are therefore
-registered only for types fleche rejects outright, which leaves exactly one
-possible digest per object no matter when the hooks load.
-
-That leaves:
-
-* :class:`~landau.refine.Refiner` and :class:`~landau.interpolate.FittedSurface`
-  -- plain classes rather than dataclasses (no subclass of either is a
-  dataclass, so hooking the base class introduces no such split).
-* The three plain :class:`~landau.interpolate.Interpolation` classes.  The ABC
-  itself is not hooked because ``SGTEInterpolation`` and
-  ``RedlichKisterInterpolation`` *are* dataclasses.
-* :class:`~landau.phases.asewrapper.AsePhase`, which is a dataclass but holds an
-  opaque ASE ``ThermoChem``.
-
-For phases the hooks are only half the story: a digest is worth nothing if it is
-not reproducible in the next interpreter.
+That covers phases only because
 :class:`~landau.phases.TemperatureDependentLinePhase` keeps its precomputed
-``_hash`` out of the dataclass fields for exactly that reason -- see the comment
-on its ``__post_init__``.
+``_hash`` out of the dataclass fields; see the comment on its ``__post_init__``.
 
-Fitted curves built from closures
----------------------------------
-
-:class:`~landau.interpolate.Interpolation` objects that wrap a closure -- what
-``SplineFit``, ``StitchedFit``, ``SoftplusFit`` and the Whitney interpolators
-return -- are refused with :exc:`fleche.digest.Indigestible` rather than
-digested.  fleche digests a function from its code object alone, and two fits of
-one interpolator share that code object while closing over different data, so
-digesting them would hand out a single cache entry for two different curves.
-Pass the :class:`~landau.interpolate.Interpolator` (which digests exactly) and
-its samples into the cached function and fit there instead.
-
-``WhitneyFittedSurface`` stays undigestible for the neighbouring reason: its
-state is a fitted scipy ``RBFInterpolator`` and ``ConvexHull``, which are not
-landau's to describe.  It raises naming those objects rather than silently
-digesting around them.  Fitting from a
-:class:`~landau.interpolate.SurfaceInterpolator` inside the cached function has
-the same answer here as it does for the closures above.
+Interpolations built from a closure (``SplineFit``, ``StitchedFit``,
+``SoftplusFit``, Whitney) are refused rather than digested -- fleche digests a
+function by code object, which two fits of one interpolator share.
+``WhitneyFittedSurface`` likewise raises, naming the fitted scipy objects it
+holds.  Fit from an ``Interpolator`` inside the cached function instead.
 """
 
 import dataclasses
@@ -137,11 +104,9 @@ def landau_digest(obj) -> Digest:
     opaque = _opaque_callables(state)
     if opaque:
         raise Indigestible(
-            f"{type(obj).__name__} holds a plain function at {', '.join(sorted(opaque))}. "
-            "fleche digests a function from its code object alone, so two closures over "
-            "different data share a digest and this would return one cached result for two "
-            "different fits. Pass the Interpolator and its samples into the cached function "
-            "and fit there, instead of passing the fitted curve."
+            f"{type(obj).__name__} holds a plain function at {', '.join(sorted(opaque))}; "
+            "fleche digests functions by code object alone, so two fits would collide. "
+            "Pass the Interpolator and its samples instead."
         )
     return digest((type(obj).__name__, state))
 

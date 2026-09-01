@@ -15,26 +15,26 @@ import sys
 import numpy as np
 import pytest
 
-from pyiron_snippets.import_alarm import ImportAlarm
-
 from landau import PolyFit, SGTE, SplineFit, TemperatureDependentLinePhase
+from landau.phases.asewrapper import AsePhase  # importable without ASE
 
-with ImportAlarm() as fleche_alarm:
-    from fleche import cache, fleche
-    from fleche.caches import Cache
-    from fleche.digest import Hook, Indigestible, digest, load_entry_points
-    from fleche.storage import CallMemory, ValueMemory
+pytest.importorskip("fleche")
 
-    from landau.fleche import digest_hooks
+from fleche import cache, fleche
+from fleche.caches import Cache
+from fleche.digest import Hook, Indigestible, digest, load_entry_points
+from fleche.storage import CallMemory, ValueMemory
 
-pytestmark = pytest.mark.skipif(fleche_alarm.message is not None, reason="fleche is not installed")
+from landau.fleche import digest_hooks
 
-with ImportAlarm() as ase_alarm:
+try:
     from ase.thermochemistry import HarmonicThermo
 
-    from landau.phases.asewrapper import AsePhase
+    HAS_ASE = True
+except ImportError:
+    HAS_ASE = False
 
-needs_ase = pytest.mark.skipif(ase_alarm.message is not None, reason="ASE is not installed")
+needs_ase = pytest.mark.skipif(not HAS_ASE, reason="ASE is not installed")
 
 
 # ---------------------------------------------------------------------------
