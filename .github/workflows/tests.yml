@@ -55,7 +55,7 @@ jobs:
         HYPOTHESIS_ARTIFACT_NAME: hypothesis-example-db-py${{ matrix.python-version }}
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        pytest
+        pytest -m "not fleche"
     - name: Upload Hypothesis example database
       if: needs.changes.outputs.run == 'true' && always()
       uses: actions/upload-artifact@v4
@@ -64,3 +64,31 @@ jobs:
         path: .hypothesis/examples
         if-no-files-found: ignore
         retention-days: 90
+
+  # Own environment: fleche pulls pyiron-snippets>=1.1, which would lift landau's
+  # declared >=1 floor in the minimum-deps job if it sat in the `test` extra.
+  fleche:
+    needs: changes
+    runs-on: ubuntu-latest
+    steps:
+    - name: Skip notice
+      if: needs.changes.outputs.run != 'true'
+      run: echo "No source, test, or workflow changes; skipping."
+    - uses: actions/checkout@v5
+      if: needs.changes.outputs.run == 'true'
+    - name: Set up Python
+      if: needs.changes.outputs.run == 'true'
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.12"
+        cache: pip
+    - name: Setup
+      if: needs.changes.outputs.run == 'true'
+      shell: bash -l {0}
+      run: |
+        pip install -e ".[test,test-fleche]"
+    - name: run fleche plugin tests
+      if: needs.changes.outputs.run == 'true'
+      shell: bash -l {0}
+      run: |
+        pytest -m fleche

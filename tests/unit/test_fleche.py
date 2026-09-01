@@ -36,6 +36,10 @@ except ImportError:
 
 needs_ase = pytest.mark.skipif(not HAS_ASE, reason="ASE is not installed")
 
+#: These run in their own CI env, installed with the test-fleche extra; the rest
+#: of the suite deselects them with -m "not fleche".
+pytestmark = pytest.mark.fleche
+
 
 # ---------------------------------------------------------------------------
 # Cross-process / load-order probe
