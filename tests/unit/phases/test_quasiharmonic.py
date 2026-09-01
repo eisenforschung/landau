@@ -18,6 +18,7 @@ with ImportAlarm() as phonopy_alarm:
         DynamicalInstabilityWarning,
         EosExtrapolationWarning,
         PhonopyQuasiHarmonicPhase,
+        _lowest_frequency,
     )
 
 pytestmark = pytest.mark.skipif(phonopy_alarm.message is not None, reason="phonopy is not installed")
@@ -122,7 +123,6 @@ def einstein_phase(name="einstein", omegas=5.0, volumes=None, energies=None, cla
         energies=energies,
         atoms_per_cell=1,
         atoms_per_primitive_cell=1,
-        lowest_frequencies=[float(p.mesh.frequencies.min()) for p in phonopys],
         **kwargs,
     )
 
@@ -382,7 +382,11 @@ def test_matches_a_temperature_dependent_line_phase_exactly_on_its_own_samples()
 
 
 def unstable_pieces(volumes, unstable, omega=5.0):
-    """``(thermal_properties, lowest_frequencies)`` with an imaginary branch where asked."""
+    """``(thermal_properties, mesh minima)`` with an imaginary branch where asked.
+
+    The minima come off the mesh rather than out of the phase, so they are an independent
+    statement of which volumes ought to be refused.
+    """
     phonopys = [
         einstein_phonopy(omega, volume=v, unstable_direction=0 if i in unstable else None)
         for i, v in enumerate(volumes)
@@ -390,6 +394,18 @@ def unstable_pieces(volumes, unstable, omega=5.0):
     return (
         [p.thermal_properties for p in phonopys],
         [float(p.mesh.frequencies.min()) for p in phonopys],
+    )
+
+
+@pytest.mark.parametrize("unstable_direction,sign", [(None, 1), (0, -1)])
+def test_lowest_frequency_matches_the_mesh(unstable_direction, sign):
+    # the screen reads ThermalProperties._frequencies, which phonopy does not expose.  This
+    # is the test that fails if that attribute moves, and the phonopy upper bound is pinned
+    # to the minor release so a new one arrives as a dependabot PR that runs it
+    phonon = einstein_phonopy(5.0, volume=20.0, unstable_direction=unstable_direction)
+    assert _lowest_frequency(phonon.thermal_properties) == pytest.approx(sign * 5.0, abs=1e-10)
+    assert _lowest_frequency(phonon.thermal_properties) == pytest.approx(
+        float(phonon.mesh.frequencies.min()), abs=1e-10
     )
 
 
@@ -403,8 +419,8 @@ def test_unstable_volumes_are_dropped_with_a_warning():
             thermal_properties=thermal_properties,
             volumes=volumes, energies=[vinet_energy(v) for v in volumes],
             atoms_per_cell=1, atoms_per_primitive_cell=1,
-            lowest_frequencies=lowest,
         )
+    assert phase.lowest_frequencies == pytest.approx(lowest, abs=1e-10)
     assert len(phase.sampled_volumes) == 6
     assert phase.unstable_volumes.tolist() == [volumes[0]]
     assert volumes[0] not in phase.sampled_volumes
@@ -414,14 +430,13 @@ def test_keeping_an_unstable_volume_changes_the_answer():
     # imaginary modes are silently skipped by the mode sum, so the bad volume still
     # returns a smooth plausible number -- and drags the fit with it
     volumes = np.linspace(17.0, 23.0, 7)
-    thermal_properties, lowest = unstable_pieces(volumes, {0})
+    thermal_properties, _ = unstable_pieces(volumes, {0})
     pieces = {
         "thermal_properties": thermal_properties,
         "volumes": volumes,
         "energies": [vinet_energy(v) for v in volumes],
         "atoms_per_cell": 1,
         "atoms_per_primitive_cell": 1,
-        "lowest_frequencies": lowest,
     }
     with pytest.warns(DynamicalInstabilityWarning):
         dropped = PhonopyQuasiHarmonicPhase("dropped", 0.0, **pieces)
@@ -430,36 +445,15 @@ def test_keeping_an_unstable_volume_changes_the_answer():
     assert abs(kept.line_free_energy(600.0) - dropped.line_free_energy(600.0)) > 1e-4
 
 
-def test_without_lowest_frequencies_the_screen_is_off():
-    # a ThermalProperties does not expose the frequencies it was built from, so an
-    # unscreened phase cannot tell an unstable volume from a stable one and fits it
-    volumes = np.linspace(17.0, 23.0, 7)
-    thermal_properties, lowest = unstable_pieces(volumes, {0})
-    common = {
-        "thermal_properties": thermal_properties,
-        "volumes": volumes,
-        "energies": [vinet_energy(v) for v in volumes],
-        "atoms_per_cell": 1,
-        "atoms_per_primitive_cell": 1,
-    }
-    unscreened = PhonopyQuasiHarmonicPhase("unscreened", 0.0, **common)
-    assert len(unscreened.sampled_volumes) == 7
-    assert unscreened.unstable_volumes.size == 0
-    with pytest.warns(DynamicalInstabilityWarning):
-        screened = PhonopyQuasiHarmonicPhase("screened", 0.0, **common, lowest_frequencies=lowest)
-    assert unscreened.line_free_energy(600.0) != screened.line_free_energy(600.0)
-
-
 def test_too_few_stable_volumes_is_an_error_not_a_fit():
     volumes = np.linspace(17.0, 23.0, 5)
-    thermal_properties, lowest = unstable_pieces(volumes, {0, 1})
+    thermal_properties, _ = unstable_pieces(volumes, {0, 1})
     with pytest.raises(ValueError, match="needs at least four"):
         PhonopyQuasiHarmonicPhase(
             "mostly unstable", 0.0,
             thermal_properties=thermal_properties,
             volumes=volumes, energies=[vinet_energy(v) for v in volumes],
             atoms_per_cell=1, atoms_per_primitive_cell=1,
-            lowest_frequencies=lowest,
         )
 
 

@@ -51,6 +51,24 @@ class EosExtrapolationWarning(UserWarning):
     """Thermal expansion carried the equilibrium volume outside the sampled range."""
 
 
+@phonopy_alarm
+def _lowest_frequency(thermal_properties):
+    """Lowest mode of a ``ThermalProperties``, in THz, negative for an imaginary one.
+
+    Reaching past phonopy's public API on purpose.  A ``ThermalProperties`` keeps the
+    frequencies it was built from privately, in eV, and exposes no accessor for them --
+    ``number_of_modes`` and ``number_of_integrated_modes`` only count how many survived
+    the cutoff, which for a Gamma-centred mesh already excludes the three acoustic
+    branches of a perfectly stable crystal.  Without this the dynamic-instability screen
+    below cannot run at all, and an imaginary-mode volume joins the equation-of-state fit
+    with a smooth plausible free energy that the mode sum produced by dropping exactly the
+    modes that make it wrong.  The upper ``phonopy`` bound is pinned to the minor release
+    so a new one arrives as a dependabot pull request and CI checks this against it;
+    ``test_lowest_frequency_matches_the_mesh`` is what fails if the attribute moves.
+    """
+    return float(np.min(thermal_properties._frequencies)) / get_physical_units().THzToEv
+
+
 @dataclass(frozen=True)
 class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
     """A fixed-concentration phase whose free energy is evaluated from phonon spectra.
@@ -90,9 +108,10 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
     **Dynamically unstable volumes.**  Imaginary modes are dropped by the mode sum rather
     than raised on, so a volume with unstable branches still returns a smooth, plausible
     free energy that then corrupts the equation-of-state fit every other volume feeds.
-    A ``ThermalProperties`` does not expose the frequencies it was built from, so the
-    screen runs on ``lowest_frequencies`` when the caller supplies it -- as
-    :meth:`from_phonopy` does, off the mesh -- and is off otherwise.
+    Volumes whose lowest mode falls below :attr:`min_frequency` are excluded and reported
+    through :attr:`lowest_frequencies`, with a :class:`DynamicalInstabilityWarning` at
+    construction.  See :func:`_lowest_frequency` for how that mode is recovered from a
+    ``ThermalProperties``, which does not expose it.
 
     **Extrapolation past the sampled volumes.**  Once thermal expansion carries the
     equilibrium volume above the largest volume sampled, the equation of state is
@@ -122,14 +141,10 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
     eos: str = "vinet"
     """Equation of state to minimise over volume; one of ``"vinet"``,
     ``"birch_murnaghan"`` or ``"murnaghan"``, passed to :func:`phonopy.qha.eos.get_eos`."""
-    lowest_frequencies: tuple | None = None
-    """Lowest mode of each sampled volume, in THz, negative for an imaginary mode.  Only
-    used to screen out dynamically unstable volumes; ``None`` turns the screen off."""
     min_frequency: float = -0.05
-    """Volumes whose entry in :attr:`lowest_frequencies` falls below this, in THz, are
-    treated as dynamically unstable and excluded from the fit.  Slightly negative rather
-    than zero because the acoustic branches at Gamma are numerically noisy in both
-    directions."""
+    """Volumes whose lowest mode falls below this, in THz, are treated as dynamically
+    unstable and excluded from the fit.  Slightly negative rather than zero because the
+    acoustic branches at Gamma are numerically noisy in both directions."""
     _key: tuple = field(default=(), init=False, repr=False)
     _hash: int = field(default=0, init=False, repr=False)
 
@@ -139,18 +154,11 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
             object.__setattr__(self, name, tuple(getattr(self, name)))
         object.__setattr__(self, "atoms_per_cell", int(self.atoms_per_cell))
         object.__setattr__(self, "atoms_per_primitive_cell", int(self.atoms_per_primitive_cell))
-        if self.lowest_frequencies is not None:
-            object.__setattr__(self, "lowest_frequencies", tuple(float(f) for f in self.lowest_frequencies))
-
-        lengths = {
-            "volumes": len(self.volumes),
-            "energies": len(self.energies),
-            **({"lowest_frequencies": len(self.lowest_frequencies)} if self.lowest_frequencies is not None else {}),
-        }
+        lengths = {"volumes": len(self.volumes), "energies": len(self.energies)}
         if set(lengths.values()) != {len(self.thermal_properties)}:
             raise ValueError(
-                f"thermal_properties, volumes, energies (and lowest_frequencies if given) must be parallel "
-                f"sequences, but got {len(self.thermal_properties)} thermal_properties against {lengths}"
+                f"thermal_properties, volumes and energies must be parallel sequences, but got "
+                f"{len(self.thermal_properties)} thermal_properties against {lengths}"
             )
         if self.eos not in ("vinet", "birch_murnaghan", "murnaghan"):
             raise ValueError(f"eos must be one of 'vinet', 'birch_murnaghan', 'murnaghan', got {self.eos!r}")
@@ -163,22 +171,19 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
         if len(set(per_atom)) != len(per_atom):
             raise ValueError(f"the sampled volumes must be distinct, got {per_atom} per atom")
 
-        if self.lowest_frequencies is None:
-            unstable = ()
-        else:
-            unstable = tuple(i for i, f in enumerate(self.lowest_frequencies) if f < self.min_frequency)
+        object.__setattr__(self, "_lowest", tuple(_lowest_frequency(tp) for tp in self.thermal_properties))
+        unstable = tuple(i for i, f in enumerate(self._lowest) if f < self.min_frequency)
         stable = tuple(sorted((i for i in range(len(per_atom)) if i not in unstable), key=lambda i: per_atom[i]))
         if len(stable) < 4:
             raise ValueError(
                 f"{len(stable)} dynamically stable volume(s) out of {len(per_atom)}, but fitting "
-                f"{self.eos} needs at least four"
-                + (f"; lowest frequencies (THz) were {list(self.lowest_frequencies)}" if unstable else "")
+                f"{self.eos} needs at least four; lowest frequencies (THz) were {list(self._lowest)}"
             )
         if unstable:
             warnings.warn(
                 f"{self.name}: dropped {len(unstable)} of {len(per_atom)} volumes carrying modes below "
                 f"{self.min_frequency} THz (volumes per atom {[per_atom[i] for i in unstable]}, lowest "
-                f"frequencies {[self.lowest_frequencies[i] for i in unstable]}); the equation of state is "
+                f"frequencies {[self._lowest[i] for i in unstable]}); the equation of state is "
                 f"fitted through the remaining {len(stable)}",
                 DynamicalInstabilityWarning,
                 stacklevel=2,
@@ -212,8 +217,7 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
         if missing:
             raise ValueError(
                 f"phonopy objects at positions {missing} carry no thermal properties; call "
-                "run_thermal_properties(temperatures=...) on each one first, which is also where "
-                "the mesh, classical/quantum statistics and the mode cutoff are chosen"
+                "run_thermal_properties(temperatures=...) on each one first"
             )
         atom_counts = {(len(p.unitcell), len(p.primitive)) for p in phonopys}
         if len(atom_counts) > 1:
@@ -230,7 +234,6 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
             energies=tuple(energies),
             atoms_per_cell=atoms_per_cell,
             atoms_per_primitive_cell=atoms_per_primitive_cell,
-            lowest_frequencies=tuple(float(np.min(p.mesh.frequencies)) for p in phonopys),
             **kwargs,
         )
 
@@ -259,7 +262,6 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
             self.atoms_per_cell,
             self.atoms_per_primitive_cell,
             self.eos,
-            self.lowest_frequencies,
             self.min_frequency,
             tuple(pickled),
         )
@@ -285,6 +287,15 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
     def energies_per_atom(self):
         """:attr:`energies` divided by :attr:`atoms_per_cell`, in the order given."""
         return tuple(e / self.atoms_per_cell for e in self.energies)
+
+    @property
+    def lowest_frequencies(self):
+        """Lowest mode of each sampled volume, in THz, in the order given.
+
+        Negative where a volume carries an imaginary branch; those below
+        :attr:`min_frequency` are the ones excluded from the fit.
+        """
+        return self._lowest
 
     @property
     def sampled_volumes(self):
@@ -342,12 +353,12 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
             the equilibrium volume in cubic Angstrom per atom.  All four are NaN if the
             fit fails.
         """
-        energies = self.volume_free_energies(T)
+        free_energies = self.volume_free_energies(T)
         # get_eos returns a closure that phonopy 3 calls as eos(v, *p) and phonopy 4 as
         # eos(v, p); handing it straight to fit_to_eos and never calling it keeps that
         # difference out of here
         try:
-            parameters = fit_to_eos(self.sampled_volumes, energies, get_eos(self.eos))
+            parameters = fit_to_eos(self.sampled_volumes, free_energies, get_eos(self.eos))
         except (RuntimeError, TypeError) as error:
             warnings.warn(
                 f"{self.name}: fitting {self.eos} to the {len(self._stable)} sampled volumes failed at "

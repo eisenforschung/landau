@@ -40,12 +40,12 @@ dependencies = [
 
 [project.optional-dependencies]
 ase = ["ase>=3.21.0"]
-phonopy = ["phonopy>=3,<5"]
+phonopy = ["phonopy>=3,<4.5"]
 test = [
     "pytest>=9,<10",
     "hypothesis>=6.71,<7",
     "ase>=3.21.0",
-    "phonopy>=3,<5",
+    "phonopy>=3,<4.5",
 ]
 docs = [
     "sphinx",
