@@ -6,6 +6,7 @@ from hypothesis import HealthCheck, given, settings, strategies as st
 from landau.interpolate import SoftplusFit
 from landau.interpolate.basic import ConcentrationInterpolator, TemperatureInterpolator
 from landau.interpolate.softplus import (
+    _CachedResidual,
     _fit_slice,
     _fit_softplus,
     _flat,
@@ -492,3 +493,114 @@ class TestFitSlice:
         a, b, c, off = _fit_slice(cn, H, 3, max_nfev=200)
         assert a.shape == b.shape == c.shape == (3,)
         assert isinstance(off, float)
+
+
+class _LinearModelAndJac:
+    """Stand-in for ``_model_and_jac``: a linear model with a constant Jacobian.
+
+    Records the parameter vector of every call so the caching can be counted
+    without running a solver.
+    """
+
+    def __init__(self, M):
+        self.M = np.asarray(M, float)
+        self.calls = []
+
+    def __call__(self, p, cn, vt):
+        self.calls.append(np.array(p, float))
+        return self.M @ p, self.M
+
+
+class TestCachedResidual:
+    """One coupled solve: one ``model_and_jac`` pass per point, ridge stacked under it."""
+
+    M = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 1.0, 1.0]])
+    F = np.array([1.0, 2.0, 3.0, 4.0])
+    SEED = np.array([0.1, -0.2, 0.3])
+    RIDGE = 0.5
+
+    def _residual(self, **kwargs):
+        model = _LinearModelAndJac(self.M)
+        return model, _CachedResidual(
+            model, None, None, self.F, self.SEED, self.RIDGE,
+            self.RIDGE * np.eye(self.SEED.size), kwargs,
+        )
+
+    def test_fun_and_jac_at_one_point_share_a_single_pass(self):
+        model, res = self._residual()
+        p = np.array([1.0, 1.0, 1.0])
+        res.fun(p)
+        res.jac(p)
+        assert len(model.calls) == 1
+
+    def test_a_different_point_recomputes(self):
+        model, res = self._residual()
+        res.fun(np.array([1.0, 1.0, 1.0]))
+        res.fun(np.array([2.0, 1.0, 1.0]))
+        assert len(model.calls) == 2
+
+    def test_the_cache_holds_only_the_last_point(self):
+        # By design a single point is cached, so revisiting an earlier one is a miss.
+        model, res = self._residual()
+        first = np.array([1.0, 1.0, 1.0])
+        res.fun(first)
+        res.fun(np.array([2.0, 1.0, 1.0]))
+        res.fun(first)
+        assert len(model.calls) == 3
+
+    def test_an_equal_but_distinct_array_hits_the_cache(self):
+        # ``least_squares`` may hand over a copy; the cache compares by value.
+        model, res = self._residual()
+        res.fun(np.array([1.0, 1.0, 1.0]))
+        res.fun(np.array([1.0, 1.0, 1.0]))
+        assert len(model.calls) == 1
+
+    def test_fun_stacks_the_ridge_under_the_data_residual(self):
+        _, res = self._residual()
+        p = np.array([1.0, 1.0, 1.0])
+        expected = np.concatenate([self.M @ p - self.F, self.RIDGE * (p - self.SEED)])
+        np.testing.assert_allclose(res.fun(p), expected, atol=1e-12)
+
+    def test_jac_stacks_the_ridge_identity_under_the_model_jacobian(self):
+        _, res = self._residual()
+        expected = np.vstack([self.M, self.RIDGE * np.eye(self.SEED.size)])
+        np.testing.assert_allclose(res.jac(np.array([1.0, 1.0, 1.0])), expected, atol=1e-12)
+
+    def test_solve_starts_from_the_seed(self):
+        model, res = self._residual()
+        out = res.solve(max_nfev=1)
+        np.testing.assert_array_equal(model.calls[0], self.SEED)
+        np.testing.assert_array_equal(out.x, self.SEED)
+
+    def test_solve_minimises_the_ridge_augmented_system(self):
+        # On a linear model the augmented least squares has the closed form
+        # ``(MᵀM + ridge²I) p = Mᵀf + ridge² seed``.
+        _, res = self._residual()
+        n = self.SEED.size
+        expected = np.linalg.solve(
+            self.M.T @ self.M + self.RIDGE**2 * np.eye(n),
+            self.M.T @ self.F + self.RIDGE**2 * self.SEED,
+        )
+        np.testing.assert_allclose(res.solve(max_nfev=100).x, expected, atol=1e-9)
+
+    def test_solver_kwargs_reach_the_solver(self):
+        # ``fit`` picks the solver (``method`` / ``loss`` / ``f_scale`` / ``x_scale``)
+        # once and hands the choice down as ``solver_kwargs``.  A robust loss on data
+        # with one corrupted point makes the pass-through observable: the default
+        # linear loss chases the outlier, ``soft_l1`` at a small ``f_scale`` does not.
+        x = np.linspace(-1.0, 1.0, 21)
+        M = np.column_stack([np.ones_like(x), x])
+        truth = np.array([0.5, 2.0])
+        f = M @ truth
+        f[7] += 50.0
+
+        def solve(**kwargs):
+            seed = np.zeros(2)
+            res = _CachedResidual(
+                _LinearModelAndJac(M), None, None, f, seed, 0.0, np.zeros((2, 2)), kwargs
+            )
+            return res.solve(max_nfev=200).x
+
+        robust = solve(method="trf", loss="soft_l1", f_scale=0.01, x_scale="jac")
+        np.testing.assert_allclose(robust, truth, atol=1e-3)
+        assert np.linalg.norm(solve() - truth) > 1.0
