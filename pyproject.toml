@@ -40,10 +40,12 @@ dependencies = [
 
 [project.optional-dependencies]
 ase = ["ase>=3.20.0"]
+fleche = ["fleche>=0.21,<1"]
 test = [
     "pytest>=9,<10",
     "hypothesis>=6.71,<7",
     "ase>=3.20.0",
+    "fleche>=0.21,<1",
 ]
 docs = [
     "sphinx",
@@ -54,6 +56,11 @@ docs = [
 constraints = ["polyfit"]
 python-tsp = ["python-tsp>=0.4.2,<=0.5"]
 fast-tsp = ["fast-tsp>=0.1.4,<=0.1.5"]
+
+# Digest hooks so landau objects can be passed to fleche-cached functions; loaded by
+# fleche's entry point machinery, landau never imports fleche itself.
+[project.entry-points."fleche"]
+digest = "landau.fleche:digest_hooks"
 
 [project.urls]
 Repository = "https://github.com/eisenforschung/landau"
