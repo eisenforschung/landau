@@ -1,3 +1,5 @@
+import dataclasses
+
 import matplotlib
 
 matplotlib.use("Agg")
@@ -1368,3 +1370,21 @@ def test_check_concentration_interpolation_plot_excess_anchors_to_line_phases(
             assert abs(y) < ERR_ATOL
     finally:
         plt.close(fig)
+
+
+def test_precomputed_hash_is_not_a_dataclass_field():
+    """``_hash`` is derived cache, not part of the value.
+
+    It is built from ``hash(bytes)``, which Python salts per interpreter, so any
+    content digest walking ``dataclasses.fields()`` would differ across processes
+    if it were declared as one (issue #438).  Hashing and equality are unaffected
+    -- both are hand-written and read the attribute directly.
+    """
+    Ts = np.linspace(100, 1000, 20)
+    phase = TemperatureDependentLinePhase("A", 0.25, Ts, -Ts * 1e-3)
+    same = TemperatureDependentLinePhase("A", 0.25, Ts, -Ts * 1e-3)
+
+    names = [f.name for f in dataclasses.fields(phase)]
+    assert names == ["name", "fixed_concentration", "temperatures", "free_energies", "interpolator"]
+    assert hasattr(phase, "_hash")
+    assert phase == same and hash(phase) == hash(same)

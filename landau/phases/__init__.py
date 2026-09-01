@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import lru_cache, cache, cached_property
 from typing import Iterable, Optional, ClassVar
 from pyiron_snippets.deprecate import deprecate
@@ -132,7 +132,6 @@ class TemperatureDependentLinePhase(AbstractLinePhase):
     """Sampled free energy of the phase has been computed."""
     interpolator: TemperatureInterpolator = SGTE(3)
     """How to interpolate to arbitrary temperatures from the samples."""
-    _hash: int = field(default=0, init=False)
 
     def __post_init__(self, *args, **kwargs):
         def to_ro_numpy(iterable):
@@ -143,7 +142,10 @@ class TemperatureDependentLinePhase(AbstractLinePhase):
         object.__setattr__(self, "temperatures", to_ro_numpy(self.temperatures))
         object.__setattr__(self, "free_energies", to_ro_numpy(self.free_energies))
         # precompute hash: hashing arrays every cache lookup is too expensive
-        # and we any way advertise as frozen
+        # and we any way advertise as frozen.  Deliberately *not* a dataclass
+        # field: it is derived from the fields above, and being salted per
+        # interpreter (hash(bytes)) it would make any content digest built from
+        # dataclasses.fields() -- e.g. fleche's -- differ across processes.
         object.__setattr__(
             self,
             "_hash",
