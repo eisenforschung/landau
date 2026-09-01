@@ -44,3 +44,19 @@ concentration still sweeps.  Reports the point count and worst per-step
 concentration jump for the old defaults (`dT_max=50`, no drift cap) vs the
 new defaults (`dT_max=5`, `dc_max=0.01`); `--plot` writes the c-T scatter.
 
+
+## `qha_phase_vs_fit.py`
+
+```bash
+pip install -e .[test,phonopy]
+python benchmarks/qha_phase_vs_fit.py
+```
+
+Builds a real quasi-harmonic calculation for fcc Cu (nine volumes, EMT forces,
+phonopy force constants and a 12³ mesh) and checks `PhonopyQuasiHarmonicPhase`
+against the two references it has: phonopy's own `ThermalProperties` for the
+mode sum, and `PhonopyQHA` for the volume minimisation.  It then routes the same
+`G(T)` through `TemperatureDependentLinePhase` and reports the fit residual and
+what that residual does to a shallow solid-solid transition — the crossing is set
+up with `d(ΔF)/dT = 0.0227 meV/atom/K`, the measured slope of the fcc-bcc
+difference in Ca, where one meV/atom of fit error is worth 44 K.
