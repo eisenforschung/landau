@@ -18,8 +18,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import landau.calculate as ldc
-import landau.phases as ldp
 from landau import plot as plot_mod
 from landau.features import Locus
 from landau.plot import _plot_triplepoints, plot_phase_diagram
@@ -135,30 +133,6 @@ def test_tielines_deprecated_routes_to_triplepoints(ax, monkeypatch):
 
 
 # --- end-to-end on a real refined diagram ------------------------------------
-
-
-@pytest.fixture(scope="module")
-def eutectic_diagram():
-    """Refined diagram for an hcp / fcc / liquid ideal-solution system
-    (Basics.ipynb parameters) with a eutectic triple point where the three
-    phases coexist."""
-    fcc = ldp.IdealSolution(
-        "fcc",
-        ldp.LinePhase("fccA", fixed_concentration=0, line_energy=-3.00, line_entropy=1.0 * ldp.kB),
-        ldp.LinePhase("fccB", fixed_concentration=1, line_energy=-2.00, line_entropy=1.1 * ldp.kB),
-    )
-    hcp = ldp.IdealSolution(
-        "hcp",
-        ldp.LinePhase("hcpA", fixed_concentration=0, line_energy=-2.975, line_entropy=1.8 * ldp.kB),
-        ldp.LinePhase("hcpB", fixed_concentration=1, line_energy=-1.95, line_entropy=1.1 * ldp.kB),
-    )
-    liquid = ldp.IdealSolution(
-        "liquid",
-        ldp.LinePhase("liquidA", fixed_concentration=0, line_energy=-2.75, line_entropy=5.0 * ldp.kB),
-        ldp.LinePhase("liquidB", fixed_concentration=1, line_energy=-1.75, line_entropy=4.4 * ldp.kB),
-    )
-    Ts = np.linspace(200.0, 1000.0, 25)
-    return ldc.calc_phase_diagram([hcp, fcc, liquid], Ts, mu=50, refine=True)
 
 
 @pytest.mark.parametrize("variables", [["c", "T"], ["mu", "T"]], ids=["c-T", "mu-T"])

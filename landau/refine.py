@@ -191,10 +191,12 @@ def _state_row(phase: Phase, T: float, mu: float) -> dict:
 
 
 # eV; largest spread in a *triple*'s own-phase potentials still read as one
-# coexistence. Orders of magnitude above a converged triple residual (~1e-8 on
-# the eutectic fixture in tests/unit/plot/test_triplepoint.py) and far below any
-# real domination gap. Not applied to two-phase boundaries, which may be
-# genuinely first-order (see _dominated).
+# coexistence. Bounded below by the refiner's own convergence — the eutectic
+# invariant of the `eutectic_diagram` fixture converges to a 2e-8 spread and
+# disappears from the diagram entirely once this constant reaches 1e-8 — and
+# above by the smallest gap that must still read as domination. Both sides are
+# pinned in tests/unit/test_refine.py. Not applied to two-phase boundaries,
+# which may be genuinely first-order (see _dominated).
 _TRIPLE_COEXIST_TOL = 1e-4
 
 
