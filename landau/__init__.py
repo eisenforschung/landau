@@ -9,6 +9,7 @@ from .phases import (
     FastInterpolatingPhase,
     Surface2DInterpolatingPhase,
     AsePhase,
+    PhonopyQuasiHarmonicPhase,
 )
 
 from .interpolate import (

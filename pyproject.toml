@@ -44,11 +44,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ase = ["ase>=3.20.0"]
+ase = ["ase>=3.21.0"]
+phonopy = ["phonopy>=3,<4.5"]
 test = [
     "pytest>=9,<10",
     "hypothesis>=6.71,<7",
-    "ase>=3.20.0",
+    "ase>=3.21.0",
+    "phonopy>=3,<4.5",
 ]
 # Kept out of `test` so the minimum-deps job still resolves landau's own floors:
 # fleche requires pyiron-snippets>=1.1, which would lift ours from >=1.
