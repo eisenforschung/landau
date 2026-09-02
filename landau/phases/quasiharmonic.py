@@ -166,7 +166,17 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
     reports a free energy per primitive cell."""
     eos: str = "vinet"
     """Equation of state to minimise over volume; one of ``"vinet"``,
-    ``"birch_murnaghan"`` or ``"murnaghan"``, passed to :func:`phonopy.qha.eos.get_eos`."""
+    ``"birch_murnaghan"`` or ``"murnaghan"``, passed to :func:`phonopy.qha.eos.get_eos`.
+
+    This fit is a second approximation underneath the interpolation the class removes, so
+    it is worth looking at with :meth:`check_equation_of_state`.  Measured on fcc Cu
+    (``benchmarks/qha_eos_forms.py``): ``birch_murnaghan`` has the better shape once the
+    solid is hot -- half the leave-one-out error of ``vinet`` at 1200 K -- while
+    ``vinet`` is better cold and ``murnaghan`` is worse than both throughout.  The form
+    is the second-order knob, though.  At a fixed number of volumes, halving the sampled
+    span cut the residual by six where changing form bought thirty percent, so a volume
+    set clustered around the equilibrium volume matters more than which of these is
+    picked."""
     min_frequency: float = -0.05
     """Volumes whose lowest mode falls below this, in THz, are treated as dynamically
     unstable and excluded from the fit.  Slightly negative rather than zero because the

@@ -44,3 +44,17 @@ concentration still sweeps.  Reports the point count and worst per-step
 concentration jump for the old defaults (`dT_max=50`, no drift cap) vs the
 new defaults (`dT_max=5`, `dc_max=0.01`); `--plot` writes the c-T scatter.
 
+
+## `qha_eos_forms.py`
+
+```bash
+pip install -e .[test,phonopy]
+python benchmarks/qha_eos_forms.py
+```
+
+Measures the equation-of-state fit that `PhonopyQuasiHarmonicPhase` minimises
+over volume — a second approximation underneath the temperature interpolation
+the class removes. Reports the fit residual, the leave-one-out error (shape
+rather than freedom), and the spread of the reported free energy across
+`vinet` / `birch_murnaghan` / `murnaghan`, on two volume sets of equal size but
+different span so the span is separated from the degrees of freedom.
