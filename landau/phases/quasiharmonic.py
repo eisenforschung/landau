@@ -52,6 +52,11 @@ class EosExtrapolationWarning(UserWarning):
     """Thermal expansion carried the equilibrium volume outside the sampled range."""
 
 
+def _pairs(volumes, frequencies):
+    """``[(volume, frequency), ...]`` rounded for a message, so each number has an owner."""
+    return [(round(float(v), 4), round(float(f), 4)) for v, f in zip(volumes, frequencies, strict=True)]
+
+
 @phonopy_alarm
 def _eos_curve(eos, volumes, parameters):
     """Evaluate a fitted equation of state, across phonopy's two calling conventions.
@@ -140,7 +145,7 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
     is continuous; above it the phase understates the expansion and therefore overstates
     the free energy.  :meth:`max_temperature` reports where that starts and
     :meth:`check_equation_of_state` shows it; sampling wider volumes is the only way to
-    push it up.
+    push it up, and :attr:`extrapolate` follows the fit out instead.
     """
 
     fixed_concentration: float
@@ -166,13 +171,22 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
     """Volumes whose lowest mode falls below this, in THz, are treated as dynamically
     unstable and excluded from the fit.  Slightly negative rather than zero because the
     acoustic branches at Gamma are numerically noisy in both directions."""
+    extrapolate: bool = False
+    """What to do once the free-energy minimum leaves the sampled volumes.  The default
+    clamps the volume to the nearest sampled end and reports the free energy there -- a
+    minimisation constrained to the volumes actually calculated.  ``True`` instead returns
+    the unconstrained minimum of the equation of state, which is extrapolating to reach
+    it: smoother and further from anything that was computed.  Either way the
+    :class:`EosExtrapolationWarning` fires."""
     _key: tuple = field(default=(), init=False, repr=False)
     _hash: int = field(default=0, init=False, repr=False)
 
     @phonopy_alarm
     def __post_init__(self):
-        for name in ("thermal_properties", "volumes", "energies"):
-            object.__setattr__(self, name, tuple(getattr(self, name)))
+        object.__setattr__(self, "thermal_properties", tuple(self.thermal_properties))
+        for name in ("volumes", "energies"):
+            # plain floats, so repr and the messages below do not carry numpy scalars
+            object.__setattr__(self, name, tuple(float(v) for v in getattr(self, name)))
         object.__setattr__(self, "atoms_per_cell", int(self.atoms_per_cell))
         object.__setattr__(self, "atoms_per_primitive_cell", int(self.atoms_per_primitive_cell))
         lengths = {"volumes": len(self.volumes), "energies": len(self.energies)}
@@ -198,14 +212,15 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
         if len(stable) < 4:
             raise ValueError(
                 f"{len(stable)} dynamically stable volume(s) out of {len(per_atom)}, but fitting "
-                f"{self.eos} needs at least four; lowest frequencies (THz) were {list(self._lowest)}"
+                f"{self.eos} needs at least four; lowest frequency by volume per atom (A^3, THz) "
+                f"was {_pairs(per_atom, self._lowest)}, and {self.min_frequency} THz is the cut"
             )
         if unstable:
             warnings.warn(
                 f"{self.name}: dropped {len(unstable)} of {len(per_atom)} volumes carrying modes below "
-                f"{self.min_frequency} THz (volumes per atom {[per_atom[i] for i in unstable]}, lowest "
-                f"frequencies {[self._lowest[i] for i in unstable]}); the equation of state is "
-                f"fitted through the remaining {len(stable)}",
+                f"{self.min_frequency} THz -- volume per atom, lowest frequency (A^3, THz): "
+                f"{_pairs([per_atom[i] for i in unstable], [self._lowest[i] for i in unstable])}; "
+                f"the equation of state is fitted through the remaining {len(stable)}",
                 DynamicalInstabilityWarning,
                 stacklevel=2,
             )
@@ -283,6 +298,7 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
             self.atoms_per_primitive_cell,
             self.eos,
             self.min_frequency,
+            self.extrapolate,
             tuple(pickled),
         )
 
@@ -403,7 +419,8 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
         is clamped to the nearest end and the free energy reported there: a minimisation
         constrained to the volumes that were actually calculated, rather than the
         unconstrained minimum of a fit that is extrapolating to reach it.  The two agree
-        exactly at the crossing, so the reported curve stays continuous.
+        exactly at the crossing, so the reported curve stays continuous.  Set
+        :attr:`extrapolate` to follow the fit out instead.
         """
         parameters = self.eos_parameters(T)
         energy, _, _, volume = parameters
@@ -413,15 +430,17 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
         if not self._in_sampled_range(volume):
             volumes = self.sampled_volumes
             clamped = float(np.clip(volume, volumes[0], volumes[-1]))
+            taken = "extrapolating the fit out to it" if self.extrapolate else f"reporting it at {clamped} instead"
             warnings.warn(
                 f"{self.name}: the free-energy minimum sits at {volume} A^3/atom, outside the sampled "
-                f"range [{volumes[0]}, {volumes[-1]}], so the equation of state would have to "
-                f"extrapolate to reach it. Reporting the free energy at {clamped} instead, which "
-                "understates the expansion; call max_temperature() for where that starts, or sample "
-                "wider volumes to push it up",
+                f"range [{volumes[0]}, {volumes[-1]}], so the equation of state has no data out there; "
+                f"{taken}. Call max_temperature() for where this starts, or sample wider volumes to "
+                "push it up",
                 EosExtrapolationWarning,
                 stacklevel=3,
             )
+            if self.extrapolate:
+                return energy, volume
             return float(np.atleast_1d(_eos_curve(self.eos, np.array([clamped]), parameters))[0]), clamped
         return energy, volume
 

@@ -417,7 +417,7 @@ def test_unstable_volumes_are_dropped_with_a_warning():
     volumes = np.linspace(17.0, 23.0, 7)
     thermal_properties, lowest = unstable_pieces(volumes, {0})
     assert lowest[0] < 0 and lowest[1] > 0
-    with pytest.warns(DynamicalInstabilityWarning, match="dropped 1 of 7"):
+    with pytest.warns(DynamicalInstabilityWarning, match=r"dropped 1 of 7 .*\(A\^3, THz\): \[\(17\.0, -5\.0\)\]"):
         phase = PhonopyQuasiHarmonicPhase(
             "unstable", 0.0,
             thermal_properties=thermal_properties,
@@ -451,7 +451,7 @@ def test_keeping_an_unstable_volume_changes_the_answer():
 def test_too_few_stable_volumes_is_an_error_not_a_fit():
     volumes = np.linspace(17.0, 23.0, 5)
     thermal_properties, _ = unstable_pieces(volumes, {0, 1})
-    with pytest.raises(ValueError, match="needs at least four"):
+    with pytest.raises(ValueError, match=r"needs at least four; lowest frequency by volume"):
         PhonopyQuasiHarmonicPhase(
             "mostly unstable", 0.0,
             thermal_properties=thermal_properties,
@@ -473,13 +473,34 @@ def test_past_the_sampled_volumes_the_volume_is_clamped_and_warned_about():
 
     inside = phase.line_free_energy(ceiling - 1.0)
     assert np.isfinite(inside)
-    with pytest.warns(EosExtrapolationWarning, match="outside the sampled range"):
+    with pytest.warns(EosExtrapolationWarning, match="no data out there"):
         outside = phase.line_free_energy(ceiling + 1.0)
     with pytest.warns(EosExtrapolationWarning):
         volume = phase.equilibrium_volume(ceiling + 1.0)
     # the volume stops at the edge of the data instead of following the fit past it
     assert volume == phase.sampled_volumes[-1]
     assert np.isfinite(outside) and outside < inside
+
+
+def test_extrapolate_follows_the_fit_out_instead_of_clamping():
+    phase = grueneisen_phase(gamma=3.0, volumes=np.linspace(19.8, 20.6, 5))
+    loose = grueneisen_phase("loose", gamma=3.0, volumes=np.linspace(19.8, 20.6, 5), extrapolate=True)
+    T = phase.max_temperature(upper=4000.0, tolerance=0.5) + 200.0
+
+    with pytest.warns(EosExtrapolationWarning, match="reporting it at"):
+        clamped_V = phase.equilibrium_volume(T)
+    with pytest.warns(EosExtrapolationWarning, match="extrapolating the fit out to it"):
+        free_V = loose.equilibrium_volume(T)
+    assert clamped_V == phase.sampled_volumes[-1] < free_V
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", EosExtrapolationWarning)
+        # the unconstrained minimum is by definition the lower of the two
+        assert loose.line_free_energy(T) < phase.line_free_energy(T)
+        # and below the ceiling the flag makes no difference at all
+        cold = 0.5 * phase.max_temperature(upper=4000.0, tolerance=0.5)
+        assert loose.line_free_energy(cold) == phase.line_free_energy(cold)
+    assert phase != loose and hash(phase) != hash(loose)
 
 
 def test_the_clamped_branch_joins_the_free_one_continuously():
