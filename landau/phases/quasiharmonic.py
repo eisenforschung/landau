@@ -473,10 +473,11 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
         out = np.array([self._minimum(float(t))[1] for t in T.flat], dtype=float)
         return _scalarize(out.reshape(T.shape))
 
-    def check_equation_of_state(self, T=300.0, samples=100, margin=0.05):
+    def check_equation_of_state(self, T=300.0, samples=100, margin=0.05, plot_error=False):
         """Plot the volume minimisation at one temperature, to see what it is doing.
 
-        Draws three things on the current axes: the free energy of every sampled volume,
+        Draws three things on the current axes (or, with ``plot_error``, how far the fit
+        misses each sampled volume): the free energy of every sampled volume,
         the equation of state fitted through them, and the minimum
         :meth:`line_free_energy` reports.  They have to agree for the reported number to
         mean anything, and once the minimum has left the sampled volumes the marker sits
@@ -488,8 +489,19 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
             samples (int): number of points along the plotted curve
             margin (float): fraction of the sampled span to extend the curve past each
                 end, so a minimum just outside the data is still visible
+            plot_error (bool): if True, plot the residual of each sampled volume against
+                the fitted equation of state instead of the free energies themselves.
+                The fit has four parameters, so with only a handful of volumes the
+                residual is what shows whether the equation of state has any freedom left
+                to be wrong in -- on the scale that matters, meV/atom
         """
         volumes = self.sampled_volumes
+        if plot_error:
+            residual = self.helmholtz_free_energies(T) - _eos_curve(self.eos, volumes, self.eos_parameters(T))
+            plt.scatter(volumes, residual, label=f"{self.name} at {T:g} K")
+            plt.xlabel(r"volume [$\mathrm{\AA}^3$/atom]")
+            plt.ylabel("fit residual [eV/atom]")
+            return
         span = volumes[-1] - volumes[0]
         grid = np.linspace(volumes[0] - margin * span, volumes[-1] + margin * span, samples)
         with warnings.catch_warnings():

@@ -588,6 +588,46 @@ def test_check_equation_of_state_draws_the_samples_the_fit_and_the_minimum():
         plt.close("all")
 
 
+def test_check_equation_of_state_plot_error_draws_the_fit_residual():
+    matplotlib.use("Agg")
+    phase = grueneisen_phase(gamma=2.0)
+    T = 600.0
+    plt.figure()
+    try:
+        phase.check_equation_of_state(T, plot_error=True)
+        ax = plt.gca()
+        assert not ax.lines  # the curve itself is not drawn in this mode
+        (residuals,) = ax.collections
+        drawn = residuals.get_offsets()
+        assert_allclose(drawn[:, 0], phase.sampled_volumes, rtol=1e-12)
+
+        # recomputed independently of the plotting path
+        expected = phase.helmholtz_free_energies(T) - _eos_curve(
+            phase.eos, phase.sampled_volumes, phase.eos_parameters(T)
+        )
+        assert_allclose(drawn[:, 1], expected, rtol=1e-12)
+        # softening modes put a volume-dependent vibrational term on top of the Vinet
+        # static energy, so the total is only approximately Vinet: this is real misfit,
+        # which is the whole point of being able to look at it
+        assert np.abs(drawn[:, 1]).max() > 1e-7
+    finally:
+        plt.close("all")
+
+
+def test_check_equation_of_state_residual_vanishes_when_the_model_is_exact():
+    matplotlib.use("Agg")
+    # volume-independent frequencies, so F(V, T) is the planted Vinet curve plus a
+    # constant and the four-parameter fit can reproduce it exactly
+    phase = planted_phase()
+    plt.figure()
+    try:
+        phase.check_equation_of_state(600.0, plot_error=True)
+        (residuals,) = plt.gca().collections
+        assert np.abs(residuals.get_offsets()[:, 1]).max() < 1e-9
+    finally:
+        plt.close("all")
+
+
 # --- construction contract and identity --------------------------------------------------
 
 
