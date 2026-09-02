@@ -21,7 +21,7 @@ constants are phonopy's, chosen by the caller when they ran
 
 import pickle
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 
 import matplotlib.pyplot as plt
@@ -34,7 +34,7 @@ with ImportAlarm(
     from phonopy.physical_units import get_physical_units
     from phonopy.qha.eos import fit_to_eos, get_eos
 
-from ..interpolate.basic import _scalarize
+from ..interpolate.basic import Interpolator, PolyFit, _scalarize
 from . import AbstractLinePhase
 
 __all__ = [
@@ -71,6 +71,90 @@ def _eos_curve(eos, volumes, parameters):
         return equation(volumes, parameters)
     except (TypeError, IndexError):
         return equation(volumes, *parameters)
+
+
+#: Volume fits with more parameters than this many free energies are not attempted; a
+#: polynomial through as many points as it has coefficients interpolates exactly and its
+#: minimum stops meaning anything.
+_MIN_RESIDUAL_DOF = 1
+
+
+@dataclass(frozen=True)
+class _FittedEos:
+    """One fit of ``F(V)`` at one temperature, whichever form produced it.
+
+    ``volume`` is the *unconstrained* minimum: a finite number when the fit turns around
+    inside the sampled range, and otherwise ``+inf`` or ``-inf`` to say which way it ran
+    off.  Everything that has to decide between clamping and extrapolating reads it.
+    """
+
+    curve: object
+    """Callable, cubic Angstrom per atom to eV per atom."""
+    energy: float
+    """Free energy at :attr:`volume`, in eV per atom."""
+    volume: float
+    """Unconstrained minimum in cubic Angstrom per atom, or +-inf."""
+    bulk_modulus: float
+    """eV per cubic Angstrom at the minimum, NaN if there is none inside."""
+    bulk_modulus_prime: float
+    """Pressure derivative of the bulk modulus, NaN if there is no minimum inside."""
+
+    @property
+    def parameters(self):
+        """``(E_0, B_0, B'_0, V_0)``, the shape :meth:`eos_parameters` promises."""
+        return (self.energy, self.bulk_modulus, self.bulk_modulus_prime, self.volume)
+
+
+def _fit_interpolator_eos(interpolator, volumes, energies):
+    """Fit ``F(V)`` with one of landau's interpolators and locate its minimum exactly.
+
+    The fit runs in a centred, scaled volume coordinate.  Raw volumes are around 12
+    cubic Angstrom, so a degree-seven design matrix in them is conditioned at about
+    1e-25 and the coefficients that come back are numerical noise even where the fitted
+    values look reasonable; centring and scaling is the same fix ``_rescale_T`` and
+    ``_standardize`` apply elsewhere in landau.
+
+    A polynomial has no useful behaviour outside its data -- it leaves through whichever
+    end its leading term points -- so the minimum is looked for strictly inside, and the
+    sign of the slope at each edge says which way an outside minimum went.
+    """
+    volumes = np.asarray(volumes, dtype=float)
+    mid = 0.5 * (volumes[0] + volumes[-1])
+    span = volumes[-1] - volumes[0]
+    fit = interpolator.fit((volumes - mid) / span, np.asarray(energies, dtype=float))
+    derivatives = [fit]
+    for _ in range(3):
+        derivatives.append(derivatives[-1].deriv())
+
+    def scaled(order):
+        return lambda v: np.asarray(derivatives[order]((np.asarray(v, dtype=float) - mid) / span)) / span**order
+
+    curve, slope = scaled(0), scaled(1)
+
+    inside = [float(v) for v in _stationary_points(derivatives[1], mid, span) if volumes[0] < v < volumes[-1]]
+    minima = [v for v in inside if scaled(2)(v) > 0]
+    if minima:
+        volume = min(minima, key=lambda v: float(curve(v)))
+        second, third = float(scaled(2)(volume)), float(scaled(3)(volume))
+        return _FittedEos(curve, float(curve(volume)), volume, volume * second, -1 - volume * third / second)
+    # no turning point in the data: the slope at the edges says which way it lies
+    volume = np.inf if float(slope(volumes[-1])) < 0 else -np.inf
+    return _FittedEos(curve, np.nan, volume, np.nan, np.nan)
+
+
+def _stationary_points(derivative, mid, span):
+    """Where the fitted curve turns over, in cubic Angstrom per atom.
+
+    Exact for a polynomial derivative; otherwise a sign-change scan over the fitted range,
+    which is all a numerically differentiated interpolation can support.
+    """
+    poly = getattr(derivative, "poly", None)
+    if poly is not None:
+        return [r.real * span + mid for r in np.roots(poly) if abs(r.imag) < 1e-9]
+    u = np.linspace(-0.5, 0.5, 257)
+    d = np.asarray(derivative(u))
+    crossings = np.flatnonzero(np.sign(d[:-1]) * np.sign(d[1:]) < 0)
+    return [float((u[i] - d[i] * (u[i + 1] - u[i]) / (d[i + 1] - d[i])) * span + mid) for i in crossings]
 
 
 @phonopy_alarm
@@ -164,19 +248,26 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
     atoms_per_primitive_cell: int
     """Number of atoms in the primitive cell the phonons were computed on; phonopy
     reports a free energy per primitive cell."""
-    eos: str = "vinet"
-    """Equation of state to minimise over volume; one of ``"vinet"``,
-    ``"birch_murnaghan"`` or ``"murnaghan"``, passed to :func:`phonopy.qha.eos.get_eos`.
+    eos: str | Interpolator = PolyFit(8)
+    """How to fit ``F(V)`` before minimising it over volume.
 
-    This fit is a second approximation underneath the interpolation the class removes, so
-    it is worth looking at with :meth:`check_equation_of_state`.  Measured on fcc Cu
-    (``benchmarks/qha_eos_forms.py``): ``birch_murnaghan`` has the better shape once the
-    solid is hot -- half the leave-one-out error of ``vinet`` at 1200 K -- while
-    ``vinet`` is better cold and ``murnaghan`` is worse than both throughout.  The form
-    is the second-order knob, though.  At a fixed number of volumes, halving the sampled
-    span cut the residual by six where changing form bought thirty percent, so a volume
-    set clustered around the equilibrium volume matters more than which of these is
-    picked."""
+    Either one of landau's own interpolators, fitted through the sampled volumes, or one
+    of the closed-form equations of state ``"vinet"``, ``"birch_murnaghan"`` or
+    ``"murnaghan"`` passed to :func:`phonopy.qha.eos.get_eos`.
+
+    This fit is a second approximation underneath the temperature interpolation the class
+    removes, and the closed forms are not accurate enough for it to be ignored: measured
+    on fcc Cu over nine volumes (``benchmarks/qha_eos_forms.py``), ``"vinet"`` leaves
+    4.3 meV/atom at 1200 K and ``"birch_murnaghan"`` 3.0, against 0.1 for the default
+    here.  All three closed forms carry four parameters, so on a wide volume set they run
+    out of freedom long before the data runs out of shape.
+
+    The default is capped at one fewer parameter than there are stable volumes, since a
+    polynomial through as many points as it has coefficients interpolates exactly and its
+    minimum stops meaning anything; with the four volumes this class needs at minimum it
+    is a cubic.  An interpolator is fitted in a centred, scaled volume coordinate and its
+    minimum is located inside the sampled range only -- a polynomial has no useful
+    behaviour outside its data -- so :attr:`extrapolate` is incompatible with one."""
     min_frequency: float = -0.05
     """Volumes whose lowest mode falls below this, in THz, are treated as dynamically
     unstable and excluded from the fit.  Slightly negative rather than zero because the
@@ -205,8 +296,19 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
                 f"thermal_properties, volumes and energies must be parallel sequences, but got "
                 f"{len(self.thermal_properties)} thermal_properties against {lengths}"
             )
-        if self.eos not in ("vinet", "birch_murnaghan", "murnaghan"):
-            raise ValueError(f"eos must be one of 'vinet', 'birch_murnaghan', 'murnaghan', got {self.eos!r}")
+        if isinstance(self.eos, str):
+            if self.eos not in ("vinet", "birch_murnaghan", "murnaghan"):
+                raise ValueError(
+                    "a string eos must be one of 'vinet', 'birch_murnaghan', 'murnaghan'; pass an "
+                    f"Interpolator to fit F(V) with one instead, got {self.eos!r}"
+                )
+        elif not isinstance(self.eos, Interpolator):
+            raise TypeError(f"eos must be an Interpolator or one of the phonopy form names, got {self.eos!r}")
+        elif self.extrapolate:
+            raise ValueError(
+                "extrapolate=True needs a closed-form eos: an interpolated F(V) has no useful behaviour "
+                "outside the volumes it was fitted through, so there is nothing honest to extrapolate"
+            )
         for name in ("atoms_per_cell", "atoms_per_primitive_cell"):
             if getattr(self, name) < 1:
                 raise ValueError(f"{name} must be positive, got {getattr(self, name)}")
@@ -382,6 +484,34 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
         return np.array(out)
 
     @lru_cache(maxsize=1024)
+    def _fit(self, T):
+        """The fitted ``F(V)`` at one temperature, cached because everything wants it."""
+        free_energies = self.helmholtz_free_energies(T)
+        volumes = self.sampled_volumes
+        if not isinstance(self.eos, str):
+            interpolator = self.eos
+            cap = len(volumes) - _MIN_RESIDUAL_DOF
+            if getattr(interpolator, "nparam", 0) != "auto" and getattr(interpolator, "nparam", 0) > cap:
+                interpolator = replace(interpolator, nparam=cap)
+            return _fit_interpolator_eos(interpolator, volumes, free_energies)
+        # get_eos returns a closure that phonopy 3 calls as eos(v, *p) and phonopy 4 as
+        # eos(v, p); handing it straight to fit_to_eos and never calling it keeps that
+        # difference out of here
+        try:
+            energy, bulk, bulk_prime, volume = fit_to_eos(volumes, free_energies, get_eos(self.eos))
+        except (RuntimeError, TypeError) as error:
+            warnings.warn(
+                f"{self.name}: fitting {self.eos} to the {len(self._stable)} sampled volumes failed at "
+                f"T = {T} K ({error}); the free energy is NaN there",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            return _FittedEos(lambda v: np.full(np.shape(v), np.nan), np.nan, np.nan, np.nan, np.nan)
+        parameters = tuple(float(p) for p in (energy, bulk, bulk_prime, volume))
+        return _FittedEos(
+            lambda v, p=parameters: _eos_curve(self.eos, v, p), *[parameters[i] for i in (0, 3, 1, 2)]
+        )
+
     def eos_parameters(self, T):
         """Equation-of-state parameters at one temperature.
 
@@ -393,24 +523,11 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
         Returns:
             tuple of float: ``(E_0, B_0, B'_0, V_0)`` -- the minimum free energy in eV per
             atom, the bulk modulus in eV per cubic Angstrom, its pressure derivative, and
-            the equilibrium volume in cubic Angstrom per atom.  All four are NaN if the
-            fit fails.
+            the equilibrium volume in cubic Angstrom per atom.  The last is ``+-inf`` when
+            the fit has no minimum inside the sampled volumes, saying which way it lies,
+            and the other three are NaN there and when the fit fails outright.
         """
-        free_energies = self.helmholtz_free_energies(T)
-        # get_eos returns a closure that phonopy 3 calls as eos(v, *p) and phonopy 4 as
-        # eos(v, p); handing it straight to fit_to_eos and never calling it keeps that
-        # difference out of here
-        try:
-            parameters = fit_to_eos(self.sampled_volumes, free_energies, get_eos(self.eos))
-        except (RuntimeError, TypeError) as error:
-            warnings.warn(
-                f"{self.name}: fitting {self.eos} to the {len(self._stable)} sampled volumes failed at "
-                f"T = {T} K ({error}); the free energy is NaN there",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            return (np.nan,) * 4
-        return tuple(float(p) for p in parameters)
+        return self._fit(T).parameters
 
     def _in_sampled_range(self, volume):
         """Whether ``volume`` per atom lies between the volumes the fit was made through."""
@@ -419,7 +536,7 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
 
     def _interpolates(self, T):
         """Whether the unconstrained equilibrium volume at ``T`` is inside the sampled range."""
-        volume = self.eos_parameters(T)[3]
+        volume = self._fit(T).volume
         return bool(np.isfinite(volume)) and self._in_sampled_range(volume)
 
     def _minimum(self, T):
@@ -432,27 +549,28 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
         exactly at the crossing, so the reported curve stays continuous.  Set
         :attr:`extrapolate` to follow the fit out instead.
         """
-        parameters = self.eos_parameters(T)
-        energy, _, _, volume = parameters
+        fit = self._fit(T)
+        volume = fit.volume
         # a failed fit is already NaN and has already warned; do not blame extrapolation
-        if not np.isfinite(volume):
+        if np.isnan(volume):
             return np.nan, np.nan
         if not self._in_sampled_range(volume):
             volumes = self.sampled_volumes
             clamped = float(np.clip(volume, volumes[0], volumes[-1]))
+            where = f"{volume} A^3/atom" if np.isfinite(volume) else f"somewhere past {clamped}"
             taken = "extrapolating the fit out to it" if self.extrapolate else f"reporting it at {clamped} instead"
             warnings.warn(
-                f"{self.name}: the free-energy minimum sits at {volume} A^3/atom, outside the sampled "
-                f"range [{volumes[0]}, {volumes[-1]}], so the equation of state has no data out there; "
+                f"{self.name}: the free-energy minimum sits at {where}, outside the sampled "
+                f"range [{volumes[0]}, {volumes[-1]}], so the fit has no data out there; "
                 f"{taken}. Call max_temperature() for where this starts, or sample wider volumes to "
                 "push it up",
                 EosExtrapolationWarning,
                 stacklevel=3,
             )
             if self.extrapolate:
-                return energy, volume
-            return float(np.atleast_1d(_eos_curve(self.eos, np.array([clamped]), parameters))[0]), clamped
-        return energy, volume
+                return fit.energy, volume
+            return float(np.atleast_1d(fit.curve(np.array([clamped])))[0]), clamped
+        return fit.energy, volume
 
     def line_free_energy(self, T):
         """Free energy per atom in eV, minimised over volume.
@@ -507,7 +625,7 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
         """
         volumes = self.sampled_volumes
         if plot_error:
-            residual = self.helmholtz_free_energies(T) - _eos_curve(self.eos, volumes, self.eos_parameters(T))
+            residual = self.helmholtz_free_energies(T) - np.asarray(self._fit(T).curve(volumes))
             plt.scatter(volumes, residual, label=f"{self.name} at {T:g} K")
             plt.xlabel(r"volume [$\mathrm{\AA}^3$/atom]")
             plt.ylabel("fit residual [eV/atom]")
@@ -517,7 +635,7 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", EosExtrapolationWarning)
             energy, volume = self._minimum(T)
-        (line,) = plt.plot(grid, _eos_curve(self.eos, grid, self.eos_parameters(T)), label=f"{self.name} at {T:g} K")
+        (line,) = plt.plot(grid, self._fit(T).curve(grid), label=f"{self.name} at {T:g} K")
         plt.scatter(volumes, self.helmholtz_free_energies(T), color=line.get_color())
         plt.scatter([volume], [energy], color=line.get_color(), marker="x", s=80, zorder=3)
         plt.axvspan(volumes[0], volumes[-1], color=line.get_color(), alpha=0.08)

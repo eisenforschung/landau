@@ -111,7 +111,7 @@ def phonopy_thermal_properties(phonon, classical, temperatures=TEMPERATURES):
     return free_energy, entropy, heat_capacity
 
 
-def copper_phase(copper, classical=False):
+def copper_phase(copper, classical=False, **kwargs):
     """A phase over those volumes, with the statistics the caller picks when running.
 
     The conventional cell holds four atoms and reduces to one primitive atom, so this is
@@ -120,7 +120,7 @@ def copper_phase(copper, classical=False):
     for phonon, _ in copper:
         phonon.run_thermal_properties(temperatures=TEMPERATURES, classical=classical)
     phase = PhonopyQuasiHarmonicPhase.from_phonopy(
-        "Cu", 0.0, [p for p, _ in copper], [e for _, e in copper]
+        "Cu", 0.0, [p for p, _ in copper], [e for _, e in copper], **kwargs
     )
     assert phase.atoms_per_cell == 4 and phase.atoms_per_primitive_cell == 1
     # the volumes are sampled in ascending order and all are stable, so the rows of
@@ -151,7 +151,9 @@ def test_volume_minimisation_matches_phonopy_qha(copper, classical):
     per_volume = [phonopy_thermal_properties(phonon, classical) for phonon, _ in copper]
     # PhonopyQHA wants each quantity shaped (n_temperatures, n_volumes)
     free_energy, entropy, heat_capacity = (np.array(q).T for q in zip(*per_volume, strict=True))
-    phase = copper_phase(copper, classical)
+    # PhonopyQHA minimises a Vinet fit, so this compares like with like; the default eos
+    # is an interpolated F(V) and deliberately does not agree, which is checked below
+    phase = copper_phase(copper, classical, eos="vinet")
     per_primitive = phase.atoms_per_primitive_cell
     # PhonopyQHA is deprecated in phonopy 4 in favour of an API phonopy 3 does not carry;
     # it is present across the whole supported range, which the replacement is not
@@ -178,6 +180,15 @@ def test_volume_minimisation_matches_phonopy_qha(copper, classical):
     assert np.abs(V - reference_V).max() / reference_V.mean() < 1e-7
     # and the answer is not a constant the tolerances would also accept
     assert V[-1] - V[0] > 0.05 * V[0]
+
+    # the default eos fits the same free energies far more closely than a four-parameter
+    # form can, and that reaches the reported number: it differs from PhonopyQHA by
+    # meV/atom, which at the Ca slope this PR is calibrated on is tens of kelvin
+    default = copper_phase(copper, classical)
+    difference = np.abs(default.line_free_energy(T) - reference_G).max()
+    assert 5e-4 < difference < 1e-2
+    residual = default.helmholtz_free_energies(T[-1]) - default._fit(T[-1]).curve(default.sampled_volumes)
+    assert np.abs(residual).max() < 1e-3  # under a meV/atom, where vinet leaves four
 
 
 # Bands the fit cost falls in, per interpolator: the worst residual anywhere on

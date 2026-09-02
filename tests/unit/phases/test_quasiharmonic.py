@@ -302,7 +302,7 @@ def test_planted_vinet_minimum_is_recovered_exactly():
     # frequencies do not depend on volume here, so the total free energy is the planted
     # Vinet curve plus a constant: the fit must return V0 unchanged and E0 shifted by
     # exactly the vibrational free energy
-    phase = planted_phase(omega=5.0)
+    phase = planted_phase(omega=5.0, eos="vinet")
     for T in (0.0, 300.0, 1500.0):
         energy, bulk_modulus, bulk_modulus_prime, volume = phase.eos_parameters(T)
         assert_allclose(volume, VINET["V0"], rtol=1e-8)
@@ -312,9 +312,14 @@ def test_planted_vinet_minimum_is_recovered_exactly():
 
 
 def test_volume_independent_spectrum_does_not_expand():
+    # the physics is that V(T) does not move, which holds for any fit; landing on the
+    # planted V0 exactly is a property of the Vinet form recovering its own curve
     phase = planted_phase()
     volumes = phase.equilibrium_volume(np.array([0.0, 500.0, 1500.0]))
-    assert_allclose(volumes, VINET["V0"], rtol=1e-8)
+    assert_allclose(volumes, volumes[0], rtol=1e-10)
+    assert_allclose(volumes, VINET["V0"], rtol=1e-3)
+    assert_allclose(planted_phase(eos="vinet").equilibrium_volume(np.array([0.0, 500.0, 1500.0])),
+                    VINET["V0"], rtol=1e-8)
 
 
 def test_softening_modes_produce_monotonic_thermal_expansion():
@@ -326,8 +331,8 @@ def test_softening_modes_produce_monotonic_thermal_expansion():
 
 
 def test_classical_statistics_remove_the_zero_point_expansion():
-    quantum = grueneisen_phase("q", gamma=2.0)
-    classical = grueneisen_phase("c", gamma=2.0, classical=True)
+    quantum = grueneisen_phase("q", gamma=2.0, eos="vinet")
+    classical = grueneisen_phase("c", gamma=2.0, classical=True, eos="vinet")
     assert_allclose(classical.equilibrium_volume(0.0), VINET["V0"], rtol=1e-8)
     assert quantum.equilibrium_volume(0.0) > classical.equilibrium_volume(0.0)
     assert_allclose(classical.line_free_energy(0.0), VINET["E0"], rtol=1e-8)
@@ -483,8 +488,9 @@ def test_past_the_sampled_volumes_the_volume_is_clamped_and_warned_about():
 
 
 def test_extrapolate_follows_the_fit_out_instead_of_clamping():
-    phase = grueneisen_phase(gamma=3.0, volumes=np.linspace(19.8, 20.6, 5))
-    loose = grueneisen_phase("loose", gamma=3.0, volumes=np.linspace(19.8, 20.6, 5), extrapolate=True)
+    volumes = np.linspace(19.8, 20.6, 5)
+    phase = grueneisen_phase(gamma=3.0, volumes=volumes, eos="vinet")
+    loose = grueneisen_phase("loose", gamma=3.0, volumes=volumes, eos="vinet", extrapolate=True)
     T = phase.max_temperature(upper=4000.0, tolerance=0.5) + 200.0
 
     with pytest.warns(EosExtrapolationWarning, match="reporting it at"):
@@ -509,7 +515,7 @@ def test_the_clamped_branch_joins_the_free_one_continuously():
     # The constrained minimum can never beat the free one, and the gap between them is
     # second order in how far the free minimum has overshot the edge, so it vanishes at
     # the crossing: no step for calc_phase_diagram to mistake for a transition.
-    phase = grueneisen_phase(gamma=3.0, volumes=np.linspace(19.8, 20.6, 5))
+    phase = grueneisen_phase(gamma=3.0, volumes=np.linspace(19.8, 20.6, 5), eos="vinet")
     ceiling = phase.max_temperature(upper=4000.0, tolerance=1e-3)
 
     def gap(T):
@@ -590,7 +596,7 @@ def test_check_equation_of_state_draws_the_samples_the_fit_and_the_minimum():
 
 def test_check_equation_of_state_plot_error_draws_the_fit_residual():
     matplotlib.use("Agg")
-    phase = grueneisen_phase(gamma=2.0)
+    phase = grueneisen_phase(gamma=2.0, eos="vinet")
     T = 600.0
     plt.figure()
     try:
@@ -618,7 +624,7 @@ def test_check_equation_of_state_residual_vanishes_when_the_model_is_exact():
     matplotlib.use("Agg")
     # volume-independent frequencies, so F(V, T) is the planted Vinet curve plus a
     # constant and the four-parameter fit can reproduce it exactly
-    phase = planted_phase()
+    phase = planted_phase(eos="vinet")
     plt.figure()
     try:
         phase.check_equation_of_state(600.0, plot_error=True)
@@ -626,6 +632,77 @@ def test_check_equation_of_state_residual_vanishes_when_the_model_is_exact():
         assert np.abs(residuals.get_offsets()[:, 1]).max() < 1e-9
     finally:
         plt.close("all")
+
+
+# --- the interpolated equation of state (the default) ------------------------------------
+
+
+def test_default_eos_fits_to_well_under_a_millielectronvolt():
+    # The bar the default exists to clear.  Note these fixtures cannot show it beating the
+    # closed forms: their static energy *is* a Vinet curve, so vinet reproduces them almost
+    # exactly and the polynomial is the one approximating.  The other way round on real
+    # phonon data, which is the comparison in benchmarks/qha_eos_forms.py.
+    phase = grueneisen_phase("poly", gamma=2.0)
+    for T in (0.0, 300.0, 900.0):
+        residual = phase.helmholtz_free_energies(T) - phase._fit(T).curve(phase.sampled_volumes)
+        assert np.abs(residual).max() < 1e-5
+
+
+def test_scaling_the_volume_coordinate_is_what_makes_that_possible():
+    # Raw volumes are around 20 cubic Angstrom, so a degree-five design matrix in them is
+    # conditioned at ~1e-20 and the fit degrades.  _fit_interpolator_eos centres and scales
+    # first; this is the difference that makes.
+    phase = grueneisen_phase("poly", gamma=2.0)
+    volumes, energies = phase.sampled_volumes, phase.helmholtz_free_energies(900.0)
+    scaled = np.abs(energies - phase._fit(900.0).curve(volumes)).max()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # the raw fit warns about its own conditioning
+        raw = np.abs(energies - np.asarray(phase.eos.fit(volumes, energies)(volumes))).max()
+    assert scaled < raw
+
+
+def test_default_eos_parameter_count_is_capped_by_the_volumes():
+    # a polynomial through as many points as it has coefficients interpolates exactly and
+    # its minimum stops meaning anything, so PolyFit(8) is not used on five volumes
+    five = grueneisen_phase("five", volumes=np.linspace(18.0, 22.0, 5))
+    assert five.eos.nparam == 8  # the field is untouched; the cap is applied at fit time
+    residual = five.helmholtz_free_energies(300.0) - five._fit(300.0).curve(five.sampled_volumes)
+    assert np.count_nonzero(np.abs(residual) > 1e-12) > 0  # not an exact interpolation
+    assert np.isfinite(five.line_free_energy(300.0))
+
+
+def test_interpolated_eos_locates_the_minimum_and_its_curvature():
+    # V0, B0 and B0' still mean what eos_parameters says they do, off a polynomial fit
+    planted = planted_phase(eos="vinet")
+    poly = planted_phase()
+    for T in (0.0, 600.0):
+        energy, bulk, bulk_prime, volume = poly.eos_parameters(T)
+        reference = planted.eos_parameters(T)
+        assert_allclose(volume, reference[3], rtol=1e-3)
+        assert_allclose(energy, reference[0], atol=1e-5)
+        assert_allclose(bulk, reference[1], rtol=5e-2)
+        assert bulk_prime > 0
+
+
+def test_interpolated_eos_reports_which_way_a_missing_minimum_lies():
+    # a polynomial has no useful behaviour outside its data, so instead of following it
+    # out the fit says the minimum left through one end and the volume clamps there
+    phase = grueneisen_phase(gamma=3.0, volumes=np.linspace(19.8, 20.6, 5))
+    ceiling = phase.max_temperature(upper=4000.0, tolerance=0.5)
+    assert 0 < ceiling < 4000.0
+    assert phase.eos_parameters(ceiling + 200.0)[3] == np.inf
+    with pytest.warns(EosExtrapolationWarning, match="somewhere past"):
+        assert phase.equilibrium_volume(ceiling + 200.0) == phase.sampled_volumes[-1]
+
+
+def test_extrapolate_needs_a_closed_form_eos():
+    with pytest.raises(ValueError, match="needs a closed-form eos"):
+        planted_phase(extrapolate=True)
+
+
+def test_unknown_eos_type_is_rejected():
+    with pytest.raises(TypeError, match="must be an Interpolator"):
+        planted_phase(eos=object())
 
 
 # --- construction contract and identity --------------------------------------------------
@@ -672,7 +749,7 @@ def test_atom_counts_must_be_positive(count):
 
 
 def test_unknown_equation_of_state_is_rejected():
-    with pytest.raises(ValueError, match="eos must be one of"):
+    with pytest.raises(ValueError, match="a string eos must be one of"):
         planted_phase(eos="debye")
 
 
