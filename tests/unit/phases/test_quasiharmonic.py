@@ -9,7 +9,7 @@ from numpy.testing import assert_allclose
 from pyiron_snippets.import_alarm import ImportAlarm
 
 from landau.calculate import calc_phase_diagram
-from landau.interpolate import WhitneyTemperatureInterpolator
+from landau.interpolate import PolyFit, WhitneyTemperatureInterpolator
 from landau.phases import LinePhase, TemperatureDependentLinePhase
 
 with ImportAlarm() as phonopy_alarm:
@@ -669,6 +669,20 @@ def test_default_eos_parameter_count_is_capped_by_the_volumes():
     residual = five.helmholtz_free_energies(300.0) - five._fit(300.0).curve(five.sampled_volumes)
     assert np.count_nonzero(np.abs(residual) > 1e-12) > 0  # not an exact interpolation
     assert np.isfinite(five.line_free_energy(300.0))
+
+
+def test_a_self_chosen_parameter_count_is_capped_too():
+    # PolyFit("auto") selects under an L1 penalty on a degree-ten basis, which is
+    # underdetermined on this many volumes and asks for about as many parameters as there
+    # are points; the cap has to reach it as well or the fit interpolates exactly
+    volumes = np.linspace(18.0, 22.0, 5)
+    auto = grueneisen_phase("auto", volumes=volumes, eos=PolyFit("auto"))
+    fixed = grueneisen_phase("fixed", volumes=volumes, eos=PolyFit(8))
+    residual = auto.helmholtz_free_energies(300.0) - auto._fit(300.0).curve(auto.sampled_volumes)
+    assert np.count_nonzero(np.abs(residual) > 1e-12) > 0  # not an exact interpolation
+    # capped to the same four parameters, so it is the same fit
+    assert_allclose(auto.line_free_energy(300.0), fixed.line_free_energy(300.0), atol=1e-12)
+    assert_allclose(auto.equilibrium_volume(300.0), fixed.equilibrium_volume(300.0), atol=1e-9)
 
 
 def test_interpolated_eos_locates_the_minimum_and_its_curvature():

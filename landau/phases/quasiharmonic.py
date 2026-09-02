@@ -105,7 +105,7 @@ class _FittedEos:
         return (self.energy, self.bulk_modulus, self.bulk_modulus_prime, self.volume)
 
 
-def _fit_interpolator_eos(interpolator, volumes, energies):
+def _fit_interpolator_eos(interpolator, volumes, energies, max_parameters=None):
     """Fit ``F(V)`` with one of landau's interpolators and locate its minimum exactly.
 
     The fit runs in a centred, scaled volume coordinate.  Raw volumes are around 12
@@ -117,11 +117,20 @@ def _fit_interpolator_eos(interpolator, volumes, energies):
     A polynomial has no useful behaviour outside its data -- it leaves through whichever
     end its leading term points -- so the minimum is looked for strictly inside, and the
     sign of the slope at each edge says which way an outside minimum went.
+
+    ``max_parameters`` caps an interpolator that chooses its own parameter count, which it
+    can only be held to once it has chosen: the fit is redone at the cap if it came back
+    richer than the volumes can constrain.
     """
     volumes = np.asarray(volumes, dtype=float)
     mid = 0.5 * (volumes[0] + volumes[-1])
     span = volumes[-1] - volumes[0]
-    fit = interpolator.fit((volumes - mid) / span, np.asarray(energies, dtype=float))
+    scaled_volumes = (volumes - mid) / span
+    energies = np.asarray(energies, dtype=float)
+    fit = interpolator.fit(scaled_volumes, energies)
+    coefficients = getattr(fit, "coefficients", ())
+    if max_parameters is not None and len(coefficients) > max_parameters:
+        fit = replace(interpolator, nparam=max_parameters).fit(scaled_volumes, energies)
     derivatives = [fit]
     for _ in range(3):
         derivatives.append(derivatives[-1].deriv())
@@ -262,12 +271,26 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
     here.  All three closed forms carry four parameters, so on a wide volume set they run
     out of freedom long before the data runs out of shape.
 
-    The default is capped at one fewer parameter than there are stable volumes, since a
+    The parameter count is capped at one fewer than there are stable volumes, since a
     polynomial through as many points as it has coefficients interpolates exactly and its
     minimum stops meaning anything; with the four volumes this class needs at minimum it
-    is a cubic.  An interpolator is fitted in a centred, scaled volume coordinate and its
-    minimum is located inside the sampled range only -- a polynomial has no useful
-    behaviour outside its data -- so :attr:`extrapolate` is incompatible with one."""
+    is a cubic.  The cap covers an interpolator that picks its own count as well, applied
+    once it has picked: ``PolyFit("auto")`` selects under an L1 penalty on a degree-ten
+    basis, which is underdetermined at these sample counts and comes back with roughly as
+    many parameters as there are volumes.
+
+    A fixed count rather than a selected one because the selection would be made per
+    temperature, and it moves: on the nine-volume fcc Cu set it flips between six and
+    eight parameters several times over 114-122 K, each flip a step of tens of
+    microelectronvolts per atom in ``F(T)`` and a few times 1e-3 cubic Angstrom in
+    ``V(T)`` where nothing physical happens -- against under two microelectronvolts of
+    genuine variation across the same window (``benchmarks/qha_eos_forms.py``).  Steps in
+    the reported free energy are the one thing :meth:`line_free_energy` must not invent,
+    since ``calc_phase_diagram`` reads them as transitions.
+
+    An interpolator is fitted in a centred, scaled volume coordinate and its minimum is
+    located inside the sampled range only -- a polynomial has no useful behaviour outside
+    its data -- so :attr:`extrapolate` is incompatible with one."""
     min_frequency: float = -0.05
     """Volumes whose lowest mode falls below this, in THz, are treated as dynamically
     unstable and excluded from the fit.  Slightly negative rather than zero because the
@@ -491,9 +514,13 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
         if not isinstance(self.eos, str):
             interpolator = self.eos
             cap = len(volumes) - _MIN_RESIDUAL_DOF
-            if getattr(interpolator, "nparam", 0) != "auto" and getattr(interpolator, "nparam", 0) > cap:
-                interpolator = replace(interpolator, nparam=cap)
-            return _fit_interpolator_eos(interpolator, volumes, free_energies)
+            nparam = getattr(interpolator, "nparam", 0)
+            if isinstance(nparam, int):
+                # a fixed count is capped before the fit, so nothing is left to hold after it
+                if nparam > cap:
+                    interpolator = replace(interpolator, nparam=cap)
+                cap = None
+            return _fit_interpolator_eos(interpolator, volumes, free_energies, cap)
         # get_eos returns a closure that phonopy 3 calls as eos(v, *p) and phonopy 4 as
         # eos(v, p); handing it straight to fit_to_eos and never calling it keeps that
         # difference out of here

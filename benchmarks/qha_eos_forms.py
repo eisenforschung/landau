@@ -55,6 +55,31 @@ the polynomial is buying interpolation accuracy between the sampled volumes rath
 better model of F(V).  That is the right trade here, since the minimum being reported sits
 between sampled volumes and never outside them, but it is not the same claim.
 
+A fourth table asks whether letting the fit choose its own parameter count helps.  It does
+not: ``PolyFit("auto")`` selects under an L1 penalty on a degree-ten basis, which with nine
+volumes is underdetermined, so the count tracks the sample count and moves with temperature
+-- six to nine over the range, switching six times.  Each switch steps the reported free
+energy where nothing physical happens:
+
+    T      count      step in F, ueV/atom      step in V, 1e-3 A^3
+                       auto    PolyFit(8)       auto    PolyFit(8)
+    114    7 -> 6     56.48       1.73          2.483      0.004
+    115    6 -> 7     54.97       1.73          2.274      0.004
+    116    7 -> 6     33.48       1.72          1.429      0.004
+    117    6 -> 7     34.78       1.72          1.459      0.003
+    122    7 -> 8     14.50       1.69          2.015      0.003
+    758    8 -> 9      0.43       0.43          0.001      0.001
+
+The fixed-count column is the smooth variation across the same 2 K window, so the steps run
+to thirty times it in F and six hundred in V.  They are not even monotone -- 114-117 K
+chatters back and forth between six and seven parameters.  A step in F(T) is what
+calc_phase_diagram reads as a transition, so the count stays fixed and the cap covers a
+self-chosen one as well.
+
+The cap does not rescue this.  It only bites on the last row, where the selection asks for
+nine parameters through nine volumes and both sides are held at eight, which is why nothing
+moves there; every other switch is between six, seven and eight and passes it untouched.
+
 The remaining table is what a phase diagram sees -- how far the reported free energy moves
 when the form changes.  Across the three closed forms alone it is 0.13 meV/atom at 0 K
 rising to 0.98 at 1200 K on the wide five-volume set, and 0.03 to 0.13 on the narrow one.
@@ -68,6 +93,9 @@ import sys
 import warnings
 
 import numpy as np
+from sklearn.linear_model import Lasso
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import PolynomialFeatures
 
 sys.path.insert(0, "tests/integration")
 
@@ -152,12 +180,62 @@ def report_leave_one_out(volumes):
                   f"{np.sqrt((errors**2).mean()) * 1e3:8.3f}")
 
 
+def report_auto_selection(volumes):
+    """Why the parameter count is fixed rather than selected per temperature.
+
+    ``PolyFit("auto")`` picks its count under an L1 penalty on a degree-ten basis.  With
+    fewer than eleven volumes that is underdetermined, so what comes back tracks the
+    sample count rather than the shape of the data -- and it moves with temperature.  Each
+    move is a step in ``F(T)`` and ``V(T)`` at a temperature where nothing physical
+    happens, which is the one artefact ``line_free_energy`` must not invent: it is what
+    ``calc_phase_diagram`` reads as a transition.
+    """
+    everything = list(range(len(volumes)))
+    auto = phase(volumes, everything, PolyFit("auto"))
+    fixed = phase(volumes, everything, PolyFit(8))
+    v = auto.sampled_volumes
+    mid, span = 0.5 * (v[0] + v[-1]), v[-1] - v[0]
+    design = ((v - mid) / span).reshape(-1, 1)
+
+    def selected(T):
+        reg = make_pipeline(PolynomialFeatures(10), Lasso(1e-8, fit_intercept=False))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            reg.fit(design, auto.helmholtz_free_energies(T))
+        return int(sum(abs(reg.steps[-1][1].coef_) > 1e-10))
+
+    grid = np.arange(0.0, 1201.0, 1.0)
+    counts = np.array([selected(T) for T in grid])
+    switches = grid[1:][counts[1:] != counts[:-1]]
+    print(f"\n=== PolyFit('auto') over {len(volumes)} volumes: counts "
+          f"{sorted(set(counts.tolist()))}, {len(switches)} switches ===")
+    print(f"{'T':>8} {'count':>11} {'step in F ueV/atom':>28} {'step in V 1e-3 A^3':>22}")
+    print(f"{'':8} {'':11} {'auto':>14} {'PolyFit(8)':>13} {'auto':>11} {'PolyFit(8)':>10}")
+    for T in switches:
+        window = np.linspace(T - 1.0, T + 1.0, 41)
+        half = len(window) // 2
+
+        def step(p, want_volume=False):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                y = np.array([(p.equilibrium_volume(t) if want_volume else p.line_free_energy(t))
+                              for t in window])
+            # a smooth curve continues the line its left half sets; a switch does not
+            straight = np.polyval(np.polyfit(window[:half], y[:half], 1), window[half:])
+            return np.abs(y[half:] - straight).max()
+
+        before = counts[int(np.searchsorted(grid, T)) - 1]
+        print(f"{T:8.0f} {before:5d} -> {selected(T):<3d} {step(auto) * 1e6:14.2f} "
+              f"{step(fixed) * 1e6:13.2f} {step(auto, True) * 1e3:11.3f} {step(fixed, True) * 1e3:10.3f}")
+
+
 def main():
     volumes = build()
     report_span(volumes, list(range(len(LATTICE_CONSTANTS))), "all nine")
     report_span(volumes, WIDE, "wide")
     report_span(volumes, NARROW, "narrow")
     report_leave_one_out(volumes)
+    report_auto_selection(volumes)
 
 
 if __name__ == "__main__":
