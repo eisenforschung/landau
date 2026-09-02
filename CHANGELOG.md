@@ -3,6 +3,14 @@
 Notable changes to **landau.py**, newest first. Per-PR detail lives in the
 [GitHub releases](https://github.com/eisenforschung/landau/releases).
 
+## [1.12.0](https://github.com/eisenforschung/landau/compare/1.11.1...1.12.0) (2026-09-02)
+
+
+### Features
+
+* **phases:** quasi-harmonic line phase evaluated from phonon spectra ([#440](https://github.com/eisenforschung/landau/issues/440)) ([c2bafa5](https://github.com/eisenforschung/landau/commit/c2bafa580fd6e6bbb87c37851d8abb5b2e9a7b6e))
+* register fleche digest hooks for landau types ([#441](https://github.com/eisenforschung/landau/issues/441)) ([74cb3ed](https://github.com/eisenforschung/landau/commit/74cb3ed5b889e1e65585554d0a896d16395abcf8))
+
 ## [1.11.1](https://github.com/eisenforschung/landau/compare/1.11.0...1.11.1) (2026-08-30)
 
 
