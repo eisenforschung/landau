@@ -463,10 +463,10 @@ def test_too_few_stable_volumes_is_an_error_not_a_fit():
 # --- the extrapolation ceiling -----------------------------------------------------------
 
 
-def test_extrapolation_past_the_sampled_volumes_warns_but_still_answers():
+def test_past_the_sampled_volumes_the_volume_is_clamped_and_warned_about():
     # a narrow volume window that thermal expansion runs out of.  Past the ceiling the
-    # equation of state is extrapolating, which is worth a warning but not worth refusing
-    # to answer: the curve stays smooth and monotonic across the boundary
+    # minimisation is constrained to the sampled volumes rather than letting the equation
+    # of state extrapolate to reach the true minimum
     phase = grueneisen_phase(gamma=3.0, volumes=np.linspace(19.8, 20.6, 5))
     ceiling = phase.max_temperature(upper=4000.0, tolerance=0.5)
     assert 0 < ceiling < 4000.0
@@ -477,8 +477,28 @@ def test_extrapolation_past_the_sampled_volumes_warns_but_still_answers():
         outside = phase.line_free_energy(ceiling + 1.0)
     with pytest.warns(EosExtrapolationWarning):
         volume = phase.equilibrium_volume(ceiling + 1.0)
+    # the volume stops at the edge of the data instead of following the fit past it
+    assert volume == phase.sampled_volumes[-1]
     assert np.isfinite(outside) and outside < inside
-    assert np.isfinite(volume) and volume > phase.sampled_volumes[-1]
+
+
+def test_the_clamped_branch_joins_the_free_one_continuously():
+    # Comparing the two branches at the same temperature, not the curve either side of the
+    # crossing -- across any interval the curve also moves by dF/dT, which swamps this.
+    # The constrained minimum can never beat the free one, and the gap between them is
+    # second order in how far the free minimum has overshot the edge, so it vanishes at
+    # the crossing: no step for calc_phase_diagram to mistake for a transition.
+    phase = grueneisen_phase(gamma=3.0, volumes=np.linspace(19.8, 20.6, 5))
+    ceiling = phase.max_temperature(upper=4000.0, tolerance=1e-3)
+
+    def gap(T):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", EosExtrapolationWarning)
+            return phase.line_free_energy(T) - phase.eos_parameters(T)[0]
+
+    assert 0 <= gap(ceiling + 1e-2) < 1e-10
+    # and far enough past it the constraint does bite, so this is not a no-op
+    assert gap(ceiling + 200.0) > 1e-4
 
 
 def test_no_warning_while_the_equilibrium_volume_is_still_inside():

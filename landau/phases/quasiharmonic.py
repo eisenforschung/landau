@@ -130,12 +130,15 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
     construction.  See :func:`_lowest_frequency` for how that mode is recovered from a
     ``ThermalProperties``, which does not expose it.
 
-    **Extrapolation past the sampled volumes.**  Once thermal expansion carries the
-    equilibrium volume above the largest volume sampled, the equation of state is
-    extrapolating.  The value is still returned -- an extrapolated equation of state is
-    the best estimate available and stays smooth -- but with an
-    :class:`EosExtrapolationWarning` saying so, since the error there is not bounded by
-    anything the fit knows.  :meth:`max_temperature` reports where that starts and
+    **Past the sampled volumes the minimisation is constrained, not extrapolated.**  Once
+    thermal expansion carries the free-energy minimum above the largest volume sampled,
+    the equation of state would have to extrapolate to reach it, and its error there is
+    not bounded by anything the fit knows.  So the volume is clamped to the nearest
+    sampled end and the free energy reported there -- the minimum over the volumes that
+    were actually calculated -- with an :class:`EosExtrapolationWarning` saying so.  The
+    constrained and unconstrained minima coincide at the crossing, so the reported curve
+    is continuous; above it the phase understates the expansion and therefore overstates
+    the free energy.  :meth:`max_temperature` reports where that starts and
     :meth:`check_equation_of_state` shows it; sampling wider volumes is the only way to
     push it up.
     """
@@ -389,24 +392,37 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
         return bool(volumes[0] <= volume <= volumes[-1])
 
     def _interpolates(self, T):
-        """Whether the equilibrium volume at ``T`` still lies inside the sampled range."""
-        volume = self._minimum(T)[1]
+        """Whether the unconstrained equilibrium volume at ``T`` is inside the sampled range."""
+        volume = self.eos_parameters(T)[3]
         return bool(np.isfinite(volume)) and self._in_sampled_range(volume)
 
     def _minimum(self, T):
-        """``(F, V)`` per atom at one temperature; warns once past the sampled volumes."""
-        energy, _, _, volume = self.eos_parameters(T)
+        """``(F, V)`` per atom at one temperature, minimised over the *sampled* volumes.
+
+        Past the point where the free-energy minimum leaves the sampled range, the volume
+        is clamped to the nearest end and the free energy reported there: a minimisation
+        constrained to the volumes that were actually calculated, rather than the
+        unconstrained minimum of a fit that is extrapolating to reach it.  The two agree
+        exactly at the crossing, so the reported curve stays continuous.
+        """
+        parameters = self.eos_parameters(T)
+        energy, _, _, volume = parameters
         # a failed fit is already NaN and has already warned; do not blame extrapolation
-        if np.isfinite(volume) and not self._in_sampled_range(volume):
+        if not np.isfinite(volume):
+            return np.nan, np.nan
+        if not self._in_sampled_range(volume):
             volumes = self.sampled_volumes
+            clamped = float(np.clip(volume, volumes[0], volumes[-1]))
             warnings.warn(
-                f"{self.name}: thermal expansion carried the equilibrium volume to {volume} A^3/atom, "
-                f"outside the sampled range [{volumes[0]}, {volumes[-1]}], where the equation of state "
-                "only extrapolates. The value is returned anyway; call max_temperature() for where that "
-                "starts, or sample wider volumes to push it up",
+                f"{self.name}: the free-energy minimum sits at {volume} A^3/atom, outside the sampled "
+                f"range [{volumes[0]}, {volumes[-1]}], so the equation of state would have to "
+                f"extrapolate to reach it. Reporting the free energy at {clamped} instead, which "
+                "understates the expansion; call max_temperature() for where that starts, or sample "
+                "wider volumes to push it up",
                 EosExtrapolationWarning,
                 stacklevel=3,
             )
+            return float(np.atleast_1d(_eos_curve(self.eos, np.array([clamped]), parameters))[0]), clamped
         return energy, volume
 
     def line_free_energy(self, T):
@@ -416,8 +432,9 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
             T (float or array of float): temperature in K
 
         Returns:
-            float or array of float: NaN wherever the equation-of-state fit failed;
-            extrapolated, with a warning, past the sampled volumes
+            float or array of float: NaN wherever the equation-of-state fit failed; taken
+            at the nearest sampled volume, with a warning, once the minimum leaves the
+            sampled range
         """
         T = np.asarray(T, dtype=float)
         out = np.array([self._minimum(float(t))[0] for t in T.flat], dtype=float)
@@ -430,7 +447,8 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
             T (float or array of float): temperature in K
 
         Returns:
-            float or array of float: NaN wherever the equation-of-state fit failed
+            float or array of float: clamped to the sampled range, with a warning, once the
+            free-energy minimum leaves it; NaN wherever the fit failed
         """
         T = np.asarray(T, dtype=float)
         out = np.array([self._minimum(float(t))[1] for t in T.flat], dtype=float)
@@ -442,8 +460,9 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
         Draws three things on the current axes: the free energy of every sampled volume,
         the equation of state fitted through them, and the minimum
         :meth:`line_free_energy` reports.  They have to agree for the reported number to
-        mean anything, and a minimum that has left the sampled volumes shows up as a
-        marker past the end of the data, in the stretch of curve that is extrapolating.
+        mean anything, and once the minimum has left the sampled volumes the marker sits
+        pinned to the edge of the shaded range while the curve keeps falling past it --
+        which is exactly the extrapolation being declined.
 
         Args:
             T (float): temperature in K
@@ -467,8 +486,8 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
     def max_temperature(self, upper=5000.0, tolerance=1.0):
         """Highest temperature at which the equation of state still interpolates.
 
-        Above this the free energy is still returned, but the equilibrium volume has left
-        the sampled range and the equation of state is extrapolating there.
+        Above this the free energy is still returned, but the free-energy minimum has left
+        the sampled range and the volume is clamped to the nearest end instead.
 
         Thermal expansion is monotonic in temperature for a stable solid, so the
         equilibrium volume leaves the sampled range once and does not come back; this
@@ -482,17 +501,15 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
         Returns:
             float: the ceiling in K, or NaN if the fit already extrapolates at ``T = 0``
         """
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", EosExtrapolationWarning)
-            if self._interpolates(upper):
-                return float(upper)
-            lo, hi = 0.0, float(upper)
-            if not self._interpolates(lo):
-                return np.nan
-            while hi - lo > tolerance:
-                mid = 0.5 * (lo + hi)
-                if self._interpolates(mid):
-                    lo = mid
-                else:
-                    hi = mid
+        if self._interpolates(upper):
+            return float(upper)
+        lo, hi = 0.0, float(upper)
+        if not self._interpolates(lo):
+            return np.nan
+        while hi - lo > tolerance:
+            mid = 0.5 * (lo + hi)
+            if self._interpolates(mid):
+                lo = mid
+            else:
+                hi = mid
         return lo
