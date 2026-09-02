@@ -11,6 +11,11 @@ version_file = "landau/_version.py"
 [tool.ruff]
 line-length = 120
 
+[tool.pytest.ini_options]
+markers = [
+    "fleche: exercises the fleche digest hooks; needs the test-fleche extra",
+]
+
 [project]
 description = "A library to calculate alloy thermodynamic equilibria and plot phase diagrams in the (semi-)grand ensemble."
 name = "landau"
@@ -45,6 +50,12 @@ test = [
     "hypothesis>=6.71,<7",
     "ase>=3.20.0",
 ]
+# Kept out of `test` so the minimum-deps job still resolves landau's own floors:
+# fleche requires pyiron-snippets>=1.1, which would lift ours from >=1.
+# The tests it enables are the `fleche` marker below, run in their own env.
+# Pinned to one minor series: the hooks lean on fleche's entry point loading and
+# digest dispatch, so a new minor should arrive as a dependabot PR to review.
+test-fleche = ["fleche>=0.22,<0.23"]
 docs = [
     "sphinx",
     "furo",
@@ -54,6 +65,11 @@ docs = [
 constraints = ["polyfit"]
 python-tsp = ["python-tsp>=0.4.2,<=0.5"]
 fast-tsp = ["fast-tsp>=0.1.4,<=0.1.5"]
+
+# Digest hooks so landau objects can be passed to fleche-cached functions; loaded by
+# fleche's entry point machinery, landau never imports fleche itself.
+[project.entry-points."fleche"]
+digest = "landau.fleche:digest_hooks"
 
 [project.urls]
 Repository = "https://github.com/eisenforschung/landau"
