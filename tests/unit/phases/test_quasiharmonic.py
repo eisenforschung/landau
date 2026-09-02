@@ -1,5 +1,8 @@
+import warnings
 from functools import cache
 
+import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 from numpy.testing import assert_allclose
@@ -18,6 +21,7 @@ with ImportAlarm() as phonopy_alarm:
         DynamicalInstabilityWarning,
         EosExtrapolationWarning,
         PhonopyQuasiHarmonicPhase,
+        _eos_curve,
         _lowest_frequency,
     )
 
@@ -167,13 +171,13 @@ def grueneisen_phase(name="grueneisen", omega0=5.0, gamma=2.0, volumes=None, **k
 
 # --- the mode sum ------------------------------------------------------------------------
 #
-# volume_free_energies returns static + vibrational per atom for every sampled volume; the
+# helmholtz_free_energies returns static + vibrational per atom for every sampled volume; the
 # planted phases put the same frequency at every volume, so one entry is the whole story.
 
 
 def vibrational(phase, T):
     """The vibrational part alone, for a phase whose static energies are all zero."""
-    return phase.volume_free_energies(T)
+    return phase.helmholtz_free_energies(T)
 
 
 @pytest.mark.parametrize("classical", [False, True])
@@ -242,7 +246,7 @@ def test_free_energy_per_atom_normalises_by_the_primitive_cell_not_the_unit_cell
     assert_allclose(phase.energies_per_atom, [per_atom_energy] * 5, rtol=1e-14)
     for T in (0.0, 300.0, 1000.0):
         expected = per_atom_energy + einstein_free_energy(omega, T)
-        assert_allclose(phase.volume_free_energies(T), expected, rtol=1e-12)
+        assert_allclose(phase.helmholtz_free_energies(T), expected, rtol=1e-12)
     assert per_atom_volume in phase.volumes_per_atom
 
 
@@ -264,7 +268,7 @@ def test_free_energy_is_independent_of_how_the_same_crystal_is_celled():
         atoms_per_primitive_cell=1,
     )
     for T in (0.0, 300.0, 1500.0):
-        assert_allclose(one.volume_free_energies(T), four.volume_free_energies(T), rtol=1e-14)
+        assert_allclose(one.helmholtz_free_energies(T), four.helmholtz_free_energies(T), rtol=1e-14)
 
 
 def test_the_temperatures_the_caller_ran_with_do_not_constrain_the_phase():
@@ -282,7 +286,7 @@ def test_negative_temperatures_are_rejected():
     # which would return fewer values than were asked for and misalign them
     phase = planted_phase()
     with pytest.raises(ValueError, match="non-negative"):
-        phase.volume_free_energies(-10.0)
+        phase.helmholtz_free_energies(-10.0)
 
 
 def test_arbitrary_unsorted_temperatures_are_answered_in_order():
@@ -422,7 +426,6 @@ def test_unstable_volumes_are_dropped_with_a_warning():
         )
     assert phase.lowest_frequencies == pytest.approx(lowest, abs=1e-10)
     assert len(phase.sampled_volumes) == 6
-    assert phase.unstable_volumes.tolist() == [volumes[0]]
     assert volumes[0] not in phase.sampled_volumes
 
 
@@ -460,16 +463,30 @@ def test_too_few_stable_volumes_is_an_error_not_a_fit():
 # --- the extrapolation ceiling -----------------------------------------------------------
 
 
-def test_free_energy_is_nan_once_the_equilibrium_volume_leaves_the_sampled_range():
-    # a narrow volume window that thermal expansion runs out of
+def test_extrapolation_past_the_sampled_volumes_warns_but_still_answers():
+    # a narrow volume window that thermal expansion runs out of.  Past the ceiling the
+    # equation of state is extrapolating, which is worth a warning but not worth refusing
+    # to answer: the curve stays smooth and monotonic across the boundary
     phase = grueneisen_phase(gamma=3.0, volumes=np.linspace(19.8, 20.6, 5))
     ceiling = phase.max_temperature(upper=4000.0, tolerance=0.5)
     assert 0 < ceiling < 4000.0
-    assert np.isfinite(phase.line_free_energy(ceiling - 1.0))
+
+    inside = phase.line_free_energy(ceiling - 1.0)
+    assert np.isfinite(inside)
     with pytest.warns(EosExtrapolationWarning, match="outside the sampled range"):
-        assert np.isnan(phase.line_free_energy(ceiling + 1.0))
+        outside = phase.line_free_energy(ceiling + 1.0)
     with pytest.warns(EosExtrapolationWarning):
-        assert np.isnan(phase.equilibrium_volume(ceiling + 1.0))
+        volume = phase.equilibrium_volume(ceiling + 1.0)
+    assert np.isfinite(outside) and outside < inside
+    assert np.isfinite(volume) and volume > phase.sampled_volumes[-1]
+
+
+def test_no_warning_while_the_equilibrium_volume_is_still_inside():
+    phase = grueneisen_phase(gamma=3.0, volumes=np.linspace(19.8, 20.6, 5))
+    ceiling = phase.max_temperature(upper=4000.0, tolerance=0.5)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", EosExtrapolationWarning)
+        phase.line_free_energy(np.linspace(0.0, ceiling - 1.0, 9))
 
 
 def test_a_wide_enough_volume_range_has_no_ceiling_below_the_bracket():
@@ -477,17 +494,57 @@ def test_a_wide_enough_volume_range_has_no_ceiling_below_the_bracket():
     assert phase.max_temperature(upper=1500.0) == 1500.0
 
 
-def test_nan_keeps_the_phase_out_of_the_stable_set():
-    # calc_phase_diagram picks the stable phase with idxmin, which skips NaN, so a phase
-    # above its ceiling drops out of the diagram instead of poisoning it
+def test_the_phase_stays_in_the_diagram_above_its_ceiling():
+    # extrapolating is a warning, not a withdrawal: calc_phase_diagram still gets a number
+    # for the phase above its ceiling and can still pick it
     solid = grueneisen_phase("solid", gamma=3.0, volumes=np.linspace(19.8, 20.6, 5))
     ceiling = solid.max_temperature(upper=4000.0, tolerance=0.5)
-    other = LinePhase("other", 0.0, line_energy=-3.0, line_entropy=1e-4)
+    other = LinePhase("other", 0.0, line_energy=0.0, line_entropy=0.0)
     T = np.array([ceiling - 50.0, ceiling + 50.0])
     with pytest.warns(EosExtrapolationWarning):
         df = calc_phase_diagram([solid, other], Ts=T, mu=np.array([0.0]), refine=False)
-    stable_above = df.query("T > @ceiling").phase.tolist()
-    assert stable_above == ["other"]
+    above = df.query("T > @ceiling")
+    assert above.phase.tolist() == ["solid"]
+    assert np.isfinite(above.phi).all()
+
+
+# --- the equation-of-state curve and the debug plot -------------------------------------
+
+
+def test_eos_curve_reproduces_the_planted_vinet():
+    # pins both the parameter order out of fit_to_eos and phonopy's calling convention,
+    # which differs between the two majors: 4 takes eos(v, p) and 3 takes eos(v, *p)
+    volumes = np.linspace(17.0, 23.0, 7)
+    parameters = (VINET["E0"], VINET["B0"], VINET["B0p"], VINET["V0"])
+    assert_allclose(
+        _eos_curve("vinet", volumes, parameters),
+        [vinet_energy(v) for v in volumes],
+        rtol=1e-12,
+    )
+
+
+def test_check_equation_of_state_draws_the_samples_the_fit_and_the_minimum():
+    matplotlib.use("Agg")
+    phase = grueneisen_phase(gamma=2.0)
+    T = 600.0
+    plt.figure()
+    try:
+        phase.check_equation_of_state(T, samples=501)
+        ax = plt.gca()
+        (curve,) = ax.lines
+        samples, minimum = ax.collections[0], ax.collections[1]
+
+        assert curve.get_xydata().shape == (501, 2)
+        assert_allclose(samples.get_offsets()[:, 0], phase.sampled_volumes, rtol=1e-12)
+        assert_allclose(samples.get_offsets()[:, 1], phase.helmholtz_free_energies(T), rtol=1e-12)
+        # the marker is the number the phase actually reports, and the drawn curve dips to it
+        assert_allclose(minimum.get_offsets()[0], [phase.equilibrium_volume(T), phase.line_free_energy(T)], rtol=1e-12)
+        # the reported minimum is the true minimum of the drawn function, so the sampled
+        # curve may sit above it by the grid resolution but never below it
+        drawn = curve.get_xydata()[:, 1].min()
+        assert 0 <= drawn - phase.line_free_energy(T) < 1e-6
+    finally:
+        plt.close("all")
 
 
 # --- construction contract and identity --------------------------------------------------
@@ -616,7 +673,7 @@ def test_from_phonopy_reproduces_phonopys_own_thermal_properties(classical):
     phonon, energy = phonopys[0]
     phonon.run_thermal_properties(temperatures=[T], classical=classical)
     reference = phonon.thermal_properties.thermal_properties[1][0] / get_physical_units().EvTokJmol
-    assert_allclose(phase.volume_free_energies(T)[0], energy / 4 + reference, rtol=1e-14)
+    assert_allclose(phase.helmholtz_free_energies(T)[0], energy / 4 + reference, rtol=1e-14)
 
 
 def test_from_phonopy_expands_when_heated():

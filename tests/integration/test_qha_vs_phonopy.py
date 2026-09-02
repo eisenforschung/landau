@@ -124,7 +124,7 @@ def copper_phase(copper, classical=False):
     )
     assert phase.atoms_per_cell == 4 and phase.atoms_per_primitive_cell == 1
     # the volumes are sampled in ascending order and all are stable, so the rows of
-    # volume_free_energies line up with the inputs as given
+    # helmholtz_free_energies line up with the inputs as given
     assert_allclose(phase.sampled_volumes, phase.volumes_per_atom, rtol=0, atol=0)
     return phase
 
@@ -141,7 +141,7 @@ def test_mode_sum_is_phonopys_own(copper, classical):
         # identical, not close: the phase resets the temperature on phonopy's own object
         # and reads its own kernel back, so any difference at all means something diverged
         assert_array_equal(
-            phase.volume_free_energies(T),
+            phase.helmholtz_free_energies(T),
             static + reference * to_ev / phase.atoms_per_primitive_cell,
         )
 
