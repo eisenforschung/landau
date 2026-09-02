@@ -191,10 +191,11 @@ def _state_row(phase: Phase, T: float, mu: float) -> dict:
 
 
 # eV; largest spread in a *triple*'s own-phase potentials still read as one
-# coexistence. Comfortably above a converged triple residual (~1e-5) and far
-# below any real domination gap. Not applied to two-phase boundaries, which may
-# be genuinely first-order (see _dominated).
-_COEXIST_TOL = 1e-3
+# coexistence. Orders of magnitude above a converged triple residual (~1e-8 on
+# the eutectic fixture in tests/unit/plot/test_triplepoint.py) and far below any
+# real domination gap. Not applied to two-phase boundaries, which may be
+# genuinely first-order (see _dominated).
+_TRIPLE_COEXIST_TOL = 1e-4
 
 
 def _dominated(pt, phases: Mapping[str, Phase]) -> bool:
@@ -205,29 +206,28 @@ def _dominated(pt, phases: Mapping[str, Phase]) -> bool:
     ``(pt.T, pt.mu)``. It is dropped when:
 
     * An own phase is **absent** (``phi = +inf``): a phase that doesn't exist
-      here can't be a coexisting vertex. (This is how a pinned ordered phase
-      reported absent outside its dome leaked into a triple point at ``c = 0``.)
+      here can't be a coexisting vertex.
     * Some phase **outside** ``pt.phase_names()`` sits below the least-stable own
       phase — then the own set isn't the top-|own| most stable, so this isn't
       the boundary it claims to be (a Clausius-Clapeyron trace that oversteps an
       invariant lands here).
     * For a **triple** only, its three phases don't share one potential (spread
-      ``> _COEXIST_TOL``) — a genuine three-phase point is a single ``(T, mu)``
-      where all three are degenerate. Two-phase boundaries are exempt: a
-      first-order boundary (a pinned ordered phase appearing already below the
-      disordered one) is a real boundary where the two phases' potentials jump
-      rather than cross, and clamping it to coexistence would drop the whole
-      upper flank of the ordered dome.
+      ``> _TRIPLE_COEXIST_TOL``) — a genuine three-phase point is a single
+      ``(T, mu)`` where all three are degenerate. Two-phase boundaries are
+      exempt: a first-order boundary is a real boundary where the two phases'
+      potentials jump rather than cross, and clamping it to coexistence would
+      drop it.
 
-    Using ``max(own_phi)`` as the reference (not one arbitrary set member) also
-    removes a ``set``-iteration-order dependence in the outside comparison.
+    The reference for the outside comparison is ``max(own_phi)`` rather than an
+    arbitrary member of the ``own`` set, so the verdict does not depend on
+    set-iteration order.
     """
     own = pt.phase_names()
     own_phi = [phases[n].semigrand_potential(pt.T, pt.mu) for n in own]
     if not np.all(np.isfinite(own_phi)):
         return True
     hi = max(own_phi)
-    if len(own) >= 3 and hi - min(own_phi) > _COEXIST_TOL:
+    if len(own) >= 3 and hi - min(own_phi) > _TRIPLE_COEXIST_TOL:
         return True
     return any(
         p.semigrand_potential(pt.T, pt.mu) < hi

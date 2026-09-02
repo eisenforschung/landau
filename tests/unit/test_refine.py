@@ -1024,13 +1024,10 @@ def test_dominated_outside_rival_between_own_potentials_returns_true():
     """Two-phase boundary with unequal own potentials (phi_A=0, phi_B=0.5;
     allowed since the coexistence-tolerance check only applies to triples).
     Rival X sits at 0.3 - strictly between the two own potentials, so it beats
-    B but not A. The old code compared against ``next(iter(own))``, an
-    arbitrary member of the ``own`` *set*: whether this candidate survived
-    depended on which own phase that happened to be. Comparing against
-    ``max(own_phi)`` instead asks "does X beat the least-stable own phase" -
-    X beats B, so the own set is not the top-2 most stable and this must be
-    dominated regardless of ``own``'s (hash-determined, not caller-controlled)
-    iteration order."""
+    B but not A. The reference is ``max(own_phi)``, i.e. "does X beat the
+    least-stable own phase": X beats B, so the own set is not the top-2 most
+    stable and the point is dominated whichever way the ``own`` set happens to
+    iterate."""
     phases = _dom_phases(("A", 0.0, 0.0), ("B", 1.0, 0.5), ("X", 0.5, 0.3))
     pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B"))
     assert _dominated(pt, phases) is True
@@ -1039,10 +1036,9 @@ def test_dominated_outside_rival_between_own_potentials_returns_true():
 def test_dominated_own_phase_below_others_returns_true():
     """A claimed triple point whose own phases don't share a potential is not a
     real coexistence: D lies far below A and B at ``(T, mu)``, so only D is
-    stable there and the A+B+D point is spurious. The old code compared against
-    one arbitrary member of ``own`` and, when it wasn't D, let the point survive;
-    now the own-phase spread (1.0 eV) exceeds the coexistence tolerance and it is
-    dropped regardless of set order."""
+    stable there and the A+B+D point is spurious. The own-phase spread (1.0 eV)
+    exceeds ``_TRIPLE_COEXIST_TOL``, so it is dropped regardless of set
+    order."""
     phases = _dom_phases(
         ("A", 0.0, 0.0), ("B", 1.0, 0.0), ("D", 0.5, -1.0),
     )
@@ -1051,9 +1047,9 @@ def test_dominated_own_phase_below_others_returns_true():
 
 
 def test_dominated_absent_own_phase_returns_true():
-    """The Au-Cu degeneracy in miniature: a pinned ordered phase reported absent
-    (``phi = +inf``) must not survive as a triple-point vertex. C is absent, so
-    A+B+C is really just A+B and the triple point is dropped."""
+    """A phase reported absent (``phi = +inf``) must not survive as a
+    triple-point vertex. C is absent, so A+B+C is really just A+B and the
+    triple point is dropped."""
     class _Absent:
         name = "C"
 
