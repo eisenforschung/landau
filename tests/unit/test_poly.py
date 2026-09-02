@@ -62,12 +62,16 @@ def _phase_region(draw, phase, unit):
     T_amp = draw(st.floats(min_value=0, max_value=200, allow_nan=False, allow_infinity=False))
     mu0 = draw(st.floats(min_value=-8, max_value=8, allow_nan=False, allow_infinity=False))
     mu_amp = draw(st.floats(min_value=0, max_value=2, allow_nan=False, allow_infinity=False))
-    c0 = draw(st.floats(min_value=0.3, max_value=0.7, allow_nan=False, allow_infinity=False))
-    c_amp = draw(st.floats(min_value=0, max_value=0.29, allow_nan=False, allow_infinity=False))
+    c_lo = draw(st.floats(min_value=0.02, max_value=0.49, allow_nan=False, allow_infinity=False))
+    c_hi = draw(st.floats(min_value=0.51, max_value=0.98, allow_nan=False, allow_infinity=False))
+    steepness = draw(st.floats(min_value=1, max_value=20, allow_nan=False, allow_infinity=False))
 
     T = T0 + T_amp * t
     mu = mu0 + mu_amp * (2 * t - 1)
-    c = c0 + c_amp * np.sin(2 * np.pi * t)
+    # Ideal-solution-type sigmoid (cf. IdealSolution.concentration's
+    # 1 / (1 + exp(...)) form): monotonic and bounded in (c_lo, c_hi) by
+    # construction, unlike a sinusoid, which can double back on itself.
+    c = c_lo + (c_hi - c_lo) / (1 + np.exp(-steepness * (t - 0.5)))
 
     border = np.zeros(n_points, dtype=bool)
     border[:n_border] = True
