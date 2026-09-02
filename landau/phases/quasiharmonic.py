@@ -646,9 +646,10 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
                 end, so a minimum just outside the data is still visible
             plot_error (bool): if True, plot the residual of each sampled volume against
                 the fitted equation of state instead of the free energies themselves.
-                The fit has four parameters, so with only a handful of volumes the
-                residual is what shows whether the equation of state has any freedom left
-                to be wrong in -- on the scale that matters, meV/atom
+                This is the second approximation underneath the reported free energy, so
+                the residual is what says whether the fit has run out of freedom to follow
+                the data -- on the scale that matters, meV/atom.  A systematic sign
+                pattern rather than scatter means shape the fit cannot take
         """
         volumes = self.sampled_volumes
         if plot_error:
