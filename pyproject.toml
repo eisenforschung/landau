@@ -53,7 +53,9 @@ test = [
 # Kept out of `test` so the minimum-deps job still resolves landau's own floors:
 # fleche requires pyiron-snippets>=1.1, which would lift ours from >=1.
 # The tests it enables are the `fleche` marker below, run in their own env.
-test-fleche = ["fleche>=0.21,<1"]
+# Pinned to one minor series: the hooks lean on fleche's entry point loading and
+# digest dispatch, so a new minor should arrive as a dependabot PR to review.
+test-fleche = ["fleche>=0.22,<0.23"]
 docs = [
     "sphinx",
     "furo",
