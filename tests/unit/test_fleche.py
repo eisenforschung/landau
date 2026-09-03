@@ -215,17 +215,21 @@ def test_refiner_settings_move_the_digest(left, right):
 # ---------------------------------------------------------------------------
 
 
-def test_fleche_collides_closures_over_different_data():
+def test_fleche_cannot_key_on_a_fitted_closure():
     """The reason the refusal below exists, stated as an executable fact.
 
-    fleche digests a function from its code object; two fits of one interpolator
-    share that code object, so their raw closures are indistinguishable to it.
+    Two fits of one interpolator share a code object, so a code digest cannot tell
+    them apart.  Since 0.22.1 fleche also folds in what a closure captured, which
+    refuses a capture it cannot digest -- the scipy spline here -- and falls back to
+    that colliding code digest when it decorates such a function anyway.
     """
     x = np.linspace(0, 1, 10)
     quadratic = SplineFit().fit(x, x**2)
     cubic = SplineFit().fit(x, x**3)
     assert quadratic(0.5) != cubic(0.5)
-    assert digest(quadratic.func) == digest(cubic.func)
+    assert digest(quadratic.func.__code__) == digest(cubic.func.__code__)
+    with pytest.raises(Indigestible):
+        digest(quadratic.func)
 
 
 @pytest.mark.parametrize("interpolator", ["spline", "stitched"])
