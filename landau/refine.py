@@ -191,16 +191,49 @@ def _state_row(phase: Phase, T: float, mu: float) -> dict:
     }
 
 
+# eV; largest spread in a *triple*'s own-phase potentials still read as one
+# coexistence. Bounded below by the refiner's own convergence — the eutectic
+# invariant of the `eutectic_diagram` fixture converges to a 2e-8 spread and
+# disappears from the diagram entirely once this constant reaches 1e-8 — and
+# above by the smallest gap that must still read as domination. Both sides are
+# pinned in tests/unit/test_refine.py. Not applied to two-phase boundaries,
+# which may be genuinely first-order (see _dominated).
+_TRIPLE_COEXIST_TOL = 1e-4
+
+
 def _dominated(pt, phases: Mapping[str, Phase]) -> bool:
-    """True iff some phase outside ``pt.phase_names()`` has a lower
-    semigrand potential at ``(pt.T, pt.mu)`` — meaning the refined
-    transition we found isn't actually globally stable, so we drop it.
+    """True iff the refined transition ``pt`` is not a valid piece of the global
+    phase boundary and should be dropped.
+
+    A point is valid when its own phases are exactly the most stable set at
+    ``(pt.T, pt.mu)``. It is dropped when:
+
+    * An own phase is **absent** (``phi = +inf``): a phase that doesn't exist
+      here can't be a coexisting vertex.
+    * Some phase **outside** ``pt.phase_names()`` sits below the least-stable own
+      phase — then the own set isn't the top-|own| most stable, so this isn't
+      the boundary it claims to be (a Clausius-Clapeyron trace that oversteps an
+      invariant lands here).
+    * For a **triple** only, its three phases don't share one potential (spread
+      ``> _TRIPLE_COEXIST_TOL``) — a genuine three-phase point is a single
+      ``(T, mu)`` where all three are degenerate. Two-phase boundaries are
+      exempt: a first-order boundary is a real boundary where the two phases'
+      potentials jump rather than cross, and clamping it to coexistence would
+      drop it.
+
+    The reference for the outside comparison is ``max(own_phi)`` rather than an
+    arbitrary member of the ``own`` set, so the verdict does not depend on
+    set-iteration order.
     """
     own = pt.phase_names()
-    own_phase = next(iter(own))
-    own_phi = phases[own_phase].semigrand_potential(pt.T, pt.mu)
+    own_phi = [phases[n].semigrand_potential(pt.T, pt.mu) for n in own]
+    if not np.all(np.isfinite(own_phi)):
+        return True
+    hi = max(own_phi)
+    if len(own) >= 3 and hi - min(own_phi) > _TRIPLE_COEXIST_TOL:
+        return True
     return any(
-        p.semigrand_potential(pt.T, pt.mu) < own_phi
+        p.semigrand_potential(pt.T, pt.mu) < hi
         for p in phases.values()
         if p.name not in own
     )
