@@ -36,6 +36,18 @@ except ImportError:
 
 needs_ase = pytest.mark.skipif(not HAS_ASE, reason="ASE is not installed")
 
+#: The quasi-harmonic phase is built through the Einstein-solid helper the
+#: quasi-harmonic unit tests use, so the planted spectrum lives in one place.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "phases"))
+try:
+    from test_quasiharmonic import einstein_phase
+
+    HAS_PHONOPY = True
+except ImportError:
+    HAS_PHONOPY = False
+
+needs_phonopy = pytest.mark.skipif(not HAS_PHONOPY, reason="phonopy is not installed")
+
 #: These run in their own CI env, installed with the test-fleche extra; the rest
 #: of the suite deselects them with -m "not fleche".
 pytestmark = pytest.mark.fleche
@@ -218,18 +230,52 @@ def test_refiner_settings_move_the_digest(left, right):
 def test_fleche_cannot_key_on_a_fitted_closure():
     """The reason the refusal below exists, stated as an executable fact.
 
-    Two fits of one interpolator share a code object, so a code digest cannot tell
-    them apart.  Since 0.22.1 fleche also folds in what a closure captured, which
-    refuses a capture it cannot digest -- the scipy spline here -- and falls back to
-    that colliding code digest when it decorates such a function anyway.
+    Two fits of one interpolator share a code object, and since 0.22.1 fleche
+    falls back to digesting that alone whenever what a closure captured is
+    itself indigestible -- so a raw closure is not a usable key.
     """
     x = np.linspace(0, 1, 10)
     quadratic = SplineFit().fit(x, x**2)
     cubic = SplineFit().fit(x, x**3)
     assert quadratic(0.5) != cubic(0.5)
     assert digest(quadratic.func.__code__) == digest(cubic.func.__code__)
-    with pytest.raises(Indigestible):
-        digest(quadratic.func)
+
+
+# ---------------------------------------------------------------------------
+# Fitted scipy splines (stopgap hook, see #449)
+# ---------------------------------------------------------------------------
+
+
+def test_fitted_splines_digest_by_knots_and_coefficients():
+    """fleche refuses a scipy spline outright; the hook keys it on ``(t, c, k)``.
+
+    Goes away with the hook once fleche digests scipy objects itself (#449).
+    """
+    from scipy.interpolate import InterpolatedUnivariateSpline
+
+    load_entry_points()
+    x = np.linspace(0, 1, 10)
+    quadratic = InterpolatedUnivariateSpline(x, x**2)
+    cubic = InterpolatedUnivariateSpline(x, x**3)
+
+    assert digest(quadratic) == digest(InterpolatedUnivariateSpline(x, x**2))
+    assert digest(quadratic) != digest(cubic)
+    assert digest(quadratic) != digest(InterpolatedUnivariateSpline(x, x**2, k=2))
+    assert digest(quadratic) != digest(InterpolatedUnivariateSpline(x, x**2, ext=1))
+
+
+def test_spline_hook_separates_fits_of_one_interpolator():
+    """What the hook buys: a closure over a spline is no longer a dead end.
+
+    ``landau_digest`` still refuses the fitted object itself -- it refuses on
+    holding a plain function, not on holding something indigestible -- so this
+    pins the fact, not a behaviour change (#449).
+    """
+    load_entry_points()
+    x = np.linspace(0, 1, 10)
+    quadratic = SplineFit().fit(x, x**2)
+    cubic = SplineFit().fit(x, x**3)
+    assert digest(quadratic.func) != digest(cubic.func)
 
 
 @pytest.mark.parametrize("interpolator", ["spline", "stitched"])
@@ -254,6 +300,58 @@ def test_digestible_interpolations_are_not_refused():
     load_entry_points()
     assert digest(PolyFit(3).fit(T, T * 2.0)) != digest(PolyFit(3).fit(T, T * 3.0))
     assert digest(SGTE(3).fit(T, -T * 1e-3)) == digest(SGTE(3).fit(T, -T * 1e-3))
+
+
+# ---------------------------------------------------------------------------
+# Opaque third-party state: phonopy and the Whitney RBF
+# ---------------------------------------------------------------------------
+
+
+@needs_phonopy
+def test_quasiharmonic_phase_digest_follows_equality():
+    """Its phonopy ``ThermalProperties`` are opaque, so the digest rides the
+    identity key the class already compares and hashes by."""
+    load_entry_points()
+    a = einstein_phase(fresh=True)
+    same = einstein_phase(fresh=True)
+    other = einstein_phase(omegas=6.0, fresh=True)
+
+    assert a == same and digest(a) == digest(same)
+    assert a != other and digest(a) != digest(other)
+
+
+def test_whitney_rbf_digest_tracks_data_and_hyperparameters():
+    """A fitted ``WhitneyRBFInterpolator`` holds a scipy ``RBFInterpolator`` and a
+    ``ConvexHull``; both follow from the training data and the hyperparameters."""
+    from landau.interpolate.whitney import WhitneyRBFInterpolator
+
+    load_entry_points()
+    T = np.linspace(100, 500, 5)
+    c = np.linspace(0.0, 1.0, 7)
+    X = np.column_stack([np.repeat(T, 7), np.tile(c, 5)])
+    y = -1e-3 * X[:, 0] + X[:, 1] * (1 - X[:, 1])
+
+    fitted = WhitneyRBFInterpolator().fit(X, y)
+    assert digest(fitted) == digest(WhitneyRBFInterpolator().fit(X, y))
+    assert digest(fitted) != digest(WhitneyRBFInterpolator().fit(X, 2 * y))
+    assert digest(fitted) != digest(WhitneyRBFInterpolator(degree=1).fit(X, y))
+    assert digest(fitted) != digest(WhitneyRBFInterpolator().fit(X * 1.01, y))
+    assert digest(WhitneyRBFInterpolator()) != digest(WhitneyRBFInterpolator(smoothing=1.0))
+
+
+def test_whitney_fitted_surface_is_digestible():
+    """What the estimator hook buys: the surface's whole state is that estimator."""
+    from landau.interpolate import WhitneySurface2DInterpolator
+
+    load_entry_points()
+    T = np.linspace(100, 500, 5)
+    c = np.linspace(0.0, 1.0, 7)
+    Tg, cg = np.repeat(T, 7), np.tile(c, 5)
+    H = -1e-3 * Tg + cg * (1 - cg)
+
+    surface = WhitneySurface2DInterpolator().fit(Tg, cg, H)
+    assert digest(surface) == digest(WhitneySurface2DInterpolator().fit(Tg, cg, H))
+    assert digest(surface) != digest(WhitneySurface2DInterpolator().fit(Tg, cg, 2 * H))
 
 
 # ---------------------------------------------------------------------------

@@ -20,8 +20,12 @@ Only types fleche cannot digest itself are hooked: :class:`~landau.refine.Refine
 and :class:`~landau.interpolate.FittedSurface` (plain classes, and no subclass of
 either is a dataclass), the three plain
 :class:`~landau.interpolate.Interpolation` classes, and
-:class:`~landau.phases.asewrapper.AsePhase` (a dataclass, but holding an opaque
-ASE ``ThermoChem``).  Everything fleche already handles -- every
+:class:`~landau.phases.asewrapper.AsePhase` and
+:class:`~landau.phases.quasiharmonic.PhonopyQuasiHarmonicPhase` (dataclasses, but
+holding an opaque ASE ``ThermoChem`` and phonopy ``ThermalProperties``), and
+:class:`~landau.interpolate.whitney.WhitneyRBFInterpolator` (an sklearn-style
+estimator whose fitted state is a scipy ``RBFInterpolator`` and a ``ConvexHull``).
+Everything fleche already handles -- every
 :class:`~landau.phases.Phase`, ``Interpolator``, ``SurfaceInterpolator``,
 point-defect class and ``AbstractPolyMethod`` -- is left to its dataclass walk
 deliberately: fleche loads entry points lazily, on the first value it cannot
@@ -31,13 +35,21 @@ another after, making the cache key depend on call order.
 That covers phases only because
 :class:`~landau.phases.TemperatureDependentLinePhase` keeps its precomputed
 ``_hash`` out of the dataclass fields; see the comment on its ``__post_init__``.
+``PhonopyQuasiHarmonicPhase`` keeps its own out for the same reason, though its
+hook means no digest reaches those fields anyway.
 
 Interpolations built from a closure (``SplineFit``, ``StitchedFit``,
 ``SoftplusFit``, Whitney) are refused rather than digested -- two fits of one
 interpolator share a code object, and fleche falls back to digesting that alone
-whenever the state a closure captured is itself indigestible.
-``WhitneyFittedSurface`` likewise raises, naming the fitted scipy objects it
-holds.  Fit from an ``Interpolator`` inside the cached function instead.
+whenever the state a closure captured is itself indigestible.  Narrowing the
+refusal to that case is open (#449).
+Fit from an ``Interpolator`` inside the cached function instead.
+``WhitneyFittedSurface`` is not among them: its whole state is one
+``WhitneyRBFInterpolator``, which the hook above digests.
+
+:func:`spline_digest` is the one hook here for a type landau does not own: fleche
+refuses a fitted scipy spline, so a function closing over one -- or taking one --
+cannot be cached at all.  It is a stopgap for #449.
 """
 
 import dataclasses
@@ -45,6 +57,7 @@ import types
 from collections.abc import Mapping
 
 from fleche.digest import Digest, Hook, Indigestible, digest
+from scipy.interpolate import UnivariateSpline
 
 from .interpolate.basic import (
     FittedSurface,
@@ -52,10 +65,19 @@ from .interpolate.basic import (
     PolynomialInterpolation,
     _CallableInterpolation,
 )
+from .interpolate.whitney import WhitneyRBFInterpolator
 from .phases import AsePhase
+from .phases.quasiharmonic import PhonopyQuasiHarmonicPhase  # importable without phonopy
 from .refine import Refiner
 
-__all__ = ["landau_digest", "ase_phase_digest", "digest_hooks"]
+__all__ = [
+    "landau_digest",
+    "ase_phase_digest",
+    "quasiharmonic_phase_digest",
+    "spline_digest",
+    "whitney_rbf_digest",
+    "digest_hooks",
+]
 
 
 def _declared_state(obj) -> dict:
@@ -123,6 +145,60 @@ def ase_phase_digest(phase: AsePhase) -> Digest:
     return digest((type(phase).__name__, phase._key()))
 
 
+def quasiharmonic_phase_digest(phase: PhonopyQuasiHarmonicPhase) -> Digest:
+    """Digest a :class:`~landau.phases.quasiharmonic.PhonopyQuasiHarmonicPhase`.
+
+    ``thermal_properties`` holds opaque phonopy objects, so the digest reuses the
+    phase's own identity key -- pickled bytes of each, taken at 0 K so the
+    temperature the phase last ran at cannot drift them -- keeping the digest in
+    step with the class's ``__eq__``/``__hash__`` by construction.  The same route
+    :func:`ase_phase_digest` takes for its ``ThermoChem``.
+    """
+    return digest((type(phase).__name__, phase._key))
+
+
+def whitney_rbf_digest(estimator: WhitneyRBFInterpolator) -> Digest:
+    """Digest a :class:`~landau.interpolate.whitney.WhitneyRBFInterpolator`.
+
+    Its fitted state is a scipy ``RBFInterpolator`` and a ``ConvexHull``, neither
+    of which fleche digests -- and both of which are deterministic functions of the
+    training data and the hyperparameters, so those are what the digest keys on.
+    ``rbf_.y``/``rbf_.d`` are the points and values the RBF was built from; an
+    unfitted estimator has neither and digests by hyperparameters alone.
+    """
+    rbf = getattr(estimator, "rbf_", None)
+    return digest(
+        (
+            type(estimator).__name__,
+            estimator.kernel,
+            estimator.smoothing,
+            estimator.degree,
+            estimator.epsilon,
+            estimator.grad_eps,
+            None if rbf is None else rbf.y,
+            None if rbf is None else rbf.d,
+            getattr(estimator, "x_min_", None),
+            getattr(estimator, "x_max_", None),
+        )
+    )
+
+
+def spline_digest(spline: UnivariateSpline) -> Digest:
+    """Digest a fitted scipy spline by the arguments it is evaluated with.
+
+    ``_eval_args`` is the ``(t, c, k)`` tuple handed to ``splev`` -- knots,
+    coefficients, degree -- so with ``ext`` it is the whole of what the spline
+    computes.  It is private, but the public accessors do not cover it:
+    ``get_knots`` returns interior knots only and ``UnivariateSpline`` exposes no
+    degree.
+
+    Stopgap.  A scipy spline is not a landau type, and hooks are global to every
+    fleche user with landau installed, so this belongs upstream; see #449, to be
+    dropped as soon as fleche digests scipy objects itself.
+    """
+    return digest((type(spline).__name__, spline._eval_args, spline.ext))
+
+
 #: Hooks fleche loads from the ``fleche`` entry point group (see ``pyproject.toml``).
 #: Only types fleche cannot digest by itself appear here; see the module docstring
 #: for why covering the dataclasses too would make their digests order-dependent.
@@ -133,4 +209,7 @@ digest_hooks = [
     Hook(NumericalDerivative, landau_digest),
     Hook(PolynomialInterpolation, landau_digest),
     Hook(_CallableInterpolation, landau_digest),
+    Hook(UnivariateSpline, spline_digest),
+    Hook(PhonopyQuasiHarmonicPhase, quasiharmonic_phase_digest),
+    Hook(WhitneyRBFInterpolator, whitney_rbf_digest),
 ]
