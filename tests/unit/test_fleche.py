@@ -218,18 +218,52 @@ def test_refiner_settings_move_the_digest(left, right):
 def test_fleche_cannot_key_on_a_fitted_closure():
     """The reason the refusal below exists, stated as an executable fact.
 
-    Two fits of one interpolator share a code object, so a code digest cannot tell
-    them apart.  Since 0.22.1 fleche also folds in what a closure captured, which
-    refuses a capture it cannot digest -- the scipy spline here -- and falls back to
-    that colliding code digest when it decorates such a function anyway.
+    Two fits of one interpolator share a code object, and since 0.22.1 fleche
+    falls back to digesting that alone whenever what a closure captured is
+    itself indigestible -- so a raw closure is not a usable key.
     """
     x = np.linspace(0, 1, 10)
     quadratic = SplineFit().fit(x, x**2)
     cubic = SplineFit().fit(x, x**3)
     assert quadratic(0.5) != cubic(0.5)
     assert digest(quadratic.func.__code__) == digest(cubic.func.__code__)
-    with pytest.raises(Indigestible):
-        digest(quadratic.func)
+
+
+# ---------------------------------------------------------------------------
+# Fitted scipy splines (stopgap hook, see #449)
+# ---------------------------------------------------------------------------
+
+
+def test_fitted_splines_digest_by_knots_and_coefficients():
+    """fleche refuses a scipy spline outright; the hook keys it on ``(t, c, k)``.
+
+    Goes away with the hook once fleche digests scipy objects itself (#449).
+    """
+    from scipy.interpolate import InterpolatedUnivariateSpline
+
+    load_entry_points()
+    x = np.linspace(0, 1, 10)
+    quadratic = InterpolatedUnivariateSpline(x, x**2)
+    cubic = InterpolatedUnivariateSpline(x, x**3)
+
+    assert digest(quadratic) == digest(InterpolatedUnivariateSpline(x, x**2))
+    assert digest(quadratic) != digest(cubic)
+    assert digest(quadratic) != digest(InterpolatedUnivariateSpline(x, x**2, k=2))
+    assert digest(quadratic) != digest(InterpolatedUnivariateSpline(x, x**2, ext=1))
+
+
+def test_spline_hook_separates_fits_of_one_interpolator():
+    """What the hook buys: a closure over a spline is no longer a dead end.
+
+    ``landau_digest`` still refuses the fitted object itself -- it refuses on
+    holding a plain function, not on holding something indigestible -- so this
+    pins the fact, not a behaviour change (#449).
+    """
+    load_entry_points()
+    x = np.linspace(0, 1, 10)
+    quadratic = SplineFit().fit(x, x**2)
+    cubic = SplineFit().fit(x, x**3)
+    assert digest(quadratic.func) != digest(cubic.func)
 
 
 @pytest.mark.parametrize("interpolator", ["spline", "stitched"])

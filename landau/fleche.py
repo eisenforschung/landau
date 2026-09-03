@@ -35,9 +35,14 @@ That covers phases only because
 Interpolations built from a closure (``SplineFit``, ``StitchedFit``,
 ``SoftplusFit``, Whitney) are refused rather than digested -- two fits of one
 interpolator share a code object, and fleche falls back to digesting that alone
-whenever the state a closure captured is itself indigestible.
+whenever the state a closure captured is itself indigestible.  Narrowing the
+refusal to that case is open (#449).
 ``WhitneyFittedSurface`` likewise raises, naming the fitted scipy objects it
 holds.  Fit from an ``Interpolator`` inside the cached function instead.
+
+:func:`spline_digest` is the one hook here for a type landau does not own: fleche
+refuses a fitted scipy spline, so a function closing over one -- or taking one --
+cannot be cached at all.  It is a stopgap for #449.
 """
 
 import dataclasses
@@ -45,6 +50,7 @@ import types
 from collections.abc import Mapping
 
 from fleche.digest import Digest, Hook, Indigestible, digest
+from scipy.interpolate import UnivariateSpline
 
 from .interpolate.basic import (
     FittedSurface,
@@ -55,7 +61,7 @@ from .interpolate.basic import (
 from .phases import AsePhase
 from .refine import Refiner
 
-__all__ = ["landau_digest", "ase_phase_digest", "digest_hooks"]
+__all__ = ["landau_digest", "ase_phase_digest", "spline_digest", "digest_hooks"]
 
 
 def _declared_state(obj) -> dict:
@@ -123,6 +129,22 @@ def ase_phase_digest(phase: AsePhase) -> Digest:
     return digest((type(phase).__name__, phase._key()))
 
 
+def spline_digest(spline: UnivariateSpline) -> Digest:
+    """Digest a fitted scipy spline by the arguments it is evaluated with.
+
+    ``_eval_args`` is the ``(t, c, k)`` tuple handed to ``splev`` -- knots,
+    coefficients, degree -- so with ``ext`` it is the whole of what the spline
+    computes.  It is private, but the public accessors do not cover it:
+    ``get_knots`` returns interior knots only and ``UnivariateSpline`` exposes no
+    degree.
+
+    Stopgap.  A scipy spline is not a landau type, and hooks are global to every
+    fleche user with landau installed, so this belongs upstream; see #449, to be
+    dropped as soon as fleche digests scipy objects itself.
+    """
+    return digest((type(spline).__name__, spline._eval_args, spline.ext))
+
+
 #: Hooks fleche loads from the ``fleche`` entry point group (see ``pyproject.toml``).
 #: Only types fleche cannot digest by itself appear here; see the module docstring
 #: for why covering the dataclasses too would make their digests order-dependent.
@@ -133,4 +155,5 @@ digest_hooks = [
     Hook(NumericalDerivative, landau_digest),
     Hook(PolynomialInterpolation, landau_digest),
     Hook(_CallableInterpolation, landau_digest),
+    Hook(UnivariateSpline, spline_digest),
 ]
