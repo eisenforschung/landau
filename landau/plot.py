@@ -320,6 +320,114 @@ def _plot_triplepoints(df, ax=None, variables=None):
             ax.plot(mu, T, marker="o", color="k", zorder=3)
 
 
+def _find_congruent_points(df, tol=0.05):
+    """Best-effort search for congruent-transformation points on refined boundaries.
+
+    A transformation is congruent when the two coexisting phases share (almost)
+    the same composition -- e.g. the maximum of a solidus/liquidus loop in an
+    isomorphous system. :func:`~landau.calculate.calc_phase_diagram` does not tag
+    these, so this looks for a strict interior local minimum, below ``tol``, of
+    the concentration gap between the two phases along each refined two-phase
+    coexistence line (grouped by ``boundary_id``). This is a plausible
+    signature, not a guarantee -- callers should treat a hit as a suggestion to
+    verify, not as ground truth.
+
+    A ``boundary_id`` group whose rows collapse to a single phase name (a
+    miscibility gap's two branches, which share one phase) is skipped: its
+    concentration gap closing is a consolute point, a different phenomenon from
+    a congruent transformation between two distinct phases.
+
+    Args:
+        df (pandas.DataFrame):
+            Phase-diagram frame carrying ``locus`` and ``boundary_id`` columns.
+            A frame without either (unrefined, or refined by a Refiner that
+            predates ``boundary_id``) has no candidates.
+        tol (float, optional):
+            Concentration-gap threshold below which a local minimum qualifies.
+            Default 0.05.
+
+    Returns:
+        list[tuple[float, float, float]]:
+            ``(mu, T, c)`` per candidate point, where ``c`` is the mean of the
+            two phases' concentrations.
+    """
+    if "boundary_id" not in df.columns or "locus" not in df.columns:
+        return []
+    boundary = df[df["locus"] == Locus.BOUNDARY]
+    out = []
+    for _bid, g in boundary.groupby("boundary_id"):
+        if g["phase"].nunique() != 2:
+            continue
+        pts = g.groupby(["mu", "T"])["c"].agg(["min", "max"]).reset_index()
+        pts = pts.sort_values("T").reset_index(drop=True)
+        if len(pts) < 3:
+            continue
+        gap = (pts["max"] - pts["min"]).to_numpy()
+        for i in range(1, len(gap) - 1):
+            if gap[i] < tol and gap[i] <= gap[i - 1] and gap[i] <= gap[i + 1] and (
+                gap[i] < gap[i - 1] or gap[i] < gap[i + 1]
+            ):
+                out.append((
+                    float(pts["mu"].iloc[i]),
+                    float(pts["T"].iloc[i]),
+                    float((pts["min"].iloc[i] + pts["max"].iloc[i]) / 2),
+                ))
+    return out
+
+
+def _annotate_transition_temperatures(df, ax=None, variables=None, congruent_tol=0.05):
+    """Label the temperature of every transition invariant on a 2d phase diagram.
+
+    Triple points take priority: every three-phase invariant tagged
+    :attr:`~landau.features.Locus.TRIPLE` (see :func:`_plot_triplepoints`) gets a
+    ``"<T> K"`` label. Congruent-transformation points are then labelled too, if
+    :func:`_find_congruent_points` turns any up -- a best-effort addition, since
+    they are not tagged in the dataframe the way triple points are; a diagram
+    with none is left with triple-point labels only, no candidates need to be
+    forced.
+
+    Args:
+        df (pandas.DataFrame):
+            Phase-diagram frame carrying a ``locus`` column. Unrefined frames
+            have nothing to label.
+        ax (matplotlib.axes.Axes, optional):
+            The axis to plot on.
+        variables (list[str], optional):
+            The ``[x, y]`` axis variables; defaults to ``["c", "T"]``.
+        congruent_tol (float, optional):
+            Forwarded to :func:`_find_congruent_points`.
+    """
+    if variables is None:
+        variables = ["c", "T"]
+    if ax is None:
+        ax = plt.gca()
+    if "locus" not in df.columns:
+        return
+
+    pad = 4  # px clearance kept between a marker/line and its temperature label
+
+    def _offset(x, y):
+        px, py = ax.transData.transform((x, y))
+        return ax.transData.inverted().transform((px + pad, py))
+
+    def _label(x, y):
+        lx, ly = _offset(x, y)
+        _text_with_outline(ax, lx, ly, f"{y:.0f} K", ha="left", va="center", fontsize="small", zorder=11)
+
+    triple = df[df["locus"] == Locus.TRIPLE]
+    if variables[0] == "c":
+        for (_mu, T), grp in triple.groupby(["mu", "T"], sort=False)[["c"]]:
+            _label(grp["c"].max(), T)
+    elif variables[0] == "mu":
+        for (mu, T), _grp in triple.groupby(["mu", "T"], sort=False):
+            _label(mu, T)
+
+    for mu, T, c in _find_congruent_points(df, tol=congruent_tol):
+        x = c if variables[0] == "c" else mu
+        ax.plot(x, T, marker="D", color="k", markersize=4, zorder=11)
+        _label(x, T)
+
+
 def _set_axis_for(axis_var: str, df_stable, element: str | None, ax) -> None:
     """Configure the x-axis of a phase diagram based on the axis variable.
 
@@ -362,6 +470,7 @@ def _plot_phase_diagram(
     min_c_width=1e-2,
     color_override: dict[str, str] = {},
     triplepoints=False,
+    transition_temperatures=False,
     poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
     variables: list[str] | None = None,
     inline_legend=True,
@@ -379,14 +488,16 @@ def _plot_phase_diagram(
 
     plot_polygons(polys, color_map, ax=ax)
 
-    if triplepoints:
+    if triplepoints or transition_temperatures:
         _plot_triplepoints(df, ax=ax, variables=variables)
 
     _set_axis_for(variables[0], df_stable, element, ax)
 
     ax.set_ylim(df_stable["T"].min(), df_stable["T"].max())
-    # Inline labels need the final axis limits to place each label at the centre
-    # of its polygon, so this runs after the limits above are set.
+    # Both need the final axis limits: inline labels to centre on each polygon,
+    # transition labels for the pixel-space nudge off their mark.
+    if transition_temperatures:
+        _annotate_transition_temperatures(df, ax=ax, variables=variables)
     if legend:
         if inline_legend:
             _add_inline_polygon_labels(ax, polys)
@@ -407,6 +518,7 @@ def plot_phase_diagram(
     min_c_width=1e-2,
     color_override: dict[str, str] = {},
     triplepoints=False,
+    transition_temperatures=False,
     poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
     variables: list[str] | None = None,
     inline_legend=True,
@@ -423,6 +535,7 @@ def plot_phase_diagram(
         min_c_width=min_c_width,
         color_override=color_override,
         triplepoints=triplepoints,
+        transition_temperatures=transition_temperatures,
         poly_method=poly_method,
         variables=variables,
         inline_legend=inline_legend,
@@ -454,6 +567,7 @@ def plot_mu_phase_diagram(
     element=None,
     color_override: dict[str, str] = {},
     triplepoints=False,
+    transition_temperatures=False,
     poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
     inline_legend=True,
     legend=True,
@@ -465,6 +579,7 @@ def plot_mu_phase_diagram(
         element=element,
         color_override=color_override,
         triplepoints=triplepoints,
+        transition_temperatures=transition_temperatures,
         poly_method=poly_method,
         variables=["mu", "T"],
         inline_legend=inline_legend,
