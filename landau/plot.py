@@ -325,12 +325,18 @@ def _find_congruent_points(df, tol=0.05):
 
     A transformation is congruent when the two coexisting phases share (almost)
     the same composition -- e.g. the maximum of a solidus/liquidus loop in an
-    isomorphous system. :func:`~landau.calculate.calc_phase_diagram` does not tag
-    these, so this looks for a strict interior local minimum, below ``tol``, of
-    the concentration gap between the two phases along each refined two-phase
-    coexistence line (grouped by ``boundary_id``). This is a plausible
-    signature, not a guarantee -- callers should treat a hit as a suggestion to
-    verify, not as ground truth.
+    isomorphous system, or (the trivial, terminal case) the melting point of a
+    pure component, where the solidus and liquidus both run into the domain
+    edge (c=0 or c=1). :func:`~landau.calculate.calc_phase_diagram` does not tag
+    either, so this looks for the concentration gap between the two phases
+    shrinking below ``tol`` along each refined two-phase coexistence line
+    (grouped by ``boundary_id``): a strict interior local minimum for the
+    isomorphous case, or the trace's own endpoint provided its concentration
+    also sits within ``tol`` of 0 or 1 -- ruling out a trace that simply
+    stopped there for an unrelated reason, e.g. running into a triple point
+    away from the domain edge. This is a plausible signature, not a
+    guarantee -- callers should treat a hit as a suggestion to verify, not as
+    ground truth.
 
     A ``boundary_id`` group whose rows collapse to a single phase name (a
     miscibility gap's two branches, which share one phase) is skipped: its
@@ -343,8 +349,9 @@ def _find_congruent_points(df, tol=0.05):
             A frame without either (unrefined, or refined by a Refiner that
             predates ``boundary_id``) has no candidates.
         tol (float, optional):
-            Concentration-gap threshold below which a local minimum qualifies.
-            Default 0.05.
+            Concentration-gap threshold below which a candidate qualifies; also
+            the terminal tolerance used to test an endpoint's concentration
+            against 0 or 1. Default 0.05.
 
     Returns:
         list[tuple[float, float, float]]:
@@ -360,18 +367,23 @@ def _find_congruent_points(df, tol=0.05):
             continue
         pts = g.groupby(["mu", "T"])["c"].agg(["min", "max"]).reset_index()
         pts = pts.sort_values("T").reset_index(drop=True)
-        if len(pts) < 3:
+        n = len(pts)
+        if n < 2:
             continue
         gap = (pts["max"] - pts["min"]).to_numpy()
-        for i in range(1, len(gap) - 1):
-            if gap[i] < tol and gap[i] <= gap[i - 1] and gap[i] <= gap[i + 1] and (
-                gap[i] < gap[i - 1] or gap[i] < gap[i + 1]
-            ):
-                out.append((
-                    float(pts["mu"].iloc[i]),
-                    float(pts["T"].iloc[i]),
-                    float((pts["min"].iloc[i] + pts["max"].iloc[i]) / 2),
-                ))
+        for i in range(n):
+            if gap[i] >= tol:
+                continue
+            if i > 0 and gap[i] > gap[i - 1]:
+                continue
+            if i < n - 1 and gap[i] > gap[i + 1]:
+                continue
+            if not ((i > 0 and gap[i] < gap[i - 1]) or (i < n - 1 and gap[i] < gap[i + 1])):
+                continue
+            c_mean = float((pts["min"].iloc[i] + pts["max"].iloc[i]) / 2)
+            if (i == 0 or i == n - 1) and not (c_mean < tol or c_mean > 1 - tol):
+                continue
+            out.append((float(pts["mu"].iloc[i]), float(pts["T"].iloc[i]), c_mean))
     return out
 
 
@@ -406,18 +418,18 @@ def _annotate_transition_temperatures(df, ax=None, variables=None, congruent_tol
 
     pad = 4  # px clearance kept between a marker/line and its temperature label
 
-    def _offset(x, y):
+    def _label(x, y, ha="left", va="center", dx=pad, dy=0):
         px, py = ax.transData.transform((x, y))
-        return ax.transData.inverted().transform((px + pad, py))
-
-    def _label(x, y):
-        lx, ly = _offset(x, y)
-        _text_with_outline(ax, lx, ly, f"{y:.0f} K", ha="left", va="center", fontsize="small", zorder=11)
+        lx, ly = ax.transData.inverted().transform((px + dx, py + dy))
+        _text_with_outline(ax, lx, ly, f"{y:.0f} K", ha=ha, va=va, fontsize="small", zorder=11)
 
     triple = df[df["locus"] == Locus.TRIPLE]
     if variables[0] == "c":
         for (_mu, T), grp in triple.groupby(["mu", "T"], sort=False)[["c"]]:
-            _label(grp["c"].max(), T)
+            # Centered above the isotherm's midpoint, matching how a triple-point
+            # temperature is conventionally written on a c-T phase diagram.
+            c_mid = (grp["c"].min() + grp["c"].max()) / 2
+            _label(c_mid, T, ha="center", va="bottom", dx=0, dy=pad)
     elif variables[0] == "mu":
         for (mu, T), _grp in triple.groupby(["mu", "T"], sort=False):
             _label(mu, T)

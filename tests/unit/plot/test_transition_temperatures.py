@@ -4,9 +4,13 @@ _annotate_transition_temperatures (plot_phase_diagram / plot_mu_phase_diagram's
 transition_temperatures=True) labels every triple point with its temperature --
 these are tagged in the dataframe (Locus.TRIPLE) -- and then does the same for
 whatever congruent-transformation points _find_congruent_points turns up.
-Congruent points are not tagged, so they are found heuristically: a strict
-interior local minimum, below `tol`, of the concentration gap between the two
-coexisting phases along a refined boundary_id line.
+Congruent points are not tagged, so they are found heuristically: the
+concentration gap between the two coexisting phases along a refined
+boundary_id line shrinking below `tol`, either at a strict interior local
+minimum (an isomorphous solidus/liquidus loop) or at the trace's own endpoint
+provided that point's concentration is itself within `tol` of a domain edge
+(c=0 or c=1) -- the trivial congruent case of a pure component's melting
+point.
 """
 import matplotlib
 
@@ -32,18 +36,21 @@ def ax():
     plt.close(fig)
 
 
-def _boundary_df(gaps, Ts, mus=None, phases=("S", "L"), boundary_id=0):
+def _boundary_df(gaps, Ts, mus=None, phases=("S", "L"), boundary_id=0, centers=None):
     """A two-phase refined boundary_id line with a given concentration gap per T.
 
     `gaps[i]` is the concentration gap between the two coexisting phases at
-    `Ts[i]` (`mus[i]` if given, else 0, 1, 2, ...), centered on c=0.5.
+    `Ts[i]` (`mus[i]` if given, else 0, 1, 2, ...), centered on `centers[i]`
+    (0.5 -- mid-composition -- for every point if not given).
     """
     if mus is None:
         mus = [float(i) for i in range(len(Ts))]
+    if centers is None:
+        centers = [0.5] * len(Ts)
     lo, hi = phases
     rows = []
-    for mu, T, gap in zip(mus, Ts, gaps):
-        c_lo, c_hi = 0.5 - gap / 2, 0.5 + gap / 2
+    for mu, T, gap, center in zip(mus, Ts, gaps, centers):
+        c_lo, c_hi = center - gap / 2, center + gap / 2
         rows.append({"mu": mu, "T": T, "c": c_lo, "phase": lo, "locus": Locus.BOUNDARY, "boundary_id": boundary_id})
         rows.append({"mu": mu, "T": T, "c": c_hi, "phase": hi, "locus": Locus.BOUNDARY, "boundary_id": boundary_id})
     return pd.DataFrame(rows)
@@ -74,8 +81,34 @@ def test_finds_interior_local_minimum():
     assert (mu, T, c) == pytest.approx((1.0, 320.0, 0.5))
 
 
-def test_ignores_minimum_at_the_trace_edge():
-    df = _boundary_df(gaps=[0.30, 0.20, 0.10, 0.02], Ts=[300.0, 310.0, 320.0, 330.0])
+def test_edge_minimum_away_from_terminal_excluded():
+    """A shrinking gap at the trace's end is not enough on its own: it also has
+    to sit near a domain edge (c=0 or c=1), or the trace just stopped there for
+    some other reason (e.g. a triple point away from either terminal)."""
+    df = _boundary_df(gaps=[0.30, 0.20, 0.10, 0.02], Ts=[300.0, 310.0, 320.0, 330.0])  # centered on c=0.5
+    assert _find_congruent_points(df, tol=0.05) == []
+
+
+def test_terminal_congruent_point_included():
+    """The trivial congruent case: a solidus/liquidus trace running into a pure
+    component's melting point at c=0 has its gap and its own concentration
+    both vanish together at that endpoint."""
+    df = _boundary_df(
+        gaps=[0.02, 0.20, 0.30], Ts=[300.0, 320.0, 340.0], centers=[0.01, 0.15, 0.30],
+    )
+    out = _find_congruent_points(df, tol=0.05)
+    assert len(out) == 1
+    mu, T, c = out[0]
+    assert (T, c) == pytest.approx((300.0, 0.01))
+
+
+def test_endpoint_gap_shrinking_but_off_terminal_excluded():
+    """Same shrinking-gap-at-the-endpoint shape as the terminal case, but the
+    composition itself never approaches 0 or 1 -- not a terminal melting
+    point, so it must not be flagged."""
+    df = _boundary_df(
+        gaps=[0.02, 0.20, 0.30], Ts=[300.0, 320.0, 340.0], centers=[0.5, 0.5, 0.5],
+    )
     assert _find_congruent_points(df, tol=0.05) == []
 
 
@@ -118,13 +151,13 @@ def test_labels_every_triple_point(ax, triple_df, variables):
     assert sorted(t.get_text() for t in ax.texts) == ["300 K", "450 K"]
 
 
-def test_cT_label_sits_past_the_line_end(ax, triple_df):
+def test_cT_label_sits_above_the_line_midpoint(ax, triple_df):
     _annotate_transition_temperatures(triple_df, ax=ax, variables=["c", "T"])
     by_text = {t.get_text(): t for t in ax.texts}
     x, y = by_text["300 K"].get_position()
-    assert x > 0.9  # nudged past this invariant's c_max=0.9
-    assert y == pytest.approx(300.0)
-    assert by_text["300 K"].get_ha() == "left"
+    assert x == pytest.approx(0.5)  # midpoint of this invariant's c=0.1..0.9
+    assert y > 300.0  # nudged above the isotherm
+    assert by_text["300 K"].get_ha() == "center"
 
 
 def test_noop_without_locus_column(ax, triple_df):
