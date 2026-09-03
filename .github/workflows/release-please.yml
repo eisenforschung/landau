@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - main
+  # Merges made by the automerge workflow run on GITHUB_TOKEN and raise no push
+  # event, so that workflow dispatches this one directly.
+  workflow_dispatch:
 
 permissions:
   contents: write
