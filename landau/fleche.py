@@ -33,8 +33,9 @@ That covers phases only because
 ``_hash`` out of the dataclass fields; see the comment on its ``__post_init__``.
 
 Interpolations built from a closure (``SplineFit``, ``StitchedFit``,
-``SoftplusFit``, Whitney) are refused rather than digested -- fleche digests a
-function by code object, which two fits of one interpolator share.
+``SoftplusFit``, Whitney) are refused rather than digested -- two fits of one
+interpolator share a code object, and fleche falls back to digesting that alone
+whenever the state a closure captured is itself indigestible.
 ``WhitneyFittedSurface`` likewise raises, naming the fitted scipy objects it
 holds.  Fit from an ``Interpolator`` inside the cached function instead.
 """
@@ -79,10 +80,10 @@ def _declared_state(obj) -> dict:
 def _opaque_callables(value, path: str = "") -> list[str]:
     """Paths of plain functions reachable from *value* through containers.
 
-    fleche digests a :class:`types.FunctionType` from its code object, ignoring
-    the cells it closes over, so every fit of one interpolator would share a
-    digest.  Only containers cheap to walk are descended into; numpy arrays hold
-    no functions and are skipped.
+    fleche digests a :class:`types.FunctionType` from what it captured where it
+    can, and from its code object alone where it cannot -- and fits of one
+    interpolator share that code object.  Only containers cheap to walk are
+    descended into; numpy arrays hold no functions and are skipped.
     """
     if isinstance(value, types.FunctionType):
         return [path or "the value itself"]
@@ -105,7 +106,8 @@ def landau_digest(obj) -> Digest:
     if opaque:
         raise Indigestible(
             f"{type(obj).__name__} holds a plain function at {', '.join(sorted(opaque))}; "
-            "fleche digests functions by code object alone, so two fits would collide. "
+            "fleche digests a function by its code object alone once what it captured "
+            "is indigestible, so two fits would collide. "
             "Pass the Interpolator and its samples instead."
         )
     return digest((type(obj).__name__, state))
