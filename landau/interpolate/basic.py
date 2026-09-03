@@ -397,7 +397,7 @@ class RedlichKisterInterpolation(Interpolation):
 class CalphadFittedSurface(FittedSurface):
     """Fitted surface for :class:`CalphadSurface2DInterpolator`.
 
-    Holds SGTE models for the terminal free energies and polynomial models for each
+    Holds the fitted terminal free energies and polynomial models for each
     Redlich-Kister interaction coefficient.  :meth:`slice_at` evaluates them at T to
     produce a :class:`RedlichKisterInterpolation` with an analytic c-derivative.
     """
@@ -414,9 +414,13 @@ class CalphadFittedSurface(FittedSurface):
         return RedlichKisterInterpolation(df, f0, L)
 
 
+_DEFAULT_TERMINAL_INTERPOLATOR = SGTE(4)
+"""Terminal T-model used by :class:`CalphadSurface2DInterpolator` unless overridden."""
+
+
 @dataclass(frozen=True, eq=True)
 class CalphadSurface2DInterpolator(SurfaceInterpolator):
-    """CALPHAD-style 2-D surface: SGTE terminals + polynomial-in-T Redlich-Kister coefficients.
+    """CALPHAD-style 2-D surface: SGTE terminals by default + polynomial-in-T Redlich-Kister coefficients.
 
     Fits the entropy-removed free energy
 
@@ -426,8 +430,8 @@ class CalphadSurface2DInterpolator(SurfaceInterpolator):
 
     1. Fit :class:`RedlichKister` independently at each T in the incoming grid,
        extracting terminals ``f0(T)``, ``df(T)`` and interaction coefficients ``L_v(T)``.
-    2. Fit the T-dependence: terminals via :class:`SGTE`, interaction coefficients via
-       :class:`PolyFit`.
+    2. Fit the T-dependence: terminals via :attr:`terminal_interpolator` (:class:`SGTE`
+       by default), interaction coefficients via :class:`PolyFit`.
 
     :meth:`slice_at` evaluates these models at T and returns a
     :class:`RedlichKisterInterpolation` with an analytic c-derivative, so the parent
@@ -438,10 +442,39 @@ class CalphadSurface2DInterpolator(SurfaceInterpolator):
 
     num_coeffs: int = 5
     """Number of Redlich-Kister interaction coefficients L_0..L_{n-1}."""
-    terminal_sgte_order: int = 4
-    """SGTE order for the terminal free energies f0(T) and df(T)."""
+    terminal_sgte_order: int | None = None
+    """SGTE order for the terminal free energies f0(T) and df(T).
+
+    .. deprecated:: 1.13
+        Pass ``terminal_interpolator=SGTE(order)`` instead.  Removed at 2.0.
+    """
     coeff_poly_order: int = 2
     """Polynomial order in T for each interaction coefficient L_v(T)."""
+    terminal_interpolator: TemperatureInterpolator = _DEFAULT_TERMINAL_INTERPOLATOR
+    """T-model for the terminal free energies ``f0(T)`` and ``df(T)``.
+
+    SGTE's entropy ``S = -b - c(1 + ln T)`` is unbounded as ``T -> 0``, so a surface
+    evaluated well below its fitting window keeps drifting from the entropy it was fitted
+    with.  A liquid that sheds entropy this way falls below a competing solid and crosses
+    under it, producing a spurious low-temperature liquid field.
+    :class:`~landau.interpolate.whitney.WhitneyTemperatureInterpolator` continues at
+    constant entropy instead and cannot.  Inside the window the fit is the same either
+    way.
+    """
+
+    def __post_init__(self):
+        if self.terminal_sgte_order is None:
+            return
+        if self.terminal_interpolator != _DEFAULT_TERMINAL_INTERPOLATOR:
+            raise ValueError(
+                "pass either terminal_sgte_order (deprecated) or terminal_interpolator, not both"
+            )
+        warnings.warn(
+            "terminal_sgte_order is deprecated, pass terminal_interpolator=SGTE(order) instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        object.__setattr__(self, "terminal_interpolator", SGTE(self.terminal_sgte_order))
 
     def fit(self, T, c, f) -> CalphadFittedSurface:
         T = np.asarray(T, float)
@@ -467,9 +500,8 @@ class CalphadSurface2DInterpolator(SurfaceInterpolator):
         dfs = np.array(dfs)
         Ls = np.array(Ls)
 
-        sgte = SGTE(self.terminal_sgte_order)
-        f0_model = sgte.fit(unique_T, f0s)
-        df_model = sgte.fit(unique_T, dfs)
+        f0_model = self.terminal_interpolator.fit(unique_T, f0s)
+        df_model = self.terminal_interpolator.fit(unique_T, dfs)
         poly = PolyFit(self.coeff_poly_order + 1)
         L_models = tuple(poly.fit(unique_T, Ls[:, v]) for v in range(Ls.shape[1]))
         return CalphadFittedSurface(f0_model, df_model, L_models)
