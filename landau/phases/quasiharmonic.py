@@ -303,7 +303,6 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
     it: smoother and further from anything that was computed.  Either way the
     :class:`EosExtrapolationWarning` fires."""
     _key: tuple = field(default=(), init=False, repr=False)
-    _hash: int = field(default=0, init=False, repr=False)
 
     @phonopy_alarm
     def __post_init__(self):
@@ -361,6 +360,10 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
             )
         object.__setattr__(self, "_stable", stable)
         object.__setattr__(self, "_key", self._content_key())
+        # Deliberately *not* a dataclass field: it is derived from _key, and being
+        # salted per interpreter (hash of pickled bytes) it would make any content
+        # digest built from dataclasses.fields() -- e.g. fleche's -- differ across
+        # processes.  Same reasoning as AbstractLinePhase.__post_init__.
         object.__setattr__(self, "_hash", hash(self._key))
 
     @classmethod

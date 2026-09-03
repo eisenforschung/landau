@@ -36,6 +36,18 @@ except ImportError:
 
 needs_ase = pytest.mark.skipif(not HAS_ASE, reason="ASE is not installed")
 
+#: The quasi-harmonic phase is built through the Einstein-solid helper the
+#: quasi-harmonic unit tests use, so the planted spectrum lives in one place.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "phases"))
+try:
+    from test_quasiharmonic import einstein_phase
+
+    HAS_PHONOPY = True
+except ImportError:
+    HAS_PHONOPY = False
+
+needs_phonopy = pytest.mark.skipif(not HAS_PHONOPY, reason="phonopy is not installed")
+
 #: These run in their own CI env, installed with the test-fleche extra; the rest
 #: of the suite deselects them with -m "not fleche".
 pytestmark = pytest.mark.fleche
@@ -288,6 +300,58 @@ def test_digestible_interpolations_are_not_refused():
     load_entry_points()
     assert digest(PolyFit(3).fit(T, T * 2.0)) != digest(PolyFit(3).fit(T, T * 3.0))
     assert digest(SGTE(3).fit(T, -T * 1e-3)) == digest(SGTE(3).fit(T, -T * 1e-3))
+
+
+# ---------------------------------------------------------------------------
+# Opaque third-party state: phonopy and the Whitney RBF
+# ---------------------------------------------------------------------------
+
+
+@needs_phonopy
+def test_quasiharmonic_phase_digest_follows_equality():
+    """Its phonopy ``ThermalProperties`` are opaque, so the digest rides the
+    identity key the class already compares and hashes by."""
+    load_entry_points()
+    a = einstein_phase(fresh=True)
+    same = einstein_phase(fresh=True)
+    other = einstein_phase(omegas=6.0, fresh=True)
+
+    assert a == same and digest(a) == digest(same)
+    assert a != other and digest(a) != digest(other)
+
+
+def test_whitney_rbf_digest_tracks_data_and_hyperparameters():
+    """A fitted ``WhitneyRBFInterpolator`` holds a scipy ``RBFInterpolator`` and a
+    ``ConvexHull``; both follow from the training data and the hyperparameters."""
+    from landau.interpolate.whitney import WhitneyRBFInterpolator
+
+    load_entry_points()
+    T = np.linspace(100, 500, 5)
+    c = np.linspace(0.0, 1.0, 7)
+    X = np.column_stack([np.repeat(T, 7), np.tile(c, 5)])
+    y = -1e-3 * X[:, 0] + X[:, 1] * (1 - X[:, 1])
+
+    fitted = WhitneyRBFInterpolator().fit(X, y)
+    assert digest(fitted) == digest(WhitneyRBFInterpolator().fit(X, y))
+    assert digest(fitted) != digest(WhitneyRBFInterpolator().fit(X, 2 * y))
+    assert digest(fitted) != digest(WhitneyRBFInterpolator(degree=1).fit(X, y))
+    assert digest(fitted) != digest(WhitneyRBFInterpolator().fit(X * 1.01, y))
+    assert digest(WhitneyRBFInterpolator()) != digest(WhitneyRBFInterpolator(smoothing=1.0))
+
+
+def test_whitney_fitted_surface_is_digestible():
+    """What the estimator hook buys: the surface's whole state is that estimator."""
+    from landau.interpolate import WhitneySurface2DInterpolator
+
+    load_entry_points()
+    T = np.linspace(100, 500, 5)
+    c = np.linspace(0.0, 1.0, 7)
+    Tg, cg = np.repeat(T, 7), np.tile(c, 5)
+    H = -1e-3 * Tg + cg * (1 - cg)
+
+    surface = WhitneySurface2DInterpolator().fit(Tg, cg, H)
+    assert digest(surface) == digest(WhitneySurface2DInterpolator().fit(Tg, cg, H))
+    assert digest(surface) != digest(WhitneySurface2DInterpolator().fit(Tg, cg, 2 * H))
 
 
 # ---------------------------------------------------------------------------

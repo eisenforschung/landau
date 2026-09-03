@@ -32,7 +32,8 @@ from landau import (
     SplineFit,
     TemperatureDependentLinePhase,
 )
-from landau.interpolate import NumericalDerivative
+from landau.interpolate import NumericalDerivative, WhitneySurface2DInterpolator
+from landau.interpolate.whitney import WhitneyRBFInterpolator
 from landau.phases import pointdefects
 
 T = np.linspace(100, 1000, 20)
@@ -41,6 +42,9 @@ B = TemperatureDependentLinePhase("B", 1.0, T, -T * 1.1e-3, SGTE(3))
 M = TemperatureDependentLinePhase("M", 0.5, T, -T * 1.2e-3 - 0.05, SGTE(3))
 L = LinePhase("L", 0.3, -0.1, 1e-4)
 defect = pointdefects.ConstantPointDefect("d", 0.1, 1e-4, 0.5)
+C = np.linspace(0.0, 1.0, 7)
+GRID_T, GRID_C = np.repeat(T[:5], 7), np.tile(C, 5)
+GRID_H = -1e-3 * GRID_T + GRID_C * (1 - GRID_C)
 sublattice = pointdefects.PointDefectSublattice("s", 0, 1.0, [defect])
 
 
@@ -68,7 +72,13 @@ def build():
         "MiscibilityGapRefiner": refine.MiscibilityGapRefiner(),
         "Concave": poly.Concave(),
         "Segments": poly.Segments(),
+        "UnivariateSpline": SplineFit().fit(C, C**2).func.__closure__[0].cell_contents,
+        "WhitneyRBFInterpolator": WhitneyRBFInterpolator().fit(
+            np.column_stack([GRID_T, GRID_C]), GRID_H
+        ),
+        "WhitneyFittedSurface": WhitneySurface2DInterpolator().fit(GRID_T, GRID_C, GRID_H),
         **ase_objects(),
+        **phonopy_objects(),
     }
 
 
@@ -81,6 +91,23 @@ def ase_objects():
     except ImportError:
         return {}
     return {"AsePhase": AsePhase("ase", 0.0, HarmonicThermo(np.array([0.01, 0.02, 0.03])))}
+
+
+def phonopy_objects():
+    """``PhonopyQuasiHarmonicPhase`` if phonopy is installed; it has a hook of its own.
+
+    Built through the Einstein-solid helper the quasi-harmonic unit tests use, so
+    the planted spectrum lives in one place.
+    """
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "phases"))
+    try:
+        from test_quasiharmonic import einstein_phase
+    except ImportError:
+        return {}
+    return {"PhonopyQuasiHarmonicPhase": einstein_phase()}
 
 
 def one(value):
