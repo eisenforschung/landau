@@ -11,18 +11,24 @@ end-to-end use inside ``Surface2DInterpolatingPhase`` (Gibbs-Duhem + convex f).
 import numpy as np
 import pytest
 
-from landau.interpolate import CalphadSurface2DInterpolator, SGTE
+from landau.interpolate import (
+    CalphadSurface2DInterpolator,
+    SGTE,
+    WhitneyTemperatureInterpolator,
+)
 from landau.interpolate.basic import (
     CalphadFittedSurface,
     RedlichKisterInterpolation,
     SurfaceInterpolator,
 )
-from landau.phases import Surface2DInterpolatingPhase, TemperatureDependentLinePhase, S
+from landau.phases import Surface2DInterpolatingPhase, TemperatureDependentLinePhase, S, kB
 
 RECOVER_ATOL = 1e-6   # exact in-family recovery (measured ~1e-10)
 DERIV_ATOL = 1e-6     # analytic vs finite-difference c-derivative (measured ~5e-11)
 GIBBS_ATOL = 5e-6     # c = -dphi/ddmu via the analytic slice derivative (measured ~8e-9)
 CONVEX_ATOL = 1e-9    # second-difference convexity floor
+TERMINAL_ATOL = 1e-12 # deprecated terminal_sgte_order vs the equivalent SGTE model
+ENTROPY_ATOL = 1e-3   # constancy of the Whitney terminal's extension, in k_B/atom
 
 
 def _calphad_surface(T, c, *, f0_lin, df_lin, L_lin):
@@ -136,10 +142,87 @@ def test_interpolator_is_frozen_and_hashable():
     assert len({a, b}) == 1
     assert CalphadSurface2DInterpolator(num_coeffs=3) != a
     assert CalphadSurface2DInterpolator(coeff_poly_order=3) != a
-    assert CalphadSurface2DInterpolator(terminal_sgte_order=5) != a
+    assert CalphadSurface2DInterpolator(terminal_interpolator=SGTE(5)) != a
     assert isinstance(a, SurfaceInterpolator)
     with pytest.raises(Exception):
         a.num_coeffs = 7
+
+
+# --------------------------------------------------------------------------- #
+# terminal T-model
+# --------------------------------------------------------------------------- #
+def _entropy(surface, T, c=0.5, h=2.0):
+    """-dH/dT of a surface slice, in k_B/atom."""
+    return -(surface.slice_at(T + h)(c) - surface.slice_at(T - h)(c)) / (2 * h) / kB
+
+
+def _liquid_like_surface(T_lo=900.0, T_hi=1300.0, nT=24, nc=9):
+    """Large, temperature-dependent entropy over a window narrow against 400 K."""
+    Tg = np.linspace(T_lo, T_hi, nT)
+    cg = np.linspace(0.0, 1.0, nc)
+    T, c = np.repeat(Tg, nc), np.tile(cg, nT)
+    S_ = 9.0 * kB + 2.0e-3 * kB * (T - T_lo)
+    H = -2.0 - 0.5 * c - T * S_ + c * (1 - c) * (-0.15 + 4e-5 * T)
+    return T, c, H
+
+
+def test_terminal_sgte_order_is_deprecated():
+    """The old field warns and resolves to the interpolator that replaces it."""
+    T, c, H = _liquid_like_surface()
+    with pytest.deprecated_call(match="terminal_sgte_order"):
+        old = CalphadSurface2DInterpolator(terminal_sgte_order=3)
+    assert old.terminal_interpolator == SGTE(3)
+    new = CalphadSurface2DInterpolator(terminal_interpolator=SGTE(3))
+    for Tq in np.linspace(950.0, 1250.0, 11):
+        assert old.fit(T, c, H).slice_at(Tq)(0.5) == pytest.approx(
+            new.fit(T, c, H).slice_at(Tq)(0.5), rel=TERMINAL_ATOL
+        )
+
+
+def test_terminal_sgte_order_conflicts_with_terminal_interpolator():
+    with pytest.raises(ValueError, match="not both"):
+        CalphadSurface2DInterpolator(
+            terminal_sgte_order=3, terminal_interpolator=WhitneyTemperatureInterpolator()
+        )
+
+
+def test_whitney_terminal_holds_entropy_below_the_window():
+    """Below the data the Whitney terminal continues at constant entropy; SGTE drifts.
+
+    The surface carries ~10.7 k_B at the bottom of its window.  500 K below it the SGTE
+    terminal has shed 2 k_B and keeps going -- ``S = -b - c(1 + ln T)`` is unbounded as
+    ``T -> 0`` -- which is what lets a fitted liquid fall under a competing solid.
+    """
+    T, c, H = _liquid_like_surface()
+    sgte = CalphadSurface2DInterpolator().fit(T, c, H)
+    whitney = CalphadSurface2DInterpolator(
+        terminal_interpolator=WhitneyTemperatureInterpolator()
+    ).fit(T, c, H)
+
+    edge = _entropy(sgte, 910.0)
+    assert edge == pytest.approx(_entropy(whitney, 910.0), rel=1e-3), "must agree inside the data"
+
+    below = np.array([_entropy(whitney, Tq) for Tq in (600.0, 400.0, 200.0, 50.0)])
+    assert below == pytest.approx(below[0], abs=ENTROPY_ATOL), "constant-entropy extension"
+    assert below[0] == pytest.approx(edge, abs=0.1), "and continued from the window edge"
+
+    decayed = np.array([_entropy(sgte, Tq) for Tq in (600.0, 400.0, 200.0, 50.0)])
+    assert (np.diff(decayed) < 0).all(), "SGTE keeps drifting instead"
+    assert edge - decayed[1] > 2.0
+
+
+def test_terminal_model_does_not_touch_the_concentration_fit():
+    """Stage 1 is per-T Redlich-Kister; swapping the stage-2 terminal model shifts a
+    slice bodily and leaves its c-dependence alone."""
+    T, c, H = _liquid_like_surface()
+    sgte = CalphadSurface2DInterpolator().fit(T, c, H)
+    whitney = CalphadSurface2DInterpolator(
+        terminal_interpolator=WhitneyTemperatureInterpolator()
+    ).fit(T, c, H)
+    cc = np.linspace(0.05, 0.95, 15)
+    a = np.asarray(sgte.slice_at(1100.0)(cc))
+    b = np.asarray(whitney.slice_at(1100.0)(cc))
+    np.testing.assert_allclose(a - a.mean(), b - b.mean(), atol=RECOVER_ATOL)
 
 
 # --------------------------------------------------------------------------- #
