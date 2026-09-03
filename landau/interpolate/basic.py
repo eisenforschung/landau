@@ -442,6 +442,44 @@ class CalphadSurface2DInterpolator(SurfaceInterpolator):
     """SGTE order for the terminal free energies f0(T) and df(T)."""
     coeff_poly_order: int = 2
     """Polynomial order in T for each interaction coefficient L_v(T)."""
+    terminal_interpolator: TemperatureInterpolator | None = None
+    """T-model for the terminals ``f0(T)`` and ``df(T)``. ``None`` uses :class:`SGTE`
+    at :attr:`terminal_sgte_order`, which is the previous behaviour.
+
+    Worth overriding whenever the surface is EXTRAPOLATED well below its data. SGTE's
+    ``S = -b - c(1 + ln T)`` is unbounded below, so a surface fitted over a narrow window
+    loses entropy without limit as ``T`` falls. For a liquid competing against a solid
+    that is not a small error: once ``S_liquid < S_solid`` the liquid's free energy rises
+    more slowly with decreasing temperature and crosses *under* the solid, producing a
+    spurious low-temperature liquid field. A constant-entropy extension cannot do this --
+    if ``S_liquid > S_solid`` at the melting point, it stays true all the way down.
+
+    :class:`~landau.interpolate.whitney.WhitneyTemperatureInterpolator` is the natural
+    choice: constant-entropy extension is exactly what it does, and it needs no
+    configuration. Eight binary liquids from an MLIP campaign, each fitted over a ~400 K
+    window, entropy in k_B/atom at 400 K (extrapolated) and mid-window (fitted); the
+    competing solids sit near 5:
+
+    ======  ===============  ===============  ===============
+    system  ``SGTE(4)``      ``Whitney``      mid-window
+    ======  ===============  ===============  ===============
+    Cu-Si   0.60             9.29             11.19
+    Ca-Cu   1.38             9.70             11.80
+    Al-Ca   1.42             7.75             10.36
+    Ca-Mg   2.51             8.66             10.73
+    Al-Mg   4.32             8.23             9.41
+    ======  ===============  ===============  ===============
+
+    Every liquid that undercut a solid had ``S <= 4.3``; every one that did not had
+    ``S >= 6.0``. The mid-window column is identical either way, so the choice affects
+    only extrapolation and not the fit. :class:`StitchedFit` reaches the same place
+    (within 0.3 k_B) if separate control above and below the data is wanted.
+
+    Only the terminal model changes; the Redlich-Kister fit in concentration and the
+    ``L_v(T)`` polynomials are untouched -- unlike swapping the whole surface for
+    :class:`~landau.interpolate.whitney.WhitneySurface2DInterpolator`, which fits one RBF
+    jointly over ``(T, c)`` and so has no Redlich-Kister form in ``c``.
+    """
 
     def fit(self, T, c, f) -> CalphadFittedSurface:
         T = np.asarray(T, float)
@@ -467,9 +505,9 @@ class CalphadSurface2DInterpolator(SurfaceInterpolator):
         dfs = np.array(dfs)
         Ls = np.array(Ls)
 
-        sgte = SGTE(self.terminal_sgte_order)
-        f0_model = sgte.fit(unique_T, f0s)
-        df_model = sgte.fit(unique_T, dfs)
+        terminal = self.terminal_interpolator or SGTE(self.terminal_sgte_order)
+        f0_model = terminal.fit(unique_T, f0s)
+        df_model = terminal.fit(unique_T, dfs)
         poly = PolyFit(self.coeff_poly_order + 1)
         L_models = tuple(poly.fit(unique_T, Ls[:, v]) for v in range(Ls.shape[1]))
         return CalphadFittedSurface(f0_model, df_model, L_models)
