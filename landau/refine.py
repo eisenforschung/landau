@@ -1205,21 +1205,22 @@ class ClausiusClapeyronRefiner(_CCBase):
         Per-step concentration-drift cap / floor. See :class:`_CCBase`.
     max_steps : int
         Hard cap on steps per trace direction. See :class:`_CCBase`.
-    congruent_tol : float, optional
-        Concentration gap below which the two phases count as sharing a
-        composition, tagging the point :attr:`~landau.features.Locus.CONGRUENT`
-        (see :meth:`_tag_features`). Defaults to three times ``dc_max``: the
-        trace samples the line in steps of at most that drift, so it can only
-        land within about a step of a closure, while a two-phase field that
-        stays wider than a few steps never closes at all. Tightening ``dc_max``
-        for a finer trace tightens this with it.
+    congruent_tol : float
+        How narrow the field has to get, as a fraction of its own widest point,
+        for the two phases to count as sharing a composition -- tagging the
+        point :attr:`~landau.features.Locus.CONGRUENT` (see
+        :meth:`_tag_features`). Relative because a closure is a *dip*: it says
+        nothing that a field is 2 at% wide somewhere until you know whether it
+        is 30 at% wide elsewhere. Default 0.1, an order of magnitude above
+        every closure in the test systems (worst 0.042, a compound melting
+        congruently) and an order below a line that never closes (0.98).
     """
 
     label = "clausius-clapeyron"
 
-    def __init__(self, *, congruent_tol: float | None = None, **kwargs):
+    def __init__(self, *, congruent_tol: float = 0.1, **kwargs):
         super().__init__(**kwargs)
-        self.congruent_tol = 3 * self.dc_max if congruent_tol is None else congruent_tol
+        self.congruent_tol = congruent_tol
 
     def _tag_features(self, points, phases):
         """Tag the points where the two phases' compositions meet.
@@ -1231,34 +1232,30 @@ class ClausiusClapeyronRefiner(_CCBase):
         melting point, where the line runs into c=0 or c=1. Either way the
         concentration gap ``|c1 - c2|`` bottoms out there.
 
-        So a point is tagged when its gap is below ``congruent_tol`` and is the
-        smallest among the points closing within ``congruent_tol`` of the same
-        composition -- one tag per closure, taken where the two phases come
-        closest. Comparing against neighbours rather than against the tolerance
-        alone is what lets the tolerance stay loose: an isomorphous lens
-        narrower than it closes at both terminals all the same, where a
-        "deepest point below the tolerance" rule would find one closure in it.
+        So a point is tagged when the field is at its narrowest there,
+        relative to how wide that same field gets elsewhere: ``gap <=
+        congruent_tol * max(gap)`` along the line. Relative, because the width
+        at a closure has no absolute scale -- it is bounded below by nothing
+        and above only by how finely the trace sampled its way in. An
+        isomorphous lens 2.5 at% wide closes at both terminals exactly as one
+        30 at% wide does, and an absolute threshold either misses the first or
+        swallows a narrow field that never closes at all. Measured on the test
+        systems: every closure comes in at 0.042 or less, a line that never
+        closes at 0.98.
 
         Composition is the axis to compare along, not T. A ``boundary_id``
         covers a whole phase *pair*, which a triple point can leave as two
         disjoint branches -- the liquid/solid pair of the Toy notebook's system
         runs to c=0 on one side and c=1 on the other, both reaching their
         terminal within 0.1 K -- and in T-order those interleave, so a scan
-        sees one line where there are two. In composition they stay apart, and
-        the window keeps them apart without having to decide where one branch
-        ends: points a whole tolerance away in composition never compete.
+        sees one line where there are two. Points closing within a few trace
+        steps of one composition are the same closure and yield one tag, the
+        narrowest of them; points further apart in composition never compete.
 
         Only the gap decides, never where the trace stopped: a line reaching a
         pure component's melting point is routinely cut short by ``_dominated``
         too, since past the terminal a third phase takes over the extrapolated
         line.
-
-        The tolerance does still decide one case on its own. A two-phase field
-        that stays narrower than it for its whole length without ever closing
-        has no shape to read, so its shallowest points are tagged as closures;
-        a field that narrow is at the resolution the trace itself samples with
-        (hence the default of a few ``dc_max``), so the data cannot tell the
-        two apart.
         """
         # Only RefinedPoint carries the flag; a subclass emitting anything else
         # (a miscibility gap, say) passes through untouched.
@@ -1273,15 +1270,19 @@ class ClausiusClapeyronRefiner(_CCBase):
 
         order = np.argsort(shared, kind="stable")
         where, gap, shared = where[order], gap[order], shared[order]
-        tol = self.congruent_tol
-        # Points closing within a tolerance of the same composition are the one
-        # closure; the window is over that neighbourhood, so a line needs no
-        # splitting into branches and a run of equal gaps yields one tag (the
-        # first, since argmin takes the earliest of a tie).
-        lo = np.searchsorted(shared, shared - tol, side="left")
-        hi = np.searchsorted(shared, shared + tol, side="right")
+        widest = gap.max()
+        # A line already closed along its whole length -- two pure components
+        # melting at the same temperature leave one -- has no widest point to
+        # measure against, and every point of it is at a closure.
+        closing = gap <= self.congruent_tol * widest if widest > 0 else np.ones(gap.size, bool)
+        # Points closing within a few trace steps of one composition are the
+        # same closure and yield one tag, the narrowest of them (argmin takes
+        # the earliest of a tie), so a line needs no splitting into branches.
+        window = 3 * self.dc_max
+        lo = np.searchsorted(shared, shared - window, side="left")
+        hi = np.searchsorted(shared, shared + window, side="right")
         out = list(points)
-        for i in np.flatnonzero(gap < tol):
+        for i in np.flatnonzero(closing):
             if lo[i] + np.argmin(gap[lo[i]:hi[i]]) == i:
                 out[where[i]] = replace(points[where[i]], congruent=True)
         return out

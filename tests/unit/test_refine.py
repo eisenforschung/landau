@@ -1446,10 +1446,10 @@ def test_emitted_concentrations_returns_plain_floats():
 #
 # A congruent transformation is one where both coexisting phases share a
 # composition, so the line's concentration gap bottoms out there. The tag goes
-# on the smallest gap among the points closing within `congruent_tol` of one
-# composition, so one closure yields one tag and two closures a tolerance apart
-# stay separate. These fixtures sample composition at `dc_max`, the drift the
-# refiner steps by.
+# where the field is narrowest relative to how wide it gets elsewhere:
+# `gap <= congruent_tol * max(gap)` along the line, with points within a few
+# trace steps of one composition counting as the same closure. These fixtures
+# sample composition at `dc_max`, the drift the refiner steps by.
 
 _DC = 0.01  # ClausiusClapeyronRefiner's default dc_max, hence the sample spacing
 _GRID = np.round(np.arange(0.0, 1.0 + _DC / 2, _DC), 10)
@@ -1489,19 +1489,28 @@ def _closes_at(gaps, shared=_GRID, **kwargs):
     return [shared[i] for i, pt in enumerate(out) if pt.congruent]
 
 
-def test_tag_congruent_lens_closes_at_both_terminals():
-    """An isomorphous lens closes at both pure components, however wide it is
-    in between. Comparing the gap against the tolerance alone instead of
-    against its neighbours tags the narrow lens once and the wide one twice."""
-    for width in (0.025, 0.20):
-        gaps = width * np.sin(np.pi * _GRID)
-        assert _closes_at(gaps) == pytest.approx([0.0, 1.0]), f"width {width}"
+@pytest.mark.parametrize("width", [0.002, 0.025, 0.20], ids=["tiny", "narrow", "wide"])
+def test_tag_congruent_lens_closes_at_both_terminals(width):
+    """An isomorphous lens closes at both pure components whatever its width in
+    between: a closure is the field narrowing against itself, and how narrow
+    that is in absolute terms says nothing on its own."""
+    assert _closes_at(width * np.sin(np.pi * _GRID)) == pytest.approx([0.0, 1.0])
 
 
-def test_tag_congruent_ignores_a_line_that_never_closes():
-    """A narrow two-phase field running between two triple points has no
-    minimum near zero, however narrow it is."""
-    assert _closes_at([0.04] * len(_GRID)) == []
+@pytest.mark.parametrize("width", [0.002, 0.02, 0.20], ids=["tiny", "narrow", "wide"])
+def test_tag_congruent_ignores_a_field_of_constant_width(width):
+    """A field that keeps its width along its whole length never closes, and a
+    narrow one is no more a closure than a wide one. Absolute thresholds get
+    this wrong from below -- any field narrower than the threshold reads as a
+    closure everywhere."""
+    assert _closes_at(width * (1 + 1e-3 * np.sin(37 * _GRID))) == []
+
+
+def test_tag_congruent_needs_the_field_to_close_not_merely_narrow():
+    """Halving the width is not a closure; dropping to a fiftieth of it is."""
+    dip = np.exp(-(((_GRID - 0.5) / 0.05) ** 2))
+    assert _closes_at(0.02 * (1 - 0.5 * dip)) == []
+    assert _closes_at(0.02 * (1 - 0.98 * dip)) == pytest.approx([0.5])
 
 
 def test_tag_congruent_interior_closure():
@@ -1532,18 +1541,13 @@ def test_tag_congruent_collapses_an_equal_gap_run_to_one_point():
     assert _closes_at([0.0] * 4, shared=shared) == pytest.approx([0.40])
 
 
-def test_tag_congruent_tolerance_follows_the_trace_step():
-    """The trace lands within about a step of a closure, so the default
-    tolerance follows dc_max rather than a constant."""
-    assert ClausiusClapeyronRefiner().congruent_tol == pytest.approx(3 * 0.01)
-    assert ClausiusClapeyronRefiner(dc_max=0.002).congruent_tol == pytest.approx(3 * 0.002)
-    assert ClausiusClapeyronRefiner(congruent_tol=0.4).congruent_tol == 0.4
-
-
-def test_tag_congruent_tolerance_is_configurable():
-    gaps = 0.10 * np.abs(_GRID - 0.4) + 0.06
-    assert _closes_at(gaps) == []
-    assert _closes_at(gaps, congruent_tol=0.1) == pytest.approx([0.4])
+def test_tag_congruent_tolerance_is_a_fraction_of_the_widest_point():
+    """The threshold is relative, so the same shape scaled by any factor gives
+    the same answer, and it is the fraction that moves the verdict."""
+    dip = 0.02 * (1 - 0.85 * np.exp(-(((_GRID - 0.4) / 0.05) ** 2)))  # closes to 15%
+    assert _closes_at(dip) == []                                  # 0.15 > default 0.1
+    assert _closes_at(dip, congruent_tol=0.2) == pytest.approx([0.4])
+    assert _closes_at(100 * dip, congruent_tol=0.2) == pytest.approx([0.4])
 
 
 def test_tag_congruent_leaves_other_emitted_types_alone():
@@ -1562,24 +1566,24 @@ def test_tag_congruent_leaves_other_emitted_types_alone():
 
 @given(
     closures=st.lists(st.floats(min_value=0.05, max_value=0.95), min_size=1, max_size=3),
-    depth=st.floats(min_value=1e-6, max_value=0.005),
-    ceiling=st.floats(min_value=0.006, max_value=0.5),
+    ceiling=st.floats(min_value=0.001, max_value=0.5),
+    depth_fraction=st.floats(min_value=1e-4, max_value=0.02),
 )
 @settings(deadline=None, max_examples=50)
-def test_tag_congruent_recovers_planted_closures(closures, depth, ceiling):
+def test_tag_congruent_recovers_planted_closures(closures, ceiling, depth_fraction):
     """Plant closures at known compositions, read them back.
 
-    The gap rises away from each planted closure towards `ceiling`, which is
-    drawn from below as well as above the tolerance: a line that stays under it
-    everywhere is exactly the case a rule comparing the gap against the
-    tolerance alone gets wrong, tagging one closure where there are two.
+    The width rises away from each planted closure towards `ceiling`, drawn
+    over three orders of magnitude: the answer has to come out the same for a
+    field 0.1 at% wide as for one 50 at% wide, which is what a rule reading an
+    absolute width gets wrong -- it finds one closure in a line that stays
+    under its threshold throughout.
     """
     closures = sorted(np.round(np.array(closures) / _DC) * _DC)
-    # Closures nearer than the window would be one closure, not two.
-    tol = ClausiusClapeyronRefiner().congruent_tol
-    assume(len(closures) == 1 or np.diff(closures).min() >= 2 * tol)
+    # Closures nearer than the dedup window would be one closure, not two.
+    assume(len(closures) == 1 or np.diff(closures).min() >= 6 * _DC)
     dist = np.min(np.abs(_GRID[:, None] - np.array(closures)[None, :]), axis=1)
-    gaps = depth + dist * ceiling / (dist + ceiling)  # -> depth at a closure, -> ceiling away
+    gaps = ceiling * (depth_fraction + dist / (dist + 0.1))
     assert _closes_at(gaps) == pytest.approx(closures, abs=_DC)
 
 
