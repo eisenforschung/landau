@@ -7,7 +7,14 @@ import pytest
 import shapely
 
 from landau.features import Locus
-from landau.phases import LinePhase, Phase, TemperatureDependentLinePhase
+from landau.calculate import calc_phase_diagram
+from landau.phases import (
+    IdealSolution,
+    LinePhase,
+    Phase,
+    TemperatureDependentLinePhase,
+    kB,
+)
 from landau.interpolate import SGTE
 from landau.interpolate.basic import G_calphad
 from landau.refine import (
@@ -1436,17 +1443,16 @@ def test_emitted_concentrations_returns_plain_floats():
 # -- ClausiusClapeyronRefiner._tag_congruent -----------------------------------
 #
 # A congruent transformation is one where both coexisting phases share a
-# composition, so the line's concentration gap dips to ~zero there. The tag
-# goes on every strict local minimum of that gap below `congruent_tol`, the
-# line's own ends included -- the tolerance, not where the line stopped, is
-# what separates a closing line from one that ran into a triple point.
+# composition, so the line's concentration gap dips to ~zero there. Candidates
+# are the points whose gap is below `congruent_tol`; those agreeing on the
+# composition they close at are one event, and the deepest of each is tagged.
 
 
-def _gap_phases(gaps):
-    """Phases whose concentration gap at mu = i is `gaps[i]`, centred on c=0.5.
+def _gap_phases(gaps, shared):
+    """Phases whose gap at mu = i is `gaps[i]`, centred on `shared[i]`.
 
-    Concentration is keyed off mu so a RefinedPoint at mu=i reproduces the
-    wanted gap through the refiner's own `_emitted_concentrations`.
+    Both are keyed off mu so a RefinedPoint at mu=i reproduces the wanted
+    numbers through the refiner's own `_emitted_concentrations`.
     """
 
     @dataclass(frozen=True)
@@ -1455,7 +1461,8 @@ def _gap_phases(gaps):
         sign: float
 
         def concentration(self, T, mu):
-            return 0.5 + self.sign * gaps[int(round(mu))] / 2
+            i = int(round(mu))
+            return shared[i] + self.sign * gaps[i] / 2
 
         def semigrand_potential(self, T, mu):
             return 0.0
@@ -1468,29 +1475,42 @@ def _gap_points(gaps):
             for i in range(len(gaps))]
 
 
-def _tagged(gaps, **kwargs):
-    """Indices of the points tagged congruent for this gap sequence."""
+def _tagged(gaps, shared=None, **kwargs):
+    """Indices of the points tagged congruent for this line."""
+    if shared is None:
+        shared = [0.5] * len(gaps)
     refiner = ClausiusClapeyronRefiner(**kwargs)
-    out = refiner._tag_congruent(_gap_points(gaps), _gap_phases(gaps))
-    return [i for i, pt in enumerate(out) if pt.congruent]
+    out = refiner._tag_congruent(_gap_points(gaps), _gap_phases(gaps, shared))
+    return sorted(i for i, pt in enumerate(out) if pt.congruent)
 
 
-def test_tag_congruent_interior_minimum():
-    """A solidus/liquidus loop closing mid-composition."""
-    assert _tagged([0.30, 0.02, 0.30]) == [1]
-
-
-def test_tag_congruent_both_terminals_of_one_line():
-    """An isomorphous line closes at both pure components, so both ends are
-    tagged -- one tag per line would be one too few."""
-    assert _tagged([0.02, 0.20, 0.30, 0.20, 0.02]) == [0, 4]
+def test_tag_congruent_tags_the_deepest_candidate():
+    """One event: the point where the two phases come closest."""
+    assert _tagged([0.30, 0.02, 0.04]) == [1]
 
 
 def test_tag_congruent_end_of_a_closing_line():
     """A line that ends because its two phases became one -- a pure component's
-    melting point -- has the gap minimum at that very end."""
-    assert _tagged([0.02, 0.20, 0.30]) == [0]
-    assert _tagged([0.30, 0.20, 0.02]) == [2]
+    melting point -- has its minimum at that very end."""
+    assert _tagged([0.02, 0.20, 0.30], shared=[0.0, 0.05, 0.1]) == [0]
+    assert _tagged([0.30, 0.20, 0.02], shared=[0.1, 0.05, 0.0]) == [2]
+
+
+def test_tag_congruent_separates_events_by_composition():
+    """One boundary_id covers a whole phase pair, which a triple point can
+    leave as two disjoint branches closing at c=0 and c=1 -- the case that
+    T-ordering interleaves into one line and half-tags."""
+    gaps = [0.02, 0.30, 0.30, 0.01]
+    shared = [0.0, 0.02, 0.98, 1.0]
+    assert _tagged(gaps, shared=shared) == [0, 3]
+
+
+def test_tag_congruent_approach_to_a_terminal_is_one_event():
+    """Candidates walking in toward a terminal share its composition to within
+    the tolerance, so they are that event, not extra ones beside it."""
+    gaps = [0.045, 0.030, 0.015, 0.001]
+    shared = [0.030, 0.020, 0.010, 0.000]
+    assert _tagged(gaps, shared=shared) == [3]
 
 
 def test_tag_congruent_ignores_a_gap_above_tolerance():
@@ -1501,20 +1521,17 @@ def test_tag_congruent_tolerance_is_configurable():
     assert _tagged([0.30, 0.20, 0.30], congruent_tol=0.25) == [1]
 
 
-def test_tag_congruent_leaves_a_monotonic_trace_alone():
-    """No local minimum anywhere but the end, which is itself the minimum."""
-    assert _tagged([0.30, 0.20, 0.10, 0.02]) == [3]
-
-
-def test_tag_congruent_needs_two_points():
+def test_tag_congruent_needs_no_neighbours():
+    """A line found as a single point still gets tagged if it closes."""
     refiner = ClausiusClapeyronRefiner()
-    one = _gap_points([0.0])
-    assert refiner._tag_congruent(one, _gap_phases([0.0])) == one
+    one = _gap_points([0.01])
+    out = refiner._tag_congruent(one, _gap_phases([0.01], [0.5]))
+    assert [pt.congruent for pt in out] == [True]
 
 
 def test_tag_congruent_emits_the_locus():
     """The tag reaches the dataframe as Locus.CONGRUENT, not BOUNDARY."""
-    phases = _gap_phases([0.02])
+    phases = _gap_phases([0.02], [0.5])
     tagged = replace(RefinedPoint(T=300.0, mu=0.0, phases=("lo", "hi")), congruent=True)
     plain = RefinedPoint(T=300.0, mu=0.0, phases=("lo", "hi"))
     assert all(row["locus"] == Locus.CONGRUENT for row in tagged.to_rows(phases))
@@ -1525,8 +1542,8 @@ def test_tag_congruent_sees_a_line_assembled_from_single_point_solves(monkeypatc
     """A narrow coexistence line can come back as a scatter of seed-only solves,
     no single one holding more than one of its points. Tagging runs per
     boundary_id in run(), so the line's terminal is spotted anyway."""
-    gaps = [0.30, 0.20, 0.02]
-    phases, pts = _gap_phases(gaps), _gap_points(gaps)
+    gaps, shared = [0.30, 0.20, 0.02], [0.1, 0.05, 0.0]
+    phases, pts = _gap_phases(gaps, shared), _gap_points(gaps)
     refiner = ClausiusClapeyronRefiner()
     monkeypatch.setattr("landau.refine._simplex_straddles", lambda cand, traces: False)
     cands = [_InterCandidate(phase1="lo", phase2="hi", T_seed=float(i),
@@ -1541,6 +1558,61 @@ def test_tag_congruent_sees_a_line_assembled_from_single_point_solves(monkeypatc
     tagged = out[out["locus"] == Locus.CONGRUENT]
     assert sorted(set(tagged["T"])) == [pts[-1].T]
     assert set(out["boundary_id"]) == {0}  # all one line
+
+
+@pytest.fixture(scope="module")
+def split_line_diagram():
+    """Refined diagram whose solid/liquid pair is split into two branches.
+
+    Solid and liquid are symmetric ideal solutions, so both pure components
+    melt at the same temperature, and an intermediate line phase at c=0.5 cuts
+    the solid/liquid coexistence in two. One boundary_id therefore holds two
+    disjoint branches that close at c=0 and c=1 at the *same* T -- in T-order
+    they interleave, which is what a sequential scan gets wrong.
+    """
+    solid = IdealSolution(
+        "solid",
+        LinePhase("sA", fixed_concentration=0, line_energy=-3.0, line_entropy=1.0 * kB),
+        LinePhase("sB", fixed_concentration=1, line_energy=-3.0, line_entropy=1.0 * kB),
+    )
+    liquid = IdealSolution(
+        "liquid",
+        LinePhase("lA", fixed_concentration=0, line_energy=-2.6, line_entropy=5.0 * kB),
+        LinePhase("lB", fixed_concentration=1, line_energy=-2.6, line_entropy=5.0 * kB),
+    )
+    inter = LinePhase("AB", fixed_concentration=0.5, line_energy=-3.2, line_entropy=1.2 * kB)
+    return calc_phase_diagram([solid, liquid, inter], np.linspace(400.0, 1600.0, 20),
+                              mu=30, refine=True)
+
+
+def test_both_branches_of_a_split_line_are_tagged(split_line_diagram):
+    """Both pure-component melting points come back, not just one.
+
+    The two branches of the solid/liquid pair share a boundary_id and reach
+    their terminals at the same temperature; scanning the line in T-order tags
+    one of them at best.
+    """
+    congruent = split_line_diagram[split_line_diagram["locus"] == Locus.CONGRUENT]
+    invariants = [grp for _key, grp in congruent.groupby(["mu", "T"])
+                  if set(grp["phase"]) == {"solid", "liquid"}]
+    assert len(invariants) == 2, "one per pure component"
+
+    shared = sorted(grp["c"].mean() for grp in invariants)
+    assert shared[0] == pytest.approx(0.0, abs=0.01)
+    assert shared[1] == pytest.approx(1.0, abs=0.01)
+    # Symmetric end members, so the two melting points coincide.
+    Ts = [grp["T"].iloc[0] for grp in invariants]
+    assert Ts[0] == pytest.approx(Ts[1], abs=1.0)
+
+
+def test_congruent_melting_of_an_intermediate_phase_is_tagged(split_line_diagram):
+    """The line phase at c=0.5 melts congruently: liquid reaches its
+    composition, so the gap closes away from either terminal."""
+    congruent = split_line_diagram[split_line_diagram["locus"] == Locus.CONGRUENT]
+    invariants = [grp for _key, grp in congruent.groupby(["mu", "T"])
+                  if set(grp["phase"]) == {"AB", "liquid"}]
+    assert len(invariants) == 1
+    assert invariants[0]["c"].mean() == pytest.approx(0.5, abs=0.02)
 
 
 def test_terminal_melting_points_are_tagged_end_to_end(eutectic_diagram):

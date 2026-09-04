@@ -1109,11 +1109,11 @@ class _CCBase(Refiner):
         """Hook: tag features spotted along a whole coexistence line.
 
         Called by :meth:`run` once per ``boundary_id`` with every point kept
-        for that line, ordered along it (ascending T). One line is generally
-        assembled from several candidates -- a narrow one can come back as a
-        scatter of seed-only solves, with no single call seeing more than one
-        of its points -- so this runs on the line, not on one traced segment.
-        Returns the points to emit; the base implementation adds no tags. See
+        for that line. One line is generally assembled from several candidates
+        -- a narrow one can come back as a scatter of seed-only solves, with no
+        single call seeing more than one of its points -- so this runs on the
+        line, not on one traced segment. Returns the points to emit; the base
+        implementation adds no tags. See
         :meth:`ClausiusClapeyronRefiner._tag_congruent`.
         """
         return points
@@ -1223,42 +1223,47 @@ class ClausiusClapeyronRefiner(_CCBase):
         """Tag the points where the two phases' compositions meet.
 
         A transformation is congruent when both coexisting phases have the same
-        composition, so nothing has to diffuse for it to happen: the congruent
-        maximum or minimum of a solidus/liquidus loop, or -- the terminal case
-        -- a pure component's melting point, where the line runs into c=0 or
-        c=1. Either way the trace's concentration gap ``|c1 - c2|`` dips to
-        (nearly) zero there, so the tag goes on every strict local minimum of
-        the gap below ``congruent_tol``, the trace's own two ends included --
-        an isomorphous loop closes at both terminals, so one tag per line would
-        be one too few, and a line that ends *because* the two phases became
-        one has its minimum exactly at that end.
+        composition, so nothing has to diffuse for it to happen: an
+        intermediate phase melting congruently, the extremum of an isomorphous
+        solidus/liquidus loop, or -- the terminal case -- a pure component's
+        melting point, where the line runs into c=0 or c=1. Either way the
+        concentration gap ``|c1 - c2|`` dips to (nearly) zero there.
+
+        Every point whose gap is below ``congruent_tol`` is a candidate. Two
+        candidates that agree on the composition they close at -- within the
+        same tolerance -- are the same event, so the candidates are grouped by
+        their shared composition and the deepest of each group is tagged.
+
+        Grouping by composition rather than walking the line in order is what
+        keeps two closures on one line apart: a ``boundary_id`` covers a whole
+        phase *pair*, which a triple point can leave as two disjoint branches
+        -- the liquid/solid pair of the Toy notebook's system runs to c=0 on
+        one side and c=1 on the other, both reaching their terminal within
+        0.1 K -- and in T-order those interleave, so a sequential scan sees one
+        line where there are two and tags a single terminal instead of both.
 
         The tolerance is what separates a closing line from one that ends at a
         triple point, where the two phases still differ in composition. Where
         the trace stopped does not: a line reaching a pure component's melting
         point is routinely cut short by ``_dominated`` as well, since past the
         terminal a third phase takes over the extrapolated line.
-
-        ``points`` must be ordered along the line, as :meth:`_CCBase.solve`
-        passes them.
         """
-        if len(points) < 2:
+        if not points:
             return points
-        gaps = []
-        for pt in points:
-            c = self._emitted_concentrations(pt, phases)
-            gaps.append(abs(c[0] - c[1]) if len(c) == 2 else float("inf"))
+        cs = [self._emitted_concentrations(pt, phases) for pt in points]
+        gaps = np.array([abs(c[0] - c[1]) if len(c) == 2 else np.inf for c in cs])
+        shared = np.array([np.mean(c) if len(c) == 2 else np.nan for c in cs])
+        tol = self.congruent_tol
+        cand = np.flatnonzero(gaps < tol)
+        if cand.size == 0:
+            return points
+        cand = cand[np.argsort(shared[cand], kind="stable")]
+        # One group per composition the line closes at: a jump wider than the
+        # tolerance between neighbouring candidates starts the next event.
+        splits = np.flatnonzero(np.diff(shared[cand]) > tol) + 1
         out = list(points)
-        n = len(gaps)
-        for i, gap in enumerate(gaps):
-            if gap >= self.congruent_tol:
-                continue
-            if i > 0 and gap > gaps[i - 1]:
-                continue
-            if i < n - 1 and gap > gaps[i + 1]:
-                continue
-            if not ((i > 0 and gap < gaps[i - 1]) or (i < n - 1 and gap < gaps[i + 1])):
-                continue
+        for group in np.split(cand, splits):
+            i = group[np.argmin(gaps[group])]
             out[i] = replace(points[i], congruent=True)
         return out
 
