@@ -337,8 +337,8 @@ def _label_obstacles_px(ax, polys, renderer):
     scales.
     """
     regions, obstacles = [], []
-    for poly in polys:
-        region = _shapely_polygon(ax.transData.transform(poly.get_xy()))
+    for patch in polys:
+        region = _shapely_polygon(ax.transData.transform(patch.get_xy()))
         if region is not None:
             regions.append(region)
             obstacles.append(region.exterior)
