@@ -252,7 +252,7 @@ def calc_phase_diagram(
     Returns:
         dataframe of phase points; the ``locus`` column classifies each row
         as a :class:`~landau.features.Locus` value (``"interior"``,
-        ``"boundary"`` or ``"triple"``)
+        ``"boundary"``, ``"triple"`` or ``"congruent"``)
     """
     if not isinstance(Ts, Iterable):
         Ts = [Ts]

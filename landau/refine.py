@@ -106,23 +106,34 @@ class RefinedPoint:
     boundary_id : int
         Identifier shared by all rows that belong to the same coexistence
         line (assigned by the refiner's ``run()``).
+    congruent : bool
+        Set on the point of a two-phase line where the two phases'
+        compositions meet (see
+        :meth:`ClausiusClapeyronRefiner._tag_features`).
 
     :meth:`to_rows` tags each emitted row with ``locus``:
     :attr:`~landau.features.Locus.TRIPLE` for three coexisting phases,
-    :attr:`~landau.features.Locus.BOUNDARY` otherwise.
+    :attr:`~landau.features.Locus.CONGRUENT` for a two-phase point marked
+    ``congruent``, :attr:`~landau.features.Locus.BOUNDARY` otherwise.
     """
 
     T: float
     mu: float
     phases: tuple[str, ...]
     boundary_id: int = 0
+    congruent: bool = False
 
     def phase_names(self) -> set[str]:
         return set(self.phases)
 
     def to_rows(self, phases: Mapping[str, Phase]) -> list[dict]:
         rows = [_state_row(phases[name], self.T, self.mu) for name in self.phases]
-        locus = Locus.TRIPLE if len(self.phases) == 3 else Locus.BOUNDARY
+        if len(self.phases) == 3:
+            locus = Locus.TRIPLE
+        elif self.congruent:
+            locus = Locus.CONGRUENT
+        else:
+            locus = Locus.BOUNDARY
         for row in rows:
             row["boundary_id"] = self.boundary_id
             row["locus"] = locus
@@ -1095,6 +1106,19 @@ class _CCBase(Refiner):
                                half_width, cand.T_min, -1))
         return out
 
+    def _tag_features(self, points, phases):
+        """Hook: tag features spotted along a whole coexistence line.
+
+        Called by :meth:`run` once per ``boundary_id`` with every point kept
+        for that line. One line is generally assembled from several candidates
+        -- a narrow one can come back as a scatter of seed-only solves, with no
+        single call seeing more than one of its points -- so this runs on the
+        line, not on one traced segment. Returns the points to emit; the base
+        implementation adds no tags. See
+        :meth:`ClausiusClapeyronRefiner._tag_features`.
+        """
+        return points
+
     def run(self, df: pd.DataFrame, phases: Mapping[str, Phase]) -> pd.DataFrame:
         rows: list[dict] = []
         # Per-pair list of completed traces; each trace is a tuple of
@@ -1103,8 +1127,11 @@ class _CCBase(Refiner):
         # _simplex_straddles inventing fake cross-segments between
         # unrelated single-point seed traces.
         traced: dict[object, list[Trace]] = {}
-        # One boundary_id per coexistence line (keyed by _pair_key).
+        # One boundary_id per coexistence line (keyed by _pair_key), and the
+        # points found for it, gathered across every candidate that fed it so
+        # _tag_features sees the whole line at once.
         boundary_ids: dict[object, int] = {}
+        by_line: dict[int, list] = {}
         next_bid = 0
         for cand in self.propose(df):
             key = self._pair_key(cand)
@@ -1120,10 +1147,10 @@ class _CCBase(Refiner):
             if key not in boundary_ids:
                 boundary_ids[key] = next_bid
                 next_bid += 1
-            bid = boundary_ids[key]
-            for pt in pts:
-                if pt.T < 0 or _dominated(pt, phases):
-                    continue
+            by_line.setdefault(boundary_ids[key], []).extend(pts)
+        for bid, pts in by_line.items():
+            keep = [pt for pt in pts if pt.T >= 0 and not _dominated(pt, phases)]
+            for pt in self._tag_features(keep, phases):
                 rows.extend(replace(pt, boundary_id=bid).to_rows(phases))
         out = pd.DataFrame(rows)
         if out.empty:
@@ -1178,9 +1205,87 @@ class ClausiusClapeyronRefiner(_CCBase):
         Per-step concentration-drift cap / floor. See :class:`_CCBase`.
     max_steps : int
         Hard cap on steps per trace direction. See :class:`_CCBase`.
+    congruent_tol : float
+        How narrow the field has to get, as a fraction of its own widest point,
+        for the two phases to count as sharing a composition -- tagging the
+        point :attr:`~landau.features.Locus.CONGRUENT` (see
+        :meth:`_tag_features`). Relative because a closure is a *dip*: it says
+        nothing that a field is 2 at% wide somewhere until you know whether it
+        is 30 at% wide elsewhere. Default 0.1, an order of magnitude above
+        every closure in the test systems (worst 0.042, a compound melting
+        congruently) and an order below a line that never closes (0.98).
     """
 
     label = "clausius-clapeyron"
+
+    def __init__(self, *, congruent_tol: float = 0.1, **kwargs):
+        super().__init__(**kwargs)
+        self.congruent_tol = congruent_tol
+
+    def _tag_features(self, points, phases):
+        """Tag the points where the two phases' compositions meet.
+
+        A transformation is congruent when both coexisting phases have the same
+        composition, so nothing has to diffuse for it to happen: an
+        intermediate phase melting congruently, the extremum of an isomorphous
+        solidus/liquidus loop, or -- the terminal case -- a pure component's
+        melting point, where the line runs into c=0 or c=1. Either way the
+        concentration gap ``|c1 - c2|`` bottoms out there.
+
+        So a point is tagged when the field is at its narrowest there,
+        relative to how wide that same field gets elsewhere: ``gap <=
+        congruent_tol * max(gap)`` along the line. Relative, because the width
+        at a closure has no absolute scale -- it is bounded below by nothing
+        and above only by how finely the trace sampled its way in. An
+        isomorphous lens 2.5 at% wide closes at both terminals exactly as one
+        30 at% wide does, and an absolute threshold either misses the first or
+        swallows a narrow field that never closes at all. Measured on the test
+        systems: every closure comes in at 0.042 or less, a line that never
+        closes at 0.98.
+
+        Composition is the axis to compare along, not T. A ``boundary_id``
+        covers a whole phase *pair*, which a triple point can leave as two
+        disjoint branches -- the liquid/solid pair of the Toy notebook's system
+        runs to c=0 on one side and c=1 on the other, both reaching their
+        terminal within 0.1 K -- and in T-order those interleave, so a scan
+        sees one line where there are two. Points closing within a few trace
+        steps of one composition are the same closure and yield one tag, the
+        narrowest of them; points further apart in composition never compete.
+
+        Only the gap decides, never where the trace stopped: a line reaching a
+        pure component's melting point is routinely cut short by ``_dominated``
+        too, since past the terminal a third phase takes over the extrapolated
+        line.
+        """
+        # Only RefinedPoint carries the flag; a subclass emitting anything else
+        # (a miscibility gap, say) passes through untouched.
+        where = np.array([i for i, pt in enumerate(points) if isinstance(pt, RefinedPoint)])
+        if where.size == 0:
+            return points
+        cs = [self._emitted_concentrations(points[i], phases) for i in where]
+        gap = np.array([abs(c[0] - c[1]) if len(c) == 2 else np.inf for c in cs])
+        shared = np.array([np.mean(c) if len(c) == 2 else np.nan for c in cs])
+        keep = np.isfinite(shared) & np.isfinite(gap)
+        where, gap, shared = where[keep], gap[keep], shared[keep]
+
+        order = np.argsort(shared, kind="stable")
+        where, gap, shared = where[order], gap[order], shared[order]
+        widest = gap.max()
+        # A line already closed along its whole length -- two pure components
+        # melting at the same temperature leave one -- has no widest point to
+        # measure against, and every point of it is at a closure.
+        closing = gap <= self.congruent_tol * widest if widest > 0 else np.ones(gap.size, bool)
+        # Points closing within a few trace steps of one composition are the
+        # same closure and yield one tag, the narrowest of them (argmin takes
+        # the earliest of a tie), so a line needs no splitting into branches.
+        window = 3 * self.dc_max
+        lo = np.searchsorted(shared, shared - window, side="left")
+        hi = np.searchsorted(shared, shared + window, side="right")
+        out = list(points)
+        for i in np.flatnonzero(closing):
+            if lo[i] + np.argmin(gap[lo[i]:hi[i]]) == i:
+                out[where[i]] = replace(points[where[i]], congruent=True)
+        return out
 
     def propose(self, df: pd.DataFrame) -> Iterator[_InterCandidate]:
         T_min = float(df["T"].min())

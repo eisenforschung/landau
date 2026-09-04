@@ -1,13 +1,22 @@
 """Unit tests for refiners in landau.refine."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
 import pytest
 import shapely
+from hypothesis import assume, given, settings
+from hypothesis import strategies as st
 
 from landau.features import Locus
-from landau.phases import LinePhase, Phase, TemperatureDependentLinePhase
+from landau.calculate import calc_phase_diagram
+from landau.phases import (
+    IdealSolution,
+    LinePhase,
+    Phase,
+    TemperatureDependentLinePhase,
+    kB,
+)
 from landau.interpolate import SGTE
 from landau.interpolate.basic import G_calphad
 from landau.refine import (
@@ -1431,3 +1440,215 @@ def test_emitted_concentrations_returns_plain_floats():
     pt = RefinedPoint(T=500.0, mu=0.05, phases=("A",))
     for c in refiner._emitted_concentrations(pt, phases):
         assert type(c) is float
+
+
+# -- ClausiusClapeyronRefiner._tag_features (congruent points) -----------------
+#
+# A congruent transformation is one where both coexisting phases share a
+# composition, so the line's concentration gap bottoms out there. The tag goes
+# where the field is narrowest relative to how wide it gets elsewhere:
+# `gap <= congruent_tol * max(gap)` along the line, with points within a few
+# trace steps of one composition counting as the same closure. These fixtures
+# sample composition at `dc_max`, the drift the refiner steps by.
+
+_DC = 0.01  # ClausiusClapeyronRefiner's default dc_max, hence the sample spacing
+_GRID = np.round(np.arange(0.0, 1.0 + _DC / 2, _DC), 10)
+
+
+def _gap_phases(gaps, shared):
+    """Phases whose gap at mu = i is `gaps[i]`, centred on `shared[i]`.
+
+    Both are keyed off mu so a RefinedPoint at mu=i reproduces the wanted
+    numbers through the refiner's own `_emitted_concentrations`.
+    """
+
+    @dataclass(frozen=True)
+    class _GapPhase:
+        name: str
+        sign: float
+
+        def concentration(self, T, mu):
+            i = int(round(mu))
+            return shared[i] + self.sign * gaps[i] / 2
+
+        def semigrand_potential(self, T, mu):
+            return 0.0
+
+    return {"lo": _GapPhase("lo", -1.0), "hi": _GapPhase("hi", +1.0)}
+
+
+def _gap_points(n):
+    return [RefinedPoint(T=300.0 + i, mu=float(i), phases=("lo", "hi")) for i in range(n)]
+
+
+def _closes_at(gaps, shared=_GRID, **kwargs):
+    """Compositions of the points tagged congruent along this line."""
+    gaps, shared = list(gaps), list(shared)
+    refiner = ClausiusClapeyronRefiner(**kwargs)
+    out = refiner._tag_features(_gap_points(len(gaps)), _gap_phases(gaps, shared))
+    return [shared[i] for i, pt in enumerate(out) if pt.congruent]
+
+
+@pytest.mark.parametrize("width", [0.002, 0.025, 0.20], ids=["tiny", "narrow", "wide"])
+def test_tag_congruent_lens_closes_at_both_terminals(width):
+    """An isomorphous lens closes at both pure components whatever its width in
+    between: a closure is the field narrowing against itself, and how narrow
+    that is in absolute terms says nothing on its own."""
+    assert _closes_at(width * np.sin(np.pi * _GRID)) == pytest.approx([0.0, 1.0])
+
+
+@pytest.mark.parametrize("width", [0.002, 0.02, 0.20], ids=["tiny", "narrow", "wide"])
+def test_tag_congruent_ignores_a_field_of_constant_width(width):
+    """A field that keeps its width along its whole length never closes, and a
+    narrow one is no more a closure than a wide one. Absolute thresholds get
+    this wrong from below -- any field narrower than the threshold reads as a
+    closure everywhere."""
+    assert _closes_at(width * (1 + 1e-3 * np.sin(37 * _GRID))) == []
+
+
+def test_tag_congruent_needs_the_field_to_close_not_merely_narrow():
+    """Halving the width is not a closure; dropping to a fiftieth of it is."""
+    dip = np.exp(-(((_GRID - 0.5) / 0.05) ** 2))
+    assert _closes_at(0.02 * (1 - 0.5 * dip)) == []
+    assert _closes_at(0.02 * (1 - 0.98 * dip)) == pytest.approx([0.5])
+
+
+def test_tag_congruent_interior_closure():
+    """An intermediate phase melting congruently: the gap dips to zero where
+    the other phase reaches its composition."""
+    gaps = 0.10 * np.abs(_GRID - 0.4) + 0.001
+    assert _closes_at(gaps) == pytest.approx([0.4])
+
+
+def test_tag_congruent_one_sided_closure():
+    """A line closing at one end only is tagged there and nowhere else."""
+    assert _closes_at(np.linspace(0.20, 0.001, len(_GRID))) == pytest.approx([1.0])
+
+
+def test_tag_congruent_separates_closures_far_apart_in_composition():
+    """One boundary_id covers a whole phase pair, which a triple point can
+    leave as two disjoint branches closing at c=0 and c=1 -- the case that
+    T-ordering interleaves into one line and half-tags. Compositions a whole
+    tolerance apart never share a window, so the two closures stay apart."""
+    shared = [0.0, 0.005, 0.995, 1.0]
+    assert _closes_at([0.001, 0.02, 0.02, 0.001], shared=shared) == pytest.approx([0.0, 1.0])
+
+
+def test_tag_congruent_collapses_an_equal_gap_run_to_one_point():
+    """Two pure components melting at the same temperature leave a run of
+    points at exactly zero gap; it is one closure, so it gets one tag."""
+    shared = [0.40, 0.41, 0.42, 0.43]
+    assert _closes_at([0.0] * 4, shared=shared) == pytest.approx([0.40])
+
+
+def test_tag_congruent_tolerance_is_a_fraction_of_the_widest_point():
+    """The threshold is relative, so the same shape scaled by any factor gives
+    the same answer, and it is the fraction that moves the verdict."""
+    dip = 0.02 * (1 - 0.85 * np.exp(-(((_GRID - 0.4) / 0.05) ** 2)))  # closes to 15%
+    assert _closes_at(dip) == []                                  # 0.15 > default 0.1
+    assert _closes_at(dip, congruent_tol=0.2) == pytest.approx([0.4])
+    assert _closes_at(100 * dip, congruent_tol=0.2) == pytest.approx([0.4])
+
+
+def test_tag_congruent_leaves_other_emitted_types_alone():
+    """MiscibilityGapRefiner emits a type with no congruent flag; the shared
+    hook must not touch it."""
+    refiner = ClausiusClapeyronRefiner()
+    points = [
+        RefinedMiscibilityGap(T=1.0, mu=0.0, phase="p", c_left=0.1, c_right=0.9),
+        RefinedPoint(T=300.0, mu=0.0, phases=("lo", "hi")),
+        RefinedPoint(T=301.0, mu=1.0, phases=("lo", "hi")),
+    ]
+    out = refiner._tag_features(points, _gap_phases([0.001, 0.02], [0.0, 0.01]))
+    assert isinstance(out[0], RefinedMiscibilityGap)
+    assert [pt.congruent for pt in out[1:]] == [True, False]
+
+
+@given(
+    closures=st.lists(st.floats(min_value=0.05, max_value=0.95), min_size=1, max_size=3),
+    ceiling=st.floats(min_value=0.001, max_value=0.5),
+    depth_fraction=st.floats(min_value=1e-4, max_value=0.02),
+)
+@settings(deadline=None, max_examples=50)
+def test_tag_congruent_recovers_planted_closures(closures, ceiling, depth_fraction):
+    """Plant closures at known compositions, read them back.
+
+    The width rises away from each planted closure towards `ceiling`, drawn
+    over three orders of magnitude: the answer has to come out the same for a
+    field 0.1 at% wide as for one 50 at% wide, which is what a rule reading an
+    absolute width gets wrong -- it finds one closure in a line that stays
+    under its threshold throughout.
+    """
+    closures = sorted(np.round(np.array(closures) / _DC) * _DC)
+    # Closures nearer than the dedup window would be one closure, not two.
+    assume(len(closures) == 1 or np.diff(closures).min() >= 6 * _DC)
+    dist = np.min(np.abs(_GRID[:, None] - np.array(closures)[None, :]), axis=1)
+    gaps = ceiling * (depth_fraction + dist / (dist + 0.1))
+    assert _closes_at(gaps) == pytest.approx(closures, abs=_DC)
+
+
+@pytest.fixture(scope="module")
+def split_line_diagram():
+    """Refined diagram whose solid/liquid pair is split into two branches.
+
+    Solid and liquid are symmetric ideal solutions, so both pure components
+    melt at the same temperature, and an intermediate line phase at c=0.5 cuts
+    the solid/liquid coexistence in two. One boundary_id therefore holds two
+    disjoint branches that close at c=0 and c=1 at the *same* T -- in T-order
+    they interleave, which is what a sequential scan gets wrong.
+    """
+    solid = IdealSolution(
+        "solid",
+        LinePhase("sA", fixed_concentration=0, line_energy=-3.0, line_entropy=1.0 * kB),
+        LinePhase("sB", fixed_concentration=1, line_energy=-3.0, line_entropy=1.0 * kB),
+    )
+    liquid = IdealSolution(
+        "liquid",
+        LinePhase("lA", fixed_concentration=0, line_energy=-2.6, line_entropy=5.0 * kB),
+        LinePhase("lB", fixed_concentration=1, line_energy=-2.6, line_entropy=5.0 * kB),
+    )
+    inter = LinePhase("AB", fixed_concentration=0.5, line_energy=-3.2, line_entropy=1.2 * kB)
+    return calc_phase_diagram([solid, liquid, inter], np.linspace(400.0, 1600.0, 20),
+                              mu=30, refine=True)
+
+
+def test_both_branches_of_a_split_line_are_tagged(split_line_diagram):
+    """Both pure-component melting points come back, not just one.
+
+    The two branches of the solid/liquid pair share a boundary_id and reach
+    their terminals at the same temperature; scanning the line in T-order tags
+    one of them at best.
+    """
+    congruent = split_line_diagram[split_line_diagram["locus"] == Locus.CONGRUENT]
+    invariants = [grp for _key, grp in congruent.groupby(["mu", "T"])
+                  if set(grp["phase"]) == {"solid", "liquid"}]
+    assert len(invariants) == 2, "one per pure component"
+
+    shared = sorted(grp["c"].mean() for grp in invariants)
+    assert shared[0] == pytest.approx(0.0, abs=0.01)
+    assert shared[1] == pytest.approx(1.0, abs=0.01)
+    # Symmetric end members, so the two melting points coincide.
+    Ts = [grp["T"].iloc[0] for grp in invariants]
+    assert Ts[0] == pytest.approx(Ts[1], abs=1.0)
+
+
+def test_congruent_melting_of_an_intermediate_phase_is_tagged(split_line_diagram):
+    """The line phase at c=0.5 melts congruently: liquid reaches its
+    composition, so the gap closes away from either terminal."""
+    congruent = split_line_diagram[split_line_diagram["locus"] == Locus.CONGRUENT]
+    invariants = [grp for _key, grp in congruent.groupby(["mu", "T"])
+                  if set(grp["phase"]) == {"AB", "liquid"}]
+    assert len(invariants) == 1
+    assert invariants[0]["c"].mean() == pytest.approx(0.5, abs=0.02)
+
+
+def test_terminal_melting_points_are_tagged_end_to_end(eutectic_diagram):
+    """The hcp/fcc/liquid fixture's pure-component transitions come back tagged,
+    each with the two coexisting phases at (nearly) the same composition."""
+    congruent = eutectic_diagram[eutectic_diagram["locus"] == Locus.CONGRUENT]
+    groups = list(congruent.groupby(["mu", "T"]))
+    assert len(groups) == 3, "one per pure-component transition in this system"
+    for _key, grp in groups:
+        assert len(grp) == 2  # exactly the two coexisting phases
+        assert grp["c"].max() - grp["c"].min() < 0.05  # they share a composition
+        assert min(grp["c"].min(), 1 - grp["c"].max()) < 0.05  # at a pure component
