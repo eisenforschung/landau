@@ -387,6 +387,97 @@ def _find_congruent_points(df, tol=0.05):
     return out
 
 
+_LABEL_PAD = 3.0  # px clearance kept between a label box and any drawn feature
+
+
+def _diagram_geometry_px(ax):
+    """Phase regions and the lines a label must not cover, in display pixels.
+
+    ``regions`` are the phase polygons drawn on ``ax``; ``obstacles`` are the
+    phase boundaries themselves -- every polygon outline -- plus whatever else
+    is already drawn in data coordinates (a triple point's isothermal line, a
+    congruent point's marker).  Pixel space is the natural frame here: a label's
+    rendered size is fixed in pixels while the two data axes have unrelated
+    scales.
+    """
+    regions, obstacles = [], []
+    for patch in ax.patches:
+        if not hasattr(patch, "get_xy"):
+            continue
+        region = _shapely_polygon(ax.transData.transform(patch.get_xy()))
+        if region is not None:
+            regions.append(region)
+            obstacles.append(region.exterior)
+    for coll in ax.collections:
+        if not hasattr(coll, "get_segments"):
+            continue
+        for seg in coll.get_segments():
+            seg = ax.transData.transform(seg)
+            if len(seg) >= 2:
+                obstacles.append(shapely.LineString(seg))
+    for line in ax.lines:
+        if line.get_transform() is not ax.transData:
+            continue
+        xy = ax.transData.transform(line.get_xydata())
+        xy = xy[np.isfinite(xy).all(axis=1)]
+        if len(xy) >= 2:
+            obstacles.append(shapely.LineString(xy))
+        elif len(xy) == 1:
+            obstacles.append(shapely.Point(xy[0]).buffer(_LABEL_PAD))
+    return regions, obstacles
+
+
+def _clear_label_center(anchor, size, *, regions, obstacle, axes_box, mode, x_weight,
+                        step=4.0, max_offset=150.0):
+    """Nearest offset from ``anchor`` (in pixels) where a label clears everything.
+
+    The label box -- ``size`` is its rendered ``(width, height)``, inflated by
+    :data:`_LABEL_PAD` -- has to lie inside the axes and off every phase
+    boundary.  ``mode`` picks which side of the boundaries it may then live on:
+
+    ``"field"``
+        wholly inside one phase polygon.  A congruent point sits on the edge
+        between two single-phase fields, so either of them will do.
+    ``"negative"``
+        clear of every phase polygon, i.e. in the two-phase negative space --
+        where a triple point's isotherm runs, with a two-phase field above it
+        and another below.
+    ``"free"``
+        no region constraint; the fallback when neither side has room.
+
+    Candidates are scanned outward from the anchor with horizontal movement
+    charged ``x_weight`` times vertical, so a label slides along whichever axis
+    it is meant to have room on before drifting sideways.  Never returns the
+    anchor itself: the closest candidate still clears the feature being
+    labelled by half a label plus the pad.  ``None`` when nothing fits.
+    """
+    w, h = size
+    lo = h / 2 + _LABEL_PAD
+    n = int(max_offset / step) + 1
+    offsets = []
+    for i in range(n):
+        for j in range(n):
+            dx, dy = i * step, lo + j * step
+            for sx in ((1, -1) if dx else (1,)):
+                for sy in (1, -1):
+                    offsets.append((sx * dx, sy * dy))
+    offsets.sort(key=lambda d: float(np.hypot(d[0] * x_weight, d[1])))
+    for dx, dy in offsets:
+        cx, cy = anchor[0] + dx, anchor[1] + dy
+        box = shapely.box(cx - w / 2 - _LABEL_PAD, cy - h / 2 - _LABEL_PAD,
+                          cx + w / 2 + _LABEL_PAD, cy + h / 2 + _LABEL_PAD)
+        if not axes_box.contains(box):
+            continue
+        if obstacle is not None and obstacle.intersects(box):
+            continue
+        if mode == "field" and not any(r.contains(box) for r in regions):
+            continue
+        if mode == "negative" and any(r.intersects(box) for r in regions):
+            continue
+        return cx, cy
+    return None
+
+
 def _annotate_transition_temperatures(df, ax=None, variables=None, congruent_tol=0.05):
     """Label the temperature of every transition invariant on a 2d phase diagram.
 
@@ -397,6 +488,20 @@ def _annotate_transition_temperatures(df, ax=None, variables=None, congruent_tol
     they are not tagged in the dataframe the way triple points are; a diagram
     with none is left with triple-point labels only, no candidates need to be
     forced.
+
+    Every label is placed by :func:`_clear_label_center` so that it stays inside
+    the axes and never cuts across a phase boundary, each kind preferring the
+    space its feature lives in:
+
+    * a triple point's label goes into the two-phase negative space above or
+      below its isotherm (in c-T; in mu-T the phase fields tile the plane, so
+      there is no negative space and the second preference takes over),
+    * a congruent point's label goes inside one of the two phase fields meeting
+      at it.
+
+    Each falls back to the other's space, then to any clear spot in the axes,
+    so a crowded diagram still gets labelled -- just less ideally.  Placed
+    labels join the obstacles, so they do not cover each other either.
 
     Args:
         df (pandas.DataFrame):
@@ -416,28 +521,50 @@ def _annotate_transition_temperatures(df, ax=None, variables=None, congruent_tol
     if "locus" not in df.columns:
         return
 
-    pad = 4  # px clearance kept between a marker/line and its temperature label
+    renderer = _get_renderer(ax.figure)
+    axbb = ax.get_window_extent(renderer)
+    axes_box = shapely.box(axbb.x0, axbb.y0, axbb.x1, axbb.y1)
+    regions, obstacles = _diagram_geometry_px(ax)
 
-    def _label(x, y, ha="left", va="center", dx=pad, dy=0):
-        px, py = ax.transData.transform((x, y))
-        lx, ly = ax.transData.inverted().transform((px + dx, py + dy))
-        _text_with_outline(ax, lx, ly, f"{y:.0f} K", ha=ha, va=va, fontsize="small", zorder=11)
+    def _label(x, y, modes, x_weight):
+        text = _text_with_outline(
+            ax, x, y, f"{y:.0f} K", ha="center", va="center", fontsize="small", zorder=11,
+        )
+        bbox = text.get_window_extent(renderer)
+        size = (bbox.width, bbox.height)
+        anchor = tuple(ax.transData.transform((x, y)))
+        obstacle = shapely.union_all(obstacles) if obstacles else None
+        center = None
+        for mode in modes:
+            center = _clear_label_center(
+                anchor, size, regions=regions, obstacle=obstacle, axes_box=axes_box,
+                mode=mode, x_weight=x_weight,
+            )
+            if center is not None:
+                break
+        if center is None:  # nothing clears: keep the anchor, pulled into the axes
+            center = (min(max(anchor[0], axbb.x0 + size[0] / 2), axbb.x1 - size[0] / 2),
+                      min(max(anchor[1], axbb.y0 + size[1] / 2), axbb.y1 - size[1] / 2))
+        text.set_position(ax.transData.inverted().transform(center))
+        obstacles.append(shapely.box(center[0] - size[0] / 2, center[1] - size[1] / 2,
+                                     center[0] + size[0] / 2, center[1] + size[1] / 2))
 
     triple = df[df["locus"] == Locus.TRIPLE]
     if variables[0] == "c":
         for (_mu, T), grp in triple.groupby(["mu", "T"], sort=False)[["c"]]:
-            # Centered above the isotherm's midpoint, matching how a triple-point
-            # temperature is conventionally written on a c-T phase diagram.
+            # Anchored on the isotherm's midpoint; the placement then lifts the
+            # label off the line into the negative space above or below it.
             c_mid = (grp["c"].min() + grp["c"].max()) / 2
-            _label(c_mid, T, ha="center", va="bottom", dx=0, dy=pad)
+            _label(c_mid, T, ("negative", "field", "free"), x_weight=3.0)
     elif variables[0] == "mu":
         for (mu, T), _grp in triple.groupby(["mu", "T"], sort=False):
-            _label(mu, T)
+            _label(mu, T, ("negative", "field", "free"), x_weight=3.0)
 
     for mu, T, c in _find_congruent_points(df, tol=congruent_tol):
         x = c if variables[0] == "c" else mu
         ax.plot(x, T, marker="D", color="k", markersize=4, zorder=11)
-        _label(x, T)
+        obstacles.append(shapely.Point(ax.transData.transform((x, T))).buffer(4.0))
+        _label(x, T, ("field", "negative", "free"), x_weight=1.5)
 
 
 def _set_axis_for(axis_var: str, df_stable, element: str | None, ax) -> None:

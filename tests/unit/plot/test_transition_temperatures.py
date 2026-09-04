@@ -18,20 +18,48 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 import pytest
+import shapely
 
+from landau import plot as plot_mod
 from landau.features import Locus
 from landau.plot import (
     _annotate_transition_temperatures,
+    _clear_label_center,
+    _diagram_geometry_px,
     _find_congruent_points,
+    plot_mu_phase_diagram,
     plot_phase_diagram,
 )
 from landau.poly import Concave
 
 
+def _box(center, size=(40.0, 12.0)):
+    """Pixel box of a label of `size` centred on `center`."""
+    (cx, cy), (w, h) = center, size
+    return shapely.box(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
+
+
+def _label_boxes(ax):
+    """Pixel boxes of the temperature labels drawn on `ax`."""
+    renderer = plot_mod._get_renderer(ax.figure)
+    return [
+        shapely.box(*t.get_window_extent(renderer).extents)
+        for t in ax.texts
+        if t.get_text().endswith(" K")
+    ]
+
+
 @pytest.fixture
 def ax():
-    """A fresh axes; its figure is closed on teardown."""
+    """A fresh axes, its limits covering the synthetic fixtures below.
+
+    Placement is axes-aware -- a label is only ever put where it fits inside the
+    axes -- so the anchors have to be in view for these tests to exercise
+    anything but the out-of-view fallback.
+    """
     fig, ax = plt.subplots()
+    ax.set_xlim(-0.5, 1.5)
+    ax.set_ylim(250.0, 500.0)
     yield ax
     plt.close(fig)
 
@@ -180,7 +208,129 @@ def test_congruent_point_below_tol_not_labelled(ax):
     assert list(ax.texts) == [] and list(ax.lines) == []
 
 
+# --- _clear_label_center -----------------------------------------------------
+
+_AXES = shapely.box(0.0, 0.0, 400.0, 400.0)
+_REGION = shapely.box(50.0, 50.0, 250.0, 250.0)  # one phase field
+
+
+def test_field_mode_lands_wholly_inside_a_region():
+    """Anchored on a boundary (as a congruent point is), the label moves into
+    the phase field rather than straddling its edge."""
+    center = _clear_label_center(
+        (150.0, 250.0), (40.0, 12.0), regions=[_REGION], obstacle=_REGION.exterior,
+        axes_box=_AXES, mode="field", x_weight=1.5,
+    )
+    box = _box(center)
+    assert _REGION.contains(box)
+    assert not box.intersects(_REGION.exterior)
+
+
+def test_negative_mode_stays_clear_of_every_region():
+    """Same anchor, negative space: the label moves out of the field instead."""
+    center = _clear_label_center(
+        (150.0, 250.0), (40.0, 12.0), regions=[_REGION], obstacle=_REGION.exterior,
+        axes_box=_AXES, mode="negative", x_weight=3.0,
+    )
+    box = _box(center)
+    assert not box.intersects(_REGION)
+    assert center[1] > 250.0  # pushed out through the edge it was anchored on
+
+
+def test_placement_stays_inside_the_axes():
+    """A corner anchor gets pulled inwards; the box never leaves the axes."""
+    center = _clear_label_center(
+        (0.0, 400.0), (40.0, 12.0), regions=[], obstacle=None,
+        axes_box=_AXES, mode="free", x_weight=1.5,
+    )
+    assert _AXES.contains(_box(center))
+
+
+def test_placement_never_returns_the_anchor_itself():
+    """The closest candidate still clears the labelled feature by half a label."""
+    center = _clear_label_center(
+        (200.0, 200.0), (40.0, 12.0), regions=[], obstacle=None,
+        axes_box=_AXES, mode="free", x_weight=1.5,
+    )
+    assert abs(center[1] - 200.0) >= 6.0  # half the label height
+    assert not _box(center).intersects(shapely.Point(200.0, 200.0))
+
+
+def test_returns_none_when_nothing_fits():
+    tiny = shapely.box(0.0, 0.0, 30.0, 30.0)  # narrower than the label
+    assert _clear_label_center(
+        (15.0, 15.0), (40.0, 12.0), regions=[], obstacle=None,
+        axes_box=tiny, mode="free", x_weight=1.5,
+    ) is None
+
+
 # --- end-to-end on a real refined diagram ------------------------------------
+
+
+@pytest.mark.parametrize("variables", [["c", "T"], ["mu", "T"]], ids=["c-T", "mu-T"])
+def test_labels_stay_inside_the_axes_and_off_every_phase_boundary(eutectic_diagram, variables):
+    """The placement guarantee, checked against a real diagram's own geometry."""
+    fig, ax = plt.subplots()
+    try:
+        plotter = plot_phase_diagram if variables[0] == "c" else plot_mu_phase_diagram
+        plotter(
+            eutectic_diagram, ax=ax, poly_method=Concave(drop_interior=False),
+            transition_temperatures=True, legend=False,
+        )
+        renderer = plot_mod._get_renderer(fig)
+        axbb = ax.get_window_extent(renderer)
+        axes_box = shapely.box(axbb.x0, axbb.y0, axbb.x1, axbb.y1)
+        regions, _obstacles = _diagram_geometry_px(ax)
+        boxes = _label_boxes(ax)
+        assert len(boxes) >= 2, "fixture carries a triple point and terminal congruent points"
+        for box in boxes:
+            assert axes_box.contains(box)
+            for region in regions:
+                assert not box.intersects(region.exterior)
+    finally:
+        plt.close(fig)
+
+
+def test_triple_label_sits_in_the_two_phase_negative_space(eutectic_diagram):
+    """In c-T the invariant's label goes above or below its isotherm, in the
+    negative space -- not into either single-phase field."""
+    fig, ax = plt.subplots()
+    try:
+        plot_phase_diagram(
+            eutectic_diagram, ax=ax, poly_method=Concave(drop_interior=False),
+            transition_temperatures=True, legend=False,
+        )
+        renderer = plot_mod._get_renderer(fig)
+        T_t = eutectic_diagram[eutectic_diagram["locus"] == Locus.TRIPLE]["T"].mean()
+        label, = [t for t in ax.texts if t.get_text() == f"{T_t:.0f} K"]
+        box = shapely.box(*label.get_window_extent(renderer).extents)
+        regions, _obstacles = _diagram_geometry_px(ax)
+        assert regions, "the diagram must have drawn phase polygons"
+        for region in regions:
+            assert not box.intersects(region)
+    finally:
+        plt.close(fig)
+
+
+def test_congruent_label_sits_inside_a_phase_field(eutectic_diagram):
+    """A congruent point sits on the edge between two fields; its label goes
+    into one of them."""
+    fig, ax = plt.subplots()
+    try:
+        plot_phase_diagram(
+            eutectic_diagram, ax=ax, poly_method=Concave(drop_interior=False),
+            transition_temperatures=True, legend=False,
+        )
+        renderer = plot_mod._get_renderer(fig)
+        congruent = _find_congruent_points(eutectic_diagram)
+        assert congruent, "fixture must carry terminal congruent points"
+        regions, _obstacles = _diagram_geometry_px(ax)
+        for _mu, T, _c in congruent:
+            label, = [t for t in ax.texts if t.get_text() == f"{T:.0f} K"]
+            box = shapely.box(*label.get_window_extent(renderer).extents)
+            assert any(region.contains(box) for region in regions)
+    finally:
+        plt.close(fig)
 
 
 def test_plot_phase_diagram_labels_the_triple_point(eutectic_diagram):
