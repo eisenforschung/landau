@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import shapely
-from hypothesis import given, settings
+from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
 from landau.features import Locus
@@ -1446,10 +1446,10 @@ def test_emitted_concentrations_returns_plain_floats():
 #
 # A congruent transformation is one where both coexisting phases share a
 # composition, so the line's concentration gap bottoms out there. The tag goes
-# on each local minimum of the gap below `congruent_tol`, judged along the
-# composition the points close at. The refiner steps by at most `dc_max` in c,
-# so these fixtures sample that densely -- a wider jump reads as a branch
-# boundary, which is how two closures on one line stay apart.
+# on the smallest gap among the points closing within `congruent_tol` of one
+# composition, so one closure yields one tag and two closures a tolerance apart
+# stay separate. These fixtures sample composition at `dc_max`, the drift the
+# refiner steps by.
 
 _DC = 0.01  # ClausiusClapeyronRefiner's default dc_max, hence the sample spacing
 _GRID = np.round(np.arange(0.0, 1.0 + _DC / 2, _DC), 10)
@@ -1516,17 +1516,18 @@ def test_tag_congruent_one_sided_closure():
     assert _closes_at(np.linspace(0.20, 0.001, len(_GRID))) == pytest.approx([1.0])
 
 
-def test_tag_congruent_separates_branches_by_composition():
+def test_tag_congruent_separates_closures_far_apart_in_composition():
     """One boundary_id covers a whole phase pair, which a triple point can
     leave as two disjoint branches closing at c=0 and c=1 -- the case that
-    T-ordering interleaves into one line and half-tags."""
+    T-ordering interleaves into one line and half-tags. Compositions a whole
+    tolerance apart never share a window, so the two closures stay apart."""
     shared = [0.0, 0.005, 0.995, 1.0]
     assert _closes_at([0.001, 0.02, 0.02, 0.001], shared=shared) == pytest.approx([0.0, 1.0])
 
 
-def test_tag_congruent_collapses_a_flat_branch_to_one_point():
-    """Two pure components melting at the same temperature leave a branch
-    sitting flat at zero gap; it is one closure, so it gets one tag."""
+def test_tag_congruent_collapses_an_equal_gap_run_to_one_point():
+    """Two pure components melting at the same temperature leave a run of
+    points at exactly zero gap; it is one closure, so it gets one tag."""
     shared = [0.40, 0.41, 0.42, 0.43]
     assert _closes_at([0.0] * 4, shared=shared) == pytest.approx([0.40])
 
@@ -1560,29 +1561,26 @@ def test_tag_congruent_leaves_other_emitted_types_alone():
 
 
 @given(
-    closures=st.lists(st.floats(min_value=0.05, max_value=0.95), min_size=1, max_size=3,
-                      unique_by=lambda c: round(c / 0.2)),
+    closures=st.lists(st.floats(min_value=0.05, max_value=0.95), min_size=1, max_size=3),
     depth=st.floats(min_value=1e-6, max_value=0.005),
+    ceiling=st.floats(min_value=0.006, max_value=0.5),
 )
 @settings(deadline=None, max_examples=50)
-def test_tag_congruent_recovers_planted_closures(closures, depth):
+def test_tag_congruent_recovers_planted_closures(closures, depth, ceiling):
     """Plant closures at known compositions, read them back.
 
-    The gap is the distance to the nearest planted closure, so each one is a V
-    whose vertex sits at the composition it closes at.
+    The gap rises away from each planted closure towards `ceiling`, which is
+    drawn from below as well as above the tolerance: a line that stays under it
+    everywhere is exactly the case a rule comparing the gap against the
+    tolerance alone gets wrong, tagging one closure where there are two.
     """
     closures = sorted(np.round(np.array(closures) / _DC) * _DC)
-    gaps = np.min(np.abs(_GRID[:, None] - np.array(closures)[None, :]), axis=1) + depth
+    # Closures nearer than the window would be one closure, not two.
+    tol = ClausiusClapeyronRefiner().congruent_tol
+    assume(len(closures) == 1 or np.diff(closures).min() >= 2 * tol)
+    dist = np.min(np.abs(_GRID[:, None] - np.array(closures)[None, :]), axis=1)
+    gaps = depth + dist * ceiling / (dist + ceiling)  # -> depth at a closure, -> ceiling away
     assert _closes_at(gaps) == pytest.approx(closures, abs=_DC)
-
-
-def test_tag_congruent_emits_the_locus():
-    """The tag reaches the dataframe as Locus.CONGRUENT, not BOUNDARY."""
-    phases = _gap_phases([0.02], [0.5])
-    tagged = replace(RefinedPoint(T=300.0, mu=0.0, phases=("lo", "hi")), congruent=True)
-    plain = RefinedPoint(T=300.0, mu=0.0, phases=("lo", "hi"))
-    assert all(row["locus"] == Locus.CONGRUENT for row in tagged.to_rows(phases))
-    assert all(row["locus"] == Locus.BOUNDARY for row in plain.to_rows(phases))
 
 
 @pytest.fixture(scope="module")

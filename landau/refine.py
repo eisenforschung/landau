@@ -109,7 +109,7 @@ class RefinedPoint:
     congruent : bool
         Set on the point of a two-phase line where the two phases'
         compositions meet (see
-        :meth:`ClausiusClapeyronRefiner._tag_congruent`).
+        :meth:`ClausiusClapeyronRefiner._tag_features`).
 
     :meth:`to_rows` tags each emitted row with ``locus``:
     :attr:`~landau.features.Locus.TRIPLE` for three coexisting phases,
@@ -1231,23 +1231,34 @@ class ClausiusClapeyronRefiner(_CCBase):
         melting point, where the line runs into c=0 or c=1. Either way the
         concentration gap ``|c1 - c2|`` bottoms out there.
 
-        So the tag goes on each *local* minimum of the gap that is also below
-        ``congruent_tol``, the line's own ends included: a line that ends
-        because its two phases became one has its minimum exactly at an end.
-        Locality is what keeps the tolerance off the critical path -- it only
-        has to exclude a line that never closes, not to pick out which point
-        closes -- and it is judged along the
-        composition the points close at, not along T. A ``boundary_id`` covers
-        a whole phase *pair*, which a triple point can leave as two disjoint
-        branches: the liquid/solid pair of the Toy notebook's system runs to
-        c=0 on one side and c=1 on the other, both reaching their terminal
-        within 0.1 K, so in T-order they interleave and a scan sees one line
-        where there are two.
+        So a point is tagged when its gap is below ``congruent_tol`` and is the
+        smallest among the points closing within ``congruent_tol`` of the same
+        composition -- one tag per closure, taken where the two phases come
+        closest. Comparing against neighbours rather than against the tolerance
+        alone is what lets the tolerance stay loose: an isomorphous lens
+        narrower than it closes at both terminals all the same, where a
+        "deepest point below the tolerance" rule would find one closure in it.
 
-        Only the shape of the gap decides, never where the trace stopped: a
-        line reaching a pure component's melting point is routinely cut short
-        by ``_dominated`` too, since past the terminal a third phase takes over
-        the extrapolated line.
+        Composition is the axis to compare along, not T. A ``boundary_id``
+        covers a whole phase *pair*, which a triple point can leave as two
+        disjoint branches -- the liquid/solid pair of the Toy notebook's system
+        runs to c=0 on one side and c=1 on the other, both reaching their
+        terminal within 0.1 K -- and in T-order those interleave, so a scan
+        sees one line where there are two. In composition they stay apart, and
+        the window keeps them apart without having to decide where one branch
+        ends: points a whole tolerance away in composition never compete.
+
+        Only the gap decides, never where the trace stopped: a line reaching a
+        pure component's melting point is routinely cut short by ``_dominated``
+        too, since past the terminal a third phase takes over the extrapolated
+        line.
+
+        The tolerance does still decide one case on its own. A two-phase field
+        that stays narrower than it for its whole length without ever closing
+        has no shape to read, so its shallowest points are tagged as closures;
+        a field that narrow is at the resolution the trace itself samples with
+        (hence the default of a few ``dc_max``), so the data cannot tell the
+        two apart.
         """
         # Only RefinedPoint carries the flag; a subclass emitting anything else
         # (a miscibility gap, say) passes through untouched.
@@ -1257,26 +1268,22 @@ class ClausiusClapeyronRefiner(_CCBase):
         cs = [self._emitted_concentrations(points[i], phases) for i in where]
         gap = np.array([abs(c[0] - c[1]) if len(c) == 2 else np.inf for c in cs])
         shared = np.array([np.mean(c) if len(c) == 2 else np.nan for c in cs])
-        tol = self.congruent_tol
+        keep = np.isfinite(shared) & np.isfinite(gap)
+        where, gap, shared = where[keep], gap[keep], shared[keep]
 
         order = np.argsort(shared, kind="stable")
-        gap, shared, where = gap[order], shared[order], where[order]
+        where, gap, shared = where[order], gap[order], shared[order]
+        tol = self.congruent_tol
+        # Points closing within a tolerance of the same composition are the one
+        # closure; the window is over that neighbourhood, so a line needs no
+        # splitting into branches and a run of equal gaps yields one tag (the
+        # first, since argmin takes the earliest of a tie).
+        lo = np.searchsorted(shared, shared - tol, side="left")
+        hi = np.searchsorted(shared, shared + tol, side="right")
         out = list(points)
-        # Branches first: a composition jump wider than the tolerance is a
-        # discontinuity, since the trace steps by at most dc_max in c.
-        for branch in np.split(np.arange(gap.size),
-                               np.flatnonzero(np.diff(shared) > tol) + 1):
-            g = gap[branch]
-            # A minimum is no higher than either neighbour, the branch's own
-            # ends counting as minima of their single side. Non-strict, so a
-            # branch sitting flat at zero -- two pure components melting at the
-            # same temperature leave one -- is not passed over; the run is then
-            # collapsed to its first point so a plateau yields one tag, not one
-            # per sample.
-            minimum = (np.r_[True, g[1:] <= g[:-1]] & np.r_[g[:-1] <= g[1:], True]
-                       & (g < tol))
-            for j in branch[minimum & ~np.r_[False, minimum[:-1]]]:
-                out[where[j]] = replace(points[where[j]], congruent=True)
+        for i in np.flatnonzero(gap < tol):
+            if lo[i] + np.argmin(gap[lo[i]:hi[i]]) == i:
+                out[where[i]] = replace(points[where[i]], congruent=True)
         return out
 
     def propose(self, df: pd.DataFrame) -> Iterator[_InterCandidate]:

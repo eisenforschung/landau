@@ -421,7 +421,7 @@ def _annotate_transition_temperatures(df, polys=(), ax=None, variables=None):
 
     * a triple point's label goes into the two-phase negative space above or
       below its isotherm, which exists only in c-T: in mu-T the phase fields
-      tile the plane, so there the search starts at the second preference,
+      tile the plane, so neither kind looks for it there,
     * a congruent point's label goes inside one of the two phase fields meeting
       at it.
 
@@ -456,9 +456,12 @@ def _annotate_transition_temperatures(df, polys=(), ax=None, variables=None):
     # figure rendered at a different dpi searches the same fraction of it.
     step = max(axbb.height / 150, 1.0)
     max_offset = axbb.height / 4
-    # A triple point's negative space is a c-T notion; in mu-T the phase fields
-    # tile the plane, so trying it there only pays for a doomed scan.
-    triple_modes = ("negative", "field", "free") if variables[0] == "c" else ("field", "free")
+    # The two-phase negative space is a c-T notion; in mu-T the phase fields
+    # tile the plane, so looking for it there only pays for a doomed scan.
+    if variables[0] == "c":
+        triple_modes, congruent_modes = ("negative", "field", "free"), ("field", "negative", "free")
+    else:
+        triple_modes = congruent_modes = ("field", "free")
 
     def _label(x, y, modes, x_weight):
         text = _text_with_outline(
@@ -502,7 +505,7 @@ def _annotate_transition_temperatures(df, polys=(), ax=None, variables=None):
         # The two phases meet here, so their concentrations agree to within the
         # refiner's tolerance; the mean is the composition of the invariant.
         x = grp["c"].mean() if variables[0] == "c" else mu
-        _label(x, T, ("field", "negative", "free"), x_weight=1.5)
+        _label(x, T, congruent_modes, x_weight=1.5)
 
 
 def _set_axis_for(axis_var: str, df_stable, element: str | None, ax) -> None:
