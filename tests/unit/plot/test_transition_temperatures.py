@@ -364,20 +364,38 @@ def test_congruent_label_sits_inside_a_phase_field(eutectic_diagram):
         plt.close(fig)
 
 
-@pytest.mark.parametrize("triplepoints", [False, True], ids=["implied", "explicit"])
-def test_warns_only_when_triplepoints_is_left_off(eutectic_diagram, triplepoints):
-    """transition_temperatures turns the triple-point marks on regardless, so it
-    says so when the caller did not ask for them."""
+@pytest.mark.parametrize(
+    "triplepoints, transition_temperatures, marks, labels",
+    [
+        (None, False, False, False),   # neither asked for
+        (None, True, True, True),      # unspecified: the marks follow the labels
+        (True, False, True, False),    # marks alone, as before this feature
+        (True, True, True, True),      # both asked for
+        (False, True, False, True),    # marks refused: labels do not switch them back on
+        (False, False, False, False),  # marks refused, nothing else asked for
+    ],
+    ids=["neither", "unspecified", "marks-only", "both", "marks-refused", "off"],
+)
+def test_triplepoint_marks_follow_the_caller(eutectic_diagram, triplepoints,
+                                             transition_temperatures, marks, labels):
+    """`triplepoints=None` is "the caller did not say", so the marks can follow
+    the labels that annotate them. Saying it settles it: an explicit False keeps
+    the marks off with the labels on, so no keyword switches on what another
+    turned off -- and nothing has to warn about doing so."""
     fig, ax = plt.subplots()
     try:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             plot_phase_diagram(
                 eutectic_diagram, ax=ax, poly_method=Concave(drop_interior=False),
-                transition_temperatures=True, triplepoints=triplepoints, legend=False,
+                triplepoints=triplepoints,
+                transition_temperatures=transition_temperatures, legend=False,
             )
-        implies = [w for w in caught if "implies triplepoints" in str(w.message)]
-        assert len(implies) == (0 if triplepoints else 1)
+        # No arrangement of the two is surprising enough to warn about.
+        assert not [w for w in caught if "triplepoints" in str(w.message)]
+        isotherms = [seg for coll in ax.collections for seg in coll.get_segments()]
+        assert bool(isotherms) is marks
+        assert bool(_label_boxes(ax)) is labels
     finally:
         plt.close(fig)
 

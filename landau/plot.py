@@ -549,7 +549,7 @@ def _plot_phase_diagram(
     element=None,
     min_c_width=1e-2,
     color_override: dict[str, str] = {},
-    triplepoints=False,
+    triplepoints=None,
     transition_temperatures=False,
     poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
     variables: list[str] | None = None,
@@ -568,9 +568,12 @@ def _plot_phase_diagram(
 
     plot_polygons(polys, color_map, ax=ax)
 
-    if transition_temperatures and not triplepoints:
-        warn("transition_temperatures implies triplepoints; drawing the triple-point marks too")
-    if triplepoints or transition_temperatures:
+    # triplepoints=None means the caller did not say, so the marks follow
+    # whatever else is being drawn -- today, the temperature labels, which
+    # annotate them. Passing it explicitly settles it either way: False keeps
+    # the marks off even with the labels on, rather than having one keyword
+    # quietly switch on what another turned off.
+    if transition_temperatures if triplepoints is None else triplepoints:
         _plot_triplepoints(df, ax=ax, variables=variables)
 
     _set_axis_for(variables[0], df_stable, element, ax)
@@ -600,7 +603,7 @@ def plot_phase_diagram(
     element=None,
     min_c_width=1e-2,
     color_override: dict[str, str] = {},
-    triplepoints=False,
+    triplepoints=None,
     transition_temperatures=False,
     poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
     variables: list[str] | None = None,
@@ -649,7 +652,7 @@ def plot_mu_phase_diagram(
     alpha=0.1,
     element=None,
     color_override: dict[str, str] = {},
-    triplepoints=False,
+    triplepoints=None,
     transition_temperatures=False,
     poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
     inline_legend=True,
