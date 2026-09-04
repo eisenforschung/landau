@@ -2,6 +2,7 @@ import pytest
 import numpy as np
 import pandas as pd
 from hypothesis import given, strategies as st
+from scipy.special import logsumexp, softmax
 from landau.calculate import (
     calc_phase_diagram,
     find_one_point,
@@ -295,7 +296,7 @@ def test_split_phase_unit_rejects_non_integer_unit():
 
 # --- guess_mu_range tests ---
 
-from landau.phases import LinePhase, IdealSolution, RegularSolution
+from landau.phases import LinePhase, IdealSolution, RegularSolution, FastInterpolatingPhase, kB
 
 
 _GMR_SAMPLES = 50
@@ -372,6 +373,177 @@ def test_guess_mu_range_endpoints_match_reported_concentrations(T):
     mus, c0, c1 = guess_mu_range(phases, T=T, samples=100)
     assert _semigrand_average_concentration(phases, T, mus.min()) == pytest.approx(c0, abs=3e-3)
     assert _semigrand_average_concentration(phases, T, mus.max()) == pytest.approx(c1, abs=3e-3)
+
+
+# --- _semigrand_average_concentration tests ---
+
+
+def test_semigrand_average_concentration_single_phase_scalar():
+    # A single phase's weight collapses to 1, so the average is just its own c.
+    phase = LinePhase("A", fixed_concentration=0.3, line_energy=0.0)
+    assert _semigrand_average_concentration([phase], T=500, mu=1.7) == pytest.approx(0.3)
+
+
+def test_semigrand_average_concentration_single_phase_array():
+    phase = LinePhase("A", fixed_concentration=0.3, line_energy=0.0)
+    mu = np.linspace(-5, 5, 7)
+    result = _semigrand_average_concentration([phase], T=500, mu=mu)
+    assert result.shape == mu.shape
+    np.testing.assert_allclose(result, 0.3)
+
+
+def test_semigrand_average_concentration_coexistence_is_arithmetic_mean():
+    # Equal energies and c=0/c=1 endpoints put coexistence exactly at mu=0:
+    # phi_a = phi_b = 0, so both phases carry weight 0.5 and the average is
+    # the plain arithmetic mean of the two concentrations.
+    a = LinePhase("A", fixed_concentration=0.0, line_energy=0.0)
+    b = LinePhase("B", fixed_concentration=1.0, line_energy=0.0)
+    assert _semigrand_average_concentration([a, b], T=300, mu=0.0) == pytest.approx(0.5)
+
+
+def test_semigrand_average_concentration_collapses_onto_dominant_phase():
+    # Far from coexistence (mu=0) at low T, the exponential weighting is
+    # essentially a hard argmin: the average should sit on the dominant
+    # phase's own concentration.
+    a = LinePhase("A", fixed_concentration=0.0, line_energy=0.0)
+    b = LinePhase("B", fixed_concentration=1.0, line_energy=0.0)
+    assert _semigrand_average_concentration([a, b], T=10, mu=5.0) == pytest.approx(1.0, abs=1e-6)
+    assert _semigrand_average_concentration([a, b], T=10, mu=-5.0) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_semigrand_average_concentration_numerical_stability_guard():
+    # One phase (dom) is far more stable than the other (normal) at every
+    # sampled mu: without the phis - phis.min(axis=0) shift, exp(-phi / kB T)
+    # would overflow to inf for the very negative phi and corrupt the
+    # normalisation into nan. With the shift the result stays exactly on the
+    # dominant phase's concentration, and no overflow/invalid FP error fires.
+    dom = LinePhase("dom", fixed_concentration=0.7, line_energy=-1e6)
+    normal = LinePhase("normal", fixed_concentration=0.2, line_energy=0.0)
+    mu = np.array([-1.0, 0.0, 1.0])
+    with np.errstate(over="raise", invalid="raise"):
+        result = _semigrand_average_concentration([dom, normal], T=300, mu=mu)
+    assert np.all(np.isfinite(result))
+    np.testing.assert_allclose(result, 0.7)
+
+
+def test_semigrand_average_concentration_array_mu_shape_contract():
+    a = LinePhase("A", fixed_concentration=0.0, line_energy=0.0)
+    b = LinePhase("B", fixed_concentration=1.0, line_energy=0.1)
+    mu = np.linspace(-3, 3, 11)
+    result = _semigrand_average_concentration([a, b], T=300, mu=mu)
+    assert result.shape == mu.shape
+    assert np.isscalar(_semigrand_average_concentration([a, b], T=300, mu=0.5))
+
+
+@given(
+    spec=st.lists(
+        st.tuples(st.floats(min_value=0, max_value=1), st.floats(min_value=-2, max_value=2)),
+        min_size=1,
+        max_size=5,
+    ),
+    mu=st.floats(min_value=-1e6, max_value=1e6),
+)
+def test_semigrand_average_concentration_matches_softmax_oracle(spec, mu):
+    # Independent oracle: scipy's numerically stable softmax over -phi / kB T.
+    # |mu| up to 1e6 puts phi/kB T past the exp overflow threshold, so the
+    # phis - phis.min(axis=0) shift is what keeps the weights finite; without it
+    # the oracle and the helper part ways at inf/inf. The weighted mean is a
+    # convex combination, so it can never leave the span of the phases' own
+    # concentrations no matter how extreme mu gets.
+    phases = [LinePhase(f"p{i}", c, e) for i, (c, e) in enumerate(spec)]
+    cs = np.array([c for c, _ in spec])
+    phis = np.array([e - mu * c for c, e in spec])
+    expected = float((softmax(-phis / (kB * 300.0)) * cs).sum())
+    with np.errstate(over="raise", invalid="raise"):
+        got = _semigrand_average_concentration(phases, T=300.0, mu=mu)
+    assert got == pytest.approx(expected, abs=1e-12)
+    assert cs.min() - 1e-12 <= got <= cs.max() + 1e-12
+
+
+def _mixed_phases():
+    """Line phases, both analytic solution models, and an interpolating phase
+    whose concentration range is the strict subset [0.25, 0.75] of [0, 1]."""
+    a = LinePhase("A", 0, 0.0)
+    b = LinePhase("B", 1, 0.1)
+    return [
+        a,
+        b,
+        IdealSolution("sol", a, b),
+        RegularSolution("reg", phases=[LinePhase("A", 0, 0.0), LinePhase("M", 0.5, 0.05), LinePhase("B", 1, 0.0)]),
+        FastInterpolatingPhase(
+            "nar", phases=[LinePhase("a", 0.25, 0.5), LinePhase("m", 0.5, -0.5), LinePhase("b", 0.75, 0.5)]
+        ),
+    ]
+
+
+def test_semigrand_average_concentration_equals_ensemble_potential_derivative():
+    # The Boltzmann average is the exact mu derivative of the ensemble potential
+    # Phi = -kB T log sum_i exp(-phi_i / kB T): dPhi/dmu = sum_i p_i dphi_i/dmu
+    # = -sum_i p_i c_i, using dphi_i/dmu = -c_i for every phase. Pins the
+    # weighting itself, which the symmetric two-phase cases above cannot -- any
+    # mismatch between the weights and the concentrations they multiply (wrong
+    # temperature factor, missing normalisation, sign flip) breaks the identity.
+    phases = _mixed_phases()
+    T = 800.0
+    mu = np.linspace(-2, 2, 9)
+    h = 1e-5
+
+    def phi_ensemble(m):
+        phis = np.array([p.semigrand_potential(T, m) for p in phases])
+        return -kB * T * logsumexp(-phis / (kB * T), axis=0)
+
+    numerical = -(phi_ensemble(mu + h) - phi_ensemble(mu - h)) / (2 * h)
+    np.testing.assert_allclose(_semigrand_average_concentration(phases, T, mu), numerical, atol=1e-6)
+
+
+def test_semigrand_average_concentration_monotone_in_mu():
+    # d<c>/dmu = Var_p(c) / kB T + <dc/dmu> >= 0, so c(mu) is non-decreasing for
+    # any phase set. guess_mu_range inverts this mapping with interp1d, which
+    # needs monotonicity to be single valued.
+    phases = _mixed_phases()
+    mus = np.linspace(-10, 10, 1001)
+    c = _semigrand_average_concentration(phases, T=800.0, mu=mus)
+    assert np.all(np.diff(c) >= -1e-12)
+    # not vacuous: the sampled window covers essentially all of [0, 1]
+    assert c.min() < 1e-3 and c.max() > 1 - 1e-3
+
+
+def test_semigrand_average_concentration_restricted_range_phases_stay_in_span():
+    # Phases covering only a subset of [0, 1]: an interpolating phase confined
+    # to [0.25, 0.75] plus a line phase at c=0.9. The average is a convex
+    # combination, so it stays inside [0.25, 0.9] and saturates on the two
+    # extreme phases rather than reaching the pure concentrations -- a caller
+    # that assumes c(mu) sweeps all of [0, 1] is reading the helper wrong.
+    phases = [_mixed_phases()[-1], LinePhase("hi", 0.9, 0.02)]
+    mus = np.linspace(-200, 200, 401)
+    c = _semigrand_average_concentration(phases, T=600.0, mu=mus)
+    assert c.min() >= 0.25 - 1e-12 and c.max() <= 0.9 + 1e-12
+    assert np.all(np.diff(c) >= -1e-12)
+    with np.errstate(over="raise", invalid="raise"):
+        assert _semigrand_average_concentration(phases, T=600.0, mu=-1e4) == pytest.approx(0.25, abs=1e-12)
+        assert _semigrand_average_concentration(phases, T=600.0, mu=+1e4) == pytest.approx(0.9, abs=1e-12)
+
+
+def test_semigrand_average_concentration_slow_response_matches_two_state_form():
+    # Phases that respond only slowly to mu: two line phases 0.002 apart in c.
+    # The full c(mu) sigmoid then has width kB T / dc ~ 13 eV, so across the
+    # (-10, 10) window guess_mu_range scans, c(mu) moves by under 1e-3 -- yet it
+    # still has to resolve strictly, and match the exact two-state weighting
+    # even at |mu| = 1e5, where the unshifted exponentials overflow.
+    ca, cb = 0.499, 0.501
+    phases = [LinePhase("A", ca, 0.0), LinePhase("B", cb, 0.0)]
+    T = 300.0
+
+    mu = np.array([-1e5, -10.0, 0.0, 10.0, 1e5])
+    with np.errstate(over="raise", invalid="raise"):
+        got = _semigrand_average_concentration(phases, T, mu)
+    # closed form: <c> = ca + (cb - ca) * sigmoid(mu * (cb - ca) / kB T)
+    expected = ca + (cb - ca) / (1 + np.exp(-np.clip(mu * (cb - ca) / (kB * T), -700, 700)))
+    np.testing.assert_allclose(got, expected, atol=1e-15)
+
+    scan = _semigrand_average_concentration(phases, T, np.linspace(-10, 10, 201))
+    assert scan.max() - scan.min() < 1e-3
+    assert np.all(np.diff(scan) > 0)
 
 
 # --- _split_stable tests ---
