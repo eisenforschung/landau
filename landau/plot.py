@@ -484,10 +484,13 @@ def _annotate_transition_temperatures(df, ax=None, variables=None):
     triple = df[df["locus"] == Locus.TRIPLE]
     if variables[0] == "c":
         for (_mu, T), grp in triple.groupby(["mu", "T"], sort=False)[["c"]]:
-            # Anchored on the isotherm's midpoint; the placement then lifts the
-            # label off the line into the negative space above or below it.
-            c_mid = (grp["c"].min() + grp["c"].max()) / 2
-            _label(c_mid, T, ("negative", "field", "free"), x_weight=3.0)
+            # Anchored on the invariant's own composition -- the middle of the
+            # three, the one that melts or decomposes into the outer two, and
+            # where the eutectic or peritectic point is drawn -- rather than
+            # the midpoint of the isotherm it spans. The placement then lifts
+            # the label off the line into the negative space above or below it,
+            # moving along the line only if it has to.
+            _label(grp["c"].median(), T, ("negative", "field", "free"), x_weight=3.0)
     elif variables[0] == "mu":
         for (mu, T), _grp in triple.groupby(["mu", "T"], sort=False):
             _label(mu, T, ("negative", "field", "free"), x_weight=3.0)

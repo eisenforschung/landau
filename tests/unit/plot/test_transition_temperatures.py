@@ -98,13 +98,25 @@ def test_labels_every_triple_point(ax, triple_df, variables):
     assert sorted(t.get_text() for t in ax.texts) == ["300 K", "450 K"]
 
 
-def test_cT_label_sits_above_the_line_midpoint(ax, triple_df):
-    _annotate_transition_temperatures(triple_df, ax=ax, variables=["c", "T"])
-    by_text = {t.get_text(): t for t in ax.texts}
-    x, y = by_text["300 K"].get_position()
-    assert x == pytest.approx(0.5)  # midpoint of this invariant's c=0.1..0.9
+def test_cT_label_sits_above_the_triple_point(ax):
+    """Anchored on the invariant's own composition -- the middle of the three,
+    where the eutectic point is drawn -- not the midpoint of the isotherm it
+    spans, which for an asymmetric invariant is somewhere else entirely."""
+    df = pd.DataFrame(
+        {
+            "mu": [0.2] * 3,
+            "T": [300.0] * 3,
+            "c": [0.1, 0.3, 0.9],  # span midpoint 0.5, triple point 0.3
+            "phase": ["A", "B", "C"],
+            "locus": [Locus.TRIPLE] * 3,
+        }
+    )
+    _annotate_transition_temperatures(df, ax=ax, variables=["c", "T"])
+    label, = ax.texts
+    x, y = label.get_position()
+    assert x == pytest.approx(0.3)
     assert y > 300.0  # nudged above the isotherm
-    assert by_text["300 K"].get_ha() == "center"
+    assert label.get_ha() == "center"
 
 
 def test_noop_without_locus_column(ax, triple_df):
