@@ -106,23 +106,34 @@ class RefinedPoint:
     boundary_id : int
         Identifier shared by all rows that belong to the same coexistence
         line (assigned by the refiner's ``run()``).
+    congruent : bool
+        Set on the point of a two-phase line where the two phases'
+        compositions meet (see
+        :meth:`ClausiusClapeyronRefiner._tag_congruent`).
 
     :meth:`to_rows` tags each emitted row with ``locus``:
     :attr:`~landau.features.Locus.TRIPLE` for three coexisting phases,
-    :attr:`~landau.features.Locus.BOUNDARY` otherwise.
+    :attr:`~landau.features.Locus.CONGRUENT` for a two-phase point marked
+    ``congruent``, :attr:`~landau.features.Locus.BOUNDARY` otherwise.
     """
 
     T: float
     mu: float
     phases: tuple[str, ...]
     boundary_id: int = 0
+    congruent: bool = False
 
     def phase_names(self) -> set[str]:
         return set(self.phases)
 
     def to_rows(self, phases: Mapping[str, Phase]) -> list[dict]:
         rows = [_state_row(phases[name], self.T, self.mu) for name in self.phases]
-        locus = Locus.TRIPLE if len(self.phases) == 3 else Locus.BOUNDARY
+        if len(self.phases) == 3:
+            locus = Locus.TRIPLE
+        elif self.congruent:
+            locus = Locus.CONGRUENT
+        else:
+            locus = Locus.BOUNDARY
         for row in rows:
             row["boundary_id"] = self.boundary_id
             row["locus"] = locus
@@ -962,7 +973,6 @@ class _CCBase(Refiner):
             Walk bound (typically ``cand.T_min`` or ``cand.T_max``).
         sign : int
             ``+1`` for an upward walk in T, ``-1`` for downward.
-
         Yields
         ------
         RefinedPoint or RefinedMiscibilityGap
@@ -1095,6 +1105,19 @@ class _CCBase(Refiner):
                                half_width, cand.T_min, -1))
         return out
 
+    def _tag_features(self, points, phases):
+        """Hook: tag features spotted along a whole coexistence line.
+
+        Called by :meth:`run` once per ``boundary_id`` with every point kept
+        for that line, ordered along it (ascending T). One line is generally
+        assembled from several candidates -- a narrow one can come back as a
+        scatter of seed-only solves, with no single call seeing more than one
+        of its points -- so this runs on the line, not on one traced segment.
+        Returns the points to emit; the base implementation adds no tags. See
+        :meth:`ClausiusClapeyronRefiner._tag_congruent`.
+        """
+        return points
+
     def run(self, df: pd.DataFrame, phases: Mapping[str, Phase]) -> pd.DataFrame:
         rows: list[dict] = []
         # Per-pair list of completed traces; each trace is a tuple of
@@ -1103,8 +1126,11 @@ class _CCBase(Refiner):
         # _simplex_straddles inventing fake cross-segments between
         # unrelated single-point seed traces.
         traced: dict[object, list[Trace]] = {}
-        # One boundary_id per coexistence line (keyed by _pair_key).
+        # One boundary_id per coexistence line (keyed by _pair_key), and the
+        # points found for it, gathered across every candidate that fed it so
+        # _tag_features sees the whole line at once.
         boundary_ids: dict[object, int] = {}
+        by_line: dict[int, list] = {}
         next_bid = 0
         for cand in self.propose(df):
             key = self._pair_key(cand)
@@ -1120,10 +1146,10 @@ class _CCBase(Refiner):
             if key not in boundary_ids:
                 boundary_ids[key] = next_bid
                 next_bid += 1
-            bid = boundary_ids[key]
-            for pt in pts:
-                if pt.T < 0 or _dominated(pt, phases):
-                    continue
+            by_line.setdefault(boundary_ids[key], []).extend(pts)
+        for bid, pts in by_line.items():
+            keep = [pt for pt in pts if pt.T >= 0 and not _dominated(pt, phases)]
+            for pt in self._tag_features(sorted(keep, key=lambda p: p.T), phases):
                 rows.extend(replace(pt, boundary_id=bid).to_rows(phases))
         out = pd.DataFrame(rows)
         if out.empty:
@@ -1178,9 +1204,63 @@ class ClausiusClapeyronRefiner(_CCBase):
         Per-step concentration-drift cap / floor. See :class:`_CCBase`.
     max_steps : int
         Hard cap on steps per trace direction. See :class:`_CCBase`.
+    congruent_tol : float
+        Concentration gap below which the two phases count as sharing a
+        composition, tagging the point :attr:`~landau.features.Locus.CONGRUENT`.
+        See :meth:`_tag_congruent`.
     """
 
     label = "clausius-clapeyron"
+
+    def __init__(self, *, congruent_tol: float = 0.05, **kwargs):
+        super().__init__(**kwargs)
+        self.congruent_tol = congruent_tol
+
+    def _tag_features(self, points, phases):
+        return self._tag_congruent(points, phases)
+
+    def _tag_congruent(self, points, phases):
+        """Tag the points where the two phases' compositions meet.
+
+        A transformation is congruent when both coexisting phases have the same
+        composition, so nothing has to diffuse for it to happen: the congruent
+        maximum or minimum of a solidus/liquidus loop, or -- the terminal case
+        -- a pure component's melting point, where the line runs into c=0 or
+        c=1. Either way the trace's concentration gap ``|c1 - c2|`` dips to
+        (nearly) zero there, so the tag goes on every strict local minimum of
+        the gap below ``congruent_tol``, the trace's own two ends included --
+        an isomorphous loop closes at both terminals, so one tag per line would
+        be one too few, and a line that ends *because* the two phases became
+        one has its minimum exactly at that end.
+
+        The tolerance is what separates a closing line from one that ends at a
+        triple point, where the two phases still differ in composition. Where
+        the trace stopped does not: a line reaching a pure component's melting
+        point is routinely cut short by ``_dominated`` as well, since past the
+        terminal a third phase takes over the extrapolated line.
+
+        ``points`` must be ordered along the line, as :meth:`_CCBase.solve`
+        passes them.
+        """
+        if len(points) < 2:
+            return points
+        gaps = []
+        for pt in points:
+            c = self._emitted_concentrations(pt, phases)
+            gaps.append(abs(c[0] - c[1]) if len(c) == 2 else float("inf"))
+        out = list(points)
+        n = len(gaps)
+        for i, gap in enumerate(gaps):
+            if gap >= self.congruent_tol:
+                continue
+            if i > 0 and gap > gaps[i - 1]:
+                continue
+            if i < n - 1 and gap > gaps[i + 1]:
+                continue
+            if not ((i > 0 and gap < gaps[i - 1]) or (i < n - 1 and gap < gaps[i + 1])):
+                continue
+            out[i] = replace(points[i], congruent=True)
+        return out
 
     def propose(self, df: pd.DataFrame) -> Iterator[_InterCandidate]:
         T_min = float(df["T"].min())

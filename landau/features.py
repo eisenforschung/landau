@@ -23,8 +23,15 @@ class Locus(StrEnum):
         branches of a miscibility gap.
     TRIPLE
         A refined point at which three phases coexist.
+    CONGRUENT
+        A refined point on a two-phase coexistence line where the two phases
+        share a composition, so the transformation happens without a change in
+        concentration: the congruent maximum or minimum of a solidus/liquidus
+        loop, or -- the terminal case -- a pure component's melting point,
+        where the line runs into c=0 or c=1.
     """
 
     INTERIOR = "interior"
     BOUNDARY = "boundary"
     TRIPLE = "triple"
+    CONGRUENT = "congruent"

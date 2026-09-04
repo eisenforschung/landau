@@ -1,16 +1,12 @@
 """Tests for transition-temperature annotations on 2d phase diagrams.
 
 _annotate_transition_temperatures (plot_phase_diagram / plot_mu_phase_diagram's
-transition_temperatures=True) labels every triple point with its temperature --
-these are tagged in the dataframe (Locus.TRIPLE) -- and then does the same for
-whatever congruent-transformation points _find_congruent_points turns up.
-Congruent points are not tagged, so they are found heuristically: the
-concentration gap between the two coexisting phases along a refined
-boundary_id line shrinking below `tol`, either at a strict interior local
-minimum (an isomorphous solidus/liquidus loop) or at the trace's own endpoint
-provided that point's concentration is itself within `tol` of a domain edge
-(c=0 or c=1) -- the trivial congruent case of a pure component's melting
-point.
+transition_temperatures=True) labels every invariant with its temperature. Both
+kinds are tagged in the dataframe -- Locus.TRIPLE for a three-phase invariant,
+Locus.CONGRUENT for a point where two coexisting phases share a composition
+(tagged by ClausiusClapeyronRefiner, tested in tests/unit/test_refine.py) -- so
+these tests cover reading them back and, above all, where the labels land:
+inside the axes and never across a phase boundary.
 """
 import warnings
 
@@ -28,7 +24,6 @@ from landau.plot import (
     _annotate_transition_temperatures,
     _clear_label_center,
     _diagram_geometry_px,
-    _find_congruent_points,
     plot_mu_phase_diagram,
     plot_phase_diagram,
 )
@@ -66,23 +61,17 @@ def ax():
     plt.close(fig)
 
 
-def _boundary_df(gaps, Ts, mus=None, phases=("S", "L"), boundary_id=0, centers=None):
-    """A two-phase refined boundary_id line with a given concentration gap per T.
+def _congruent_df(points):
+    """Frame of Locus.CONGRUENT rows: one `(mu, T, c)` invariant per entry.
 
-    `gaps[i]` is the concentration gap between the two coexisting phases at
-    `Ts[i]` (`mus[i]` if given, else 0, 1, 2, ...), centered on `centers[i]`
-    (0.5 -- mid-composition -- for every point if not given).
+    Each carries the two coexisting phases at that shared composition, the way
+    ClausiusClapeyronRefiner emits a tagged point.
     """
-    if mus is None:
-        mus = [float(i) for i in range(len(Ts))]
-    if centers is None:
-        centers = [0.5] * len(Ts)
-    lo, hi = phases
     rows = []
-    for mu, T, gap, center in zip(mus, Ts, gaps, centers):
-        c_lo, c_hi = center - gap / 2, center + gap / 2
-        rows.append({"mu": mu, "T": T, "c": c_lo, "phase": lo, "locus": Locus.BOUNDARY, "boundary_id": boundary_id})
-        rows.append({"mu": mu, "T": T, "c": c_hi, "phase": hi, "locus": Locus.BOUNDARY, "boundary_id": boundary_id})
+    for mu, T, c in points:
+        for phase in ("S", "L"):
+            rows.append({"mu": mu, "T": T, "c": c, "phase": phase,
+                         "locus": Locus.CONGRUENT, "boundary_id": 0})
     return pd.DataFrame(rows)
 
 
@@ -98,78 +87,6 @@ def triple_df():
             "locus": [Locus.TRIPLE] * 6,
         }
     )
-
-
-# --- _find_congruent_points --------------------------------------------------
-
-
-def test_finds_interior_local_minimum():
-    df = _boundary_df(gaps=[0.30, 0.02, 0.30], Ts=[300.0, 320.0, 340.0])
-    out = _find_congruent_points(df, tol=0.05)
-    assert len(out) == 1
-    mu, T, c = out[0]
-    assert (mu, T, c) == pytest.approx((1.0, 320.0, 0.5))
-
-
-def test_edge_minimum_away_from_terminal_excluded():
-    """A shrinking gap at the trace's end is not enough on its own: it also has
-    to sit near a domain edge (c=0 or c=1), or the trace just stopped there for
-    some other reason (e.g. a triple point away from either terminal)."""
-    df = _boundary_df(gaps=[0.30, 0.20, 0.10, 0.02], Ts=[300.0, 310.0, 320.0, 330.0])  # centered on c=0.5
-    assert _find_congruent_points(df, tol=0.05) == []
-
-
-def test_terminal_congruent_point_included():
-    """The trivial congruent case: a solidus/liquidus trace running into a pure
-    component's melting point at c=0 has its gap and its own concentration
-    both vanish together at that endpoint."""
-    df = _boundary_df(
-        gaps=[0.02, 0.20, 0.30], Ts=[300.0, 320.0, 340.0], centers=[0.01, 0.15, 0.30],
-    )
-    out = _find_congruent_points(df, tol=0.05)
-    assert len(out) == 1
-    mu, T, c = out[0]
-    assert (T, c) == pytest.approx((300.0, 0.01))
-
-
-def test_endpoint_gap_shrinking_but_off_terminal_excluded():
-    """Same shrinking-gap-at-the-endpoint shape as the terminal case, but the
-    composition itself never approaches 0 or 1 -- not a terminal melting
-    point, so it must not be flagged."""
-    df = _boundary_df(
-        gaps=[0.02, 0.20, 0.30], Ts=[300.0, 320.0, 340.0], centers=[0.5, 0.5, 0.5],
-    )
-    assert _find_congruent_points(df, tol=0.05) == []
-
-
-def test_above_tolerance_not_flagged():
-    df = _boundary_df(gaps=[0.30, 0.20, 0.30], Ts=[300.0, 320.0, 340.0])
-    assert _find_congruent_points(df, tol=0.05) == []
-
-
-def test_miscibility_gap_same_phase_excluded():
-    """A miscibility gap's two branches share one phase name; its closing gap is
-    a consolute point, not a congruent transformation, and must not be flagged."""
-    df = _boundary_df(gaps=[0.30, 0.02, 0.30], Ts=[300.0, 320.0, 340.0], phases=("A", "A"))
-    assert _find_congruent_points(df, tol=0.05) == []
-
-
-@pytest.mark.parametrize(
-    "transform",
-    [lambda df: df.drop(columns="boundary_id"), lambda df: df.drop(columns="locus")],
-    ids=["no-boundary_id", "no-locus"],
-)
-def test_missing_columns_returns_empty(transform):
-    df = _boundary_df(gaps=[0.30, 0.02, 0.30], Ts=[300.0, 320.0, 340.0])
-    assert _find_congruent_points(transform(df)) == []
-
-
-def test_boundary_ids_checked_independently():
-    a = _boundary_df(gaps=[0.30, 0.02, 0.30], Ts=[300.0, 320.0, 340.0], boundary_id=0)
-    b = _boundary_df(gaps=[0.30, 0.20, 0.30], Ts=[300.0, 320.0, 340.0], boundary_id=1)
-    out = _find_congruent_points(pd.concat([a, b], ignore_index=True), tol=0.05)
-    assert len(out) == 1
-    assert out[0][1] == pytest.approx(320.0)
 
 
 # --- _annotate_transition_temperatures ---------------------------------------
@@ -195,17 +112,27 @@ def test_noop_without_locus_column(ax, triple_df):
     assert list(ax.texts) == []
 
 
-def test_congruent_point_gets_marker_and_label(ax):
-    df = _boundary_df(gaps=[0.30, 0.02, 0.30], Ts=[300.0, 320.0, 340.0])
+@pytest.mark.parametrize("variables", [["c", "T"], ["mu", "T"]], ids=["c-T", "mu-T"])
+def test_labels_every_congruent_point(ax, variables):
+    df = _congruent_df([(0.2, 320.0, 0.05), (0.6, 400.0, 0.95)])
+    _annotate_transition_temperatures(df, ax=ax, variables=variables)
+    assert sorted(t.get_text() for t in ax.texts) == ["320 K", "400 K"]
+    assert list(ax.lines) == []  # the label alone, no marker
+
+
+def test_congruent_label_anchors_on_the_shared_composition(ax):
+    """One label per invariant, anchored on the composition the two phases
+    share, not one per emitted row."""
+    df = _congruent_df([(0.2, 320.0, 0.05)])
     _annotate_transition_temperatures(df, ax=ax, variables=["c", "T"])
-    assert [t.get_text() for t in ax.texts] == ["320 K"]
-    markers = [line for line in ax.lines if line.get_marker() == "D"]
-    assert len(markers) == 1
-    assert (markers[0].get_xdata()[0], markers[0].get_ydata()[0]) == pytest.approx((0.5, 320.0))
+    label, = ax.texts
+    x, _y = label.get_position()
+    assert x == pytest.approx(0.05, abs=0.05)
 
 
-def test_congruent_point_below_tol_not_labelled(ax):
-    df = _boundary_df(gaps=[0.30, 0.20, 0.30], Ts=[300.0, 320.0, 340.0])
+def test_boundary_rows_are_not_labelled(ax):
+    """Only tagged invariants are annotated; plain boundary rows are not."""
+    df = _congruent_df([(0.2, 320.0, 0.05)]).assign(locus=Locus.BOUNDARY)
     _annotate_transition_temperatures(df, ax=ax, variables=["c", "T"])
     assert list(ax.texts) == [] and list(ax.lines) == []
 
@@ -324,10 +251,10 @@ def test_congruent_label_sits_inside_a_phase_field(eutectic_diagram):
             transition_temperatures=True, legend=False,
         )
         renderer = plot_mod._get_renderer(fig)
-        congruent = _find_congruent_points(eutectic_diagram)
-        assert congruent, "fixture must carry terminal congruent points"
+        congruent = eutectic_diagram[eutectic_diagram["locus"] == Locus.CONGRUENT]
+        assert not congruent.empty, "fixture must carry terminal congruent points"
         regions, _obstacles = _diagram_geometry_px(ax)
-        for _mu, T, _c in congruent:
+        for (_mu, T), _grp in congruent.groupby(["mu", "T"]):
             label, = [t for t in ax.texts if t.get_text() == f"{T:.0f} K"]
             box = shapely.box(*label.get_window_extent(renderer).extents)
             assert any(region.contains(box) for region in regions)

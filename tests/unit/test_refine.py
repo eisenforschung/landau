@@ -1,5 +1,5 @@
 """Unit tests for refiners in landau.refine."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
@@ -1431,3 +1431,125 @@ def test_emitted_concentrations_returns_plain_floats():
     pt = RefinedPoint(T=500.0, mu=0.05, phases=("A",))
     for c in refiner._emitted_concentrations(pt, phases):
         assert type(c) is float
+
+
+# -- ClausiusClapeyronRefiner._tag_congruent -----------------------------------
+#
+# A congruent transformation is one where both coexisting phases share a
+# composition, so the line's concentration gap dips to ~zero there. The tag
+# goes on every strict local minimum of that gap below `congruent_tol`, the
+# line's own ends included -- the tolerance, not where the line stopped, is
+# what separates a closing line from one that ran into a triple point.
+
+
+def _gap_phases(gaps):
+    """Phases whose concentration gap at mu = i is `gaps[i]`, centred on c=0.5.
+
+    Concentration is keyed off mu so a RefinedPoint at mu=i reproduces the
+    wanted gap through the refiner's own `_emitted_concentrations`.
+    """
+
+    @dataclass(frozen=True)
+    class _GapPhase:
+        name: str
+        sign: float
+
+        def concentration(self, T, mu):
+            return 0.5 + self.sign * gaps[int(round(mu))] / 2
+
+        def semigrand_potential(self, T, mu):
+            return 0.0
+
+    return {"lo": _GapPhase("lo", -1.0), "hi": _GapPhase("hi", +1.0)}
+
+
+def _gap_points(gaps):
+    return [RefinedPoint(T=300.0 + 10 * i, mu=float(i), phases=("lo", "hi"))
+            for i in range(len(gaps))]
+
+
+def _tagged(gaps, **kwargs):
+    """Indices of the points tagged congruent for this gap sequence."""
+    refiner = ClausiusClapeyronRefiner(**kwargs)
+    out = refiner._tag_congruent(_gap_points(gaps), _gap_phases(gaps))
+    return [i for i, pt in enumerate(out) if pt.congruent]
+
+
+def test_tag_congruent_interior_minimum():
+    """A solidus/liquidus loop closing mid-composition."""
+    assert _tagged([0.30, 0.02, 0.30]) == [1]
+
+
+def test_tag_congruent_both_terminals_of_one_line():
+    """An isomorphous line closes at both pure components, so both ends are
+    tagged -- one tag per line would be one too few."""
+    assert _tagged([0.02, 0.20, 0.30, 0.20, 0.02]) == [0, 4]
+
+
+def test_tag_congruent_end_of_a_closing_line():
+    """A line that ends because its two phases became one -- a pure component's
+    melting point -- has the gap minimum at that very end."""
+    assert _tagged([0.02, 0.20, 0.30]) == [0]
+    assert _tagged([0.30, 0.20, 0.02]) == [2]
+
+
+def test_tag_congruent_ignores_a_gap_above_tolerance():
+    assert _tagged([0.30, 0.20, 0.30]) == []
+
+
+def test_tag_congruent_tolerance_is_configurable():
+    assert _tagged([0.30, 0.20, 0.30], congruent_tol=0.25) == [1]
+
+
+def test_tag_congruent_leaves_a_monotonic_trace_alone():
+    """No local minimum anywhere but the end, which is itself the minimum."""
+    assert _tagged([0.30, 0.20, 0.10, 0.02]) == [3]
+
+
+def test_tag_congruent_needs_two_points():
+    refiner = ClausiusClapeyronRefiner()
+    one = _gap_points([0.0])
+    assert refiner._tag_congruent(one, _gap_phases([0.0])) == one
+
+
+def test_tag_congruent_emits_the_locus():
+    """The tag reaches the dataframe as Locus.CONGRUENT, not BOUNDARY."""
+    phases = _gap_phases([0.02])
+    tagged = replace(RefinedPoint(T=300.0, mu=0.0, phases=("lo", "hi")), congruent=True)
+    plain = RefinedPoint(T=300.0, mu=0.0, phases=("lo", "hi"))
+    assert all(row["locus"] == Locus.CONGRUENT for row in tagged.to_rows(phases))
+    assert all(row["locus"] == Locus.BOUNDARY for row in plain.to_rows(phases))
+
+
+def test_tag_congruent_sees_a_line_assembled_from_single_point_solves(monkeypatch):
+    """A narrow coexistence line can come back as a scatter of seed-only solves,
+    no single one holding more than one of its points. Tagging runs per
+    boundary_id in run(), so the line's terminal is spotted anyway."""
+    gaps = [0.30, 0.20, 0.02]
+    phases, pts = _gap_phases(gaps), _gap_points(gaps)
+    refiner = ClausiusClapeyronRefiner()
+    monkeypatch.setattr("landau.refine._simplex_straddles", lambda cand, traces: False)
+    cands = [_InterCandidate(phase1="lo", phase2="hi", T_seed=float(i),
+                             mu_bracket=(0.0, 1.0), T_bracket=(0.0, 1.0),
+                             T_min=0.0, T_max=1.0, proj_p1=(0.0, 0.0), proj_p2=(1.0, 1.0))
+             for i in range(len(pts))]
+    monkeypatch.setattr(refiner, "propose", lambda df: iter(cands))
+    monkeypatch.setattr(refiner, "solve", lambda cand, ph: [pts[int(cand.T_seed)]])
+    monkeypatch.setattr(refiner, "_pair_key", lambda cand: ("lo", "hi"))
+
+    out = refiner.run(pd.DataFrame(), phases)
+    tagged = out[out["locus"] == Locus.CONGRUENT]
+    assert sorted(set(tagged["T"])) == [pts[-1].T]
+    assert set(out["boundary_id"]) == {0}  # all one line
+
+
+def test_terminal_melting_points_are_tagged_end_to_end(eutectic_diagram):
+    """The hcp/fcc/liquid fixture's pure-component transitions come back tagged,
+    each with the two coexisting phases at (nearly) the same composition."""
+    congruent = eutectic_diagram[eutectic_diagram["locus"] == Locus.CONGRUENT]
+    groups = list(congruent.groupby(["mu", "T"]))
+    assert len(groups) == 3, "one per pure-component transition in this system"
+    for _key, grp in groups:
+        assert len(grp) == 2  # exactly the two coexisting phases
+        assert grp["c"].max() - grp["c"].min() < 0.05  # they share a composition
+        assert min(grp["c"].min(), 1 - grp["c"].max()) < 0.05  # at a pure component

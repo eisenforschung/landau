@@ -320,73 +320,6 @@ def _plot_triplepoints(df, ax=None, variables=None):
             ax.plot(mu, T, marker="o", color="k", zorder=3)
 
 
-def _find_congruent_points(df, tol=0.05):
-    """Best-effort search for congruent-transformation points on refined boundaries.
-
-    A transformation is congruent when the two coexisting phases share (almost)
-    the same composition -- e.g. the maximum of a solidus/liquidus loop in an
-    isomorphous system, or (the trivial, terminal case) the melting point of a
-    pure component, where the solidus and liquidus both run into the domain
-    edge (c=0 or c=1). :func:`~landau.calculate.calc_phase_diagram` does not tag
-    either, so this looks for the concentration gap between the two phases
-    shrinking below ``tol`` along each refined two-phase coexistence line
-    (grouped by ``boundary_id``): a strict interior local minimum for the
-    isomorphous case, or the trace's own endpoint provided its concentration
-    also sits within ``tol`` of 0 or 1 -- ruling out a trace that simply
-    stopped there for an unrelated reason, e.g. running into a triple point
-    away from the domain edge. This is a plausible signature, not a
-    guarantee -- callers should treat a hit as a suggestion to verify, not as
-    ground truth.
-
-    A ``boundary_id`` group whose rows collapse to a single phase name (a
-    miscibility gap's two branches, which share one phase) is skipped: its
-    concentration gap closing is a consolute point, a different phenomenon from
-    a congruent transformation between two distinct phases.
-
-    Args:
-        df (pandas.DataFrame):
-            Phase-diagram frame carrying ``locus`` and ``boundary_id`` columns.
-            A frame without either (unrefined, or refined by a Refiner that
-            predates ``boundary_id``) has no candidates.
-        tol (float, optional):
-            Concentration-gap threshold below which a candidate qualifies; also
-            the terminal tolerance used to test an endpoint's concentration
-            against 0 or 1. Default 0.05.
-
-    Returns:
-        list[tuple[float, float, float]]:
-            ``(mu, T, c)`` per candidate point, where ``c`` is the mean of the
-            two phases' concentrations.
-    """
-    if "boundary_id" not in df.columns or "locus" not in df.columns:
-        return []
-    boundary = df[df["locus"] == Locus.BOUNDARY]
-    out = []
-    for _bid, g in boundary.groupby("boundary_id"):
-        if g["phase"].nunique() != 2:
-            continue
-        pts = g.groupby(["mu", "T"])["c"].agg(["min", "max"]).reset_index()
-        pts = pts.sort_values("T").reset_index(drop=True)
-        n = len(pts)
-        if n < 2:
-            continue
-        gap = (pts["max"] - pts["min"]).to_numpy()
-        for i in range(n):
-            if gap[i] >= tol:
-                continue
-            if i > 0 and gap[i] > gap[i - 1]:
-                continue
-            if i < n - 1 and gap[i] > gap[i + 1]:
-                continue
-            if not ((i > 0 and gap[i] < gap[i - 1]) or (i < n - 1 and gap[i] < gap[i + 1])):
-                continue
-            c_mean = float((pts["min"].iloc[i] + pts["max"].iloc[i]) / 2)
-            if (i == 0 or i == n - 1) and not (c_mean < tol or c_mean > 1 - tol):
-                continue
-            out.append((float(pts["mu"].iloc[i]), float(pts["T"].iloc[i]), c_mean))
-    return out
-
-
 _LABEL_PAD = 3.0  # px clearance kept between a label box and any drawn feature
 
 
@@ -396,7 +329,7 @@ def _diagram_geometry_px(ax):
     ``regions`` are the phase polygons drawn on ``ax``; ``obstacles`` are the
     phase boundaries themselves -- every polygon outline -- plus whatever else
     is already drawn in data coordinates (a triple point's isothermal line, a
-    congruent point's marker).  Pixel space is the natural frame here: a label's
+    congruent point's isotherm).  Pixel space is the natural frame here: a label's
     rendered size is fixed in pixels while the two data axes have unrelated
     scales.
     """
@@ -478,16 +411,17 @@ def _clear_label_center(anchor, size, *, regions, obstacle, axes_box, mode, x_we
     return None
 
 
-def _annotate_transition_temperatures(df, ax=None, variables=None, congruent_tol=0.05):
+def _annotate_transition_temperatures(df, ax=None, variables=None):
     """Label the temperature of every transition invariant on a 2d phase diagram.
 
-    Triple points take priority: every three-phase invariant tagged
-    :attr:`~landau.features.Locus.TRIPLE` (see :func:`_plot_triplepoints`) gets a
-    ``"<T> K"`` label. Congruent-transformation points are then labelled too, if
-    :func:`_find_congruent_points` turns any up -- a best-effort addition, since
-    they are not tagged in the dataframe the way triple points are; a diagram
-    with none is left with triple-point labels only, no candidates need to be
-    forced.
+    Both kinds of invariant are tagged in the ``locus`` column of a refined
+    :func:`~landau.calculate.calc_phase_diagram` frame, so this only reads them
+    back: :attr:`~landau.features.Locus.TRIPLE` for a three-phase invariant
+    (see :func:`_plot_triplepoints`) and
+    :attr:`~landau.features.Locus.CONGRUENT` for a point where two coexisting
+    phases share a composition (see
+    :meth:`~landau.refine.ClausiusClapeyronRefiner._tag_congruent`). A frame
+    with neither -- an unrefined one, say -- draws nothing.
 
     Every label is placed by :func:`_clear_label_center` so that it stays inside
     the axes and never cuts across a phase boundary, each kind preferring the
@@ -511,8 +445,6 @@ def _annotate_transition_temperatures(df, ax=None, variables=None, congruent_tol
             The axis to plot on.
         variables (list[str], optional):
             The ``[x, y]`` axis variables; defaults to ``["c", "T"]``.
-        congruent_tol (float, optional):
-            Forwarded to :func:`_find_congruent_points`.
     """
     if variables is None:
         variables = ["c", "T"]
@@ -560,10 +492,11 @@ def _annotate_transition_temperatures(df, ax=None, variables=None, congruent_tol
         for (mu, T), _grp in triple.groupby(["mu", "T"], sort=False):
             _label(mu, T, ("negative", "field", "free"), x_weight=3.0)
 
-    for mu, T, c in _find_congruent_points(df, tol=congruent_tol):
-        x = c if variables[0] == "c" else mu
-        ax.plot(x, T, marker="D", color="k", markersize=4, zorder=11)
-        obstacles.append(shapely.Point(ax.transData.transform((x, T))).buffer(4.0))
+    congruent = df[df["locus"] == Locus.CONGRUENT]
+    for (mu, T), grp in congruent.groupby(["mu", "T"], sort=False)[["c"]]:
+        # The two phases meet here, so their concentrations agree to within the
+        # refiner's tolerance; the mean is the composition of the invariant.
+        x = grp["c"].mean() if variables[0] == "c" else mu
         _label(x, T, ("field", "negative", "free"), x_weight=1.5)
 
 
