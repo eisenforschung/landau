@@ -12,6 +12,8 @@ provided that point's concentration is itself within `tol` of a domain edge
 (c=0 or c=1) -- the trivial congruent case of a pure component's melting
 point.
 """
+import warnings
+
 import matplotlib
 
 matplotlib.use("Agg")
@@ -329,6 +331,24 @@ def test_congruent_label_sits_inside_a_phase_field(eutectic_diagram):
             label, = [t for t in ax.texts if t.get_text() == f"{T:.0f} K"]
             box = shapely.box(*label.get_window_extent(renderer).extents)
             assert any(region.contains(box) for region in regions)
+    finally:
+        plt.close(fig)
+
+
+@pytest.mark.parametrize("triplepoints", [False, True], ids=["implied", "explicit"])
+def test_warns_only_when_triplepoints_is_left_off(eutectic_diagram, triplepoints):
+    """transition_temperatures turns the triple-point marks on regardless, so it
+    says so when the caller did not ask for them."""
+    fig, ax = plt.subplots()
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            plot_phase_diagram(
+                eutectic_diagram, ax=ax, poly_method=Concave(drop_interior=False),
+                transition_temperatures=True, triplepoints=triplepoints, legend=False,
+            )
+        implies = [w for w in caught if "implies triplepoints" in str(w.message)]
+        assert len(implies) == (0 if triplepoints else 1)
     finally:
         plt.close(fig)
 

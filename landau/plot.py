@@ -627,6 +627,8 @@ def _plot_phase_diagram(
 
     plot_polygons(polys, color_map, ax=ax)
 
+    if transition_temperatures and not triplepoints:
+        warn("transition_temperatures implies triplepoints; drawing the triple-point marks too")
     if triplepoints or transition_temperatures:
         _plot_triplepoints(df, ax=ax, variables=variables)
 
