@@ -3,6 +3,19 @@
 Notable changes to **landau.py**, newest first. Per-PR detail lives in the
 [GitHub releases](https://github.com/eisenforschung/landau/releases).
 
+## [1.13.0](https://github.com/eisenforschung/landau/compare/1.12.0...1.13.0) (2026-09-03)
+
+
+### Features
+
+* **fleche:** digest the objects fleche refuses (spline, quasi-harmonic phase, Whitney RBF) ([#450](https://github.com/eisenforschung/landau/issues/450)) ([3f0071a](https://github.com/eisenforschung/landau/commit/3f0071af3c2a719fbf82ca8da2fac92bb25a8183))
+
+
+### Bug Fixes
+
+* **deps:** require fleche&gt;=0.22.1 for the digest hook tests ([#448](https://github.com/eisenforschung/landau/issues/448)) ([04615a6](https://github.com/eisenforschung/landau/commit/04615a6a8e01a043196488cd25df24b8ee609faa))
+* **refine:** _dominated drops non-coexisting refined transitions robustly ([#345](https://github.com/eisenforschung/landau/issues/345)) ([79251ea](https://github.com/eisenforschung/landau/commit/79251ea2a78d25bf83471d7a8a1004ec32f4dde4))
+
 ## [1.12.0](https://github.com/eisenforschung/landau/compare/1.11.1...1.12.0) (2026-09-02)
 
 
