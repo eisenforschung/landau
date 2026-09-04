@@ -323,45 +323,50 @@ def _plot_triplepoints(df, ax=None, variables=None):
 _LABEL_PAD = 3.0  # px clearance kept between a label box and any drawn feature
 
 
-def _diagram_geometry_px(ax):
-    """Phase regions and the lines a label must not cover, in display pixels.
+def _label_obstacles_px(ax, polys, renderer):
+    """What a temperature label has to stay off, in display pixels.
 
-    ``regions`` are the phase polygons drawn on ``ax``; ``obstacles`` are the
-    phase boundaries themselves -- every polygon outline -- plus whatever else
-    is already drawn in data coordinates (a triple point's isothermal line, a
-    congruent point's isotherm).  Pixel space is the natural frame here: a label's
+    ``regions`` are the phase polygons as drawn -- taken from the same
+    :func:`get_polygons` result the caller plotted, rather than read back off
+    ``ax.patches``, which would also pick up any unrelated patch the caller put
+    there. ``obstacles`` are the lines it must not cover: every polygon
+    outline, whatever else is drawn in data coordinates (a triple point's
+    isotherm and marker, via :func:`_curve_obstacles`) and the labels already
+    placed on the axes. Pixel space is the natural frame here: a label's
     rendered size is fixed in pixels while the two data axes have unrelated
     scales.
     """
     regions, obstacles = [], []
-    for patch in ax.patches:
-        if not hasattr(patch, "get_xy"):
-            continue
-        region = _shapely_polygon(ax.transData.transform(patch.get_xy()))
+    for poly in polys:
+        region = _shapely_polygon(ax.transData.transform(poly.get_xy()))
         if region is not None:
             regions.append(region)
             obstacles.append(region.exterior)
-    for coll in ax.collections:
-        if not hasattr(coll, "get_segments"):
-            continue
-        for seg in coll.get_segments():
-            seg = ax.transData.transform(seg)
-            if len(seg) >= 2:
-                obstacles.append(shapely.LineString(seg))
-    for line in ax.lines:
-        if line.get_transform() is not ax.transData:
-            continue
-        xy = ax.transData.transform(line.get_xydata())
-        xy = xy[np.isfinite(xy).all(axis=1)]
-        if len(xy) >= 2:
-            obstacles.append(shapely.LineString(xy))
-        elif len(xy) == 1:
-            obstacles.append(shapely.Point(xy[0]).buffer(_LABEL_PAD))
+    drawn = _curve_obstacles(ax)
+    if drawn is not None:
+        obstacles.append(drawn)
+    obstacles.extend(shapely.box(*t.get_window_extent(renderer).extents) for t in ax.texts)
     return regions, obstacles
 
 
-def _clear_label_center(anchor, size, *, regions, obstacle, axes_box, mode, x_weight,
-                        step=4.0, max_offset=150.0):
+def _label_offsets(size, x_weight, step, max_offset):
+    """Candidate displacements from an anchor, nearest first.
+
+    Horizontal movement is charged ``x_weight`` times vertical, so a label
+    slides along whichever axis it is meant to have room on before drifting
+    sideways. The closest candidate already clears the labelled feature by half
+    a label plus the pad, so the anchor itself is never returned.
+    """
+    lo = size[1] / 2 + _LABEL_PAD
+    n = int(max_offset / step) + 1
+    offsets = [(sx * i * step, sy * (lo + j * step))
+               for i in range(n) for j in range(n)
+               for sx in ((1, -1) if i else (1,)) for sy in (1, -1)]
+    offsets.sort(key=lambda d: float(np.hypot(d[0] * x_weight, d[1])))
+    return offsets
+
+
+def _clear_label_center(anchor, size, offsets, *, regions, obstacle, axes_box, mode):
     """Nearest offset from ``anchor`` (in pixels) where a label clears everything.
 
     The label box -- ``size`` is its rendered ``(width, height)``, inflated by
@@ -378,23 +383,10 @@ def _clear_label_center(anchor, size, *, regions, obstacle, axes_box, mode, x_we
     ``"free"``
         no region constraint; the fallback when neither side has room.
 
-    Candidates are scanned outward from the anchor with horizontal movement
-    charged ``x_weight`` times vertical, so a label slides along whichever axis
-    it is meant to have room on before drifting sideways.  Never returns the
-    anchor itself: the closest candidate still clears the feature being
-    labelled by half a label plus the pad.  ``None`` when nothing fits.
+    ``offsets`` are the displacements to try, nearest first, from
+    :func:`_label_offsets`.  ``None`` when nothing fits.
     """
     w, h = size
-    lo = h / 2 + _LABEL_PAD
-    n = int(max_offset / step) + 1
-    offsets = []
-    for i in range(n):
-        for j in range(n):
-            dx, dy = i * step, lo + j * step
-            for sx in ((1, -1) if dx else (1,)):
-                for sy in (1, -1):
-                    offsets.append((sx * dx, sy * dy))
-    offsets.sort(key=lambda d: float(np.hypot(d[0] * x_weight, d[1])))
     for dx, dy in offsets:
         cx, cy = anchor[0] + dx, anchor[1] + dy
         box = shapely.box(cx - w / 2 - _LABEL_PAD, cy - h / 2 - _LABEL_PAD,
@@ -411,7 +403,7 @@ def _clear_label_center(anchor, size, *, regions, obstacle, axes_box, mode, x_we
     return None
 
 
-def _annotate_transition_temperatures(df, ax=None, variables=None):
+def _annotate_transition_temperatures(df, polys=(), ax=None, variables=None):
     """Label the temperature of every transition invariant on a 2d phase diagram.
 
     Both kinds of invariant are tagged in the ``locus`` column of a refined
@@ -420,27 +412,30 @@ def _annotate_transition_temperatures(df, ax=None, variables=None):
     (see :func:`_plot_triplepoints`) and
     :attr:`~landau.features.Locus.CONGRUENT` for a point where two coexisting
     phases share a composition (see
-    :meth:`~landau.refine.ClausiusClapeyronRefiner._tag_congruent`). A frame
+    :meth:`~landau.refine.ClausiusClapeyronRefiner._tag_features`). A frame
     with neither -- an unrefined one, say -- draws nothing.
 
-    Every label is placed by :func:`_clear_label_center` so that it stays inside
-    the axes and never cuts across a phase boundary, each kind preferring the
-    space its feature lives in:
+    Every label is placed by :func:`_clear_label_center` so that it stays
+    inside the axes and never cuts across a phase boundary or an already-placed
+    label, each kind preferring the space its feature lives in:
 
     * a triple point's label goes into the two-phase negative space above or
-      below its isotherm (in c-T; in mu-T the phase fields tile the plane, so
-      there is no negative space and the second preference takes over),
+      below its isotherm, which exists only in c-T: in mu-T the phase fields
+      tile the plane, so there the search starts at the second preference,
     * a congruent point's label goes inside one of the two phase fields meeting
       at it.
 
     Each falls back to the other's space, then to any clear spot in the axes,
-    so a crowded diagram still gets labelled -- just less ideally.  Placed
-    labels join the obstacles, so they do not cover each other either.
+    so a crowded diagram still gets labelled -- just less ideally.
 
     Args:
         df (pandas.DataFrame):
             Phase-diagram frame carrying a ``locus`` column. Unrefined frames
             have nothing to label.
+        polys (pandas.Series or iterable, optional):
+            The phase polygons as drawn, from :func:`get_polygons`; a label is
+            kept off their outlines and, for a congruent point, inside one of
+            them.
         ax (matplotlib.axes.Axes, optional):
             The axis to plot on.
         variables (list[str], optional):
@@ -456,7 +451,14 @@ def _annotate_transition_temperatures(df, ax=None, variables=None):
     renderer = _get_renderer(ax.figure)
     axbb = ax.get_window_extent(renderer)
     axes_box = shapely.box(axbb.x0, axbb.y0, axbb.x1, axbb.y1)
-    regions, obstacles = _diagram_geometry_px(ax)
+    regions, obstacles = _label_obstacles_px(ax, polys, renderer)
+    # Scan resolution and reach in pixels, but derived from the axes so a
+    # figure rendered at a different dpi searches the same fraction of it.
+    step = max(axbb.height / 150, 1.0)
+    max_offset = axbb.height / 4
+    # A triple point's negative space is a c-T notion; in mu-T the phase fields
+    # tile the plane, so trying it there only pays for a doomed scan.
+    triple_modes = ("negative", "field", "free") if variables[0] == "c" else ("field", "free")
 
     def _label(x, y, modes, x_weight):
         text = _text_with_outline(
@@ -465,18 +467,20 @@ def _annotate_transition_temperatures(df, ax=None, variables=None):
         bbox = text.get_window_extent(renderer)
         size = (bbox.width, bbox.height)
         anchor = tuple(ax.transData.transform((x, y)))
+        offsets = _label_offsets(size, x_weight, step, max_offset)
         obstacle = shapely.union_all(obstacles) if obstacles else None
         center = None
         for mode in modes:
-            center = _clear_label_center(
-                anchor, size, regions=regions, obstacle=obstacle, axes_box=axes_box,
-                mode=mode, x_weight=x_weight,
-            )
+            center = _clear_label_center(anchor, size, offsets, regions=regions,
+                                         obstacle=obstacle, axes_box=axes_box, mode=mode)
             if center is not None:
                 break
-        if center is None:  # nothing clears: keep the anchor, pulled into the axes
-            center = (min(max(anchor[0], axbb.x0 + size[0] / 2), axbb.x1 - size[0] / 2),
-                      min(max(anchor[1], axbb.y0 + size[1] / 2), axbb.y1 - size[1] / 2))
+        if center is None:
+            # Nothing clears: keep the label at its anchor, pulled inside the
+            # axes with the same clearance a placed one would have kept.
+            half_w, half_h = size[0] / 2 + _LABEL_PAD, size[1] / 2 + _LABEL_PAD
+            center = (min(max(anchor[0], axbb.x0 + half_w), axbb.x1 - half_w),
+                      min(max(anchor[1], axbb.y0 + half_h), axbb.y1 - half_h))
         text.set_position(ax.transData.inverted().transform(center))
         obstacles.append(shapely.box(center[0] - size[0] / 2, center[1] - size[1] / 2,
                                      center[0] + size[0] / 2, center[1] + size[1] / 2))
@@ -487,13 +491,11 @@ def _annotate_transition_temperatures(df, ax=None, variables=None):
             # Anchored on the invariant's own composition -- the middle of the
             # three, the one that melts or decomposes into the outer two, and
             # where the eutectic or peritectic point is drawn -- rather than
-            # the midpoint of the isotherm it spans. The placement then lifts
-            # the label off the line into the negative space above or below it,
-            # moving along the line only if it has to.
-            _label(grp["c"].median(), T, ("negative", "field", "free"), x_weight=3.0)
+            # the midpoint of the isotherm it spans.
+            _label(grp["c"].median(), T, triple_modes, x_weight=3.0)
     elif variables[0] == "mu":
         for (mu, T), _grp in triple.groupby(["mu", "T"], sort=False):
-            _label(mu, T, ("negative", "field", "free"), x_weight=3.0)
+            _label(mu, T, triple_modes, x_weight=3.0)
 
     congruent = df[df["locus"] == Locus.CONGRUENT]
     for (mu, T), grp in congruent.groupby(["mu", "T"], sort=False)[["c"]]:
@@ -571,15 +573,16 @@ def _plot_phase_diagram(
     _set_axis_for(variables[0], df_stable, element, ax)
 
     ax.set_ylim(df_stable["T"].min(), df_stable["T"].max())
-    # Both need the final axis limits: inline labels to centre on each polygon,
-    # transition labels for the pixel-space nudge off their mark.
-    if transition_temperatures:
-        _annotate_transition_temperatures(df, ax=ax, variables=variables)
+    # Inline labels need the final axis limits to place each label at the centre
+    # of its polygon, so this runs after the limits above are set.
     if legend:
         if inline_legend:
             _add_inline_polygon_labels(ax, polys)
         else:
             ax.legend(ncols=2)
+    # Last, so the phase labels just placed are obstacles it keeps clear of.
+    if transition_temperatures:
+        _annotate_transition_temperatures(df, polys, ax=ax, variables=variables)
     ax.set_ylabel("$T$ [K]")
 
 
@@ -1361,16 +1364,19 @@ def plot_1d_T_phase_diagram(
 # ---------------------------------------------------------------------------
 
 def _curve_obstacles(ax):
-    """Drawn curves and scatter markers of *ax* as one shapely geometry in pixels.
+    """Everything drawn on *ax* in data coordinates, as one pixel-space geometry.
 
-    Phase curves become :class:`shapely.LineString`\\ s and scatter dots (line-phase
-    markers, hull vertices) become :class:`shapely.Point`\\ s buffered by their
-    marker radius, all in display coordinates so a label's pixel bounding box can be
-    tested against them directly.  The horizontal reference line (a blended-transform
-    ``axhline``) is skipped so labels are not pushed off the zero line.  Returns the
-    unioned geometry, or ``None`` when nothing is drawn yet.
+    Curves and segment collections (a phase curve, a triple point's isotherm)
+    become :class:`shapely.LineString`\\ s; scatter dots and lone markers
+    (line-phase markers, hull vertices, a triple point in mu-T) become
+    :class:`shapely.Point`\\ s buffered by their marker radius.  All in display
+    coordinates, so a label's pixel bounding box can be tested against them
+    directly.  The horizontal reference line (a blended-transform ``axhline``)
+    is skipped so labels are not pushed off the zero line.  Returns the unioned
+    geometry, or ``None`` when nothing is drawn yet.
     """
     geoms = []
+    dpi = ax.figure.dpi
     for line in ax.lines:
         if line.get_transform() is not ax.transData:  # skip refline / blended artists
             continue
@@ -1378,8 +1384,19 @@ def _curve_obstacles(ax):
         disp = disp[np.isfinite(disp).all(axis=1)]
         if len(disp) >= 2:
             geoms.append(shapely.LineString(disp))
-    dpi = ax.figure.dpi
+        elif len(disp) == 1 and line.get_marker() not in ("", "None", None):
+            # A lone marker (a triple point in mu-T) has no line to trace.
+            radius = max(line.get_markersize() / 2.0 * dpi / 72.0, 1.0)
+            geoms.append(shapely.Point(disp[0]).buffer(radius))
     for coll in ax.collections:
+        # Segment collections (a triple point's isotherm, from ax.hlines).
+        for seg in getattr(coll, "get_segments", list)():
+            seg = coll.get_transform().transform(seg)
+            if len(seg) >= 2:
+                geoms.append(shapely.LineString(seg))
+    for coll in ax.collections:
+        if not hasattr(coll, "get_sizes"):  # not a scatter; handled above
+            continue
         offsets = np.asarray(coll.get_offsets(), dtype=float)
         if offsets.size == 0:
             continue

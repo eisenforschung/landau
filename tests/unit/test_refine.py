@@ -5,6 +5,8 @@ import numpy as np
 import pandas as pd
 import pytest
 import shapely
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from landau.features import Locus
 from landau.calculate import calc_phase_diagram
@@ -1440,12 +1442,17 @@ def test_emitted_concentrations_returns_plain_floats():
         assert type(c) is float
 
 
-# -- ClausiusClapeyronRefiner._tag_congruent -----------------------------------
+# -- ClausiusClapeyronRefiner._tag_features (congruent points) -----------------
 #
 # A congruent transformation is one where both coexisting phases share a
-# composition, so the line's concentration gap dips to ~zero there. Candidates
-# are the points whose gap is below `congruent_tol`; those agreeing on the
-# composition they close at are one event, and the deepest of each is tagged.
+# composition, so the line's concentration gap bottoms out there. The tag goes
+# on each local minimum of the gap below `congruent_tol`, judged along the
+# composition the points close at. The refiner steps by at most `dc_max` in c,
+# so these fixtures sample that densely -- a wider jump reads as a branch
+# boundary, which is how two closures on one line stay apart.
+
+_DC = 0.01  # ClausiusClapeyronRefiner's default dc_max, hence the sample spacing
+_GRID = np.round(np.arange(0.0, 1.0 + _DC / 2, _DC), 10)
 
 
 def _gap_phases(gaps, shared):
@@ -1470,63 +1477,103 @@ def _gap_phases(gaps, shared):
     return {"lo": _GapPhase("lo", -1.0), "hi": _GapPhase("hi", +1.0)}
 
 
-def _gap_points(gaps):
-    return [RefinedPoint(T=300.0 + 10 * i, mu=float(i), phases=("lo", "hi"))
-            for i in range(len(gaps))]
+def _gap_points(n):
+    return [RefinedPoint(T=300.0 + i, mu=float(i), phases=("lo", "hi")) for i in range(n)]
 
 
-def _tagged(gaps, shared=None, **kwargs):
-    """Indices of the points tagged congruent for this line."""
-    if shared is None:
-        shared = [0.5] * len(gaps)
+def _closes_at(gaps, shared=_GRID, **kwargs):
+    """Compositions of the points tagged congruent along this line."""
+    gaps, shared = list(gaps), list(shared)
     refiner = ClausiusClapeyronRefiner(**kwargs)
-    out = refiner._tag_congruent(_gap_points(gaps), _gap_phases(gaps, shared))
-    return sorted(i for i, pt in enumerate(out) if pt.congruent)
+    out = refiner._tag_features(_gap_points(len(gaps)), _gap_phases(gaps, shared))
+    return [shared[i] for i, pt in enumerate(out) if pt.congruent]
 
 
-def test_tag_congruent_tags_the_deepest_candidate():
-    """One event: the point where the two phases come closest."""
-    assert _tagged([0.30, 0.02, 0.04]) == [1]
+def test_tag_congruent_lens_closes_at_both_terminals():
+    """An isomorphous lens closes at both pure components, however wide it is
+    in between. Comparing the gap against the tolerance alone instead of
+    against its neighbours tags the narrow lens once and the wide one twice."""
+    for width in (0.025, 0.20):
+        gaps = width * np.sin(np.pi * _GRID)
+        assert _closes_at(gaps) == pytest.approx([0.0, 1.0]), f"width {width}"
 
 
-def test_tag_congruent_end_of_a_closing_line():
-    """A line that ends because its two phases became one -- a pure component's
-    melting point -- has its minimum at that very end."""
-    assert _tagged([0.02, 0.20, 0.30], shared=[0.0, 0.05, 0.1]) == [0]
-    assert _tagged([0.30, 0.20, 0.02], shared=[0.1, 0.05, 0.0]) == [2]
+def test_tag_congruent_ignores_a_line_that_never_closes():
+    """A narrow two-phase field running between two triple points has no
+    minimum near zero, however narrow it is."""
+    assert _closes_at([0.04] * len(_GRID)) == []
 
 
-def test_tag_congruent_separates_events_by_composition():
+def test_tag_congruent_interior_closure():
+    """An intermediate phase melting congruently: the gap dips to zero where
+    the other phase reaches its composition."""
+    gaps = 0.10 * np.abs(_GRID - 0.4) + 0.001
+    assert _closes_at(gaps) == pytest.approx([0.4])
+
+
+def test_tag_congruent_one_sided_closure():
+    """A line closing at one end only is tagged there and nowhere else."""
+    assert _closes_at(np.linspace(0.20, 0.001, len(_GRID))) == pytest.approx([1.0])
+
+
+def test_tag_congruent_separates_branches_by_composition():
     """One boundary_id covers a whole phase pair, which a triple point can
     leave as two disjoint branches closing at c=0 and c=1 -- the case that
     T-ordering interleaves into one line and half-tags."""
-    gaps = [0.02, 0.30, 0.30, 0.01]
-    shared = [0.0, 0.02, 0.98, 1.0]
-    assert _tagged(gaps, shared=shared) == [0, 3]
+    shared = [0.0, 0.005, 0.995, 1.0]
+    assert _closes_at([0.001, 0.02, 0.02, 0.001], shared=shared) == pytest.approx([0.0, 1.0])
 
 
-def test_tag_congruent_approach_to_a_terminal_is_one_event():
-    """Candidates walking in toward a terminal share its composition to within
-    the tolerance, so they are that event, not extra ones beside it."""
-    gaps = [0.045, 0.030, 0.015, 0.001]
-    shared = [0.030, 0.020, 0.010, 0.000]
-    assert _tagged(gaps, shared=shared) == [3]
+def test_tag_congruent_collapses_a_flat_branch_to_one_point():
+    """Two pure components melting at the same temperature leave a branch
+    sitting flat at zero gap; it is one closure, so it gets one tag."""
+    shared = [0.40, 0.41, 0.42, 0.43]
+    assert _closes_at([0.0] * 4, shared=shared) == pytest.approx([0.40])
 
 
-def test_tag_congruent_ignores_a_gap_above_tolerance():
-    assert _tagged([0.30, 0.20, 0.30]) == []
+def test_tag_congruent_tolerance_follows_the_trace_step():
+    """The trace lands within about a step of a closure, so the default
+    tolerance follows dc_max rather than a constant."""
+    assert ClausiusClapeyronRefiner().congruent_tol == pytest.approx(3 * 0.01)
+    assert ClausiusClapeyronRefiner(dc_max=0.002).congruent_tol == pytest.approx(3 * 0.002)
+    assert ClausiusClapeyronRefiner(congruent_tol=0.4).congruent_tol == 0.4
 
 
 def test_tag_congruent_tolerance_is_configurable():
-    assert _tagged([0.30, 0.20, 0.30], congruent_tol=0.25) == [1]
+    gaps = 0.10 * np.abs(_GRID - 0.4) + 0.06
+    assert _closes_at(gaps) == []
+    assert _closes_at(gaps, congruent_tol=0.1) == pytest.approx([0.4])
 
 
-def test_tag_congruent_needs_no_neighbours():
-    """A line found as a single point still gets tagged if it closes."""
+def test_tag_congruent_leaves_other_emitted_types_alone():
+    """MiscibilityGapRefiner emits a type with no congruent flag; the shared
+    hook must not touch it."""
     refiner = ClausiusClapeyronRefiner()
-    one = _gap_points([0.01])
-    out = refiner._tag_congruent(one, _gap_phases([0.01], [0.5]))
-    assert [pt.congruent for pt in out] == [True]
+    points = [
+        RefinedMiscibilityGap(T=1.0, mu=0.0, phase="p", c_left=0.1, c_right=0.9),
+        RefinedPoint(T=300.0, mu=0.0, phases=("lo", "hi")),
+        RefinedPoint(T=301.0, mu=1.0, phases=("lo", "hi")),
+    ]
+    out = refiner._tag_features(points, _gap_phases([0.001, 0.02], [0.0, 0.01]))
+    assert isinstance(out[0], RefinedMiscibilityGap)
+    assert [pt.congruent for pt in out[1:]] == [True, False]
+
+
+@given(
+    closures=st.lists(st.floats(min_value=0.05, max_value=0.95), min_size=1, max_size=3,
+                      unique_by=lambda c: round(c / 0.2)),
+    depth=st.floats(min_value=1e-6, max_value=0.005),
+)
+@settings(deadline=None, max_examples=50)
+def test_tag_congruent_recovers_planted_closures(closures, depth):
+    """Plant closures at known compositions, read them back.
+
+    The gap is the distance to the nearest planted closure, so each one is a V
+    whose vertex sits at the composition it closes at.
+    """
+    closures = sorted(np.round(np.array(closures) / _DC) * _DC)
+    gaps = np.min(np.abs(_GRID[:, None] - np.array(closures)[None, :]), axis=1) + depth
+    assert _closes_at(gaps) == pytest.approx(closures, abs=_DC)
 
 
 def test_tag_congruent_emits_the_locus():
@@ -1536,28 +1583,6 @@ def test_tag_congruent_emits_the_locus():
     plain = RefinedPoint(T=300.0, mu=0.0, phases=("lo", "hi"))
     assert all(row["locus"] == Locus.CONGRUENT for row in tagged.to_rows(phases))
     assert all(row["locus"] == Locus.BOUNDARY for row in plain.to_rows(phases))
-
-
-def test_tag_congruent_sees_a_line_assembled_from_single_point_solves(monkeypatch):
-    """A narrow coexistence line can come back as a scatter of seed-only solves,
-    no single one holding more than one of its points. Tagging runs per
-    boundary_id in run(), so the line's terminal is spotted anyway."""
-    gaps, shared = [0.30, 0.20, 0.02], [0.1, 0.05, 0.0]
-    phases, pts = _gap_phases(gaps, shared), _gap_points(gaps)
-    refiner = ClausiusClapeyronRefiner()
-    monkeypatch.setattr("landau.refine._simplex_straddles", lambda cand, traces: False)
-    cands = [_InterCandidate(phase1="lo", phase2="hi", T_seed=float(i),
-                             mu_bracket=(0.0, 1.0), T_bracket=(0.0, 1.0),
-                             T_min=0.0, T_max=1.0, proj_p1=(0.0, 0.0), proj_p2=(1.0, 1.0))
-             for i in range(len(pts))]
-    monkeypatch.setattr(refiner, "propose", lambda df: iter(cands))
-    monkeypatch.setattr(refiner, "solve", lambda cand, ph: [pts[int(cand.T_seed)]])
-    monkeypatch.setattr(refiner, "_pair_key", lambda cand: ("lo", "hi"))
-
-    out = refiner.run(pd.DataFrame(), phases)
-    tagged = out[out["locus"] == Locus.CONGRUENT]
-    assert sorted(set(tagged["T"])) == [pts[-1].T]
-    assert set(out["boundary_id"]) == {0}  # all one line
 
 
 @pytest.fixture(scope="module")

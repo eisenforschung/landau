@@ -973,6 +973,7 @@ class _CCBase(Refiner):
             Walk bound (typically ``cand.T_min`` or ``cand.T_max``).
         sign : int
             ``+1`` for an upward walk in T, ``-1`` for downward.
+
         Yields
         ------
         RefinedPoint or RefinedMiscibilityGap
@@ -1114,7 +1115,7 @@ class _CCBase(Refiner):
         single call seeing more than one of its points -- so this runs on the
         line, not on one traced segment. Returns the points to emit; the base
         implementation adds no tags. See
-        :meth:`ClausiusClapeyronRefiner._tag_congruent`.
+        :meth:`ClausiusClapeyronRefiner._tag_features`.
         """
         return points
 
@@ -1149,7 +1150,7 @@ class _CCBase(Refiner):
             by_line.setdefault(boundary_ids[key], []).extend(pts)
         for bid, pts in by_line.items():
             keep = [pt for pt in pts if pt.T >= 0 and not _dominated(pt, phases)]
-            for pt in self._tag_features(sorted(keep, key=lambda p: p.T), phases):
+            for pt in self._tag_features(keep, phases):
                 rows.extend(replace(pt, boundary_id=bid).to_rows(phases))
         out = pd.DataFrame(rows)
         if out.empty:
@@ -1204,22 +1205,23 @@ class ClausiusClapeyronRefiner(_CCBase):
         Per-step concentration-drift cap / floor. See :class:`_CCBase`.
     max_steps : int
         Hard cap on steps per trace direction. See :class:`_CCBase`.
-    congruent_tol : float
+    congruent_tol : float, optional
         Concentration gap below which the two phases count as sharing a
-        composition, tagging the point :attr:`~landau.features.Locus.CONGRUENT`.
-        See :meth:`_tag_congruent`.
+        composition, tagging the point :attr:`~landau.features.Locus.CONGRUENT`
+        (see :meth:`_tag_features`). Defaults to three times ``dc_max``: the
+        trace samples the line in steps of at most that drift, so it can only
+        land within about a step of a closure, while a two-phase field that
+        stays wider than a few steps never closes at all. Tightening ``dc_max``
+        for a finer trace tightens this with it.
     """
 
     label = "clausius-clapeyron"
 
-    def __init__(self, *, congruent_tol: float = 0.05, **kwargs):
+    def __init__(self, *, congruent_tol: float | None = None, **kwargs):
         super().__init__(**kwargs)
-        self.congruent_tol = congruent_tol
+        self.congruent_tol = 3 * self.dc_max if congruent_tol is None else congruent_tol
 
     def _tag_features(self, points, phases):
-        return self._tag_congruent(points, phases)
-
-    def _tag_congruent(self, points, phases):
         """Tag the points where the two phases' compositions meet.
 
         A transformation is congruent when both coexisting phases have the same
@@ -1227,44 +1229,54 @@ class ClausiusClapeyronRefiner(_CCBase):
         intermediate phase melting congruently, the extremum of an isomorphous
         solidus/liquidus loop, or -- the terminal case -- a pure component's
         melting point, where the line runs into c=0 or c=1. Either way the
-        concentration gap ``|c1 - c2|`` dips to (nearly) zero there.
+        concentration gap ``|c1 - c2|`` bottoms out there.
 
-        Every point whose gap is below ``congruent_tol`` is a candidate. Two
-        candidates that agree on the composition they close at -- within the
-        same tolerance -- are the same event, so the candidates are grouped by
-        their shared composition and the deepest of each group is tagged.
+        So the tag goes on each *local* minimum of the gap that is also below
+        ``congruent_tol``, the line's own ends included: a line that ends
+        because its two phases became one has its minimum exactly at an end.
+        Locality is what keeps the tolerance off the critical path -- it only
+        has to exclude a line that never closes, not to pick out which point
+        closes -- and it is judged along the
+        composition the points close at, not along T. A ``boundary_id`` covers
+        a whole phase *pair*, which a triple point can leave as two disjoint
+        branches: the liquid/solid pair of the Toy notebook's system runs to
+        c=0 on one side and c=1 on the other, both reaching their terminal
+        within 0.1 K, so in T-order they interleave and a scan sees one line
+        where there are two.
 
-        Grouping by composition rather than walking the line in order is what
-        keeps two closures on one line apart: a ``boundary_id`` covers a whole
-        phase *pair*, which a triple point can leave as two disjoint branches
-        -- the liquid/solid pair of the Toy notebook's system runs to c=0 on
-        one side and c=1 on the other, both reaching their terminal within
-        0.1 K -- and in T-order those interleave, so a sequential scan sees one
-        line where there are two and tags a single terminal instead of both.
-
-        The tolerance is what separates a closing line from one that ends at a
-        triple point, where the two phases still differ in composition. Where
-        the trace stopped does not: a line reaching a pure component's melting
-        point is routinely cut short by ``_dominated`` as well, since past the
-        terminal a third phase takes over the extrapolated line.
+        Only the shape of the gap decides, never where the trace stopped: a
+        line reaching a pure component's melting point is routinely cut short
+        by ``_dominated`` too, since past the terminal a third phase takes over
+        the extrapolated line.
         """
-        if not points:
+        # Only RefinedPoint carries the flag; a subclass emitting anything else
+        # (a miscibility gap, say) passes through untouched.
+        where = np.array([i for i, pt in enumerate(points) if isinstance(pt, RefinedPoint)])
+        if where.size == 0:
             return points
-        cs = [self._emitted_concentrations(pt, phases) for pt in points]
-        gaps = np.array([abs(c[0] - c[1]) if len(c) == 2 else np.inf for c in cs])
+        cs = [self._emitted_concentrations(points[i], phases) for i in where]
+        gap = np.array([abs(c[0] - c[1]) if len(c) == 2 else np.inf for c in cs])
         shared = np.array([np.mean(c) if len(c) == 2 else np.nan for c in cs])
         tol = self.congruent_tol
-        cand = np.flatnonzero(gaps < tol)
-        if cand.size == 0:
-            return points
-        cand = cand[np.argsort(shared[cand], kind="stable")]
-        # One group per composition the line closes at: a jump wider than the
-        # tolerance between neighbouring candidates starts the next event.
-        splits = np.flatnonzero(np.diff(shared[cand]) > tol) + 1
+
+        order = np.argsort(shared, kind="stable")
+        gap, shared, where = gap[order], shared[order], where[order]
         out = list(points)
-        for group in np.split(cand, splits):
-            i = group[np.argmin(gaps[group])]
-            out[i] = replace(points[i], congruent=True)
+        # Branches first: a composition jump wider than the tolerance is a
+        # discontinuity, since the trace steps by at most dc_max in c.
+        for branch in np.split(np.arange(gap.size),
+                               np.flatnonzero(np.diff(shared) > tol) + 1):
+            g = gap[branch]
+            # A minimum is no higher than either neighbour, the branch's own
+            # ends counting as minima of their single side. Non-strict, so a
+            # branch sitting flat at zero -- two pure components melting at the
+            # same temperature leave one -- is not passed over; the run is then
+            # collapsed to its first point so a plateau yields one tag, not one
+            # per sample.
+            minimum = (np.r_[True, g[1:] <= g[:-1]] & np.r_[g[:-1] <= g[1:], True]
+                       & (g < tol))
+            for j in branch[minimum & ~np.r_[False, minimum[:-1]]]:
+                out[where[j]] = replace(points[where[j]], congruent=True)
         return out
 
     def propose(self, df: pd.DataFrame) -> Iterator[_InterCandidate]:
