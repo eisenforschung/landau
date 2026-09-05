@@ -3,6 +3,13 @@
 Notable changes to **landau.py**, newest first. Per-PR detail lives in the
 [GitHub releases](https://github.com/eisenforschung/landau/releases).
 
+## [1.14.0](https://github.com/eisenforschung/landau/compare/1.13.0...1.14.0) (2026-09-05)
+
+
+### Features
+
+* **plot:** annotate triple and congruent transition temperatures on 2d diagrams ([#452](https://github.com/eisenforschung/landau/issues/452)) ([b995cb4](https://github.com/eisenforschung/landau/commit/b995cb4f26c7ccd8b1a111d351b603d7a233b2fa))
+
 ## [1.13.0](https://github.com/eisenforschung/landau/compare/1.12.0...1.13.0) (2026-09-03)
 
 
