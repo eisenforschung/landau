@@ -28,6 +28,7 @@ from .interpolate import (
 )
 
 from .plot import plot_phase_diagram, plot_excess_free_energy
+from .tdb import to_tdb, write_tdb
 
 try:
     from ._version import __version__
