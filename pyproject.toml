@@ -14,6 +14,7 @@ line-length = 120
 [tool.pytest.ini_options]
 markers = [
     "fleche: exercises the fleche digest hooks; needs the test-fleche extra",
+    "pycalphad: reads exported TDB files back with pycalphad; needs the test-pycalphad extra",
 ]
 
 [project]
@@ -51,9 +52,11 @@ test = [
     "hypothesis>=6.71,<7",
     "ase>=3.21.0",
     "phonopy>=3,<4.5",
-    # reads the TDB files landau.tdb writes back, in tests/unit/test_tdb.py
-    "pycalphad>=0.11.1,<0.12",
 ]
+# Reads the TDB files landau.tdb writes back (the `pycalphad` marker below). Kept out
+# of `test` because it pulls in symengine, about 130 MB installed; its CI job runs
+# when the exporter or its tests change and on every push to main.
+test-pycalphad = ["pycalphad>=0.11.1,<0.12"]
 # Kept out of `test` so the minimum-deps job still resolves landau's own floors:
 # fleche requires pyiron-snippets>=1.1, which would lift ours from >=1.
 # The tests it enables are the `fleche` marker below, run in their own env.

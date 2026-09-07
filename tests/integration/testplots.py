@@ -360,29 +360,6 @@ def plot_2d_toy_mu(out_dir: Path, poly_method: str | None = None, **_) -> Path:
     return _save(fig, out_dir, "2d_toy_mu_phase_diagram", _file_suffix(poly_method))
 
 
-def _plot_2d_tdb_pycalphad(out_dir: Path, system: str) -> Path | None:
-    """landau's c-T diagram next to pycalphad's, computed from the TDB written by ``landau.tdb``."""
-    sys.path.insert(0, str(Path(__file__).parent))
-    import test_tdb_pycalphad as tdb_pycalphad
-
-    if not tdb_pycalphad.HAS_PYCALPHAD:
-        print(f"warning: pycalphad is not installed; skipping 2d_tdb_pycalphad_{system}", file=sys.stderr)
-        return None
-    sys_ = tdb_pycalphad.SYSTEMS[system]
-    fig = tdb_pycalphad.comparison_figure(sys_, tdb_pycalphad.phase_diagram(sys_), tdb_pycalphad.database(sys_))
-    return _save(fig, out_dir, f"2d_tdb_pycalphad_{system}")
-
-
-def plot_2d_tdb_pycalphad_eutectic(out_dir: Path, **_) -> Path | None:
-    """2D c-T diagram of the hcp / fcc / liquid eutectic system, landau vs pycalphad on the exported TDB."""
-    return _plot_2d_tdb_pycalphad(out_dir, "eutectic")
-
-
-def plot_2d_tdb_pycalphad_toy(out_dir: Path, **_) -> Path | None:
-    """2D c-T diagram of the Toy.ipynb compound system, landau vs pycalphad on the exported TDB."""
-    return _plot_2d_tdb_pycalphad(out_dir, "toy")
-
-
 # Each plot maps to (function, kwargs it actually consumes). 1D plots ignore
 # poly_method and tielines, so cross-product iteration over them dedupes
 # automatically instead of re-rendering identical files.
@@ -398,8 +375,6 @@ PLOTS = {
     "2d_toy_mu":              (plot_2d_toy_mu,               ("poly_method",)),
     "excess_free_energy":             (plot_excess_free_energy,             ()),
     "excess_free_energy_line_phases": (plot_excess_free_energy_line_phases, ()),
-    "2d_tdb_pycalphad_eutectic":      (plot_2d_tdb_pycalphad_eutectic,      ()),
-    "2d_tdb_pycalphad_toy":           (plot_2d_tdb_pycalphad_toy,           ()),
 }
 
 
@@ -453,8 +428,7 @@ def main() -> None:
         for combo in itertools.product(*(axes[k] for k in uses)):
             call_kwargs = dict(zip(uses, combo))
             path = fn(args.out, **call_kwargs)
-            if path is not None:
-                print(f"wrote {path}")
+            print(f"wrote {path}")
 
 
 if __name__ == "__main__":

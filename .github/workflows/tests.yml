@@ -11,6 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       run: ${{ steps.filter.outputs.run }}
+      tdb: ${{ steps.filter.outputs.tdb }}
     steps:
       - uses: actions/checkout@v6
       - uses: dorny/paths-filter@v3
@@ -22,6 +23,11 @@ jobs:
               - 'tests/**'
               - 'pyproject.toml'
               - '.github/workflows/tests.yml'
+            tdb:
+              - 'landau/tdb.py'
+              - 'tests/unit/test_tdb.py'
+              - 'tests/integration/test_tdb_pycalphad.py'
+              - 'pyproject.toml'
 
   build:
     needs: changes
@@ -55,7 +61,7 @@ jobs:
         HYPOTHESIS_ARTIFACT_NAME: hypothesis-example-db-py${{ matrix.python-version }}
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        pytest -m "not fleche"
+        pytest -m "not fleche and not pycalphad"
     - name: Upload Hypothesis example database
       if: needs.changes.outputs.run == 'true' && always()
       uses: actions/upload-artifact@v4
@@ -92,3 +98,34 @@ jobs:
       shell: bash -l {0}
       run: |
         pytest -m fleche
+
+  # Own environment: pycalphad pulls in symengine (about 130 MB installed), so it
+  # stays out of the `test` extra. The TDB round trip only guards landau/tdb.py,
+  # so it runs when the exporter or its tests change, and on every push to main.
+  pycalphad:
+    needs: changes
+    runs-on: ubuntu-latest
+    env:
+      RUN: ${{ needs.changes.outputs.tdb == 'true' || github.event_name == 'push' }}
+    steps:
+    - name: Skip notice
+      if: env.RUN != 'true'
+      run: echo "No TDB export changes; skipping."
+    - uses: actions/checkout@v5
+      if: env.RUN == 'true'
+    - name: Set up Python
+      if: env.RUN == 'true'
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.12"
+        cache: pip
+    - name: Setup
+      if: env.RUN == 'true'
+      shell: bash -l {0}
+      run: |
+        pip install -e ".[test,test-pycalphad]"
+    - name: run TDB round-trip tests
+      if: env.RUN == 'true'
+      shell: bash -l {0}
+      run: |
+        pytest -m pycalphad

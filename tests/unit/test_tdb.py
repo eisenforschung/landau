@@ -212,7 +212,9 @@ def test_elements_must_be_two_distinct_symbols(terminals, elements):
         to_tdb(terminals, elements=elements)
 
 
-@pytest.mark.parametrize("name, tdb_name", [("Mg2Ca-C14", "MG2CA_C14"), ("L1_2 (ordered)", "L1_2_ORDERED"), ("fcc", "FCC")])
+@pytest.mark.parametrize(
+    "name, tdb_name", [("Mg2Ca-C14", "MG2CA_C14"), ("L1_2 (ordered)", "L1_2_ORDERED"), ("fcc", "FCC")]
+)
 def test_phase_names_are_upper_cased_alphanumeric(name, tdb_name):
     records = _records(to_tdb([LinePhase(name, 0.5, -1.0)]))
     assert f"PHASE {tdb_name} % 2 0.5 0.5" in records
@@ -269,7 +271,8 @@ def test_line_phase_concentration_outside_unit_interval_raises():
 def test_temperature_dependent_line_phase(interpolator):
     """The written ``G(T)`` is the phase's own fit, whatever closed form it uses."""
     T = np.linspace(300.0, 2000.0, 50)
-    phase = TemperatureDependentLinePhase("x", 0.25, T, -3.0 + 2e-4 * T - 3e-4 * T * np.log(T), interpolator=interpolator)
+    G_sampled = -3.0 + 2e-4 * T - 3e-4 * T * np.log(T)
+    phase = TemperatureDependentLinePhase("x", 0.25, T, G_sampled, interpolator=interpolator)
     G = _parameters(to_tdb([phase]))["G(X,A:B;0)"][2]
     Tq = np.linspace(250.0, 2100.0, 7)
     np.testing.assert_allclose(G(Tq), phase.line_free_energy(Tq) * J_PER_MOL, atol=ATOL)
@@ -287,7 +290,8 @@ def test_ideal_solution(terminals):
     assert sorted(_parameters(text)) == ["G(SOL,A;0)", "G(SOL,B;0)"]
     for T in TS:
         expected = (1 - CS) * A.line_free_energy(T) + CS * B.line_free_energy(T) - T * S(CS)
-        np.testing.assert_allclose(_solution_free_energy(text, "SOL", ("A", "B"), T, CS), expected * J_PER_MOL, atol=ATOL)
+        written = _solution_free_energy(text, "SOL", ("A", "B"), T, CS)
+        np.testing.assert_allclose(written, expected * J_PER_MOL, atol=ATOL)
 
 
 @pytest.mark.parametrize("add_entropy", [False, True])
@@ -386,7 +390,10 @@ def _point_defected():
         (lambda A, B, mid: RegularSolution("x", [A, _stitched("s", 0.5), B]), "no closed form in T"),
         (
             lambda A, B, mid: Surface2DInterpolatingPhase(
-                "x", [A, mid, B], surface_interpolator=SoftplusSurface2DInterpolator(), temperature_range=(300.0, 2000.0)
+                "x",
+                [A, mid, B],
+                surface_interpolator=SoftplusSurface2DInterpolator(),
+                temperature_range=(300.0, 2000.0),
             ),
             "only CalphadSurface2DInterpolator",
         ),
@@ -429,12 +436,13 @@ def test_phases_without_a_calphad_form_raise(line_phases, build, match):
 # --------------------------------------------------------------------------- #
 # pycalphad round trip
 # --------------------------------------------------------------------------- #
+@pytest.mark.pycalphad
 @pytest.mark.skipif(not HAS_PYCALPHAD, reason="pycalphad is not installed")
 def test_pycalphad_reads_back_the_same_free_energies(line_phases):
     """A real TDB reader recovers every phase's free energy, including the sign of the
     odd interaction under non-alphabetical element order and a two-sublattice compound."""
     A, B = line_phases[0], line_phases[-1]
-    phases = list(line_phases) + [IdealSolution("ideal", A, B)] + _rk_phases(line_phases) + [_surface_phase(line_phases)]
+    phases = [*line_phases, IdealSolution("ideal", A, B), *_rk_phases(line_phases), _surface_phase(line_phases)]
     text = to_tdb(phases, elements=("MG", "CA"), temperature_range=(1.0, 3000.0))
     with warnings.catch_warnings():
         warnings.simplefilter("error")
