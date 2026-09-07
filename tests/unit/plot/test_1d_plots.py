@@ -29,14 +29,16 @@ import landau.calculate as ldc
 import landau.phases as ldp
 from landau.plot import (
     _assign_segment_ids,
-    _bold_math,
     _bridge_unstable_segments,
-    _phase_visible_in_band,
-    _place_transition_labels,
-    _spread_labels,
     _subtract_reference_phase,
     plot_1d_mu_phase_diagram,
     plot_1d_T_phase_diagram,
+)
+from landau.plot.labels import (
+    _bold_math,
+    _phase_visible_in_band,
+    _place_transition_labels,
+    _spread_labels,
 )
 
 

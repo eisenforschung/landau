@@ -19,15 +19,15 @@ import pandas as pd
 import pytest
 import shapely
 
-from landau import plot as plot_mod
 from landau.features import Locus
-from landau.plot import (
+from landau.plot import plot_mu_phase_diagram, plot_phase_diagram
+from landau.plot.labels import (
     _annotate_transition_temperatures,
     _clear_label_center,
+    _get_renderer,
     _label_obstacles_px,
     _label_offsets,
-    plot_mu_phase_diagram,
-    plot_phase_diagram,
+    _shapely_polygon,
 )
 from landau.poly import Concave
 
@@ -58,7 +58,7 @@ def _phase_regions(ax):
     """
     out = []
     for patch in ax.patches:
-        region = plot_mod._shapely_polygon(ax.transData.transform(patch.get_xy()))
+        region = _shapely_polygon(ax.transData.transform(patch.get_xy()))
         if region is not None:
             out.append(region)
     return out
@@ -66,7 +66,7 @@ def _phase_regions(ax):
 
 def _label_boxes(ax):
     """Pixel boxes of the temperature labels drawn on `ax`."""
-    renderer = plot_mod._get_renderer(ax.figure)
+    renderer = _get_renderer(ax.figure)
     return [
         shapely.box(*t.get_window_extent(renderer).extents)
         for t in ax.texts
@@ -226,7 +226,7 @@ def test_label_falls_back_to_the_anchor_when_nothing_fits(ax, triple_df):
     ax.set_xlim(0.0, 1.0)
     ax.set_ylim(300.0, 300.2)  # far shorter than a label is tall
     _annotate_transition_temperatures(triple_df, ax=ax, variables=["c", "T"])
-    renderer = plot_mod._get_renderer(ax.figure)
+    renderer = _get_renderer(ax.figure)
     axbb = ax.get_window_extent(renderer)
     boxes = _label_boxes(ax)
     assert boxes, "the label is kept, not dropped"
@@ -255,7 +255,7 @@ def test_obstacles_cover_polygons_lines_markers_and_existing_labels(ax):
     ax.hlines(350.0, 0.2, 0.8)
     ax.plot(0.5, 450.0, marker="o")
     ax.text(0.0, 480.0, "hcp")
-    renderer = plot_mod._get_renderer(ax.figure)
+    renderer = _get_renderer(ax.figure)
 
     regions, obstacles = _label_obstacles_px(ax, [poly], renderer)
     assert len(regions) == 1
@@ -270,7 +270,7 @@ def test_obstacles_ignore_patches_the_caller_did_not_plot(ax):
     """Only the polygons handed in are phase regions; an unrelated patch on the
     axes is not one, and must not break the collection either."""
     ax.axvspan(0.2, 0.4)  # a Rectangle, whose get_xy() is a corner, not a ring
-    renderer = plot_mod._get_renderer(ax.figure)
+    renderer = _get_renderer(ax.figure)
     regions, _obstacles = _label_obstacles_px(ax, [], renderer)
     assert regions == []
 
@@ -288,7 +288,7 @@ def test_labels_stay_inside_the_axes_and_off_every_phase_boundary(eutectic_diagr
             eutectic_diagram, ax=ax, poly_method=Concave(drop_interior=False),
             transition_temperatures=True, legend=False,
         )
-        renderer = plot_mod._get_renderer(fig)
+        renderer = _get_renderer(fig)
         axbb = ax.get_window_extent(renderer)
         axes_box = shapely.box(axbb.x0, axbb.y0, axbb.x1, axbb.y1)
         regions = _phase_regions(ax)
@@ -312,7 +312,7 @@ def test_no_label_covers_another_with_the_legend_on(eutectic_diagram, variables)
         plotter = plot_phase_diagram if variables[0] == "c" else plot_mu_phase_diagram
         plotter(eutectic_diagram, ax=ax, poly_method=Concave(drop_interior=False),
                 transition_temperatures=True)
-        renderer = plot_mod._get_renderer(fig)
+        renderer = _get_renderer(fig)
         boxes = [shapely.box(*t.get_window_extent(renderer).extents) for t in ax.texts]
         assert len(boxes) >= 5  # three phases plus the invariants
         for i, a in enumerate(boxes):
@@ -331,7 +331,7 @@ def test_triple_label_sits_in_the_two_phase_negative_space(eutectic_diagram):
             eutectic_diagram, ax=ax, poly_method=Concave(drop_interior=False),
             transition_temperatures=True, legend=False,
         )
-        renderer = plot_mod._get_renderer(fig)
+        renderer = _get_renderer(fig)
         T_t = eutectic_diagram[eutectic_diagram["locus"] == Locus.TRIPLE]["T"].mean()
         label, = [t for t in ax.texts if t.get_text() == f"{T_t:.0f} K"]
         box = shapely.box(*label.get_window_extent(renderer).extents)
@@ -352,7 +352,7 @@ def test_congruent_label_sits_inside_a_phase_field(eutectic_diagram):
             eutectic_diagram, ax=ax, poly_method=Concave(drop_interior=False),
             transition_temperatures=True, legend=False,
         )
-        renderer = plot_mod._get_renderer(fig)
+        renderer = _get_renderer(fig)
         congruent = eutectic_diagram[eutectic_diagram["locus"] == Locus.CONGRUENT]
         assert not congruent.empty, "fixture must carry terminal congruent points"
         regions = _phase_regions(ax)
