@@ -1720,3 +1720,112 @@ def test_cc_refiner_bootstraps_a_steep_coexistence_line():
         Ts = np.array([p.T for p in pts])
         assert Ts.max() - Ts.min() > 2 * refiner.dT_min
 
+
+
+# -- MiscibilityGapRefiner._dominated_node: monotectic-type invariants --------
+#
+# A miscibility gap running into another phase ends in a three-phase invariant
+# of one phase taking part twice (monotectic L1 -> S + L2, monotectoid,
+# syntectic). DelaunayTripleRefiner counts distinct phases and never sees it;
+# the gap trace solves it where it steps into domination.
+
+
+def _monotectic_system():
+    """Line phases alpha (c=0) and beta (c=1) plus a symmetric regular liquid
+    whose gap (T_c = L0 / 2 kB ~ 1450 K) meets the alpha liquidus."""
+    from landau.phases import FastInterpolatingPhase
+    from landau.interpolate import RedlichKister
+
+    E_A, S_A, E_B, S_B, L0 = -2.8, 3.0 * kB, -2.35, 3.0 * kB, 0.25
+    alpha = LinePhase("alpha", fixed_concentration=0, line_energy=-3.0, line_entropy=1.0 * kB)
+    beta = LinePhase("beta", fixed_concentration=1, line_energy=-2.5, line_entropy=1.0 * kB)
+    controls = [
+        LinePhase(f"l{i}", fixed_concentration=c,
+                  line_energy=(1 - c) * E_A + c * E_B + L0 * c * (1 - c),
+                  line_entropy=(1 - c) * S_A + c * S_B)
+        for i, c in enumerate([0.0, 0.25, 0.5, 0.75, 1.0])
+    ]
+    liquid = FastInterpolatingPhase("liquid", phases=controls, add_entropy=True,
+                                    interpolator=RedlichKister(2))
+    return alpha, beta, liquid, (E_A, S_A, E_B, S_B, L0)
+
+
+def _monotectic_oracle(params):
+    """Independent solution of the monotectic of :func:`_monotectic_system`.
+
+    The liquid is symmetric about c = 1/2 once its linear part is removed, so
+    its binodal sits at mu* = f_B - f_A exactly and phi_liquid(T, mu*) = f_A(T)
+    + min_c [L0 c (1 - c) - T S(c)]. Alpha is a line phase at c=0, so its
+    potential is f_alpha(T) at any mu. The invariant is where the two agree.
+    """
+    import scipy.optimize as so
+    from landau.phases import S
+
+    E_A, S_A, E_B, S_B, L0 = params
+
+    def mixing_min(T):
+        r = so.minimize_scalar(lambda c: L0 * c * (1 - c) - T * S(c),
+                               bounds=(1e-9, 0.5), method="bounded",
+                               options={"xatol": 1e-12})
+        return r.fun, r.x
+
+    def h(T):
+        return (E_A - S_A * T) + mixing_min(T)[0] - (-3.0 - 1.0 * kB * T)
+
+    T = so.brentq(h, 900.0, 1400.0, xtol=1e-9)
+    c_left = mixing_min(T)[1]
+    return T, E_B - E_A - (S_B - S_A) * T, c_left, 1.0 - c_left
+
+
+def test_gap_refiner_emits_monotectic_triple():
+    alpha, beta, liquid, params = _monotectic_system()
+    T_star, mu_star, c_left, c_right = _monotectic_oracle(params)
+    df = calc_phase_diagram([alpha, beta, liquid], Ts=np.linspace(300.0, 1600.0, 80), mu=120)
+    node = df[(df["locus"] == Locus.TRIPLE) & (df["refined"] == "miscibility-gap")]
+    assert len(node) == 3
+    assert node["T"].nunique() == 1 and node["mu"].nunique() == 1
+    assert node["T"].iloc[0] == pytest.approx(T_star, abs=0.05)
+    assert node["mu"].iloc[0] == pytest.approx(mu_star, abs=1e-4)
+    by_phase = node.sort_values("c")
+    assert list(by_phase["phase"]) == ["alpha", "liquid", "liquid"]
+    assert by_phase["c"].to_numpy() == pytest.approx([0.0, c_left, c_right], abs=2e-3)
+    # the eutectic is still found by the Delaunay refiner, and is the only other triple
+    other = df[(df["locus"] == Locus.TRIPLE) & (df["refined"] != "miscibility-gap")]
+    assert set(other["phase"]) == {"alpha", "beta", "liquid"} and len(other) == 3
+
+
+def test_gap_refiner_node_is_at_the_end_of_the_gap_trace():
+    """The gap's own boundary rows stop at the invariant: none below it."""
+    alpha, beta, liquid, params = _monotectic_system()
+    T_star = _monotectic_oracle(params)[0]
+    df = calc_phase_diagram([alpha, beta, liquid], Ts=np.linspace(300.0, 1600.0, 80), mu=120)
+    gap = df[(df["refined"] == "miscibility-gap") & (df["locus"] == Locus.BOUNDARY)]
+    assert gap["T"].min() >= T_star - 1e-6
+    assert gap["T"].min() - T_star < MiscibilityGapRefiner().dT_max
+
+
+def test_refined_point_concentrations_override_the_requery():
+    a = LinePhase("A", fixed_concentration=0, line_energy=-1.0)
+    b = LinePhase("B", fixed_concentration=1, line_energy=-1.0)
+    mapping = {"A": a, "B": b}
+    pt = RefinedPoint(T=500.0, mu=0.0, phases=("A", "A", "B"), concentrations=(0.1, 0.9, 1.0))
+    rows = pt.to_rows(mapping)
+    assert [r["c"] for r in rows] == [0.1, 0.9, 1.0]
+    assert [r["phase"] for r in rows] == ["A", "A", "B"]
+    assert all(r["locus"] == Locus.TRIPLE for r in rows)
+    assert ClausiusClapeyronRefiner()._emitted_concentrations(pt, mapping) == (0.1, 0.9, 1.0)
+    # without the override the re-query is used, as before
+    plain = RefinedPoint(T=500.0, mu=0.0, phases=("A", "B"))
+    assert [r["c"] for r in plain.to_rows(mapping)] == [0.0, 1.0]
+    assert ClausiusClapeyronRefiner()._emitted_concentrations(plain, mapping) == (0.0, 1.0)
+
+
+def test_cc_base_dominated_node_default_is_none():
+    alpha, beta, liquid, _ = _monotectic_system()
+    mapping = {p.name: p for p in (alpha, beta, liquid)}
+    cand = _InterCandidate(
+        phase1="alpha", phase2="liquid", T_seed=1000.0, mu_bracket=(0.4, 0.5),
+        T_bracket=(990.0, 1010.0), T_min=300.0, T_max=1600.0,
+        proj_p1=(1000.0, 0.4), proj_p2=(1000.0, 0.5),
+    )
+    assert ClausiusClapeyronRefiner()._dominated_node(cand, mapping, 1000.0, 0.45, 1005.0, 0.45, 0.05) is None
