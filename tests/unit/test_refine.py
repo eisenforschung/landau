@@ -1652,3 +1652,71 @@ def test_terminal_melting_points_are_tagged_end_to_end(eutectic_diagram):
         assert len(grp) == 2  # exactly the two coexisting phases
         assert grp["c"].max() - grp["c"].min() < 0.05  # they share a composition
         assert min(grp["c"].min(), 1 - grp["c"].max()) < 0.05  # at a pure component
+
+
+# -- _CCBase bootstrap bracket / ClausiusClapeyronRefiner._seed_slope ---------
+#
+# The bootstrap step brackets the corrector by the seed simplex's mu
+# half-width alone, which assumes the coexistence mu drifts less than one
+# grid spacing per dT_min. A vapour-liquid lens (entropy difference ~13 kB)
+# drifts ~0.02 eV/K, so on any reasonable mu grid every bootstrap fails and the
+# line comes back as scattered seed-only points.
+
+
+def _steep_lens():
+    """Vapour-liquid-like lens: two ideal solutions 13 kB of entropy apart.
+
+    A boils at 373 K, B at 351 K; dmu*/dT along the lens is ~0.02 eV/K."""
+    S = 13.0 * kB
+    T_A, T_B = 373.0, 351.0
+    liquid = IdealSolution(
+        "liquid",
+        LinePhase("lA", fixed_concentration=0, line_energy=0.0, line_entropy=0.0),
+        LinePhase("lB", fixed_concentration=1, line_energy=0.0, line_entropy=0.0),
+    )
+    vapour = IdealSolution(
+        "vapour",
+        LinePhase("vA", fixed_concentration=0, line_energy=S * T_A, line_entropy=S),
+        LinePhase("vB", fixed_concentration=1, line_energy=S * T_B, line_entropy=S),
+    )
+    return liquid, vapour, T_A, T_B
+
+
+def test_cc_seed_slope_matches_line_phase_clausius_clapeyron():
+    """Two line phases at c=0 / c=1: mu*(T) = (E2 - E1) + T (S1 - S2) exactly,
+    so the implicit-differentiation slope must return S1 - S2."""
+    S1, S2 = 1.0 * kB, 2.5 * kB
+    a = LinePhase("A", fixed_concentration=0, line_energy=-2.0, line_entropy=S1)
+    b = LinePhase("B", fixed_concentration=1, line_energy=-2.4, line_entropy=S2)
+    mapping = {"A": a, "B": b}
+    T0 = 700.0
+    mu0 = (b.line_energy - a.line_energy) + T0 * (S1 - S2)
+    cand = _InterCandidate(
+        phase1="A", phase2="B", T_seed=T0, mu_bracket=(mu0 - 0.01, mu0 + 0.01),
+        T_bracket=(T0 - 10, T0 + 10), T_min=0.0, T_max=1000.0,
+        proj_p1=(T0, mu0 - 0.01), proj_p2=(T0, mu0 + 0.01),
+    )
+    slope = ClausiusClapeyronRefiner()._seed_slope(cand, mapping, T0, mu0)
+    assert slope == pytest.approx(S1 - S2, abs=1e-12)
+
+
+def test_cc_refiner_bootstraps_a_steep_coexistence_line():
+    """A single candidate on the steep lens must trace past its seed.
+
+    Before the slope-sized bootstrap bracket, solve() returned exactly the seed
+    point for every candidate here: both bootstrap correctors failed to bracket
+    a root one dT_min away."""
+    liquid, vapour, T_A, T_B = _steep_lens()
+    mapping = {"liquid": liquid, "vapour": vapour}
+    coarse = calc_phase_diagram(
+        [liquid, vapour], Ts=np.linspace(340.0, 385.0, 46), mu=100, refine=False)
+    refiner = ClausiusClapeyronRefiner()
+    cands = list(refiner.propose(coarse))
+    assert cands
+    # every candidate seeds a trace, not a lone point
+    for cand in cands[:5]:
+        pts = refiner.solve(cand, mapping)
+        assert len(pts) > 1
+        Ts = np.array([p.T for p in pts])
+        assert Ts.max() - Ts.min() > 2 * refiner.dT_min
+
