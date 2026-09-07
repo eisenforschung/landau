@@ -350,6 +350,31 @@ def test_guess_mu_range_degenerate_raises():
         guess_mu_range([a, b], T=1000, samples=_GMR_SAMPLES)
 
 
+def test_guess_mu_range_narrow_concentration_span_shrinks_tolerance():
+    # Two line phases only 0.002 apart in concentration: the c(mu) span reachable
+    # within the (-10, 10) bracket is far narrower than the default tolerance=1e-2,
+    # so c0 = min(cc) + tolerance used to land past c1 = max(cc) - tolerance and
+    # outside the sampled cc range entirely, raising an interp1d domain error
+    # instead of shrinking tolerance the way the mu0 == mu1 branch already does.
+    a = LinePhase("A", 0.499, 0.0)
+    b = LinePhase("B", 0.501, 0.0)
+    phases = [a, b]
+    mus, c0, c1 = guess_mu_range(phases, T=300, samples=_GMR_SAMPLES)
+    assert len(mus) == _GMR_SAMPLES
+    assert 0.499 < c0 < c1 < 0.501
+    assert _semigrand_average_concentration(phases, 300, mus.min()) == pytest.approx(c0, abs=1e-6)
+    assert _semigrand_average_concentration(phases, 300, mus.max()) == pytest.approx(c1, abs=1e-6)
+
+
+def test_guess_mu_range_narrow_span_below_floor_tolerance_raises():
+    # Phases close enough that shrinking tolerance down to the 1e-7 floor still
+    # leaves the reachable cc span narrower than 2*tolerance.
+    a = LinePhase("A", 0.5, 0.0)
+    b = LinePhase("B", 0.5 + 1e-9, 0.0)
+    with pytest.raises(ValueError):
+        guess_mu_range([a, b], T=300, samples=_GMR_SAMPLES)
+
+
 def _solution_tail_phases():
     """A solution phase whose c(mu) reaches 0/1 only asymptotically, plus a line
     phase.  The asymptotic tails are what the old default ``so.brute`` fmin polish
