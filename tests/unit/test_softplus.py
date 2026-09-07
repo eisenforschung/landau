@@ -6,6 +6,7 @@ from hypothesis import HealthCheck, given, settings, strategies as st
 from landau.interpolate import SoftplusFit
 from landau.interpolate.basic import ConcentrationInterpolator, TemperatureInterpolator
 from landau.interpolate.softplus import (
+    SoftplusSurface2DInterpolator,
     _CachedResidual,
     _fit_slice,
     _fit_softplus,
@@ -604,3 +605,144 @@ class TestCachedResidual:
         robust = solve(method="trf", loss="soft_l1", f_scale=0.01, x_scale="jac")
         np.testing.assert_allclose(robust, truth, atol=1e-3)
         assert np.linalg.norm(solve() - truth) > 1.0
+
+
+# Order combination behind the layout expectations spelled out in
+# ``TestSurfaceParameterLayout``: na=2, nb=3, nc=2, no=3.
+_SURFACE_ORDERS = {"n_softplus": 2, "a_order": 1, "b_order": 2, "c_order": 1, "offset_order": 2}
+
+
+class TestSurfaceParameterLayout:
+    """Flat coefficient vector of the coupled surface fit: size, split, seed.
+
+    ``_const_init`` builds the vector, ``_n_params`` sizes it and ``_unpack``
+    splits it back; all three branch on ``shared_knee`` and a layout slip between
+    them shows up only as a worse surface fit.
+    """
+
+    A = np.array([1.0, 2.0])
+    B = np.array([3.0, -4.0])
+    C = np.array([0.2, 0.2])
+    OFF = 0.7
+
+    def _seed(self, **kwargs):
+        interp = SoftplusSurface2DInterpolator(**{**_SURFACE_ORDERS, **kwargs})
+        return interp, interp._const_init(self.A, self.B, self.C, self.OFF)
+
+    @pytest.mark.parametrize("shared_knee", [False, True])
+    @pytest.mark.parametrize("n_softplus,a_order,b_order,c_order,offset_order", [(2, 1, 2, 1, 2), (3, 0, 1, 2, 0)])
+    def test_const_init_produces_exactly_n_params_coefficients(
+        self, shared_knee, n_softplus, a_order, b_order, c_order, offset_order
+    ):
+        interp = SoftplusSurface2DInterpolator(
+            n_softplus=n_softplus, a_order=a_order, b_order=b_order,
+            c_order=c_order, offset_order=offset_order, shared_knee=shared_knee,
+        )
+        a = np.full(n_softplus, 1.5)
+        seed = interp._const_init(a, np.full(n_softplus, 2.0), np.full(n_softplus, -0.1), 0.5)
+        assert seed.shape == (interp._n_params,)
+
+    def test_shared_knee_keeps_one_knee_block_instead_of_one_per_term(self):
+        free = SoftplusSurface2DInterpolator(**_SURFACE_ORDERS)
+        shared = SoftplusSurface2DInterpolator(**_SURFACE_ORDERS, shared_knee=True)
+        nc = free._orders[2]
+        assert free._n_params - shared._n_params == (free.n_softplus - 1) * nc
+
+    @pytest.mark.parametrize("shared_knee", [False, True])
+    def test_unpack_returns_per_term_blocks_either_way(self, shared_knee):
+        # The shared knee is broadcast back to the per-term ``(n, nc)`` shape so
+        # the model and the fitted surface see one layout regardless.
+        interp = SoftplusSurface2DInterpolator(**_SURFACE_ORDERS, shared_knee=shared_knee)
+        na, nb, nc, no = interp._orders
+        A, B, C, O = interp._unpack(np.arange(interp._n_params, dtype=float))
+        n = interp.n_softplus
+        assert (A.shape, B.shape, C.shape, O.shape) == ((n, na), (n, nb), (n, nc), (no,))
+
+    def test_unpack_reads_terms_contiguously_then_the_offset(self):
+        interp = SoftplusSurface2DInterpolator(**_SURFACE_ORDERS)
+        A, B, C, O = interp._unpack(np.arange(interp._n_params, dtype=float))
+        # [A_0 | B_0 | C_0 | A_1 | B_1 | C_1 | offset] with na=2, nb=3, nc=2, no=3.
+        np.testing.assert_array_equal(A, [[0, 1], [7, 8]])
+        np.testing.assert_array_equal(B, [[2, 3, 4], [9, 10, 11]])
+        np.testing.assert_array_equal(C, [[5, 6], [12, 13]])
+        np.testing.assert_array_equal(O, [14, 15, 16])
+
+    def test_unpack_reads_one_knee_block_after_all_terms_when_shared(self):
+        interp = SoftplusSurface2DInterpolator(**_SURFACE_ORDERS, shared_knee=True)
+        A, B, C, O = interp._unpack(np.arange(interp._n_params, dtype=float))
+        # [A_0 | B_0 | A_1 | B_1 | C_shared | offset].
+        np.testing.assert_array_equal(A, [[0, 1], [5, 6]])
+        np.testing.assert_array_equal(B, [[2, 3, 4], [7, 8, 9]])
+        np.testing.assert_array_equal(C, [[10, 11], [10, 11]])
+        np.testing.assert_array_equal(O, [12, 13, 14])
+
+    def test_const_init_puts_the_slice_in_the_order_zero_coefficients(self):
+        interp, seed = self._seed()
+        _, B, C, O = interp._unpack(seed)
+        np.testing.assert_allclose(B[:, 0], self.B)
+        np.testing.assert_allclose(C[:, 0], self.C)
+        assert O[0] == self.OFF
+
+    def test_const_init_leaves_every_higher_order_coefficient_at_zero(self):
+        # A constant-in-T seed: only the order-0 coefficient of each polynomial
+        # carries the slice, so the surface starts flat in T.
+        interp, seed = self._seed()
+        A, B, C, O = interp._unpack(seed)
+        assert not np.any(A[:, 1:]) and not np.any(B[:, 1:])
+        assert not np.any(C[:, 1:]) and not np.any(O[1:])
+
+    def test_const_init_maps_the_amplitude_through_the_inverse_link(self):
+        # ``A`` parametrises the pre-activation alpha, not the amplitude itself,
+        # so the seed only reproduces the slice amplitude after the softplus link.
+        interp, seed = self._seed()
+        A, _, _, _ = interp._unpack(seed)
+        np.testing.assert_allclose(_softplus(A[:, 0]), self.A, atol=PARAM_ATOL)
+
+    def test_const_init_seeds_the_shared_knee_from_the_first_term(self):
+        interp = SoftplusSurface2DInterpolator(**_SURFACE_ORDERS, shared_knee=True)
+        seed = interp._const_init(self.A, self.B, np.array([0.2, 0.9]), self.OFF)
+        _, _, C, _ = interp._unpack(seed)
+        np.testing.assert_allclose(C[:, 0], 0.2)
+
+
+class TestBSeed:
+    """Slope block of the seed, with and without the monotone-slope link."""
+
+    B = np.array([3.0, -4.0])
+
+    def _interp(self, **kwargs):
+        return SoftplusSurface2DInterpolator(n_softplus=2, b_order=2, **kwargs)
+
+    def test_free_slope_seeds_the_constant_coefficient_directly(self):
+        block = self._interp()._bseed(self.B, None)
+        np.testing.assert_array_equal(block[:, 0], self.B)
+        assert not np.any(block[:, 1:])
+
+    def test_monotone_slope_constant_term_recovers_the_slice_magnitude(self):
+        # Under the link the fitted quantity is |b|; the branch sign is carried
+        # separately by ``signs``, so it must not survive into the block.
+        block = self._interp(monotone_slope=True)._bseed(self.B, None)
+        np.testing.assert_allclose(_softplus(block[:, 0]), np.abs(self.B), atol=PARAM_ATOL)
+
+    def test_monotone_slope_higher_orders_start_small_but_active(self):
+        # Born at a few percent of |b| rather than saturated off, so the coupled
+        # solve still sees a gradient in the sharpening increments.
+        block = self._interp(monotone_slope=True)._bseed(self.B, None)
+        expected = np.broadcast_to(0.05 * np.abs(self.B)[:, None], block[:, 1:].shape)
+        np.testing.assert_allclose(_softplus(block[:, 1:]), expected, rtol=1e-9)
+
+    def test_monotone_slope_divides_the_increments_by_the_basis_column_scale(self):
+        # The increments multiply w^k, so a basis column with a large magnitude
+        # gets a proportionally smaller coefficient to contribute the same amount.
+        b_basis = np.array([[1.0, 0.5, 0.25], [1.0, 2.0, 4.0]])
+        block = self._interp(monotone_slope=True)._bseed(self.B, b_basis)
+        col = np.abs(b_basis).mean(axis=0)
+        expected = 0.05 * np.abs(self.B)[:, None] / col[None, 1:]
+        np.testing.assert_allclose(_softplus(block[:, 1:]), expected, rtol=1e-9)
+
+    def test_monotone_slope_floors_a_vanishing_slice_slope(self):
+        # ``_softplus_inv(0)`` is -inf; the 1e-6 magnitude floor keeps a flat
+        # seed slice finite instead of poisoning the whole parameter vector.
+        block = self._interp(monotone_slope=True)._bseed(np.zeros(2), None)
+        assert np.all(np.isfinite(block))
+        np.testing.assert_allclose(_softplus(block[:, 0]), 1e-6, rtol=1e-6)
