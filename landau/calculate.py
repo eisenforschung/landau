@@ -216,6 +216,20 @@ def guess_mu_range(phases: Iterable[Phase], T: float, samples: int, tolerance: f
         )
     mm = np.linspace(mu0, mu1, samples)
     cc = c(mm)
+    # When phases sit close together in concentration (e.g. two line phases a few
+    # at% apart), the c(mu) span reachable within the (-10, 10) bracket can be
+    # narrower than 2*tolerance, so c0 = min(cc) + tolerance would cross past
+    # c1 = max(cc) - tolerance and land outside the sampled range entirely.
+    # Shrink tolerance the same way the mu0 == mu1 degeneracy above does until
+    # the window fits inside the reachable span.
+    if max(cc) - min(cc) < 2 * tolerance:
+        if tolerance > 1e-7:
+            return guess_mu_range(phases, T, samples, tolerance / 10)
+        raise ValueError(
+                "chemical potential range degenerate! Concentration span reachable within the "
+                "sampled bracket is narrower than 2*tolerance even at tolerance=1e-7 - check that "
+                "phases are not extremely close in concentration."
+        )
     c0 = min(cc) + tolerance
     c1 = max(cc) - tolerance
     # At very low T, c(mu) is a step function and cc may have repeated values;
