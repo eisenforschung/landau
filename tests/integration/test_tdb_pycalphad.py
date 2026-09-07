@@ -6,12 +6,14 @@ which then has to reproduce landau's diagram from the file alone: the
 tie-lines along every refined phase boundary, the temperature and compositions
 of every triple point, and the congruent transition temperatures (terminal
 melting points, a compound melting or forming at its own composition).
-``comparison_figure`` draws the two diagrams side by side;
-``tests/integration/testplots.py`` renders it as ``2d_tdb_pycalphad_<system>``
+``comparison_figure`` draws the two diagrams side by side; running this module
+as a script writes them as ``tests/integration/_plots/2d_tdb_pycalphad_<system>.png``
 for visual review.
 """
 
+import argparse
 from dataclasses import dataclass
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -33,7 +35,10 @@ try:
 except ImportError:
     HAS_PYCALPHAD = False
 
-pytestmark = pytest.mark.skipif(not HAS_PYCALPHAD, reason="pycalphad is not installed")
+pytestmark = [
+    pytest.mark.pycalphad,
+    pytest.mark.skipif(not HAS_PYCALPHAD, reason="pycalphad is not installed"),
+]
 
 COMPS = ["A", "B", "VA"]
 PRESSURE = 101325
@@ -312,3 +317,21 @@ def test_comparison_figure(case, tmp_path):
     fig.savefig(path)
     plt.close(fig)
     assert path.stat().st_size > 0
+
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Render landau's and pycalphad's diagrams side by side.")
+    parser.add_argument("--out", type=Path, default=Path(__file__).parent / "_plots", help="output directory for PNGs")
+    args = parser.parse_args()
+    args.out.mkdir(parents=True, exist_ok=True)
+    for system in SYSTEMS.values():
+        fig = comparison_figure(system, phase_diagram(system), database(system))
+        path = args.out / f"2d_tdb_pycalphad_{system.name}.png"
+        fig.savefig(path, dpi=120, bbox_inches="tight")
+        plt.close(fig)
+        print(f"wrote {path}")
+
+
+if __name__ == "__main__":
+    main()
