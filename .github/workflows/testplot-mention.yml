@@ -128,7 +128,7 @@ jobs:
           cache-dependency-path: pyproject.toml
 
       - name: Install
-        run: pip install -e .[test,fast-tsp,python-tsp]
+        run: pip install -e .[fast-tsp,python-tsp]
 
       - name: Render phase diagrams
         env:
@@ -166,7 +166,7 @@ jobs:
           cache-dependency-path: pyproject.toml
 
       - name: Install
-        run: pip install -e .[test,fast-tsp,python-tsp]
+        run: pip install -e .[fast-tsp,python-tsp]
 
       - name: Render phase diagrams
         env:
