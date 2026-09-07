@@ -6,6 +6,7 @@ Examples
 
    notebooks/Basics.ipynb
    notebooks/PlotGallery.ipynb
+   notebooks/TransitionTemperatures.ipynb
    notebooks/IdealSolution.ipynb
    notebooks/Intermetallics.ipynb
    notebooks/ClausiusClapeyron.ipynb
