@@ -2010,6 +2010,32 @@ def test_terminal_refiner_recurses_through_an_interposed_phase():
     assert pairs == {("α", "γ"), ("liquid", "γ")}
 
 
+def test_terminal_refiner_proposes_every_grid_step_on_both_sides():
+    """propose reads only the frame's T grid and finite mu range: one candidate
+    per adjacent-T pair per side, carrying that side's mu edge."""
+    Ts = np.array([300.0, 400.0, 500.0])
+    cands = list(TerminalRefiner().propose(_terminal_frame(Ts, mus=(-0.5, 0.5))))
+    assert len(cands) == 4
+    assert {(c.side, c.edge) for c in cands} == {(0.0, -0.5), (1.0, 0.5)}
+    assert {c.bracket for c in cands} == {(300.0, 400.0), (400.0, 500.0)}
+
+
+def test_terminal_refiner_solve_is_empty_across_an_unchanged_step():
+    """A step whose two ends have the same stable phase at the terminal yields
+    nothing; solve does the stability lookup, propose does not."""
+    a = LinePhase("A", fixed_concentration=0, line_energy=-2.0, line_entropy=1.0 * kB)
+    b = LinePhase("B", fixed_concentration=0, line_energy=-1.8, line_entropy=2.5 * kB)
+    refiner = TerminalRefiner()
+    below, = [c for c in refiner.propose(_terminal_frame(np.array([400.0, 600.0]))) if c.side == 0.0]
+    assert refiner.solve(below, {"A": a, "B": b}) == []
+    # a point carries the finite far mu it was validated at, the rows go to -inf
+    T_m = 0.2 / (1.5 * kB)
+    across, = [c for c in refiner.propose(_terminal_frame(np.array([T_m - 100, T_m + 100]))) if c.side == 0.0]
+    pt, = refiner.solve(across, {"A": a, "B": b})
+    assert np.isfinite(pt.mu) and pt.terminal == 0.0 and pt.congruent
+    assert {row["mu"] for row in pt.to_rows({"A": a, "B": b})} == {-np.inf}
+
+
 def test_terminal_refiner_nothing_when_the_terminal_phase_never_changes():
     a = LinePhase("A", fixed_concentration=0, line_energy=-2.0, line_entropy=1.0 * kB)
     b = LinePhase("B", fixed_concentration=1, line_energy=-2.0, line_entropy=1.0 * kB)
