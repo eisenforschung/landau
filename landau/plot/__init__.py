@@ -31,7 +31,7 @@ __all__ = [
 ]
 
 
-def cluster_phase(df, distance_threshold=0.5):  # 0.5 hand-tuned
+def cluster_phase(df, distance_threshold=0.2):  # hand-tuned, issue #456
     """Cluster the stable, single phase regions.
 
     When a (e.g solid solution) phase has multiple disconnected regions of stability, the make_poly and
@@ -42,8 +42,14 @@ def cluster_phase(df, distance_threshold=0.5):  # 0.5 hand-tuned
     Args:
         df: DataFrame with columns 'phase', 'T', 'c'.
         distance_threshold: Passed to :func:`~landau.calculate.cluster_T_c`. Lower values
-            (e.g. 0.1) split more aggressively and are needed when two stable segments of
-            the same phase are close in concentration space.
+            split more aggressively and are needed when two disconnected stable segments of
+            the same phase sit close together in (normalised T, c) space; raise it (towards
+            0.5) if a single continuous region is instead being split apart on its own
+            sampling grid. The 0.2 default (issue #456) sits inside the safe band measured
+            empirically on a real diagram (a Y-Zn liquid whose two stable fields are 0.39
+            apart in normalised space stays split for any threshold from ~0.01 to ~0.3) and
+            on the coarser synthetic grids in the test suite (a single continuous region
+            starts fragmenting somewhere between 0.05 and 0.1).
     """
     df["phase_unit"] = _apply_series(
         df.groupby("phase", group_keys=False),
@@ -57,7 +63,7 @@ def get_polygons(
     df,
     poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
     variables: list[str] | None = None,
-    distance_threshold: float = 0.5,  # hand-tuned
+    distance_threshold: float = 0.2,  # hand-tuned, issue #456
     **kwargs,
 ):
     """Turn the stable phase regions in df into polygons.
@@ -71,7 +77,8 @@ def get_polygons(
             The columns in df to use as coordinates for the polygons. Defaults to ["c", "T"].
         distance_threshold (float, optional):
             Passed to :func:`cluster_phase`. Lower values split disconnected stable regions
-            more aggressively. Default is 0.5.
+            more aggressively. Default is 0.2 — see :func:`cluster_phase` for the empirical
+            margin behind that choice.
         **kwargs:
             Passed to poly.handle_poly_method.
 
