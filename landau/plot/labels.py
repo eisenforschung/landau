@@ -429,10 +429,16 @@ class _TemperatureLabel:
 
 def _label_candidates(label, axes_box):
     """Candidate centres for ``label``: the :func:`_label_offsets` grid out to
-    :data:`_LABEL_REACH` label heights, keeping the padded box inside ``axes_box``."""
+    :data:`_LABEL_REACH` label heights, keeping the padded box inside ``axes_box``.
+
+    The grid reaches at least half a label width plus a step sideways, whatever
+    the reach in heights, so a label anchored on the axes edge -- a terminal
+    melting point at c=0 or c=1 -- still has candidates that fit inside.
+    """
     w, h = label.size
     step = max(h / 4.0, 1.0)
-    offsets = np.asarray(_label_offsets(label.size, label.x_weight, step, _LABEL_REACH * h))
+    reach = max(_LABEL_REACH * h, w / 2 + _LABEL_PAD + step)
+    offsets = np.asarray(_label_offsets(label.size, label.x_weight, step, reach))
     centers = np.asarray(label.anchor, dtype=float) + offsets
     hw, hh = w / 2 + _LABEL_PAD, h / 2 + _LABEL_PAD
     x0, y0, x1, y1 = axes_box.bounds
@@ -467,10 +473,10 @@ def _static_costs(label, regions, obstacle, levels):
     the space it lands in, and how far it reaches past another invariant's
     temperature.
 
-    ``levels`` are the other invariants as ``(T, span, y)``; a candidate
-    within half a label width of one's ``span`` pays for every pixel its box
-    reaches past that temperature on the wrong side, beyond the pad, so a label
-    may touch a neighbouring isotherm but not sit across it. A crossing is
+    ``levels`` are the other invariants as ``(T, span, y)``; a candidate whose
+    box comes within a label width of one's ``span`` pays for every pixel the
+    box reaches past that temperature on the wrong side, beyond the pad, so a
+    label may touch a neighbouring isotherm but not sit across it. A crossing is
     penalised whether or not the neighbour's label is anywhere near, which is
     what keeps the order of the labels honest even when they do not interact.
     """
@@ -493,7 +499,7 @@ def _static_costs(label, regions, obstacle, levels):
     for T, (sx0, sx1), y in levels:
         if T == label.T:
             continue
-        near = (c[:, 0] + w > sx0) & (c[:, 0] - w < sx1)
+        near = (c[:, 0] + 1.5 * w > sx0) & (c[:, 0] - 1.5 * w < sx1)
         if label.T > T:
             depth = (y - _LABEL_PAD) - (c[:, 1] - h / 2)
         else:

@@ -26,6 +26,7 @@ from landau.plot.labels import (
     _LABEL_REACH,
     _TemperatureLabel,
     _annotate_transition_temperatures,
+    _label_candidates,
     _get_renderer,
     _label_obstacles_px,
     _place_temperature_labels,
@@ -217,6 +218,17 @@ def test_placement_never_returns_the_anchor_itself():
     center, = _place([_label((200.0, 200.0))])
     assert abs(center[1] - 200.0) >= 6.0  # half the label height
     assert not _box(center).intersects(shapely.Point(200.0, 200.0))
+
+
+def test_wide_label_on_the_axes_edge_still_has_candidates():
+    """A terminal melting point sits on the axes edge, and a four-digit label
+    is wider than the reach in heights: the grid still offers spots inside."""
+    wide = (44.0, 12.0)  # wider than 2 * 12 px of horizontal reach
+    label = _label((400.0, 200.0), size=wide)  # anchored on the right edge of _AXES
+    cands = _label_candidates(label, _AXES)
+    assert len(cands) > 0
+    for cx, cy in cands:
+        assert _AXES.contains(_box((cx, cy), wide).buffer(_LABEL_PAD))
 
 
 def test_no_candidate_when_the_axes_cannot_hold_the_label():
