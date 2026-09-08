@@ -118,6 +118,13 @@ class RefinedPoint:
         monotectic-type invariant (see
         :meth:`MiscibilityGapRefiner._dominated_node`) -- since the re-query
         cannot tell the branches apart.
+    terminal : float or None
+        ``0.0`` or ``1.0`` for a pure component's transition (see
+        :class:`TerminalRefiner`): ``mu`` then holds the finite far chemical
+        potential the point was solved and validated at, while
+        :meth:`to_rows` emits it at ``mu = -inf`` / ``+inf`` with both
+        concentrations equal to the terminal's, like the synthetic edge rows
+        of :func:`~landau.calculate.calc_phase_diagram`.
 
     :meth:`to_rows` tags each emitted row with ``locus``:
     :attr:`~landau.features.Locus.TRIPLE` for three coexisting phases,
@@ -131,24 +138,24 @@ class RefinedPoint:
     boundary_id: int = 0
     congruent: bool = False
     concentrations: tuple[float, ...] | None = None
+    terminal: float | None = None
 
     def phase_names(self) -> set[str]:
         return set(self.phases)
 
     def to_rows(self, phases: Mapping[str, Phase]) -> list[dict]:
-        if np.isfinite(self.mu):
+        if self.terminal is not None:
+            # A pure component's transition sits at mu = -+inf, like the
+            # synthetic edge rows of calc_phase_diagram: no potential to
+            # evaluate there, the concentrations are the terminal's.
+            mu = -np.inf if self.terminal == 0 else np.inf
+            rows = [{"T": self.T, "mu": mu, "phi": np.nan, "c": self.terminal, "phase": name}
+                    for name in self.phases]
+        else:
             rows = [_state_row(phases[name], self.T, self.mu) for name in self.phases]
             if self.concentrations is not None:
                 for row, c in zip(rows, self.concentrations):
                     row["c"] = c
-        else:
-            # A pure component's transition sits at mu = -+inf, like the
-            # synthetic edge rows of calc_phase_diagram: no potential to
-            # evaluate there, the concentrations are the terminal's.
-            if self.concentrations is None:
-                raise ValueError("a point at infinite mu needs explicit concentrations")
-            rows = [{"T": self.T, "mu": self.mu, "phi": np.nan, "c": c, "phase": name}
-                    for name, c in zip(self.phases, self.concentrations)]
         if len(self.phases) == 3:
             locus = Locus.TRIPLE
         elif self.congruent:
@@ -443,9 +450,24 @@ class ScanRefiner(Refiner):
         return [point(x, (name1, name2))]
 
 
+@dataclass(frozen=True)
+class _TerminalCandidate:
+    """Seed for :class:`TerminalRefiner` -- one step of the frame's T grid at
+    one pure component.
+
+    ``side`` is the terminal composition (0.0 or 1.0) and ``edge`` the end of
+    the sampled ``mu`` range on that side, from which the refiner steps out
+    to where every phase sits at the terminal.
+    """
+
+    side: float
+    edge: float
+    bracket: Bracket
+
+
 class TerminalRefiner(ScanRefiner):
-    """Pure-component transitions: a T-scan of :class:`ScanRefiner` at c = 0
-    and c = 1.
+    """Pure-component transitions: :class:`ScanRefiner`'s T-scan at c = 0 and
+    c = 1.
 
     Every phase sits at a pure component as ``mu -> -inf`` (c = 0) or
     ``+inf`` (c = 1), so a pure component's transitions are the crossings of
@@ -456,14 +478,16 @@ class TerminalRefiner(ScanRefiner):
     stops short of it, and two line phases at the same terminal have no
     boundary in ``mu`` to trace at all.
 
-    The scan walks the frame's T grid at ``mu`` a fixed number of thermal
-    energies past the sampled range on each side, ``kT_far`` -- every phase is
-    then within ``exp(-kT_far)`` of its terminal composition and the potential
-    differences have converged to the same order -- and root-finds every
-    change of the stable phase between adjacent samples, recursing where a
-    third phase interposes (:meth:`ScanRefiner._solve_pair`). Each transition
-    is emitted at ``mu = -+inf``, as the synthetic edge rows of
-    :func:`~landau.calculate.calc_phase_diagram` are, tagged
+    :meth:`propose` yields every step of the frame's T grid on each side;
+    :meth:`solve` evaluates the potentials ``kT_far`` thermal energies past
+    the sampled ``mu`` range on that side -- every phase is then within
+    ``exp(-kT_far)`` of its terminal composition and the potential differences
+    have converged to the same order -- and root-finds the stable phase's
+    change across the step with :meth:`ScanRefiner._solve_pair`, recursing
+    where a third phase interposes. Only phases actually at the terminal
+    count: a line phase at c = 0 is no candidate on the c = 1 side. Each
+    transition is a :class:`RefinedPoint` with ``terminal`` set: solved and
+    validated at the finite far ``mu``, emitted at ``mu = -+inf`` tagged
     :attr:`~landau.features.Locus.CONGRUENT` with both concentrations equal
     to the terminal's.
 
@@ -481,55 +505,41 @@ class TerminalRefiner(ScanRefiner):
         self.label = "terminal"  # ScanRefiner labels by its axis
         self.kT_far = kT_far
 
-    def _mu_far(self, edge: float, sign: float, T: float) -> float:
-        return edge + sign * self.kT_far * kB * max(abs(T), 1.0)
+    def _mu_far(self, cand: _TerminalCandidate, T: float) -> float:
+        sign = 1.0 if cand.side else -1.0
+        return cand.edge + sign * self.kT_far * kB * max(abs(T), 1.0)
 
-    def propose(self, df: pd.DataFrame) -> Iterator[_ScanCandidate]:
-        # The frame's own rows say nothing about mu = -+inf, so proposing needs
-        # the phases: run() does both, see there.
-        raise NotImplementedError("TerminalRefiner proposes from the phases; use run()")
-
-    def run(self, df: pd.DataFrame, phases: Mapping[str, Phase]) -> pd.DataFrame:
+    def propose(self, df: pd.DataFrame) -> Iterator[_TerminalCandidate]:
         mus = df["mu"].to_numpy(dtype=float)
         mus = mus[np.isfinite(mus)]
         Ts = np.sort(df["T"].unique())
-        rows: list[dict] = []
-        next_bid = 0
-        if mus.size and Ts.size > 1:
-            for side, sign, edge in ((0.0, -1.0, float(mus.min())), (1.0, +1.0, float(mus.max()))):
-                def potential(p, T, sign=sign, edge=edge):
-                    return float(p.semigrand_potential(T, self._mu_far(edge, sign, T)))
+        if mus.size == 0 or Ts.size < 2:
+            return
+        for side, edge in ((0.0, float(mus.min())), (1.0, float(mus.max()))):
+            for lo, hi in zip(Ts[:-1], Ts[1:]):
+                yield _TerminalCandidate(side=side, edge=edge, bracket=(float(lo), float(hi)))
 
-                def point(T, pair, side=side, sign=sign):
-                    return RefinedPoint(T=float(T), mu=sign * np.inf, phases=pair,
-                                        congruent=True, concentrations=(side, side))
+    def solve(self, cand: _TerminalCandidate, phases) -> list[RefinedPoint]:
+        def potential(p, T):
+            return float(p.semigrand_potential(T, self._mu_far(cand, T)))
 
-                # The stable phase at each T, if it is at the terminal at all: a
-                # phase that cannot reach it (a line phase at c=0 on the c=1
-                # side, say) is no terminal phase, so a T where the most stable
-                # phase is such a one has no terminal transition to bracket.
-                stable = []
-                for T in Ts:
-                    p = min(phases.values(), key=lambda p: potential(p, T))
-                    c = float(p.concentration(T, self._mu_far(edge, sign, T)))
-                    stable.append(p.name if abs(c - side) < _TERMINAL_C_TOL else None)
-                for i in range(len(Ts) - 1):
-                    if stable[i] is None or stable[i + 1] is None or stable[i] == stable[i + 1]:
-                        continue
-                    pts = self._solve_pair(stable[i], stable[i + 1], (float(Ts[i]), float(Ts[i + 1])),
-                                           potential, point, phases)
-                    for pt in pts:
-                        if pt.T < 0:
-                            continue
-                        rows.extend(replace(pt, boundary_id=next_bid).to_rows(phases))
-                        next_bid += 1
-        out = pd.DataFrame(rows)
-        if out.empty:
-            return out
-        out["stable"] = True
-        out["border"] = True
-        out["refined"] = self.label
-        return out
+        def at_terminal(T):
+            # The stable phase at T, if it sits at the terminal at all: a phase
+            # that cannot reach it is no terminal phase, so a T where the most
+            # stable phase is such a one has no terminal transition to bracket.
+            p = min(phases.values(), key=lambda p: potential(p, T))
+            c = float(p.concentration(T, self._mu_far(cand, T)))
+            return p.name if abs(c - cand.side) < _TERMINAL_C_TOL else None
+
+        name_lo, name_hi = (at_terminal(T) for T in cand.bracket)
+        if name_lo is None or name_hi is None or name_lo == name_hi:
+            return []
+
+        def point(T, pair):
+            return RefinedPoint(T=float(T), mu=self._mu_far(cand, T), phases=pair,
+                                congruent=True, terminal=cand.side)
+
+        return self._solve_pair(name_lo, name_hi, cand.bracket, potential, point, phases)
 
 
 # -- Delaunay-based refiners --------------------------------------------------
@@ -1067,6 +1077,8 @@ class _CCBase(Refiner):
         """
         if isinstance(pt, RefinedMiscibilityGap):
             return (pt.c_left, pt.c_right)
+        if pt.terminal is not None:
+            return (float(pt.terminal),) * len(pt.phases)
         if pt.concentrations is not None:
             return tuple(float(c) for c in pt.concentrations)
         return tuple(float(phases[n].concentration(pt.T, pt.mu)) for n in pt.phases)
