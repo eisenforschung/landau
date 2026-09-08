@@ -87,11 +87,7 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
 **Active**
 
-- **#116 refactor umbrella** — long-running sweep splitting big functions and pinning private helpers with direct unit tests. Sub-issues open at the time of writing (open PRs in flight noted; check before duplicating):
-
-  - #388 (`_semigrand_average_concentration` in `calculate.py`, PR #391)
-
-  - #424 (`SoftplusSurface2DInterpolator._unpack` / `_n_params` / `_const_init` in `interpolate/softplus.py`)
+- **#116 refactor umbrella** — long-running sweep splitting big functions and pinning private helpers with direct unit tests. Sub-issues open at the time of writing (check before duplicating):
 
   - #425 (`_label_fits` in `plot.py`)
 
@@ -101,13 +97,17 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
   - #437 (`SoftplusSurface2DInterpolator._solver_kwargs` / `_vandermonde` in `interpolate/softplus.py`)
 
-  PR #422 (direct tests for `_fit_softplus` / `_fit_slice`) merged 2026-08-30 without a numbered sub-issue; #423 closed 2026-09-01 by PR #434; #390 closed 2026-09-02 by PR #394 and #413 by PR #414. Closed sub-issues are recorded one cohort per line in [`CLAUDE.md`](CLAUDE.md)'s #116 section — check there before re-picking one.
+  - #458 (`_stationary_points` in `phases/quasiharmonic.py`)
+
+  - #460 (LTE saturation clamp in `phases/pointdefects.py`)
+
+  PR #422 (direct tests for `_fit_softplus` / `_fit_slice`) merged 2026-08-30 without a numbered sub-issue; #423 closed 2026-09-01 by PR #434; #390 closed 2026-09-02 by PR #394 and #413 by PR #414; #388 closed 2026-09-07 by PR #391 and #424 by PR #457; #459 (`landau/fleche.py` helpers) was filed and closed not-planned the same day — fleche is expected to take that responsibility over. Closed sub-issues are recorded one cohort per line in [`CLAUDE.md`](CLAUDE.md)'s #116 section — check there before re-picking one.
 
 - **#137 `phases/__init__.py` split** — `pointdefects.py` and `asewrapper.py` already split out; further splits (line vs solution vs interpolating) are the open direction. `phases/__init__.py` is still ~980 lines.
 
 - **#332 phase free-energy parametrization is indirect** — both `InterpolatingPhase` and `Surface2DInterpolatingPhase` reach `f(c[, T])` through a sample-and-refit round-trip. Open direction: an optional "just give me a callable" builder path so a `.tdb` importer (#138) or bespoke model can skip it. Parked with #137.
 
-- **#138 TDB file import** — scoping; feeds #332.
+- **#138 TDB file import** — scoping; feeds #332. The *export* half is in flight as PR #462 (`landau.tdb` with `to_tdb` / `write_tdb`; exact closed-form export of SGTE/PolyFit/RedlichKister-backed phases, pycalphad round-trip tests behind a `test-pycalphad` extra).
 
 - **#34, #60 plot/calc API 2.0 refactor** — axes-as-arg for `plot_{mu,}_phase_diagram` + broader rearrangement for 2.0.
 
@@ -123,13 +123,17 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
 - **#443 nuclear quantum correction to classical-MD solid free energies via the QHA** (idea, filed 2026-09-02) — `F = F_calphy − F_QHA,cl + F_QHA,qu`: anharmonicity from MD, quantum statistics from the harmonic model, the classical harmonic term cancels the double-counting; phonopy returns both statistics from one mesh. Which correction dominates flips by element (Al: quantum ~5× anharmonic; Ca/Si: reversed), 1 meV/atom ≈ 10 K of melting point. Solid-only (the liquid has no harmonic reference); reference data for Al/Ca/Si on a GRACE MLIP attached to the issue. No code planned yet — a possible helper where `PhonopyQuasiHarmonicPhase` and calphy-style free energies meet.
 
+- **#456 disjoint stable fields of one phase drawn as a single bridged polygon** (filed 2026-09-07, Y-Zn reproducer). `cluster_phase` / `get_polygons` default `distance_threshold=0.5` merges same-phase stable fields far apart in c at the same T; every `poly_method` then bridges the gap (`concave` silently — worse). Fix in flight: PR #461 lowers the default to `0.2` and adds a regression fixture.
+
+- **#463, #464 transition-temperature annotation follow-ups** (filed 2026-09-07 against 1.14.0). #464: one congruent maximum tagged `CONGRUENT` twice (adjacent narrow trace points both pass the relative-gap criterion) plus terminal melting/boiling points tagged congruent — duplicate labels. #463: obstacle avoidance can drift labels too far to attribute; arrows or accepted overplotting are the sketched directions. PR #468 in flight is groundwork (`plot.py` → `landau/plot/` subpackage, label placement in `plot/labels.py`, behaviour-preserving).
+
 - **#81 analytic SRO models** — prototype `QuasiChemicalPhase` (PR #123) was closed without merging; still open.
 
 - **#33 fast Legendre transforms**, **#59 autodiff for `concentration`** — stretch goals; no owner.
 
 - **#62 flat → `src/` layout** — long-standing. #70 (weak Hypothesis strategies for polygon tests) closed 2026-09-02 by PR #395: `poly_dataframe` now correlates `c`/`T`/`mu` per row instead of drawing them independently.
 
-- **Open PRs in flight** (check before duplicating): #391 (tests for #388), the CEF stack #324/#326/#346 (+ parked #334) behind #344, and long-open design prototypes #306 (`IntermetallicPhase`), #250 (`PhaseDiagram` object interface), #249 (`BufferedSegments`). #452 (`transition_temperatures` + `Locus.CONGRUENT`) merged 2026-09-04.
+- **Open PRs in flight** (check before duplicating): #461 (lower `cluster_phase` default `distance_threshold` to 0.2, closes #456), #462 (TDB export), the #466 → #467 → #465 stack (CC bootstrap bracket sized by the seed slope; monotectic-type invariant tagging via a `_dominated_node` hook on the gap tracer; TransitionTemperatures notebook), #468 (`landau/plot/` subpackage split, groundwork for #463), the CEF stack #324/#326/#346 (+ parked #334) behind #344, and long-open design prototypes #306 (`IntermetallicPhase`), #250 (`PhaseDiagram` object interface), #249 (`BufferedSegments`).
 
 **Out of scope**
 
