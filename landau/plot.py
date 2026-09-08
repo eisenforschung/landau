@@ -504,7 +504,14 @@ def _annotate_transition_temperatures(df, polys=(), ax=None, variables=None):
     for (mu, T), grp in congruent.groupby(["mu", "T"], sort=False)[["c"]]:
         # The two phases meet here, so their concentrations agree to within the
         # refiner's tolerance; the mean is the composition of the invariant.
-        x = grp["c"].mean() if variables[0] == "c" else mu
+        if variables[0] == "c":
+            x = grp["c"].mean()
+        elif np.isfinite(mu):
+            x = mu
+        else:
+            # A pure component's transition sits at mu = -+inf: the boundary
+            # runs off to that edge of the axes, so the label anchors there.
+            x = ax.get_xlim()[0 if mu < 0 else 1]
         _label(x, T, congruent_modes, x_weight=1.5)
 
 
