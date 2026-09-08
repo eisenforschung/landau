@@ -267,6 +267,67 @@ def plot_2d_toy(out_dir: Path, poly_method: str | None = None, tielines: bool = 
     return _save(fig, out_dir, "2d_toy_phase_diagram", _file_suffix(poly_method, tielines))
 
 
+def _calc_2d_azeotrope():
+    """Water-ethanol vapour-liquid lens with its azeotrope, from TransitionTemperatures.ipynb.
+
+    Real boiling points and entropies of vaporisation; the sub-regular liquid
+    is solved so the liquid and vapour free energies touch with a common slope
+    exactly at the azeotrope (351.3 K, 89.4 mol% ethanol).
+    """
+    T_w, T_e = 373.15, 351.4
+    S_w, S_e = 40.65e3 / T_w / 8.314, 38.6e3 / T_e / 8.314  # kB units
+    c_az, T_az = 0.894, 351.3
+
+    def g(c):
+        return (1 - c) * S_w * ldp.kB * (T_w - T_az) + c * S_e * ldp.kB * (T_e - T_az)
+
+    c = c_az
+    M = np.array([[c * (1 - c), c * (1 - c) * (2 * c - 1)],
+                  [1 - 2 * c, (1 - 2 * c) * (2 * c - 1) + 2 * c * (1 - c)]])
+    L0, L1 = np.linalg.solve(M, [g(c), g(1) - g(0)])
+    controls = [
+        ldp.LinePhase(f"l{i}", fixed_concentration=x, line_energy=x * (1 - x) * (L0 + L1 * (2 * x - 1)),
+                      line_entropy=0.0)
+        for i, x in enumerate([0, 0.25, 0.5, 0.75, 1])
+    ]
+    liquid = ldp.FastInterpolatingPhase("liquid", controls, add_entropy=True, interpolator=ldi.PolyFit(4))
+    vapour = ldp.IdealSolution(
+        "vapour",
+        ldp.LinePhase("vw", fixed_concentration=0, line_energy=S_w * ldp.kB * T_w, line_entropy=S_w * ldp.kB),
+        ldp.LinePhase("ve", fixed_concentration=1, line_energy=S_e * ldp.kB * T_e, line_entropy=S_e * ldp.kB),
+    )
+    return ldc.calc_phase_diagram([liquid, vapour], np.linspace(340, 385, 90), mu=100, refine=True)
+
+
+def plot_2d_azeotrope(out_dir: Path, poly_method: str | None = None, **_) -> Path:
+    """2D c-T diagram of the water-ethanol azeotrope with transition temperatures, from TransitionTemperatures.ipynb.
+
+    A vapour-liquid lens 1e-5 eV thick near its congruent minimum, which sits
+    0.1 K below ethanol's boiling point: the refined line has to run the whole
+    lens and close at the azeotrope and both pure components for the three
+    temperature labels to come out right.
+    """
+    df = _calc_2d_azeotrope()
+    fig, ax = plt.subplots(figsize=(6, 5))
+    lpl.plot_phase_diagram(df, ax=ax, element="EtOH", transition_temperatures=True, poly_method=poly_method)
+    ax.set_title(f"2D c-T diagram (water-ethanol azeotrope){_title_suffix(poly_method)}")
+    return _save(fig, out_dir, "2d_azeotrope_phase_diagram", _file_suffix(poly_method))
+
+
+def plot_2d_azeotrope_mu(out_dir: Path, poly_method: str | None = None, **_) -> Path:
+    """2D T-mu diagram of the water-ethanol azeotrope with transition temperatures, from TransitionTemperatures.ipynb.
+
+    Same frame as ``2d_azeotrope``; the azeotrope is a point in the T-mu
+    plane and the two boiling points sit where the boundary runs off the mu
+    axis.
+    """
+    df = _calc_2d_azeotrope()
+    fig, ax = plt.subplots(figsize=(6, 5))
+    lpl.plot_mu_phase_diagram(df, ax=ax, element="EtOH", transition_temperatures=True, poly_method=poly_method)
+    ax.set_title(f"2D T-$\\mu$ diagram (water-ethanol azeotrope){_title_suffix(poly_method)}")
+    return _save(fig, out_dir, "2d_azeotrope_mu_phase_diagram", _file_suffix(poly_method))
+
+
 def plot_excess_free_energy(out_dir: Path, **_) -> Path:
     """Excess free energy vs concentration (Intermetallics example) from ExcessFreeEnergy.ipynb.
 
@@ -373,6 +434,8 @@ PLOTS = {
     "2d_basics_mu":           (plot_2d_basics_mu,            ("poly_method",)),
     "2d_toy":                 (plot_2d_toy,                  ("poly_method", "tielines")),
     "2d_toy_mu":              (plot_2d_toy_mu,               ("poly_method",)),
+    "2d_azeotrope":           (plot_2d_azeotrope,            ("poly_method",)),
+    "2d_azeotrope_mu":        (plot_2d_azeotrope_mu,         ("poly_method",)),
     "excess_free_energy":             (plot_excess_free_energy,             ()),
     "excess_free_energy_line_phases": (plot_excess_free_energy_line_phases, ()),
 }
