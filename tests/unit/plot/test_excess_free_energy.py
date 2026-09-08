@@ -206,7 +206,7 @@ def test_inline_labels_clear_of_curves_and_markers():
     """Every inline label box must clear the drawn curves and scatter markers."""
     import shapely
 
-    from landau.plot import _curve_obstacles
+    from landau.plot.labels import _curve_obstacles
 
     g = plot_excess_free_energy(_minimal_df([500, 1000]))
     g.fig.canvas.draw()

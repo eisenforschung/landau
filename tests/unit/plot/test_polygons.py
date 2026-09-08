@@ -22,15 +22,18 @@ from shapely.ops import polylabel
 
 from landau import plot as plot_mod
 from landau.plot import (
-    _add_inline_polygon_labels,
-    _group_overlapping_intervals,
-    _largest_inscribed_circle_center,
-    _shapely_polygon,
-    _text_with_outline,
     get_phase_colors,
     get_polygons,
     plot_phase_diagram,
     plot_polygons,
+)
+from landau.plot.labels import (
+    _add_inline_polygon_labels,
+    _get_renderer,
+    _group_overlapping_intervals,
+    _largest_inscribed_circle_center,
+    _shapely_polygon,
+    _text_with_outline,
 )
 from landau.poly import AbstractPolyMethod, Concave
 
@@ -460,7 +463,7 @@ def _wide_axes():
 
 
 def _extent_px(ax, text):
-    return text.get_window_extent(plot_mod._get_renderer(ax.figure))
+    return text.get_window_extent(_get_renderer(ax.figure))
 
 
 # Label placement is clamped in pixel space but stored in data coordinates, so
@@ -469,7 +472,7 @@ PX_TOL = 1e-6
 
 
 def _assert_inside_axes(ax, bbox, vertical=True):
-    axbb = ax.get_window_extent(plot_mod._get_renderer(ax.figure))
+    axbb = ax.get_window_extent(_get_renderer(ax.figure))
     assert axbb.x0 - PX_TOL <= bbox.x0 and bbox.x1 <= axbb.x1 + PX_TOL
     if vertical:
         assert axbb.y0 - PX_TOL <= bbox.y0 and bbox.y1 <= axbb.y1 + PX_TOL
