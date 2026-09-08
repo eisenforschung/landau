@@ -379,6 +379,32 @@ class _ScanCandidate:
     bracket: Bracket
 
 
+def _solve_pair(name1, name2, bracket, potential, point, phases) -> list[RefinedPoint]:
+    """Root-find the (name1, name2) crossing inside ``bracket``.
+
+    ``potential(phase, x)`` evaluates a phase along the scanned variable and
+    ``point(x, pair)`` builds the refined point at a root; shared by
+    :class:`ScanRefiner` and :class:`TerminalRefiner`.
+
+    When a third phase is more stable at the crossing, the pair does not
+    actually coexist there: the stable phase changes name1 → dominator →
+    name2 inside the bracket, with the dominator's stable window narrower
+    than the sampling grid.  Recurse into the two sub-brackets so both real
+    transitions are found instead of leaving the candidate to be dropped
+    by :func:`_dominated` in :meth:`Refiner.run`.
+    """
+    x = _find_one_point(phases[name1], phases[name2], potential, bracket)
+    rivals = {p.name: potential(p, x) for p in phases.values() if p.name not in (name1, name2)}
+    if rivals:
+        dom = min(rivals, key=rivals.get)
+        if rivals[dom] < potential(phases[name1], x):
+            return (
+                _solve_pair(name1, dom, (bracket[0], x), potential, point, phases)
+                + _solve_pair(dom, name2, (x, bracket[1]), potential, point, phases)
+            )
+    return [point(x, (name1, name2))]
+
+
 class ScanRefiner(Refiner):
     """
     Walk samples sorted along one axis (``mu`` or ``T``) and root-find the
@@ -426,28 +452,8 @@ class ScanRefiner(Refiner):
 
             def point(x, pair):
                 return RefinedPoint(T=x, mu=cand.mu, phases=pair)
-        return self._solve_pair(cand.phase1, cand.phase2, cand.bracket, potential, point, phases)
+        return _solve_pair(cand.phase1, cand.phase2, cand.bracket, potential, point, phases)
 
-    def _solve_pair(self, name1, name2, bracket, potential, point, phases) -> list[RefinedPoint]:
-        """Root-find the (name1, name2) crossing inside ``bracket``.
-
-        When a third phase is more stable at the crossing, the pair does not
-        actually coexist there: the stable phase changes name1 → dominator →
-        name2 inside the bracket, with the dominator's stable window narrower
-        than the sampling grid.  Recurse into the two sub-brackets so both real
-        transitions are found instead of leaving the candidate to be dropped
-        by :func:`_dominated` in :meth:`Refiner.run`.
-        """
-        x = _find_one_point(phases[name1], phases[name2], potential, bracket)
-        rivals = {p.name: potential(p, x) for p in phases.values() if p.name not in (name1, name2)}
-        if rivals:
-            dom = min(rivals, key=rivals.get)
-            if rivals[dom] < potential(phases[name1], x):
-                return (
-                    self._solve_pair(name1, dom, (bracket[0], x), potential, point, phases)
-                    + self._solve_pair(dom, name2, (x, bracket[1]), potential, point, phases)
-                )
-        return [point(x, (name1, name2))]
 
 
 @dataclass(frozen=True)
@@ -465,9 +471,8 @@ class _TerminalCandidate:
     bracket: Bracket
 
 
-class TerminalRefiner(ScanRefiner):
-    """Pure-component transitions: :class:`ScanRefiner`'s T-scan at c = 0 and
-    c = 1.
+class TerminalRefiner(Refiner):
+    """Pure-component transitions: a T-scan at c = 0 and c = 1.
 
     Every phase sits at a pure component as ``mu -> -inf`` (c = 0) or
     ``+inf`` (c = 1), so a pure component's transitions are the crossings of
@@ -483,8 +488,8 @@ class TerminalRefiner(ScanRefiner):
     the sampled ``mu`` range on that side -- every phase is then within
     ``exp(-kT_far)`` of its terminal composition and the potential differences
     have converged to the same order -- and root-finds the stable phase's
-    change across the step with :meth:`ScanRefiner._solve_pair`, recursing
-    where a third phase interposes. Only phases actually at the terminal
+    change across the step with :func:`_solve_pair` (shared with
+    :class:`ScanRefiner`), recursing where a third phase interposes. Only phases actually at the terminal
     count: a line phase at c = 0 is no candidate on the c = 1 side. Each
     transition is a :class:`RefinedPoint` with ``terminal`` set: solved and
     validated at the finite far ``mu``, emitted at ``mu = -+inf`` tagged
@@ -501,8 +506,6 @@ class TerminalRefiner(ScanRefiner):
     label = "terminal"
 
     def __init__(self, *, kT_far: float = 40.0):
-        super().__init__(by="T")
-        self.label = "terminal"  # ScanRefiner labels by its axis
         self.kT_far = kT_far
 
     def _mu_far(self, cand: _TerminalCandidate, T: float) -> float:
@@ -539,7 +542,7 @@ class TerminalRefiner(ScanRefiner):
             return RefinedPoint(T=float(T), mu=self._mu_far(cand, T), phases=pair,
                                 congruent=True, terminal=cand.side)
 
-        return self._solve_pair(name_lo, name_hi, cand.bracket, potential, point, phases)
+        return _solve_pair(name_lo, name_hi, cand.bracket, potential, point, phases)
 
 
 # -- Delaunay-based refiners --------------------------------------------------
