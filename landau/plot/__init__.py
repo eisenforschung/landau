@@ -1,5 +1,6 @@
 from collections.abc import Callable
 from dataclasses import dataclass
+from itertools import cycle
 from typing import Literal
 from warnings import warn
 
@@ -281,8 +282,9 @@ def plot_phase_diagram(
 def get_phase_colors(phase_names, override: dict[str, str] | None = None):
     if override is None:
         override = {}
-    # the default map
-    color_map = dict(zip(phase_names, sns.palettes.SEABORN_PALETTES["pastel"]))
+    # the default map; cycle the palette so every phase gets a color even
+    # past the pastel palette's 10 entries
+    color_map = dict(zip(phase_names, cycle(sns.palettes.SEABORN_PALETTES["pastel"])))
     # disregard overriden phases that are not present
     override = {p: c for p, c in override.items() if p in color_map}
     # if the override uses the same colors as the default map, multiple phases
