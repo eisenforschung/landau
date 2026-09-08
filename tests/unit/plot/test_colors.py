@@ -48,6 +48,16 @@ def test_get_phase_colors_none_override():
     assert colors["Alpha"] == pastel[0]
     assert colors["Beta"] == pastel[1]
 
+def test_get_phase_colors_more_than_palette_size():
+    pastel = sns.palettes.SEABORN_PALETTES["pastel"]
+    phase_names = [f"phase{i}" for i in range(len(pastel) + 3)]
+
+    colors = get_phase_colors(phase_names)
+
+    assert set(phase_names) == set(colors)
+    for i, name in enumerate(phase_names):
+        assert colors[name] == pastel[i % len(pastel)]
+
 def test_get_phase_colors_multiple_duplicates():
     phase_names = ["A", "B", "C", "D"]
     pastel = sns.palettes.SEABORN_PALETTES["pastel"]
