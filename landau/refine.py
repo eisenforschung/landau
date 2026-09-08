@@ -58,7 +58,7 @@ import shapely
 from scipy.spatial import Delaunay
 
 from .features import Locus
-from .phases import Phase
+from .phases import Phase, kB
 
 
 # -- Type aliases ------------------------------------------------------------
@@ -222,6 +222,14 @@ def _state_row(phase: Phase, T: float, mu: float) -> dict:
 # pinned in tests/unit/test_refine.py. Not applied to two-phase boundaries,
 # which may be genuinely first-order (see _dominated).
 _TRIPLE_COEXIST_TOL = 1e-4
+
+# Two solved congruent points closer than this in (T, mu) are one point: the
+# traced closures on either side of a fold both converge onto it.
+_CONGRUENT_DEDUP_T = 1e-3
+_CONGRUENT_DEDUP_MU = 1e-6
+# A solved congruent point this close to a pure component is a terminal
+# closure the solver ran off toward rather than an interior one.
+_CONGRUENT_EDGE = 1e-4
 
 
 def _dominated(pt, phases: Mapping[str, Phase]) -> bool:
@@ -1276,7 +1284,9 @@ class ClausiusClapeyronRefiner(_CCBase):
         nothing that a field is 2 at% wide somewhere until you know whether it
         is 30 at% wide elsewhere. Default 0.1, an order of magnitude above
         every closure in the test systems (worst 0.042, a compound melting
-        congruently) and an order below a line that never closes (0.98).
+        congruently) and an order below a line that never closes (0.98). Only
+        the detection is a tolerance: an interior closure is then solved
+        exactly (see :meth:`_solve_congruent`).
     """
 
     label = "clausius-clapeyron"
@@ -1319,6 +1329,16 @@ class ClausiusClapeyronRefiner(_CCBase):
         pure component's melting point is routinely cut short by ``_dominated``
         too, since past the terminal a third phase takes over the extrapolated
         line.
+
+        The narrowest traced point is where the closure is *detected*, not
+        where it is: a congruent point is a fold of the coexistence line in T,
+        which a tracer stepping in T only ever approaches. So each closure is
+        handed to :meth:`_solve_congruent`, and where that converges the exact
+        point is emitted tagged instead of the traced one (which stays, as an
+        ordinary boundary point); closures that converge onto one point yield
+        one tag. Where it does not -- a pure component's terminal, where the
+        composition is reached only as ``mu`` diverges -- the traced point
+        keeps the tag as before.
         """
         # Only RefinedPoint carries the flag; a subclass emitting anything else
         # (a miscibility gap, say) passes through untouched.
@@ -1345,10 +1365,74 @@ class ClausiusClapeyronRefiner(_CCBase):
         lo = np.searchsorted(shared, shared - window, side="left")
         hi = np.searchsorted(shared, shared + window, side="right")
         out = list(points)
+        solved: list[RefinedPoint] = []
+
+        def near(a, b):
+            return abs(a.T - b.T) <= _CONGRUENT_DEDUP_T and abs(a.mu - b.mu) <= _CONGRUENT_DEDUP_MU
+
         for i in np.flatnonzero(closing):
-            if lo[i] + np.argmin(gap[lo[i]:hi[i]]) == i:
-                out[where[i]] = replace(points[where[i]], congruent=True)
+            if lo[i] + np.argmin(gap[lo[i]:hi[i]]) != i:
+                continue
+            pt = points[where[i]]
+            exact = self._solve_congruent(pt, phases)
+            if exact is None:
+                out[where[i]] = replace(pt, congruent=True)
+            elif any(near(exact, s) for s in solved):
+                continue
+            elif near(exact, pt):
+                # the trace landed on the point itself: no second row for it
+                out[where[i]] = replace(pt, congruent=True)
+                solved.append(pt)
+            else:
+                solved.append(exact)
+                out.append(exact)
         return out
+
+    def _solve_congruent(self, pt, phases):
+        """The exact congruent point near the traced closure ``pt``, or ``None``.
+
+        Both phases share a composition on the coexistence line there, so the
+        point solves ``phi1 = phi2`` and ``c1 = c2`` in ``(T, mu)``. The system
+        is well posed even though the trace folds: ``d(phi1 - phi2)/dmu = c2 -
+        c1`` vanishes at the solution, but ``d(phi1 - phi2)/dT`` (the entropy
+        difference) and ``d(c1 - c2)/dmu`` (the curvature difference) do not.
+        Solved with :func:`scipy.optimize.root` in variables scaled by ``T``
+        and ``kB T``, seeded from ``pt``.
+
+        Returns ``None`` when the solver does not converge or the solution is
+        not the closure it was seeded from: further than ``2 dT_max`` from the
+        seed in ``T``, at a pure component (a terminal closure is reached only
+        as ``mu`` diverges, and the solver runs off), or no longer the globally
+        stable pair there.
+        """
+        p1, p2 = (phases[n] for n in pt.phases)
+        T_s = max(abs(pt.T), 1.0)
+        mu_s = max(kB * abs(pt.T), 1e-3)
+
+        def F(x):
+            T, mu = x[0] * T_s, x[1] * mu_s
+            return [
+                float(p1.semigrand_potential(T, mu) - p2.semigrand_potential(T, mu)) / mu_s,
+                float(p1.concentration(T, mu) - p2.concentration(T, mu)),
+            ]
+
+        try:
+            sol = so.root(F, [pt.T / T_s, pt.mu / mu_s], method="hybr",
+                          options={"xtol": 1e-12, "maxfev": 200})
+        except (ValueError, FloatingPointError):
+            return None
+        if not sol.success:
+            return None
+        T, mu = float(sol.x[0] * T_s), float(sol.x[1] * mu_s)
+        if not np.isfinite(T) or not np.isfinite(mu) or abs(T - pt.T) > 2 * self.dT_max:
+            return None
+        c = float(p1.concentration(T, mu))
+        if not _CONGRUENT_EDGE < c < 1 - _CONGRUENT_EDGE:
+            return None
+        exact = RefinedPoint(T=T, mu=mu, phases=pt.phases, congruent=True)
+        if _dominated(exact, phases):
+            return None
+        return exact
 
     def propose(self, df: pd.DataFrame) -> Iterator[_InterCandidate]:
         T_min = float(df["T"].min())
