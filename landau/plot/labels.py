@@ -9,6 +9,8 @@ Placement works in display pixels throughout, because a rendered label has a
 fixed pixel size while the two data axes have unrelated scales.
 """
 
+from dataclasses import dataclass, field
+
 import matplotlib.patheffects as patheffects
 import matplotlib.pyplot as plt
 import numpy as np
@@ -333,18 +335,28 @@ def _label_obstacles_px(ax, polys, renderer):
     :func:`get_polygons` result the caller plotted, rather than read back off
     ``ax.patches``, which would also pick up any unrelated patch the caller put
     there. ``obstacles`` are the lines it must not cover: every polygon
-    outline, whatever else is drawn in data coordinates (a triple point's
-    isotherm and marker, via :func:`_curve_obstacles`) and the labels already
-    placed on the axes. Pixel space is the natural frame here: a label's
-    rendered size is fixed in pixels while the two data axes have unrelated
-    scales.
+    outline except where it runs along the edge of the sampled window or the
+    axes frame (a phase field cut off there has an edge, but no boundary a
+    reader could mistake a label for covering), whatever else is drawn in data
+    coordinates (a triple point's isotherm and marker, via
+    :func:`_curve_obstacles`) and the labels already placed on the axes. Pixel
+    space is the natural frame here: a label's rendered size is fixed in
+    pixels while the two data axes have unrelated scales.
     """
-    regions, obstacles = [], []
+    regions = []
     for patch in polys:
         region = _shapely_polygon(ax.transData.transform(patch.get_xy()))
         if region is not None:
             regions.append(region)
-            obstacles.append(region.exterior)
+    edges = [shapely.box(*ax.get_window_extent(renderer).extents).exterior]
+    if regions:
+        edges.append(shapely.box(*shapely.union_all(regions).bounds).exterior)
+    frame = shapely.union_all(edges).buffer(_LABEL_PAD)
+    obstacles = []
+    for region in regions:
+        outline = region.exterior.difference(frame)
+        if not outline.is_empty:
+            obstacles.append(outline)
     drawn = _curve_obstacles(ax)
     if drawn is not None:
         obstacles.append(drawn)
@@ -369,41 +381,187 @@ def _label_offsets(size, x_weight, step, max_offset):
     return offsets
 
 
-def _clear_label_center(anchor, size, offsets, *, regions, obstacle, axes_box, mode):
-    """Nearest offset from ``anchor`` (in pixels) where a label clears everything.
+# Placement cost weights. Every term is measured in label heights, so they
+# compare like for like against the distance term, whose largest value is the
+# reach of the candidate set: 2 heights, costing 4. A line crossing the box
+# covers about a third of it and so costs as much as that whole reach, as does
+# reaching half a label past another invariant's temperature; either is avoided
+# whenever any candidate within reach avoids it, and accepted otherwise.
+_LABEL_COST = {
+    "distance": 2.0,   # per label height moved off the anchor (x charged x_weight times)
+    "overlap": 12.0,   # per padded label-box area covered by a feature or another label
+    "mode": 1.0,       # per step down the label's list of preferred spaces
+    "crossing": 8.0,   # per label height the box reaches past another invariant's temperature
+    "swap": 8.0,       # per label height two labels' centres are out of temperature order
+}
+_LABEL_REACH = 2.0     # candidates extend this many label heights from the anchor
+_LABEL_SWEEPS = 5      # repair passes over the greedy placement
 
-    The label box -- ``size`` is its rendered ``(width, height)``, inflated by
-    :data:`_LABEL_PAD` -- has to lie inside the axes and off every phase
-    boundary.  ``mode`` picks which side of the boundaries it may then live on:
+
+@dataclass
+class _TemperatureLabel:
+    """One transition-temperature label while it is being placed.
+
+    Everything is in display pixels. ``anchor`` is the invariant itself (its
+    ``y`` is the temperature level every other label is ordered against),
+    ``span`` the horizontal extent of the feature it labels -- an isotherm's
+    two ends in c-T, the point itself in mu-T -- and ``modes`` the label's
+    preferred spaces, best first, as :func:`_box_modes` names them.
+    ``candidates`` are the centres it may take, ``choice`` the index of the one
+    it has, ``None`` while unplaced or when nothing fits inside the axes.
+    """
+
+    T: float
+    anchor: tuple[float, float]
+    size: tuple[float, float]
+    modes: tuple[str, ...]
+    x_weight: float
+    span: tuple[float, float]
+    candidates: np.ndarray = field(default_factory=lambda: np.empty((0, 2)))
+    static_cost: np.ndarray = field(default_factory=lambda: np.empty(0))
+    choice: int | None = None
+
+    @property
+    def center(self):
+        return None if self.choice is None else (float(self.candidates[self.choice, 0]),
+                                                 float(self.candidates[self.choice, 1]))
+
+
+def _label_candidates(label, axes_box):
+    """Candidate centres for ``label``: the :func:`_label_offsets` grid out to
+    :data:`_LABEL_REACH` label heights, keeping the padded box inside ``axes_box``."""
+    w, h = label.size
+    step = max(h / 4.0, 1.0)
+    offsets = np.asarray(_label_offsets(label.size, label.x_weight, step, _LABEL_REACH * h))
+    centers = np.asarray(label.anchor, dtype=float) + offsets
+    hw, hh = w / 2 + _LABEL_PAD, h / 2 + _LABEL_PAD
+    x0, y0, x1, y1 = axes_box.bounds
+    inside = ((centers[:, 0] - hw >= x0) & (centers[:, 0] + hw <= x1)
+              & (centers[:, 1] - hh >= y0) & (centers[:, 1] + hh <= y1))
+    return centers[inside]
+
+
+def _box_modes(boxes, regions):
+    """Which space each of ``boxes`` sits in, given the phase-field ``regions``:
 
     ``"field"``
-        wholly inside one phase polygon.  A congruent point sits on the edge
+        wholly inside one phase polygon. A congruent point sits on the edge
         between two single-phase fields, so either of them will do.
     ``"negative"``
         clear of every phase polygon, i.e. in the two-phase negative space --
         where a triple point's isotherm runs, with a two-phase field above it
         and another below.
     ``"free"``
-        no region constraint; the fallback when neither side has room.
-
-    ``offsets`` are the displacements to try, nearest first, from
-    :func:`_label_offsets`.  ``None`` when nothing fits.
+        neither: straddling a boundary.
     """
-    w, h = size
-    for dx, dy in offsets:
-        cx, cy = anchor[0] + dx, anchor[1] + dy
-        box = shapely.box(cx - w / 2 - _LABEL_PAD, cy - h / 2 - _LABEL_PAD,
-                          cx + w / 2 + _LABEL_PAD, cy + h / 2 + _LABEL_PAD)
-        if not axes_box.contains(box):
+    if not regions:
+        return np.full(len(boxes), "negative")
+    inside = np.any([shapely.contains(r, boxes) for r in regions], axis=0)
+    touching = np.any([shapely.intersects(r, boxes) for r in regions], axis=0)
+    return np.where(inside, "field", np.where(touching, "free", "negative"))
+
+
+def _static_costs(label, regions, obstacle, levels):
+    """Cost of each candidate of ``label`` from what does not move: its
+    distance from the anchor, how much of its padded box ``obstacle`` covers,
+    the space it lands in, and how far it reaches past another invariant's
+    temperature.
+
+    ``levels`` are the other invariants as ``(T, span, y)``; a candidate
+    within half a label width of one's ``span`` pays for every pixel its box
+    reaches past that temperature on the wrong side, beyond the pad, so a label
+    may touch a neighbouring isotherm but not sit across it. A crossing is
+    penalised whether or not the neighbour's label is anywhere near, which is
+    what keeps the order of the labels honest even when they do not interact.
+    """
+    c = label.candidates
+    if len(c) == 0:
+        return np.empty(0)
+    w, h = label.size
+    hw, hh = w / 2 + _LABEL_PAD, h / 2 + _LABEL_PAD
+    weights = _LABEL_COST
+    cost = weights["distance"] * np.hypot((c[:, 0] - label.anchor[0]) * label.x_weight,
+                                          c[:, 1] - label.anchor[1]) / h
+    if obstacle is not None:
+        padded = shapely.box(c[:, 0] - hw, c[:, 1] - hh, c[:, 0] + hw, c[:, 1] + hh)
+        cost += weights["overlap"] * shapely.area(shapely.intersection(padded, obstacle)) / (4 * hw * hh)
+    # The space a label sits in is judged by the text itself, without the pad:
+    # next to the edge of the sampled window the pad pokes out of every field.
+    boxes = shapely.box(c[:, 0] - w / 2, c[:, 1] - h / 2, c[:, 0] + w / 2, c[:, 1] + h / 2)
+    rank = {m: i for i, m in enumerate(label.modes)}
+    cost += weights["mode"] * np.array([rank.get(m, len(label.modes)) for m in _box_modes(boxes, regions)])
+    for T, (sx0, sx1), y in levels:
+        if T == label.T:
             continue
-        if obstacle is not None and obstacle.intersects(box):
+        near = (c[:, 0] + w > sx0) & (c[:, 0] - w < sx1)
+        if label.T > T:
+            depth = (y - _LABEL_PAD) - (c[:, 1] - h / 2)
+        else:
+            depth = (c[:, 1] + h / 2) - (y + _LABEL_PAD)
+        cost += weights["crossing"] * np.where(near, np.maximum(depth, 0.0), 0.0) / h
+    return cost
+
+
+def _dynamic_costs(label, placed):
+    """Cost of each candidate of ``label`` from the labels in ``placed``: the
+    part of its padded box they cover, and, for one it shares horizontal
+    extent with, how far its centre sits on the wrong side of theirs in
+    temperature order -- the 800 K label under the 700 K one -- scaled by that
+    shared extent, so labels far apart in x do not constrain each other."""
+    c = label.candidates
+    cost = np.zeros(len(c))
+    w, h = label.size
+    hw, hh = w / 2 + _LABEL_PAD, h / 2 + _LABEL_PAD
+    weights = _LABEL_COST
+    for other in placed:
+        (ox, oy), (ow, oh) = other.center, other.size
+        ix = np.minimum(c[:, 0] + hw, ox + ow / 2) - np.maximum(c[:, 0] - hw, ox - ow / 2)
+        iy = np.minimum(c[:, 1] + hh, oy + oh / 2) - np.maximum(c[:, 1] - hh, oy - oh / 2)
+        cost += weights["overlap"] * np.clip(ix, 0.0, None) * np.clip(iy, 0.0, None) / (4 * hw * hh)
+        if other.T == label.T:
             continue
-        if mode == "field" and not any(r.contains(box) for r in regions):
+        shared = np.clip(np.minimum(c[:, 0] + w / 2, ox + ow / 2)
+                         - np.maximum(c[:, 0] - w / 2, ox - ow / 2), 0.0, None) / min(w, ow)
+        depth = oy - c[:, 1] if label.T > other.T else c[:, 1] - oy
+        cost += weights["swap"] * shared * np.maximum(depth, 0.0) / h
+    return cost
+
+
+def _place_temperature_labels(labels, regions, obstacle, axes_box):
+    """Choose a centre for every label in ``labels``, in place.
+
+    Each label scores its candidates by :func:`_static_costs` plus
+    :func:`_dynamic_costs` and takes the cheapest. Labels are placed hottest
+    first, so each one only ever sees the higher temperatures already fixed
+    above it, then re-placed one at a time with the others held still until
+    none moves (at most :data:`_LABEL_SWEEPS` passes): the greedy pass alone
+    lets an early label push a later one into a worse spot than the two could
+    share. No candidate is ever rejected outright except for leaving the axes,
+    so a crowded invariant is overplotted near its anchor rather than labelled
+    somewhere clear but far away.
+    """
+    levels = [(label.T, label.span, label.anchor[1]) for label in labels]
+    for label in labels:
+        label.candidates = _label_candidates(label, axes_box)
+        label.static_cost = _static_costs(label, regions, obstacle, levels)
+        label.choice = None
+    order = sorted(range(len(labels)), key=lambda i: -labels[i].T)
+    placed = []
+    for i in order:
+        label = labels[i]
+        if len(label.candidates) == 0:
             continue
-        if mode == "negative" and any(r.intersects(box) for r in regions):
-            continue
-        return cx, cy
-    return None
+        label.choice = int(np.argmin(label.static_cost + _dynamic_costs(label, placed)))
+        placed.append(label)
+    for _ in range(_LABEL_SWEEPS):
+        moved = False
+        for label in placed:
+            total = label.static_cost + _dynamic_costs(label, [o for o in placed if o is not label])
+            best = int(np.argmin(total))
+            if total[best] < total[label.choice] - 1e-9:
+                label.choice, moved = best, True
+        if not moved:
+            break
 
 
 def _annotate_transition_temperatures(df, polys=(), ax=None, variables=None):
@@ -416,11 +574,21 @@ def _annotate_transition_temperatures(df, polys=(), ax=None, variables=None):
     :attr:`~landau.features.Locus.CONGRUENT` for a point where two coexisting
     phases share a composition (see
     :meth:`~landau.refine.ClausiusClapeyronRefiner._tag_features`). A frame
-    with neither -- an unrefined one, say -- draws nothing.
+    with neither -- an unrefined one, say -- draws nothing. Invariants whose
+    labels would read the same and whose anchors lie within one label of each
+    other -- a eutectic and a terminal melting point at the same rounded
+    temperature -- share one label at their mean anchor.
 
-    Every label is placed by :func:`_clear_label_center` so that it stays
-    inside the axes and never cuts across a phase boundary or an already-placed
-    label, each kind preferring the space its feature lives in:
+    Every label is anchored on its invariant -- a triple point at the middle
+    of its three compositions, the phase that melts or decomposes into the
+    outer two and where the eutectic or peritectic point is drawn; a congruent
+    point at the shared composition -- and placed by
+    :func:`_place_temperature_labels`: the cheapest of the candidate spots
+    within two label heights of the anchor, weighing the distance moved
+    against covering a phase boundary, a drawn curve or another label, leaving
+    the space it prefers, and reaching past another invariant's temperature or
+    out of temperature order with another label. Each kind prefers the space
+    its feature lives in:
 
     * a triple point's label goes into the two-phase negative space above or
       below its isotherm, which exists only in c-T: in mu-T the phase fields
@@ -428,8 +596,9 @@ def _annotate_transition_temperatures(df, polys=(), ax=None, variables=None):
     * a congruent point's label goes inside one of the two phase fields meeting
       at it.
 
-    Each falls back to the other's space, then to any clear spot in the axes,
-    so a crowded diagram still gets labelled -- just less ideally.
+    Nothing near the anchor is ever ruled out, so a crowded invariant gets an
+    overplotted label next to itself rather than a clear one far away; only a
+    label with no room at all inside the axes is pulled in at its anchor.
 
     Args:
         df (pandas.DataFrame):
@@ -451,14 +620,6 @@ def _annotate_transition_temperatures(df, polys=(), ax=None, variables=None):
     if "locus" not in df.columns:
         return
 
-    renderer = _get_renderer(ax.figure)
-    axbb = ax.get_window_extent(renderer)
-    axes_box = shapely.box(axbb.x0, axbb.y0, axbb.x1, axbb.y1)
-    regions, obstacles = _label_obstacles_px(ax, polys, renderer)
-    # Scan resolution and reach in pixels, but derived from the axes so a
-    # figure rendered at a different dpi searches the same fraction of it.
-    step = max(axbb.height / 150, 1.0)
-    max_offset = axbb.height / 4
     # The two-phase negative space is a c-T notion; in mu-T the phase fields
     # tile the plane, so looking for it there only pays for a doomed scan.
     if variables[0] == "c":
@@ -466,49 +627,66 @@ def _annotate_transition_temperatures(df, polys=(), ax=None, variables=None):
     else:
         triple_modes = congruent_modes = ("field", "free")
 
-    def _label(x, y, modes, x_weight):
-        text = _text_with_outline(
-            ax, x, y, f"{y:.0f} K", ha="center", va="center", fontsize="small", zorder=11,
-        )
-        bbox = text.get_window_extent(renderer)
-        size = (bbox.width, bbox.height)
-        anchor = tuple(ax.transData.transform((x, y)))
-        offsets = _label_offsets(size, x_weight, step, max_offset)
-        obstacle = shapely.union_all(obstacles) if obstacles else None
-        center = None
-        for mode in modes:
-            center = _clear_label_center(anchor, size, offsets, regions=regions,
-                                         obstacle=obstacle, axes_box=axes_box, mode=mode)
-            if center is not None:
-                break
-        if center is None:
-            # Nothing clears: keep the label at its anchor, pulled inside the
-            # axes with the same clearance a placed one would have kept.
-            half_w, half_h = size[0] / 2 + _LABEL_PAD, size[1] / 2 + _LABEL_PAD
-            center = (min(max(anchor[0], axbb.x0 + half_w), axbb.x1 - half_w),
-                      min(max(anchor[1], axbb.y0 + half_h), axbb.y1 - half_h))
-        text.set_position(ax.transData.inverted().transform(center))
-        obstacles.append(shapely.box(center[0] - size[0] / 2, center[1] - size[1] / 2,
-                                     center[0] + size[0] / 2, center[1] + size[1] / 2))
-
+    # (x, T, x-extent, modes, x_weight) per invariant, in data coordinates.
+    entries = []
     triple = df[df["locus"] == Locus.TRIPLE]
     if variables[0] == "c":
         for (_mu, T), grp in triple.groupby(["mu", "T"], sort=False)[["c"]]:
-            # Anchored on the invariant's own composition -- the middle of the
-            # three, the one that melts or decomposes into the outer two, and
-            # where the eutectic or peritectic point is drawn -- rather than
-            # the midpoint of the isotherm it spans.
-            _label(grp["c"].median(), T, triple_modes, x_weight=3.0)
+            entries.append((grp["c"].median(), T, (grp["c"].min(), grp["c"].max()), triple_modes, 2.0))
     elif variables[0] == "mu":
         for (mu, T), _grp in triple.groupby(["mu", "T"], sort=False):
-            _label(mu, T, triple_modes, x_weight=3.0)
-
+            entries.append((mu, T, (mu, mu), triple_modes, 2.0))
     congruent = df[df["locus"] == Locus.CONGRUENT]
     for (mu, T), grp in congruent.groupby(["mu", "T"], sort=False)[["c"]]:
         # The two phases meet here, so their concentrations agree to within the
         # refiner's tolerance; the mean is the composition of the invariant.
         x = grp["c"].mean() if variables[0] == "c" else mu
-        _label(x, T, congruent_modes, x_weight=1.5)
+        entries.append((x, T, (x, x), congruent_modes, 1.5))
+    if not entries:
+        return
+
+    renderer = _get_renderer(ax.figure)
+    axbb = ax.get_window_extent(renderer)
+    axes_box = shapely.box(axbb.x0, axbb.y0, axbb.x1, axbb.y1)
+    regions, obstacles = _label_obstacles_px(ax, polys, renderer)
+    obstacle = shapely.union_all([o.buffer(_LABEL_PAD) for o in obstacles]) if obstacles else None
+
+    texts, labels = [], []
+    for x, T, (x0, x1), modes, x_weight in entries:
+        text = _text_with_outline(
+            ax, x, T, f"{T:.0f} K", ha="center", va="center", fontsize="small", zorder=11,
+        )
+        bbox = text.get_window_extent(renderer)
+        ax_px, ay_px = ax.transData.transform((x, T))
+        span = tuple(sorted((ax.transData.transform((x0, T))[0], ax.transData.transform((x1, T))[0])))
+        label = _TemperatureLabel(T=T, anchor=(float(ax_px), float(ay_px)), size=(bbox.width, bbox.height),
+                                  modes=modes, x_weight=x_weight, span=span)
+        # Coalesce with an earlier label that reads the same and sits within
+        # one label of this one: keep that one, at the mean anchor.
+        for other_text, other in zip(texts, labels):
+            if (other_text.get_text() == text.get_text()
+                    and abs(other.anchor[0] - label.anchor[0]) <= other.size[0]
+                    and abs(other.anchor[1] - label.anchor[1]) <= other.size[1]):
+                other.anchor = ((other.anchor[0] + label.anchor[0]) / 2, (other.anchor[1] + label.anchor[1]) / 2)
+                other.span = (min(other.span[0], span[0]), max(other.span[1], span[1]))
+                text.remove()
+                break
+        else:
+            texts.append(text)
+            labels.append(label)
+
+    _place_temperature_labels(labels, regions, obstacle, axes_box)
+
+    inv = ax.transData.inverted()
+    for text, label in zip(texts, labels):
+        center = label.center
+        if center is None:
+            # Nothing fits inside the axes: keep the label at its anchor,
+            # pulled inside with the same clearance a placed one would keep.
+            half_w, half_h = label.size[0] / 2 + _LABEL_PAD, label.size[1] / 2 + _LABEL_PAD
+            center = (min(max(label.anchor[0], axbb.x0 + half_w), axbb.x1 - half_w),
+                      min(max(label.anchor[1], axbb.y0 + half_h), axbb.y1 - half_h))
+        text.set_position(inv.transform(center))
 
 
 def _place_side_labels(ax, df, scan_col, phase_colors, top_texts=()):
