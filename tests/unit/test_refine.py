@@ -1468,7 +1468,9 @@ def _gap_phases(gaps, shared):
         sign: float
 
         def concentration(self, T, mu):
-            i = int(round(mu))
+            # clipped: the congruent solve probes mu off the sampled points
+            # before giving up on these constant-potential fakes
+            i = min(max(int(round(mu)), 0), len(gaps) - 1)
             return shared[i] + self.sign * gaps[i] / 2
 
         def semigrand_potential(self, T, mu):
@@ -1829,3 +1831,142 @@ def test_cc_base_dominated_node_default_is_none():
         proj_p1=(1000.0, 0.4), proj_p2=(1000.0, 0.5),
     )
     assert ClausiusClapeyronRefiner()._dominated_node(cand, mapping, 1000.0, 0.45, 1005.0, 0.45, 0.05) is None
+
+
+# -- ClausiusClapeyronRefiner._solve_congruent ---------------------------------
+#
+# A congruent point is a fold of the coexistence line in T, so a tracer that
+# steps in T only approaches it. The detected closure is polished by solving
+# phi1 = phi2, c1 = c2 in (T, mu); a terminal closure (mu diverging) keeps the
+# traced tag.
+
+
+def _regular_liquid(E_A, S_A, E_B, S_B, L0):
+    """Regular solution on FastInterpolatingPhase: cubic free energy fitted
+    exactly by PolyFit(4), c located by the logit-Newton polish."""
+    from landau.interpolate import PolyFit
+    from landau.phases import FastInterpolatingPhase
+
+    ctrl = [
+        LinePhase(f"l{i}", fixed_concentration=c,
+                  line_energy=(1 - c) * E_A + c * E_B + L0 * c * (1 - c),
+                  line_entropy=((1 - c) * S_A + c * S_B) * kB)
+        for i, c in enumerate([0, 0.25, 0.5, 0.75, 1])
+    ]
+    return FastInterpolatingPhase("liquid", phases=ctrl, add_entropy=True, interpolator=PolyFit(4))
+
+
+@pytest.fixture(scope="module")
+def isomorphous_minimum():
+    """Ideal solid + attractive regular liquid: a lens with an interior minimum.
+
+    Returns the refined frame, the phases and the exact minimum. With both
+    phases carrying ideal mixing entropy the difference
+    ``d(c, T) = (1-c) dA(T) + c dB(T) + L0 c (1-c)`` (``dX`` the pure-component
+    liquid-solid difference) is entropy-free, and the congruent point is where
+    ``d = 0`` and ``dd/dc = 0``: two equations linear in T, solved here
+    independently of any refiner.
+    """
+    E = dict(sA=-3.0, sB=-2.5, lA=-2.8, lB=-2.35)
+    S = dict(sA=1.0, sB=1.0, lA=3.0, lB=3.0)
+    L0 = -0.12
+    solid = IdealSolution(
+        "solid",
+        LinePhase("sA", fixed_concentration=0, line_energy=E["sA"], line_entropy=S["sA"] * kB),
+        LinePhase("sB", fixed_concentration=1, line_energy=E["sB"], line_entropy=S["sB"] * kB),
+    )
+    liquid = _regular_liquid(E["lA"], S["lA"], E["lB"], S["lB"], L0)
+
+    def dA(T):
+        return (E["lA"] - S["lA"] * kB * T) - (E["sA"] - S["sA"] * kB * T)
+
+    def dB(T):
+        return (E["lB"] - S["lB"] * kB * T) - (E["sB"] - S["sB"] * kB * T)
+
+    import scipy.optimize as so
+
+    def G(x):
+        c, T = x
+        return [(1 - c) * dA(T) + c * dB(T) + L0 * c * (1 - c), dB(T) - dA(T) + L0 * (1 - 2 * c)]
+
+    c_min, T_min = so.root(G, [0.7, 800.0], options={"xtol": 1e-13}).x
+    df = calc_phase_diagram([solid, liquid], np.linspace(300.0, 1500.0, 60), mu=100)
+    return df, {"solid": solid, "liquid": liquid}, (float(c_min), float(T_min))
+
+
+def test_congruent_minimum_is_solved_exactly(isomorphous_minimum):
+    """The tagged point sits on the exact minimum, not on the nearest traced
+    point (which is a trace step away in T and a few at% off in c)."""
+    df, _phases, (c_min, T_min) = isomorphous_minimum
+    congruent = df[df["locus"] == Locus.CONGRUENT]
+    interior = [grp for _k, grp in congruent.groupby(["mu", "T"]) if 0.05 < grp["c"].mean() < 0.95]
+    assert len(interior) == 1, "closures on both sides of the fold converge to one point"
+    (grp,) = interior
+    assert grp["T"].iloc[0] == pytest.approx(T_min, abs=1e-2)
+    assert grp["c"].to_numpy() == pytest.approx([c_min, c_min], abs=1e-4)
+    # and it is not a traced point: no BOUNDARY row shares its (T, mu)
+    key = (grp["mu"].iloc[0], grp["T"].iloc[0])
+    boundary = df[df["locus"] == Locus.BOUNDARY]
+    assert not ((boundary["mu"] == key[0]) & (boundary["T"] == key[1])).any()
+
+
+def test_congruent_minimum_terminals_keep_the_traced_tag(isomorphous_minimum):
+    """The pure-component melting points are reached only as mu diverges, so
+    the solver gives up there and the traced closure stays tagged, at finite
+    mu on the line."""
+    df, _phases, _exact = isomorphous_minimum
+    congruent = df[df["locus"] == Locus.CONGRUENT]
+    terminals = [grp for _k, grp in congruent.groupby(["mu", "T"]) if not 0.05 < grp["c"].mean() < 0.95]
+    assert len(terminals) == 2
+    boundary = df[df["locus"] == Locus.BOUNDARY]
+    for grp in terminals:
+        assert grp["mu"].abs().iloc[0] < 2.0
+        assert grp["T"].iloc[0] == pytest.approx(1160.45 if grp["c"].mean() < 0.5 else 870.34, abs=1.0)
+
+
+def test_solve_congruent_line_phase_melting_congruently():
+    """A line phase at c=0.5 meeting an ideal liquid: c_liquid = 0.5 fixes mu
+    and phi equality fixes T, which has a closed form here."""
+    E_A, E_B, S = -2.8, -2.35, 3.0
+    liquid = IdealSolution(
+        "liquid",
+        LinePhase("lA", fixed_concentration=0, line_energy=E_A, line_entropy=S * kB),
+        LinePhase("lB", fixed_concentration=1, line_energy=E_B, line_entropy=S * kB),
+    )
+    E_g, S_g = -2.85, 1.0
+    gamma = LinePhase("γ", fixed_concentration=0.5, line_energy=E_g, line_entropy=S_g * kB)
+    # f_γ(T) = f_liquid(0.5, T):  E_g - S_g kB T = (E_A + E_B)/2 - S kB T - T kB ln 2
+    T_exact = (E_g - (E_A + E_B) / 2) / (kB * (S_g - S - np.log(2)))
+    mu_exact = E_B - E_A  # symmetric ideal liquid: c = 0.5 at the chord slope
+    phases = {"liquid": liquid, "γ": gamma}
+    seed = RefinedPoint(T=T_exact + 3.0, mu=mu_exact + 0.02, phases=("liquid", "γ"))
+    exact = ClausiusClapeyronRefiner()._solve_congruent(seed, phases)
+    assert exact is not None and exact.congruent
+    assert exact.T == pytest.approx(T_exact, abs=1e-6)
+    assert exact.mu == pytest.approx(mu_exact, abs=1e-9)
+    assert liquid.concentration(exact.T, exact.mu) == pytest.approx(0.5, abs=1e-9)
+
+
+def test_solve_congruent_gives_up_on_two_line_phases():
+    """Two line phases never share a composition: no root, no point."""
+    a = LinePhase("A", fixed_concentration=0, line_energy=-2.0, line_entropy=1.0 * kB)
+    b = LinePhase("B", fixed_concentration=1, line_energy=-2.4, line_entropy=2.5 * kB)
+    seed = RefinedPoint(T=700.0, mu=-0.4 + 700.0 * (1.0 - 2.5) * kB, phases=("A", "B"))
+    assert ClausiusClapeyronRefiner()._solve_congruent(seed, {"A": a, "B": b}) is None
+
+
+def test_solve_congruent_rejects_a_solution_far_from_its_seed():
+    """The solve polishes the closure it was seeded from; a root more than
+    2 dT_max away in T is some other feature and is not taken."""
+    E_A, E_B, S = -2.8, -2.35, 3.0
+    liquid = IdealSolution(
+        "liquid",
+        LinePhase("lA", fixed_concentration=0, line_energy=E_A, line_entropy=S * kB),
+        LinePhase("lB", fixed_concentration=1, line_energy=E_B, line_entropy=S * kB),
+    )
+    gamma = LinePhase("γ", fixed_concentration=0.5, line_energy=-2.85, line_entropy=1.0 * kB)
+    phases = {"liquid": liquid, "γ": gamma}
+    T_exact = (-2.85 - (E_A + E_B) / 2) / (kB * (1.0 - S - np.log(2)))
+    refiner = ClausiusClapeyronRefiner(dT_max=5.0)
+    far = RefinedPoint(T=T_exact + 40.0, mu=E_B - E_A, phases=("liquid", "γ"))
+    assert refiner._solve_congruent(far, phases) is None
