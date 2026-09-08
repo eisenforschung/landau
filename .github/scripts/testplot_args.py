@@ -263,7 +263,7 @@ Heuristics from changed file paths:
       → render all four 2D c-T/mu plots
       → --poly-method fasttsp tsp segment-fasttsp segment-tsp
         (skip "concave" / "segments" unless the change explicitly affects them)
-  - landau/plot.py touched
+  - landau/plot/** touched
       → all plots (no extra flags)
   - landau/phases.py or landau/calculate.py touched
       → all plots (no extra flags)

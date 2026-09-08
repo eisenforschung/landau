@@ -60,7 +60,7 @@ jobs:
               2. **Calculation** — `landau/calculate.py`, `landau/refine.py`,
                  `landau/phases/**`, `landau/interpolate/**` (the dataframe of
                  transitions/concentrations the plots are built from).
-              3. **Plotting** — `landau/plot.py`, `landau/poly.py` (axes, colours,
+              3. **Plotting** — `landau/plot/**`, `landau/poly.py` (axes, colours,
                  polygon/region construction, 1D/2D phase-diagram drawing).
 
             Do the following. Fetch input lazily — triage by filename first and

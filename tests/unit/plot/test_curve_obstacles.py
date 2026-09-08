@@ -1,4 +1,4 @@
-"""Direct unit tests for `landau.plot._curve_obstacles` (issue #389).
+"""Direct unit tests for `landau.plot.labels._curve_obstacles` (issue #389).
 
 `_curve_obstacles` rasterises the lines and scatter markers of a matplotlib
 Axes into one shapely geometry in pixel space; `_add_inline_curve_labels`
@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import shapely
 
-from landau.plot import _curve_obstacles
+from landau.plot.labels import _curve_obstacles
 
 
 def test_curve_obstacles_empty_axes_returns_none():
