@@ -2095,3 +2095,140 @@ def test_solve_congruent_rejects_a_solution_far_from_its_seed():
     refiner = ClausiusClapeyronRefiner(dT_max=5.0)
     far = RefinedPoint(T=T_exact + 40.0, mu=E_B - E_A, phases=("liquid", "γ"))
     assert refiner._solve_congruent(far, phases) is None
+
+
+# -- MiscibilityGapRefiner: the closure of the gap ------------------------------
+#
+# The trace overshoots the critical point by a few steps, reading the steep but
+# continuous c(mu) just above it as a small jump at the scan's resolution. The
+# exact jump of _gap_jump (bisect mu* to 1e-9 eV, read c on either side) tells
+# open from closed, and the closure is bisected in T between the last open
+# point and the first closed one.
+
+from landau.refine import _gap_jump  # noqa: E402
+
+
+def _gap_liquid(L0, L1=0.0, E_A=-2.8, E_B=-2.35, S=3.0):
+    """Sub-regular solution on FastInterpolatingPhase/PolyFit(4), as the notebooks build it."""
+    from landau.interpolate import PolyFit
+    from landau.phases import FastInterpolatingPhase
+
+    def E_mix(c):
+        return c * (1 - c) * (L0 + L1 * (2 * c - 1))
+
+    controls = [
+        LinePhase(f"l{i}", fixed_concentration=c, line_energy=(1 - c) * E_A + c * E_B + E_mix(c),
+                  line_entropy=S * kB)
+        for i, c in enumerate([0, 0.25, 0.5, 0.75, 1])
+    ]
+    return FastInterpolatingPhase("liquid", controls, add_entropy=True, interpolator=PolyFit(4))
+
+
+def _consolute_point(L0, L1):
+    """Critical point of f = c(1-c)(L0 + L1(2c-1)) + kT [c ln c + (1-c) ln(1-c)]:
+    f_cc = 0 and f_ccc = 0, solved for (c, T)."""
+    import scipy.optimize as so
+
+    def G(x):
+        c, T = x
+        f_cc = -2 * L0 + L1 * (6 - 12 * c) + kB * T / (c * (1 - c))
+        f_ccc = -12 * L1 + kB * T * (1 / (1 - c) ** 2 - 1 / c ** 2)
+        return [f_cc, f_ccc]
+
+    c, T = so.root(G, [0.5, L0 / (2 * kB)], options={"xtol": 1e-13}).x
+    return float(c), float(T)
+
+
+def _closures(df):
+    """The congruent rows the gap refiner emitted, one frame per closure."""
+    rows = df[(df["locus"] == Locus.CONGRUENT) & (df["refined"] == "miscibility-gap")]
+    return [grp for _k, grp in rows.groupby(["mu", "T"])]
+
+
+def test_gap_jump_reads_the_binodal_below_tc_and_nothing_above():
+    """Symmetric regular solution: mu* = E_B - E_A exactly, the branches solve
+    ln(c/(1-c)) = (L0/kT)(2c - 1); above T_c the jump is the probe's 2 eps dc/dmu."""
+    import scipy.optimize as so
+    L0 = 0.25
+    liquid = _gap_liquid(L0)
+    mu_star = -2.35 - (-2.8)
+    T = 1000.0
+    c_r = so.brentq(lambda c: np.log(c / (1 - c)) - L0 / (kB * T) * (2 * c - 1), 0.5 + 1e-9, 1 - 1e-9)
+    mu, cl, cr = _gap_jump(liquid, T, mu_star - 0.02, mu_star + 0.02)
+    assert mu == pytest.approx(mu_star, abs=1e-6)
+    assert cl == pytest.approx(1 - c_r, abs=1e-4) and cr == pytest.approx(c_r, abs=1e-4)
+    _mu, cl, cr = _gap_jump(liquid, 1600.0, mu_star - 0.02, mu_star + 0.02)
+    assert cr - cl < 1e-6
+
+
+def test_gap_jump_needs_an_increasing_c_of_mu():
+    a = LinePhase("A", fixed_concentration=0.3, line_energy=-1.0)
+    with pytest.raises(ValueError):
+        _gap_jump(a, 500.0, -0.1, 0.1)
+
+
+def test_refined_miscibility_gap_congruent_rows():
+    liquid = _gap_liquid(0.25)
+    rows = RefinedMiscibilityGap(T=1450.0, mu=0.45, phase="liquid", c_left=0.5, c_right=0.5,
+                                 congruent=True).to_rows({"liquid": liquid})
+    assert [r["locus"] for r in rows] == [Locus.CONGRUENT] * 2
+    plain = RefinedMiscibilityGap(T=1000.0, mu=0.45, phase="liquid", c_left=0.2, c_right=0.8)
+    assert [r["locus"] for r in plain.to_rows({"liquid": liquid})] == [Locus.BOUNDARY] * 2
+
+
+@pytest.fixture(scope="module")
+def symmetric_gap_diagram():
+    """A line phase at c=0 under a symmetric repulsive liquid: a monotectic at the
+    bottom of the dome and the closure at T_c = L0 / (2 kB), c = 1/2."""
+    L0 = 0.25
+    alpha = LinePhase("α", fixed_concentration=0, line_energy=-3.0, line_entropy=1.0 * kB)
+    df = calc_phase_diagram([alpha, _gap_liquid(L0)], np.linspace(300.0, 1600.0, 80), mu=100)
+    return df, L0
+
+
+def test_gap_closure_is_the_critical_point(symmetric_gap_diagram):
+    df, L0 = symmetric_gap_diagram
+    (closure,) = _closures(df)
+    assert closure["T"].iloc[0] == pytest.approx(L0 / (2 * kB), abs=0.02)
+    assert closure["c"].to_numpy() == pytest.approx([0.5, 0.5], abs=1e-3)
+    assert closure["c"].iloc[0] == closure["c"].iloc[1]  # both branches at one composition
+    assert set(closure["phase"]) == {"liquid"}
+
+
+def test_gap_trace_stops_at_the_closure(symmetric_gap_diagram):
+    """The overshoot past T_c is dropped: no boundary row of the gap above it."""
+    df, L0 = symmetric_gap_diagram
+    (closure,) = _closures(df)
+    trace = df[(df["refined"] == "miscibility-gap") & (df["locus"] == Locus.BOUNDARY)]
+    assert trace["T"].max() < closure["T"].iloc[0]
+    assert trace["T"].max() > closure["T"].iloc[0] - 5.0  # but reaches it
+
+
+def test_gap_end_at_another_phase_is_not_a_closure(symmetric_gap_diagram):
+    """The dome's lower end is the monotectic, where the gap is at its widest:
+    one closure only, and the monotectic stays a triple."""
+    df, _L0 = symmetric_gap_diagram
+    assert len(_closures(df)) == 1
+    triple = df[df["locus"] == Locus.TRIPLE]
+    assert set(triple["phase"]) == {"α", "liquid"} and triple["T"].nunique() == 1
+
+
+def test_gap_closure_asymmetric_matches_the_spinodal_oracle():
+    """Sub-regular liquid: the consolute point solves f_cc = f_ccc = 0 off c = 1/2."""
+    L0, L1 = 0.25, 0.04
+    c_c, T_c = _consolute_point(L0, L1)
+    assert abs(c_c - 0.5) > 0.02, "the oracle must be off-centre for the test to mean anything"
+    liquid = _gap_liquid(L0, L1)
+    df = calc_phase_diagram([liquid], np.linspace(1000.0, 1600.0, 40), mu=100)
+    (closure,) = _closures(df)
+    assert closure["T"].iloc[0] == pytest.approx(T_c, abs=0.05)
+    assert closure["c"].iloc[0] == pytest.approx(c_c, abs=2e-3)
+
+
+def test_gap_leaving_the_window_has_no_closure():
+    """Sampled only below T_c: the trace ends at the window's edge with the gap
+    open, and nothing is tagged."""
+    liquid = _gap_liquid(0.25)
+    df = calc_phase_diagram([liquid], np.linspace(1000.0, 1300.0, 20), mu=100)
+    assert _closures(df) == []
+    assert (df[df["refined"] == "miscibility-gap"]["locus"] == Locus.BOUNDARY).all()
