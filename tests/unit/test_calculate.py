@@ -10,7 +10,7 @@ from landau.calculate import (
     cluster_T_c,
     cluster_T_c_mu,
     get_transitions,
-    reduce,
+    _tie_lines,
     _apply_series,
     _border_edges,
     _f_excess_tangent_chord,
@@ -676,24 +676,43 @@ def test_border_edges_preserves_T_and_phase_from_source(grid_frame):
     assert (right["phase"] == "A").all()
 
 
-# --- reduce tests ---
+# --- _tie_lines tests ---
 
 
-def test_reduce_joins_phase_names_sorted_by_c():
-    # rows deliberately out of c order; transition string must reflect ascending-c sort
+def test_tie_lines_pairs_neighbours_in_c():
+    # three phases at one (mu, T), rows deliberately out of c order: two
+    # tie-lines between c-neighbours, named in ascending-c order, the middle
+    # phase in both
     dd = pd.DataFrame({"phase": ["liq", "fcc", "bcc"], "c": [0.7, 0.2, 0.5]})
-    phases_by_c = dd.sort_values("c")["phase"].tolist()
-    out = reduce(dd)
-    assert out["transition"] == "-".join(phases_by_c)
-    assert out["c"] == sorted(dd["c"].tolist())
-    assert out["phase"] == phases_by_c
+    out = _tie_lines(dd)
+    assert out["transition"].tolist() == ["fcc-bcc", "fcc-bcc", "bcc-liq", "bcc-liq"]
+    assert out["phase"].tolist() == ["fcc", "bcc", "bcc", "liq"]
+    assert out["c"].tolist() == [0.2, 0.5, 0.5, 0.7]
 
 
-def test_reduce_single_phase_no_dash():
+def test_tie_lines_two_phases_is_one_transition():
+    dd = pd.DataFrame({"phase": ["liq", "fcc"], "c": [0.7, 0.2]})
+    out = _tie_lines(dd)
+    assert out["transition"].tolist() == ["fcc-liq", "fcc-liq"]
+    assert out["phase"].tolist() == ["fcc", "liq"]
+
+
+def test_tie_lines_same_phase_twice_keeps_both_branches_apart():
+    # a monotectic isotherm: the liquid at both of its branch compositions and
+    # a solid at the end. The liquid's branches are the two ends of the
+    # liquid-liquid tie-line, the near one also the end of the solid-liquid
+    # one; there is no liquid-only pairing across the field.
+    dd = pd.DataFrame({"phase": ["liquid", "α", "liquid"], "c": [0.81, 0.0, 0.19]})
+    out = _tie_lines(dd)
+    assert out["transition"].tolist() == ["α-liquid", "α-liquid", "liquid-liquid", "liquid-liquid"]
+    assert out["c"].tolist() == [0.0, 0.19, 0.19, 0.81]
+
+
+def test_tie_lines_single_phase_no_dash():
     dd = pd.DataFrame({"phase": ["fcc"], "c": [0.3]})
-    out = reduce(dd)
-    assert out["transition"] == "fcc"
-    assert out["c"] == [0.3]
+    out = _tie_lines(dd)
+    assert out["transition"].tolist() == ["fcc"]
+    assert out["c"].tolist() == [0.3]
 
 
 # --- cluster dispatcher tests ---
