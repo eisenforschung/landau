@@ -110,6 +110,13 @@ class RefinedPoint:
         Set on the point of a two-phase line where the two phases'
         compositions meet (see
         :meth:`ClausiusClapeyronRefiner._tag_features`).
+    concentrations : tuple[float, ...] or None
+        Concentration emitted for each entry of ``phases``, in order, instead
+        of re-querying ``concentration(T, mu)``. Needed when one phase takes
+        part twice -- the two branches of a miscibility gap at a
+        monotectic-type invariant (see
+        :meth:`MiscibilityGapRefiner._dominated_node`) -- since the re-query
+        cannot tell the branches apart.
 
     :meth:`to_rows` tags each emitted row with ``locus``:
     :attr:`~landau.features.Locus.TRIPLE` for three coexisting phases,
@@ -122,12 +129,16 @@ class RefinedPoint:
     phases: tuple[str, ...]
     boundary_id: int = 0
     congruent: bool = False
+    concentrations: tuple[float, ...] | None = None
 
     def phase_names(self) -> set[str]:
         return set(self.phases)
 
     def to_rows(self, phases: Mapping[str, Phase]) -> list[dict]:
         rows = [_state_row(phases[name], self.T, self.mu) for name in self.phases]
+        if self.concentrations is not None:
+            for row, c in zip(rows, self.concentrations):
+                row["c"] = c
         if len(self.phases) == 3:
             locus = Locus.TRIPLE
         elif self.congruent:
@@ -940,7 +951,24 @@ class _CCBase(Refiner):
         """
         if isinstance(pt, RefinedMiscibilityGap):
             return (pt.c_left, pt.c_right)
+        if pt.concentrations is not None:
+            return tuple(float(c) for c in pt.concentrations)
         return tuple(float(phases[n].concentration(pt.T, pt.mu)) for n in pt.phases)
+
+    def _dominated_node(self, cand, phases, T_ok, mu_ok, T_dom, mu_dom, half_width):
+        """Hook: the point where a phase outside the traced line takes over.
+
+        Called by :meth:`_trace` when a step lands in a region where an outside
+        phase is more stable (``_dominated``), with the last kept step
+        ``(T_ok, mu_ok)`` and the dominated one ``(T_dom, mu_dom)``: the line
+        crosses an invariant between the two. Returns the refined point to emit
+        for it, or ``None`` to stop silently. The base implementation returns
+        ``None``: a two-phase line's invariants are triple points, which
+        :class:`DelaunayTripleRefiner` locates on its own. See
+        :meth:`MiscibilityGapRefiner._dominated_node` for the one the Delaunay
+        refiners cannot see.
+        """
+        return None
 
     # -- shared trace skeleton ---------------------------------------------
 
@@ -1035,8 +1063,14 @@ class _CCBase(Refiner):
             return
         T_b = T0 + dT_boot
         # Abort as soon as the pair goes metastable (see the docstring's
-        # stop conditions) rather than tracing a tail run() would drop.
+        # stop conditions) rather than tracing a tail run() would drop --
+        # after solving the invariant it just crossed, if the subclass knows
+        # how (_dominated_node).
         if _dominated(pt, phases):
+            node = self._dominated_node(
+                cand, phases, T0, mu0, T_b, step.mu_star, half_width)
+            if node is not None:
+                yield node
             return
         yield pt
         mu_star = step.mu_star
@@ -1094,11 +1128,16 @@ class _CCBase(Refiner):
                 # the corrector (e.g. brentq can't bracket a root).
                 return
             dmu_dT = (step.mu_star - mu_star) / dT
-            T, mu_star = T_next, step.mu_star
-            pt = self._emit(cand, T, step)
-            # Stop once the pair is no longer globally stable here.
+            pt = self._emit(cand, T_next, step)
+            # Stop once the pair is no longer globally stable here, emitting
+            # the invariant crossed on the way if the subclass can solve it.
             if _dominated(pt, phases):
+                node = self._dominated_node(
+                    cand, phases, T, mu_star, T_next, step.mu_star, half_width)
+                if node is not None:
+                    yield node
                 return
+            T, mu_star = T_next, step.mu_star
             yield pt
             c_now = self._emitted_concentrations(pt, phases)
             dc_dT = max((abs(a - b) for a, b in zip(c_now, c_prev)),
@@ -1544,6 +1583,50 @@ class MiscibilityGapRefiner(_CCBase):
         return RefinedMiscibilityGap(
             T=T, mu=step.mu_star, phase=cand.phase,
             c_left=x.c_left, c_right=x.c_right)
+
+    def _dominated_node(self, cand, phases, T_ok, mu_ok, T_dom, mu_dom, half_width):
+        """Solve the invariant where the gap runs into another phase.
+
+        A miscibility gap that meets a two-phase boundary ends in a three-phase
+        invariant of one phase taking part twice -- the monotectic ``L1 -> S +
+        L2``, its solid-state and inverted relatives (monotectoid, syntectic).
+        :class:`DelaunayTripleRefiner` cannot see it: it counts *distinct*
+        phases per simplex and this one has only two. The gap trace does run
+        into it, though: it is where the trace steps from a kept point into
+        one where an outside phase is more stable. So on the gap's own
+        ``mu*(T)`` line, ``phi_rival - phi_own`` changes sign between ``T_ok``
+        and ``T_dom``, and a root-find in ``T`` locates the invariant to the
+        precision the isothermal scan gives ``mu*``.
+
+        The emitted :class:`RefinedPoint` names the gap phase twice and the
+        rival once, carrying the two branch concentrations of the scan and the
+        rival's own, so its rows tag :attr:`~landau.features.Locus.TRIPLE` and
+        span the isotherm from the rival to the far branch.
+        """
+        ph = phases[cand.phase]
+        rivals = [p for p in phases.values() if p.name != cand.phase]
+        if not rivals:
+            return None
+        lo, hi = sorted((mu_ok, mu_dom))
+        pad = max(hi - lo, half_width)
+
+        def at(T):
+            step = self._refine_step(cand, phases, T, lo - pad, hi + pad)
+            own = float(ph.semigrand_potential(T, step.mu_star))
+            rival = min(rivals, key=lambda p: float(p.semigrand_potential(T, step.mu_star)))
+            return step, rival, float(rival.semigrand_potential(T, step.mu_star)) - own
+
+        try:
+            T = so.brentq(lambda T: at(T)[2], T_ok, T_dom, xtol=1e-6)
+            step, rival, _ = at(T)
+        except ValueError:
+            return None
+        return RefinedPoint(
+            T=float(T), mu=step.mu_star,
+            phases=(cand.phase, cand.phase, rival.name),
+            concentrations=(step.extra.c_left, step.extra.c_right,
+                            float(rival.concentration(T, step.mu_star))),
+        )
 
 
 # -- Defaults -----------------------------------------------------------------
