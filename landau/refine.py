@@ -111,8 +111,12 @@ class RefinedPoint:
         compositions meet (see
         :meth:`ClausiusClapeyronRefiner._tag_features`).
     concentrations : tuple[float, ...] or None
-        Per-entry concentrations to emit in place of the re-query; see the
-        field doc below.
+        Concentration emitted for each entry of ``phases``, in order, instead
+        of re-querying ``concentration(T, mu)``. Needed when one phase takes
+        part twice -- the two branches of a miscibility gap at a
+        monotectic-type invariant (see
+        :meth:`MiscibilityGapRefiner._dominated_node`) -- since the re-query
+        cannot tell the branches apart.
 
     :meth:`to_rows` tags each emitted row with ``locus``:
     :attr:`~landau.features.Locus.TRIPLE` for three coexisting phases,
@@ -126,11 +130,6 @@ class RefinedPoint:
     boundary_id: int = 0
     congruent: bool = False
     concentrations: tuple[float, ...] | None = None
-    """Concentration emitted for each entry of ``phases``, in order, instead of
-    re-querying ``concentration(T, mu)``. Needed when one phase takes part
-    twice -- the two branches of a miscibility gap at a monotectic-type
-    invariant (see :meth:`MiscibilityGapRefiner._dominated_node`) -- since the
-    re-query cannot tell the branches apart."""
 
     def phase_names(self) -> set[str]:
         return set(self.phases)
