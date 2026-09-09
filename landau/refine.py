@@ -178,7 +178,8 @@ class RefinedMiscibilityGap:
     branch concentrations ``c_left`` and ``c_right`` directly — so
     the two branches show up as distinct ``(c, T)`` points while
     still sitting on the exact coexistence chemical potential. Both
-    rows are tagged ``locus = Locus.BOUNDARY``.
+    rows are tagged ``locus = Locus.BOUNDARY``, or ``Locus.CONGRUENT`` for
+    the point where the gap closes.
 
     Attributes
     ----------
@@ -195,6 +196,13 @@ class RefinedMiscibilityGap:
         re-queried via ``ph.concentration(T, mu)`` because for some
         phases (e.g. brute-grid minimisers) the re-query can collapse
         to a single branch even though the scan resolved both.
+    boundary_id : int
+        Identifier of the gap's coexistence line (assigned by the refiner's
+        ``run()``).
+    congruent : bool
+        Set on the point where the gap closes -- the critical (consolute)
+        point, where ``c_left == c_right`` (see
+        :meth:`MiscibilityGapRefiner._tag_features`).
     """
 
     T: float
@@ -203,6 +211,7 @@ class RefinedMiscibilityGap:
     c_left: float
     c_right: float
     boundary_id: int = 0
+    congruent: bool = False
 
     def phase_names(self) -> set[str]:
         return {self.phase}
@@ -210,13 +219,14 @@ class RefinedMiscibilityGap:
     def to_rows(self, phases: Mapping[str, Phase]) -> list[dict]:
         ph = phases[self.phase]
         phi = float(ph.semigrand_potential(self.T, self.mu))
+        locus = Locus.CONGRUENT if self.congruent else Locus.BOUNDARY
         return [
             {"T": self.T, "mu": self.mu, "phi": phi,
              "c": self.c_left,  "phase": ph.name, "boundary_id": self.boundary_id,
-             "locus": Locus.BOUNDARY},
+             "locus": locus},
             {"T": self.T, "mu": self.mu, "phi": phi,
              "c": self.c_right, "phase": ph.name, "boundary_id": self.boundary_id,
-             "locus": Locus.BOUNDARY},
+             "locus": locus},
         ]
 
 
@@ -1652,6 +1662,41 @@ class ClausiusClapeyronRefiner(_CCBase):
 # -- Intra-phase miscibility gap ----------------------------------------------
 
 
+def _gap_jump(phase, T: float, mu_lo: float, mu_hi: float, *, eps: float = 1e-9):
+    """The exact jump of ``c(mu)`` at fixed ``T`` inside ``[mu_lo, mu_hi]``.
+
+    Where a phase is split by a miscibility gap, ``c(mu)`` jumps between the
+    two branches at the coexistence ``mu*``; above the gap's critical point it
+    is merely steep. The 50-point scan of :meth:`MiscibilityGapRefiner._scan`
+    cannot tell a jump from a steep slope at its own resolution, so this
+    bisects the scan's steepest segment on which branch ``c(mu)`` lands on
+    until ``mu*`` is pinned to ``eps``, and reads the jump as ``c(mu* + eps) -
+    c(mu* - eps)``: the true gap below the critical point, ``2 eps dc/dmu`` (as
+    good as zero) above it.
+
+    Returns ``(mu_star, c_left, c_right)``; ``c_right - c_left`` is the jump.
+    Raises :class:`ValueError` where ``c(mu)`` does not increase in the
+    bracket.
+    """
+    mus = np.linspace(mu_lo, mu_hi, 50)
+    cs = np.array([float(phase.concentration(T, m)) for m in mus])
+    dcs = np.diff(cs)
+    if dcs.max() <= 0:
+        raise ValueError(f"c(mu) is not increasing in [{mu_lo}, {mu_hi}] at T={T}")
+    i = int(np.argmax(dcs))
+    lo, hi = float(mus[i]), float(mus[i + 1])
+    c_mid = (float(cs[i]) + float(cs[i + 1])) / 2.0
+    while hi - lo > eps:
+        mid = (lo + hi) / 2.0
+        if float(phase.concentration(T, mid)) < c_mid:
+            lo = mid
+        else:
+            hi = mid
+    mu_star = (lo + hi) / 2.0
+    return mu_star, float(phase.concentration(T, mu_star - eps)), float(phase.concentration(T, mu_star + eps))
+
+
+
 @dataclass(frozen=True)
 class _GapStep:
     """Payload of one miscibility-gap refinement step."""
@@ -1692,6 +1737,11 @@ class MiscibilityGapRefiner(_CCBase):
     the steepest-segment endpoints so its :meth:`~RefinedMiscibilityGap.to_rows`
     reads concentrations on each side of the jump.
 
+    Once a line is traced, :meth:`_tag_features` locates the point where the
+    gap closes exactly and emits it tagged
+    :attr:`~landau.features.Locus.CONGRUENT`, dropping the trace's overshoot
+    past it.
+
     Parameters
     ----------
     dT_max, dT_min, dc_max, dc_min, max_steps :
@@ -1705,6 +1755,9 @@ class MiscibilityGapRefiner(_CCBase):
         the bracket is judged supercritical (default 0.1). Raise
         toward 0.5 to stop the trace further below T_c; lower toward
         0 to push closer to T_c at the cost of some drift.
+    closure_xtol : float
+        Temperature tolerance (K) to which the gap's closure -- its critical
+        point -- is bisected (default 1e-3); see :meth:`_tag_features`.
     """
 
     label = "miscibility-gap"
@@ -1712,12 +1765,14 @@ class MiscibilityGapRefiner(_CCBase):
     def __init__(self, *, dT_max: float = 5.0, dT_min: float = 1.0,
                  dc_max: float = 0.01, dc_min: float = 0.0,
                  max_steps: int = 500, c_jump_min: float = 0.3,
-                 gap_close: float = 1e-3, gap_share_min: float = 0.1):
+                 gap_close: float = 1e-3, gap_share_min: float = 0.1,
+                 closure_xtol: float = 1e-3):
         super().__init__(dT_max=dT_max, dT_min=dT_min, dc_max=dc_max,
                          dc_min=dc_min, max_steps=max_steps)
         self.c_jump_min = c_jump_min
         self.gap_close = gap_close
         self.gap_share_min = gap_share_min
+        self.closure_xtol = closure_xtol
 
     def propose(self, df: pd.DataFrame) -> Iterator[_GapCandidate]:
         T_min = float(df["T"].min())
@@ -1800,6 +1855,84 @@ class MiscibilityGapRefiner(_CCBase):
         return RefinedMiscibilityGap(
             T=T, mu=step.mu_star, phase=cand.phase,
             c_left=x.c_left, c_right=x.c_right)
+
+    def _tag_features(self, points, phases):
+        """Locate the closure of the gap exactly and tag it congruent.
+
+        The trace approaches the critical (consolute) point in steps of at
+        least ``dT_min`` and, reading the steep but continuous ``c(mu)`` just
+        above it as a small jump at the scan's resolution, overshoots it by a
+        few steps. So at each end of the line the exact jump of
+        :func:`_gap_jump` decides: an end where the jump is still open is no
+        closure (the gap left the sampled window, or ran into another phase
+        -- a monotectic, see :meth:`_dominated_node`); an end where it has
+        vanished is past the closure, which is then bisected in ``T`` between
+        the last open point and the first closed one to ``closure_xtol``. The
+        closure is emitted as a :class:`RefinedMiscibilityGap` with both
+        branches at the critical composition and ``congruent`` set, and the
+        overshoot beyond it is dropped. An upper closure (a UCST) and a lower
+        one (an LCST) are handled alike.
+
+        The jump is read through the phase's own ``concentration``, so the
+        closure is located to the resolution at which the phase resolves two
+        shallow minima: a gap narrower than that reads as closed.
+        """
+        gaps = sorted((i for i, pt in enumerate(points) if isinstance(pt, RefinedMiscibilityGap)),
+                      key=lambda i: points[i].T)
+        if len(gaps) < 2:
+            return points
+        ph = phases[points[gaps[0]].phase]
+        drop: set[int] = set()
+        closures: list[RefinedMiscibilityGap] = []
+        for order in (gaps, gaps[::-1]):  # walk in from the top, then from the bottom
+            jumps = []
+            for i in order:
+                pt = points[i]
+                jumps.append(self._jump_at(ph, pt))
+                if jumps[-1] is not None and jumps[-1][2] - jumps[-1][1] > self.gap_close:
+                    break
+            if len(jumps) < 2 or jumps[-1] is None or jumps[-1][2] - jumps[-1][1] <= self.gap_close:
+                continue  # the end is open (or unreadable): no closure on this side
+            i_open, i_closed = order[len(jumps) - 1], order[len(jumps) - 2]
+            closure = self._bisect_closure(ph, points[i_open], points[i_closed])
+            if closure is None:
+                continue
+            closures.append(closure)
+            sign = 1.0 if closure.T > points[i_open].T else -1.0
+            drop.update(i for i in gaps if sign * (points[i].T - closure.T) > 0)
+        out = [pt for i, pt in enumerate(points) if i not in drop]
+        return out + closures
+
+    def _jump_at(self, ph, pt):
+        """:func:`_gap_jump` at a traced point, bracketing ``mu`` around it."""
+        width = max(abs(pt.c_right - pt.c_left), self.gap_close) * kB * max(abs(pt.T), 1.0)
+        for _ in range(6):
+            try:
+                return _gap_jump(ph, pt.T, pt.mu - width, pt.mu + width)
+            except ValueError:
+                width *= 4.0
+        return None
+
+    def _bisect_closure(self, ph, open_pt, closed_pt):
+        """Bisect in T between an open gap point and a closed one for the
+        closure, returning it as a congruent :class:`RefinedMiscibilityGap`."""
+        T_open, T_closed = open_pt.T, closed_pt.T
+        mu = open_pt.mu
+        c_l, c_r = open_pt.c_left, open_pt.c_right
+        while abs(T_closed - T_open) > self.closure_xtol:
+            T = (T_open + T_closed) / 2.0
+            width = max(abs(c_r - c_l), self.gap_close) * kB * max(abs(T), 1.0)
+            try:
+                mu_star, cl, cr = _gap_jump(ph, T, mu - 4 * width, mu + 4 * width)
+            except ValueError:
+                return None
+            if cr - cl > self.gap_close:
+                T_open, mu, c_l, c_r = T, mu_star, cl, cr
+            else:
+                T_closed = T
+        c_c = (c_l + c_r) / 2.0
+        return RefinedMiscibilityGap(T=(T_open + T_closed) / 2.0, mu=mu, phase=open_pt.phase,
+                                     c_left=c_c, c_right=c_c, congruent=True)
 
     def _dominated_node(self, cand, phases, T_ok, mu_ok, T_dom, mu_dom, half_width):
         """Solve the invariant where the gap runs into another phase.
