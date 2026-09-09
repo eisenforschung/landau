@@ -58,7 +58,7 @@ import shapely
 from scipy.spatial import Delaunay
 
 from .features import Locus
-from .phases import Phase
+from .phases import Phase, kB
 
 
 # -- Type aliases ------------------------------------------------------------
@@ -86,6 +86,7 @@ __all__ = [
     "DelaunayTripleRefiner",
     "ClausiusClapeyronRefiner",
     "MiscibilityGapRefiner",
+    "TerminalRefiner",
     "default_refiners",
 ]
 
@@ -117,6 +118,13 @@ class RefinedPoint:
         monotectic-type invariant (see
         :meth:`MiscibilityGapRefiner._dominated_node`) -- since the re-query
         cannot tell the branches apart.
+    terminal : float or None
+        ``0.0`` or ``1.0`` for a pure component's transition (see
+        :class:`TerminalRefiner`): ``mu`` then holds the finite far chemical
+        potential the point was solved and validated at, while
+        :meth:`to_rows` emits it at ``mu = -inf`` / ``+inf`` with both
+        concentrations equal to the terminal's, like the synthetic edge rows
+        of :func:`~landau.calculate.calc_phase_diagram`.
 
     :meth:`to_rows` tags each emitted row with ``locus``:
     :attr:`~landau.features.Locus.TRIPLE` for three coexisting phases,
@@ -130,15 +138,24 @@ class RefinedPoint:
     boundary_id: int = 0
     congruent: bool = False
     concentrations: tuple[float, ...] | None = None
+    terminal: float | None = None
 
     def phase_names(self) -> set[str]:
         return set(self.phases)
 
     def to_rows(self, phases: Mapping[str, Phase]) -> list[dict]:
-        rows = [_state_row(phases[name], self.T, self.mu) for name in self.phases]
-        if self.concentrations is not None:
-            for row, c in zip(rows, self.concentrations):
-                row["c"] = c
+        if self.terminal is not None:
+            # A pure component's transition sits at mu = -+inf, like the
+            # synthetic edge rows of calc_phase_diagram: no potential to
+            # evaluate there, the concentrations are the terminal's.
+            mu = -np.inf if self.terminal == 0 else np.inf
+            rows = [{"T": self.T, "mu": mu, "phi": np.nan, "c": self.terminal, "phase": name}
+                    for name in self.phases]
+        else:
+            rows = [_state_row(phases[name], self.T, self.mu) for name in self.phases]
+            if self.concentrations is not None:
+                for row, c in zip(rows, self.concentrations):
+                    row["c"] = c
         if len(self.phases) == 3:
             locus = Locus.TRIPLE
         elif self.congruent:
@@ -221,6 +238,23 @@ def _state_row(phase: Phase, T: float, mu: float) -> dict:
 # pinned in tests/unit/test_refine.py. Not applied to two-phase boundaries,
 # which may be genuinely first-order (see _dominated).
 _TRIPLE_COEXIST_TOL = 1e-4
+
+# Two solved congruent points closer than this in (T, mu) are one point: the
+# traced closures on either side of a fold both converge onto it.
+_CONGRUENT_DEDUP_T = 1e-3
+_CONGRUENT_DEDUP_MU = 1e-6
+# A solved congruent point this close to a pure component is that component's
+# transition (TerminalRefiner's, at mu = -+inf), not an interior point: either
+# the solver ran off toward the terminal, or the line is congruent along its
+# whole length (two pure components transforming at one temperature) and the
+# solve converged wherever it was seeded.
+_CONGRUENT_EDGE = 1e-2
+# A traced closure this close to a pure component whose interior solve gives
+# nothing is that component's transition, which TerminalRefiner marks.
+_CONGRUENT_TERMINAL_WINDOW = 0.1
+# How close to c = 0 / 1 a phase must sit, kT_far past the sampled mu range,
+# to count as present at that terminal (TerminalRefiner).
+_TERMINAL_C_TOL = 1e-6
 
 
 def _dominated(pt, phases: Mapping[str, Phase]) -> bool:
@@ -345,6 +379,32 @@ class _ScanCandidate:
     bracket: Bracket
 
 
+def _solve_pair(name1, name2, bracket, potential, point, phases) -> list[RefinedPoint]:
+    """Root-find the (name1, name2) crossing inside ``bracket``.
+
+    ``potential(phase, x)`` evaluates a phase along the scanned variable and
+    ``point(x, pair)`` builds the refined point at a root; shared by
+    :class:`ScanRefiner` and :class:`TerminalRefiner`.
+
+    When a third phase is more stable at the crossing, the pair does not
+    actually coexist there: the stable phase changes name1 → dominator →
+    name2 inside the bracket, with the dominator's stable window narrower
+    than the sampling grid.  Recurse into the two sub-brackets so both real
+    transitions are found instead of leaving the candidate to be dropped
+    by :func:`_dominated` in :meth:`Refiner.run`.
+    """
+    x = _find_one_point(phases[name1], phases[name2], potential, bracket)
+    rivals = {p.name: potential(p, x) for p in phases.values() if p.name not in (name1, name2)}
+    if rivals:
+        dom = min(rivals, key=rivals.get)
+        if rivals[dom] < potential(phases[name1], x):
+            return (
+                _solve_pair(name1, dom, (bracket[0], x), potential, point, phases)
+                + _solve_pair(dom, name2, (x, bracket[1]), potential, point, phases)
+            )
+    return [point(x, (name1, name2))]
+
+
 class ScanRefiner(Refiner):
     """
     Walk samples sorted along one axis (``mu`` or ``T``) and root-find the
@@ -392,28 +452,97 @@ class ScanRefiner(Refiner):
 
             def point(x, pair):
                 return RefinedPoint(T=x, mu=cand.mu, phases=pair)
-        return self._solve_pair(cand.phase1, cand.phase2, cand.bracket, potential, point, phases)
+        return _solve_pair(cand.phase1, cand.phase2, cand.bracket, potential, point, phases)
 
-    def _solve_pair(self, name1, name2, bracket, potential, point, phases) -> list[RefinedPoint]:
-        """Root-find the (name1, name2) crossing inside ``bracket``.
 
-        When a third phase is more stable at the crossing, the pair does not
-        actually coexist there: the stable phase changes name1 → dominator →
-        name2 inside the bracket, with the dominator's stable window narrower
-        than the sampling grid.  Recurse into the two sub-brackets so both real
-        transitions are found instead of leaving the candidate to be dropped
-        by :func:`_dominated` in :meth:`Refiner.run`.
-        """
-        x = _find_one_point(phases[name1], phases[name2], potential, bracket)
-        rivals = {p.name: potential(p, x) for p in phases.values() if p.name not in (name1, name2)}
-        if rivals:
-            dom = min(rivals, key=rivals.get)
-            if rivals[dom] < potential(phases[name1], x):
-                return (
-                    self._solve_pair(name1, dom, (bracket[0], x), potential, point, phases)
-                    + self._solve_pair(dom, name2, (x, bracket[1]), potential, point, phases)
-                )
-        return [point(x, (name1, name2))]
+
+@dataclass(frozen=True)
+class _TerminalCandidate:
+    """Seed for :class:`TerminalRefiner` -- one step of the frame's T grid at
+    one pure component.
+
+    ``side`` is the terminal composition (0.0 or 1.0) and ``edge`` the end of
+    the sampled ``mu`` range on that side, from which the refiner steps out
+    to where every phase sits at the terminal.
+    """
+
+    side: float
+    edge: float
+    bracket: Bracket
+
+
+class TerminalRefiner(Refiner):
+    """Pure-component transitions: a T-scan at c = 0 and c = 1.
+
+    Every phase sits at a pure component as ``mu -> -inf`` (c = 0) or
+    ``+inf`` (c = 1), so a pure component's transitions are the crossings of
+    the phases' potentials there -- the melting point of A, an allotropic
+    transition of B, a boiling point. They are congruent points, and the one
+    kind the 2-D refiners only approach: a coexistence line reaches the
+    terminal composition only as ``mu`` diverges, so a trace in ``(T, mu)``
+    stops short of it, and two line phases at the same terminal have no
+    boundary in ``mu`` to trace at all.
+
+    :meth:`propose` yields every step of the frame's T grid on each side;
+    :meth:`solve` evaluates the potentials ``kT_far`` thermal energies past
+    the sampled ``mu`` range on that side -- every phase is then within
+    ``exp(-kT_far)`` of its terminal composition and the potential differences
+    have converged to the same order -- and root-finds the stable phase's
+    change across the step with :func:`_solve_pair` (shared with
+    :class:`ScanRefiner`), recursing where a third phase interposes. Only phases actually at the terminal
+    count: a line phase at c = 0 is no candidate on the c = 1 side. Each
+    transition is a :class:`RefinedPoint` with ``terminal`` set: solved and
+    validated at the finite far ``mu``, emitted at ``mu = -+inf`` tagged
+    :attr:`~landau.features.Locus.CONGRUENT` with both concentrations equal
+    to the terminal's.
+
+    Parameters
+    ----------
+    kT_far : float
+        How far past the sampled ``mu`` range, in units of ``kB T``, the
+        potentials are evaluated. Default 40.
+    """
+
+    label = "terminal"
+
+    def __init__(self, *, kT_far: float = 40.0):
+        self.kT_far = kT_far
+
+    def _mu_far(self, cand: _TerminalCandidate, T: float) -> float:
+        sign = 1.0 if cand.side else -1.0
+        return cand.edge + sign * self.kT_far * kB * max(abs(T), 1.0)
+
+    def propose(self, df: pd.DataFrame) -> Iterator[_TerminalCandidate]:
+        mus = df["mu"].to_numpy(dtype=float)
+        mus = mus[np.isfinite(mus)]
+        Ts = np.sort(df["T"].unique())
+        if mus.size == 0 or Ts.size < 2:
+            return
+        for side, edge in ((0.0, float(mus.min())), (1.0, float(mus.max()))):
+            for lo, hi in zip(Ts[:-1], Ts[1:]):
+                yield _TerminalCandidate(side=side, edge=edge, bracket=(float(lo), float(hi)))
+
+    def solve(self, cand: _TerminalCandidate, phases) -> list[RefinedPoint]:
+        def potential(p, T):
+            return float(p.semigrand_potential(T, self._mu_far(cand, T)))
+
+        def at_terminal(T):
+            # The stable phase at T, if it sits at the terminal at all: a phase
+            # that cannot reach it is no terminal phase, so a T where the most
+            # stable phase is such a one has no terminal transition to bracket.
+            p = min(phases.values(), key=lambda p: potential(p, T))
+            c = float(p.concentration(T, self._mu_far(cand, T)))
+            return p.name if abs(c - cand.side) < _TERMINAL_C_TOL else None
+
+        name_lo, name_hi = (at_terminal(T) for T in cand.bracket)
+        if name_lo is None or name_hi is None or name_lo == name_hi:
+            return []
+
+        def point(T, pair):
+            return RefinedPoint(T=float(T), mu=self._mu_far(cand, T), phases=pair,
+                                congruent=True, terminal=cand.side)
+
+        return _solve_pair(name_lo, name_hi, cand.bracket, potential, point, phases)
 
 
 # -- Delaunay-based refiners --------------------------------------------------
@@ -951,6 +1080,8 @@ class _CCBase(Refiner):
         """
         if isinstance(pt, RefinedMiscibilityGap):
             return (pt.c_left, pt.c_right)
+        if pt.terminal is not None:
+            return (float(pt.terminal),) * len(pt.phases)
         if pt.concentrations is not None:
             return tuple(float(c) for c in pt.concentrations)
         return tuple(float(phases[n].concentration(pt.T, pt.mu)) for n in pt.phases)
@@ -1275,7 +1406,9 @@ class ClausiusClapeyronRefiner(_CCBase):
         nothing that a field is 2 at% wide somewhere until you know whether it
         is 30 at% wide elsewhere. Default 0.1, an order of magnitude above
         every closure in the test systems (worst 0.042, a compound melting
-        congruently) and an order below a line that never closes (0.98).
+        congruently) and an order below a line that never closes (0.98). Only
+        the detection is a tolerance: an interior closure is then solved
+        exactly (see :meth:`_solve_congruent`).
     """
 
     label = "clausius-clapeyron"
@@ -1318,12 +1451,53 @@ class ClausiusClapeyronRefiner(_CCBase):
         pure component's melting point is routinely cut short by ``_dominated``
         too, since past the terminal a third phase takes over the extrapolated
         line.
+
+        The narrowest traced point is where the closure is *detected*, not
+        where it is: a congruent point is a fold of the coexistence line in T,
+        which a tracer stepping in T only ever approaches. So each closure is
+        handed to :meth:`_solve_congruent`, and where that converges the exact
+        point is emitted tagged instead of the traced one (which stays, as an
+        ordinary boundary point); closures that converge onto one point yield
+        one tag. Where it does not, the traced point keeps the tag as before --
+        unless the closure is at a pure component, which the trace only ever
+        approaches (the composition is reached as ``mu`` diverges): that
+        transition is :class:`TerminalRefiner`'s, solved exactly at
+        ``mu = -+inf``, and is left untagged here so the two do not both mark
+        it.
         """
+        out = list(points)
+        solved: list[RefinedPoint] = []
+
+        def near(a, b):
+            return abs(a.T - b.T) <= _CONGRUENT_DEDUP_T and abs(a.mu - b.mu) <= _CONGRUENT_DEDUP_MU
+
+        for i in self._closures(points, phases):
+            pt = points[i]
+            exact = self._solve_congruent(pt, phases)
+            if exact is None:
+                c0 = np.mean(self._emitted_concentrations(pt, phases))
+                if min(c0, 1 - c0) > _CONGRUENT_TERMINAL_WINDOW:
+                    out[i] = replace(pt, congruent=True)
+            elif any(near(exact, s) for s in solved):
+                continue
+            elif near(exact, pt):
+                # the trace landed on the point itself: no second row for it
+                out[i] = replace(pt, congruent=True)
+                solved.append(pt)
+            else:
+                solved.append(exact)
+                out.append(exact)
+        return out
+
+    def _closures(self, points, phases) -> list[int]:
+        """Indices into ``points`` of the closures of the line: the narrowest
+        point of every dip of the gap below ``congruent_tol`` times the widest
+        (see :meth:`_tag_features`), one per composition window."""
         # Only RefinedPoint carries the flag; a subclass emitting anything else
         # (a miscibility gap, say) passes through untouched.
         where = np.array([i for i, pt in enumerate(points) if isinstance(pt, RefinedPoint)])
         if where.size == 0:
-            return points
+            return []
         cs = [self._emitted_concentrations(points[i], phases) for i in where]
         gap = np.array([abs(c[0] - c[1]) if len(c) == 2 else np.inf for c in cs])
         shared = np.array([np.mean(c) if len(c) == 2 else np.nan for c in cs])
@@ -1343,11 +1517,54 @@ class ClausiusClapeyronRefiner(_CCBase):
         window = 3 * self.dc_max
         lo = np.searchsorted(shared, shared - window, side="left")
         hi = np.searchsorted(shared, shared + window, side="right")
-        out = list(points)
-        for i in np.flatnonzero(closing):
-            if lo[i] + np.argmin(gap[lo[i]:hi[i]]) == i:
-                out[where[i]] = replace(points[where[i]], congruent=True)
-        return out
+        return [int(where[i]) for i in np.flatnonzero(closing)
+                if lo[i] + np.argmin(gap[lo[i]:hi[i]]) == i]
+
+    def _solve_congruent(self, pt, phases):
+        """The exact congruent point near the traced closure ``pt``, or ``None``.
+
+        Both phases share a composition on the coexistence line there, so the
+        point solves ``phi1 = phi2`` and ``c1 = c2`` in ``(T, mu)``. The system
+        is well posed even though the trace folds: ``d(phi1 - phi2)/dmu = c2 -
+        c1`` vanishes at the solution, but ``d(phi1 - phi2)/dT`` (the entropy
+        difference) and ``d(c1 - c2)/dmu`` (the curvature difference) do not.
+        Solved with :func:`scipy.optimize.root` in variables scaled by ``T``
+        and ``kB T``, seeded from ``pt``.
+
+        Returns ``None`` when the solver does not converge or the solution is
+        not the closure it was seeded from: further than ``2 dT_max`` from the
+        seed in ``T``, at a pure component (a terminal closure is reached only
+        as ``mu`` diverges, and the solver runs off), or no longer the globally
+        stable pair there.
+        """
+        p1, p2 = (phases[n] for n in pt.phases)
+        T_s = max(abs(pt.T), 1.0)
+        mu_s = max(kB * abs(pt.T), 1e-3)
+
+        def F(x):
+            T, mu = x[0] * T_s, x[1] * mu_s
+            return [
+                float(p1.semigrand_potential(T, mu) - p2.semigrand_potential(T, mu)) / mu_s,
+                float(p1.concentration(T, mu) - p2.concentration(T, mu)),
+            ]
+
+        try:
+            sol = so.root(F, [pt.T / T_s, pt.mu / mu_s], method="hybr",
+                          options={"xtol": 1e-12, "maxfev": 200})
+        except (ValueError, FloatingPointError):
+            return None
+        if not sol.success:
+            return None
+        T, mu = float(sol.x[0] * T_s), float(sol.x[1] * mu_s)
+        if not np.isfinite(T) or not np.isfinite(mu) or abs(T - pt.T) > 2 * self.dT_max:
+            return None
+        c = float(p1.concentration(T, mu))
+        if not _CONGRUENT_EDGE < c < 1 - _CONGRUENT_EDGE:
+            return None
+        exact = RefinedPoint(T=T, mu=mu, phases=pt.phases, congruent=True)
+        if _dominated(exact, phases):
+            return None
+        return exact
 
     def propose(self, df: pd.DataFrame) -> Iterator[_InterCandidate]:
         T_min = float(df["T"].min())
@@ -1638,7 +1855,8 @@ def default_refiners(df: pd.DataFrame) -> Sequence[Refiner]:
     * Both ``mu`` and ``T`` sampled (2-D grid) → triple points
       (:class:`DelaunayTripleRefiner`) plus dense Clausius-Clapeyron
       traces for inter-phase boundaries and intra-phase miscibility
-      gaps.
+      gaps, and the pure components' transitions
+      (:class:`TerminalRefiner`).
     * Only one axis sampled (1-D scan) → just the
       :class:`ScanRefiner` walking that axis.
     """
@@ -1649,6 +1867,7 @@ def default_refiners(df: pd.DataFrame) -> Sequence[Refiner]:
             DelaunayTripleRefiner(),
             ClausiusClapeyronRefiner(),
             MiscibilityGapRefiner(),
+            TerminalRefiner(),
         ]
     refiners: list[Refiner] = []
     if multiple_mus:
