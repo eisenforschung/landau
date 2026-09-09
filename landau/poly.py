@@ -196,7 +196,7 @@ class Segments(AbstractPolyMethod):
         df.loc[:, "phase"] = df.phase_id
         tdf = get_transitions(df)
         tdf["phase"], tdf["phase_unit"] = _split_phase_unit(tdf["phase"])
-        return tdf
+        return _absorb_repeated_invariant_rows(tdf)
 
     @staticmethod
     def _sort_segments(df, x_col="c", y_col="T", segment_label="border_segment"):
@@ -274,6 +274,48 @@ class Segments(AbstractPolyMethod):
             return None
 
         return shapely.Polygon(coords)
+
+
+def _absorb_repeated_invariant_rows(tdf: pd.DataFrame, x_col: str = "c", y_col: str = "T") -> pd.DataFrame:
+    """Relabel the rows of an invariant on which one phase appears twice to the
+    segment of that phase's nearest two-phase row.
+
+    A three-phase isotherm with the same phase at both of its outer ends -- a
+    monotectic ``L1 -> S + L2``, a syntectic, a monotectoid -- puts two points
+    of that phase into one ``(mu, T)`` group, and :func:`get_transitions`
+    labels them as a segment of their own: a chord straight across the
+    two-phase field between them, which the stitch then takes in place of the
+    miscibility-gap dome above it. Each such point is where two boundaries of
+    that phase meet (the dome and the liquidus), so it belongs to either; hand
+    it to the nearest in normalised ``(x, y)``. Rows of ordinary invariants,
+    one point per phase, and the two rows of a plain miscibility-gap point are
+    left alone.
+    """
+    if tdf.empty:
+        return tdf
+    # Two rows of one phase at one (mu, T) with nothing else there are a
+    # miscibility-gap point, whose rows are the dome; it takes a third phase in
+    # the group to make it an invariant.
+    invariant = tdf.groupby(["mu", "T"])[x_col].transform("size") >= 3
+    repeated = invariant & (tdf.groupby(["mu", "T", "phase", "phase_unit"])[x_col].transform("size") >= 2)
+    if not repeated.any():
+        return tdf
+    tdf = tdf.copy()
+    xy = tdf[[x_col, y_col]].to_numpy(dtype=float)
+    norm = np.ptp(xy, axis=0)
+    norm = np.where(norm == 0, 1.0, norm)
+    finite = np.isfinite(tdf["mu"].to_numpy(dtype=float))
+    for i in np.flatnonzero(repeated.to_numpy()):
+        same = (
+            (tdf["phase"].to_numpy() == tdf["phase"].iat[i])
+            & (tdf["phase_unit"].to_numpy() == tdf["phase_unit"].iat[i])
+            & ~repeated.to_numpy() & finite
+        )
+        if not same.any():
+            continue
+        d = np.hypot(*((xy[same] - xy[i]) / norm).T)
+        tdf.iat[i, tdf.columns.get_loc("border_segment")] = tdf["border_segment"].to_numpy()[same][np.argmin(d)]
+    return tdf
 
 
 def _greedy_stitch(
