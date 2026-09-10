@@ -3,6 +3,14 @@
 Notable changes to **landau.py**, newest first. Per-PR detail lives in the
 [GitHub releases](https://github.com/eisenforschung/landau/releases).
 
+## [1.14.1](https://github.com/eisenforschung/landau/compare/1.14.0...1.14.1) (2026-09-10)
+
+
+### Bug Fixes
+
+* **plot:** cycle pastel palette in get_phase_colors past 10 phases ([#475](https://github.com/eisenforschung/landau/issues/475)) ([f35feb9](https://github.com/eisenforschung/landau/commit/f35feb9240553e9b5fd148d765988012c0866ea9))
+* **plot:** lower cluster_phase default distance_threshold to stop bridging disjoint stable fields ([#461](https://github.com/eisenforschung/landau/issues/461)) ([ec67b54](https://github.com/eisenforschung/landau/commit/ec67b54ba59d0fff2186a472ba2b71c18c0971ff))
+
 ## [1.14.0](https://github.com/eisenforschung/landau/compare/1.13.0...1.14.0) (2026-09-07)
 
 
