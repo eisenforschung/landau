@@ -25,6 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     # Skip drafts and PRs that already carry the label (nothing to decide).
     if: |
+      github.event.sender.type == 'User' &&
       github.event.pull_request.draft == false &&
       !contains(github.event.pull_request.labels.*.name, 'testplot')
     permissions:
