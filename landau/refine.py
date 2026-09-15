@@ -911,6 +911,24 @@ class _CCBase(Refiner):
         slope = max(abs(dmu_dT), 1e-9)
         return half_width / slope
 
+    def _seed_slope(self, cand, phases, T0: float, mu0: float) -> float:
+        """``dmu*/dT`` at the seed, used to size the bootstrap bracket.
+
+        The main trace loop brackets each corrector by the drift the previous
+        step measured, but the bootstrap step has no previous step, so without
+        an estimate its bracket is the seed simplex's mu half-width alone --
+        a grid spacing, which says nothing about how fast the line moves. On a
+        vapour-liquid lens (an entropy difference of ~13 kB) the coexistence
+        mu drifts ~0.02 eV/K, an order of magnitude past any reasonable mu
+        grid, so every bootstrap fails to bracket a root one ``dT_min`` away
+        and the line comes back as scattered seed-only points.
+
+        The base implementation returns ``0`` (unknown), which leaves the
+        bracket at the half-width; :class:`ClausiusClapeyronRefiner` overrides
+        it with the Clausius-Clapeyron slope by implicit differentiation.
+        """
+        return 0.0
+
     def _emitted_concentrations(self, pt, phases) -> tuple[float, ...]:
         """Concentrations plotted by one emitted point, for the
         ``dc_max``/``dc_min`` density caps in :meth:`_trace`.
@@ -984,10 +1002,15 @@ class _CCBase(Refiner):
         if dT_boot == 0:
             return
 
+        slope0 = self._seed_slope(cand, phases, T0, mu0)
+
         def boot(dT):
             # One bootstrap refinement at T0 + dT; returns (step, pt, drift).
+            # Same bracket rule as the main loop below, with the seed slope in
+            # place of the previous step's measured drift.
+            bracket = max(half_width, abs(slope0 * dT) * 2.0)
             step = self._refine_step(
-                cand, phases, T0 + dT, mu0 - half_width, mu0 + half_width)
+                cand, phases, T0 + dT, mu0 - bracket, mu0 + bracket)
             pt = self._emit(cand, T0 + dT, step)
             c = self._emitted_concentrations(pt, phases)
             drift = max((abs(a - b) for a, b in zip(c, seed_c)), default=0.0)
@@ -1335,6 +1358,26 @@ class ClausiusClapeyronRefiner(_CCBase):
             return None
         T0, mu0 = project(t)
         return T0, _StepResult(mu_star=mu0)
+
+    def _seed_slope(self, cand, phases, T0, mu0):
+        """Clausius-Clapeyron slope ``dmu*/dT`` at the seed.
+
+        Implicit differentiation of ``F(T, mu) = phi1 - phi2 = 0``: since
+        ``c = -dphi/dmu``, ``dF/dmu = c2 - c1`` exactly, and ``dF/dT`` is a
+        central difference in ``T``, so ``dmu*/dT = -F_T / F_mu = F_T / (c1 -
+        c2)``. Two potential evaluations; for two line phases at c=0 / c=1 this
+        is exact.
+        """
+        p1, p2 = phases[cand.phase1], phases[cand.phase2]
+        dc = float(p1.concentration(T0, mu0) - p2.concentration(T0, mu0))
+        if abs(dc) < 1e-12:
+            return 0.0
+        h = max(1e-3 * abs(T0), 1e-3)
+
+        def F(T):
+            return float(p1.semigrand_potential(T, mu0) - p2.semigrand_potential(T, mu0))
+
+        return (F(T0 + h) - F(T0 - h)) / (2.0 * h) / dc
 
     def _refine_step(self, cand, phases, T, mu_lo, mu_hi):
         p1, p2 = phases[cand.phase1], phases[cand.phase2]
