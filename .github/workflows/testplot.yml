@@ -22,8 +22,9 @@ env:
 jobs:
   select:
     if: >-
-      (github.event.action == 'labeled' && github.event.label.name == 'testplot') ||
-      (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'testplot'))
+      github.actor != 'dependabot[bot]' &&
+      ((github.event.action == 'labeled' && github.event.label.name == 'testplot') ||
+      (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'testplot')))
     runs-on: ubuntu-latest
     permissions:
       pull-requests: read

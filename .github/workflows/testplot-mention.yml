@@ -40,6 +40,7 @@ env:
 jobs:
   parse:
     if: >-
+      github.event.sender.type == 'User' &&
       github.event.issue.pull_request != null &&
       contains(github.event.comment.body, '@testplot')
     runs-on: ubuntu-latest
