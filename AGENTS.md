@@ -101,6 +101,12 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
   - #460 (LTE saturation clamp in `phases/pointdefects.py`)
 
+  - #481 (`SoftplusSurface2DInterpolator._model_and_jac` direct tests, `interpolate/softplus.py` — PR #482 in flight)
+
+  - #483 (extract the inline-label anchor block of `plot_excess_free_energy` to a module-level helper in `plot/labels.py`)
+
+  - #484 (extract the point-cleaning prologue of `AbstractPolyMethod.make` in `poly.py` as a testable `_clean_points`)
+
   PR #422 (direct tests for `_fit_softplus` / `_fit_slice`) merged 2026-08-30 without a numbered sub-issue; #423 closed 2026-09-01 by PR #434; #390 closed 2026-09-02 by PR #394 and #413 by PR #414; #388 closed 2026-09-07 by PR #391 and #424 by PR #457; #459 (`landau/fleche.py` helpers) was filed and closed not-planned the same day — fleche is expected to take that responsibility over. Closed sub-issues are recorded one cohort per line in [`CLAUDE.md`](CLAUDE.md)'s #116 section — check there before re-picking one.
 
 - **#137 `phases/__init__.py` split** — `pointdefects.py` and `asewrapper.py` already split out; further splits (line vs solution vs interpolating) are the open direction. `phases/__init__.py` is still ~980 lines.
@@ -133,7 +139,7 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
 - **#62 flat → `src/` layout** — long-standing. #70 (weak Hypothesis strategies for polygon tests) closed 2026-09-02 by PR #395: `poly_dataframe` now correlates `c`/`T`/`mu` per row instead of drawing them independently.
 
-- **Open PRs in flight** (check before duplicating): #462 (TDB export), the #466 → #467 → #471 → #478 → #465 stack (CC bootstrap bracket sized by the seed slope; monotectic-type invariant tagging via a `_dominated_node` hook on the gap tracer; exact congruent-point solve + `TerminalRefiner`; miscibility-gap closure tagged as its congruent point; TransitionTemperatures notebook), #474 (cost-based transition-temperature label placement, refs #463), #476 (release-please 1.14.1 — carries #461/#468/#475), the CEF stack #324/#326/#346 (+ parked #334) behind #344, and long-open design prototypes #306 (`IntermetallicPhase`), #250 (`PhaseDiagram` object interface), #249 (`BufferedSegments`).
+- **Open PRs in flight** (check before duplicating): #462 (TDB export), the #466 → #467 → #471 → #478 → #465 stack (CC bootstrap bracket sized by the seed slope; monotectic-type invariant tagging via a `_dominated_node` hook on the gap tracer; exact congruent-point solve + `TerminalRefiner`; miscibility-gap closure tagged as its congruent point; TransitionTemperatures notebook), #474 (cost-based transition-temperature label placement, refs #463), #476 (release-please 1.14.1 — carries #461/#468/#475), #482 (direct `_model_and_jac` tests, closes #481), #480 (dependabot: phonopy pin `<4.5` → `<4.6`), the CEF stack #324/#326/#346 (+ parked #334) behind #344, and long-open design prototypes #306 (`IntermetallicPhase`), #250 (`PhaseDiagram` object interface), #249 (`BufferedSegments`).
 
 **Out of scope**
 
