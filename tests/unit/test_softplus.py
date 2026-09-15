@@ -746,3 +746,105 @@ class TestBSeed:
         block = self._interp(monotone_slope=True)._bseed(np.zeros(2), None)
         assert np.all(np.isfinite(block))
         np.testing.assert_allclose(_softplus(block[:, 0]), 1e-6, rtol=1e-6)
+
+
+class TestSurfaceModelAndJac:
+    """Fused model/Jacobian of the coupled surface fit.
+
+    Every iteration of the coupled solve reads both halves out of one call, so
+    the analytic columns are never checked against the values they differentiate.
+    The amplitude link, the two slope parametrisations and the shared-knee
+    accumulation each add a chain-rule factor; a wrong one only shows up
+    downstream as a slow or stalled fit.
+    """
+
+    def _case(self, **kwargs):
+        """Interpolator plus a non-degenerate ``(p, cn, vt, signs)`` to evaluate at."""
+        interp = SoftplusSurface2DInterpolator(**{**_SURFACE_ORDERS, **kwargs})
+        vt = interp._vandermonde(np.linspace(0.0, 1.0, 6), np.linspace(0.0, 0.8, 6))
+        cn = np.linspace(-1.2, 1.4, 6)
+        p = np.random.default_rng(0).normal(scale=0.6, size=interp._n_params)
+        return interp, p, cn, vt, np.array([1.0, -1.0])
+
+    def test_model_matches_an_independent_evaluation(self):
+        # off(T) + sum_i softplus(alpha_i(T)) * softplus(b_i(T) * (cn + c_i(T))),
+        # with the amplitude -- and only the amplitude -- through the link.
+        interp, p, cn, vt, _ = self._case()
+        VTa, VWb, VTc, VTo = vt
+        A, B, C, O = interp._unpack(p)
+        expected = VTo @ O
+        for Ai, Bi, Ci in zip(A, B, C):
+            expected = expected + _softplus(VTa @ Ai) * _softplus((VWb @ Bi) * (cn + VTc @ Ci))
+        out, _ = interp._model_and_jac(p, cn, vt)
+        np.testing.assert_allclose(out, expected, rtol=1e-12)
+
+    def test_monotone_slope_signs_a_sum_of_softplus_increments(self):
+        # Under ``monotone_slope`` the slope is the frozen branch sign times a
+        # sum of non-negative increments, not a free polynomial in the basis.
+        interp, p, cn, vt, signs = self._case(monotone_slope=True)
+        VTa, VWb, VTc, VTo = vt
+        A, B, C, O = interp._unpack(p)
+        expected = VTo @ O
+        for s, Ai, Bi, Ci in zip(signs, A, B, C):
+            b = s * (VWb @ _softplus(Bi))
+            expected = expected + _softplus(VTa @ Ai) * _softplus(b * (cn + VTc @ Ci))
+        out, _ = interp._model_and_jac(p, cn, vt, signs)
+        np.testing.assert_allclose(out, expected, rtol=1e-12)
+
+    @pytest.mark.parametrize("shared_knee", [False, True])
+    @pytest.mark.parametrize("monotone_slope", [False, True])
+    def test_jacobian_columns_match_a_central_difference(self, shared_knee, monotone_slope):
+        # Central-difference every coefficient and check the matching column.
+        # This is what catches a chain-rule slip in the amplitude link, the
+        # signed softplus slope or the accumulated shared knee.
+        interp, p, cn, vt, signs = self._case(
+            shared_knee=shared_knee, monotone_slope=monotone_slope
+        )
+        _, J = interp._model_and_jac(p, cn, vt, signs)
+        for k in range(p.size):
+            step = np.zeros_like(p)
+            step[k] = _FD_STEP
+            fd = (
+                interp._model_and_jac(p + step, cn, vt, signs)[0]
+                - interp._model_and_jac(p - step, cn, vt, signs)[0]
+            ) / (2 * _FD_STEP)
+            np.testing.assert_allclose(
+                J[:, k], fd, atol=_FD_ATOL, err_msg=f"column {k} mismatch"
+            )
+
+    @pytest.mark.parametrize("shared_knee", [False, True])
+    def test_jacobian_is_one_column_per_parameter(self, shared_knee):
+        interp, p, cn, vt, signs = self._case(shared_knee=shared_knee)
+        out, J = interp._model_and_jac(p, cn, vt, signs)
+        assert out.shape == cn.shape
+        assert J.shape == (cn.size, interp._n_params)
+
+    def test_offset_columns_close_the_jacobian(self):
+        # The offset enters linearly and is laid out last, so its columns are
+        # the offset Vandermonde itself -- the anchor for the column layout.
+        interp, p, cn, vt, _ = self._case()
+        _, J = interp._model_and_jac(p, cn, vt)
+        no = interp._orders[3]
+        np.testing.assert_array_equal(J[:, -no:], vt[3])
+
+    def test_shared_knee_column_sums_the_per_term_contributions(self):
+        # One knee polynomial shared by every term: by the chain rule its
+        # derivative is the sum of what each term contributes, not one block
+        # per term.  Compare against a free-knee vector holding the same knee.
+        shared, p, cn, vt, _ = self._case(shared_knee=True)
+        free, _, _, _, _ = self._case()
+        na, nb, nc, _ = shared._orders
+        n = shared.n_softplus
+        A, B, C, O = shared._unpack(p)
+        p_free = np.concatenate(
+            [np.concatenate([A[i], B[i], C[i]]) for i in range(n)] + [O]
+        )
+        _, J_shared = shared._model_and_jac(p, cn, vt)
+        _, J_free = free._model_and_jac(p_free, cn, vt)
+
+        per = na + nb + nc
+        knee_blocks = [J_free[:, i * per + na + nb: (i + 1) * per] for i in range(n)]
+        start = n * (na + nb)
+        np.testing.assert_allclose(
+            J_shared[:, start:start + nc], sum(knee_blocks), rtol=1e-12
+        )
