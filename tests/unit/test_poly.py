@@ -1,3 +1,7 @@
+import subprocess
+import sys
+import textwrap
+
 import numpy as np
 import pandas as pd
 import shapely
@@ -132,6 +136,49 @@ def test_concave(df):
     if isinstance(res, pd.Series):
         for p in res:
             assert isinstance(p, Polygon)
+
+
+# Standardized border points, as poly_dataframe draws them, on which GEOS
+# 3.13.1's concave hull loops forever: a cluster of points spread over ~1e-7
+# next to far points. Bits matter, so the coordinates are spelled out exactly.
+# The first set hangs as is (the CI job ran into its six-hour limit on it);
+# the second hangs once its cluster is snapped onto a grid finer than its
+# spread, which is why _CONCAVE_GRID must exceed such spreads, not just be set.
+_NEAR_COINCIDENT_POINTS = [
+    [
+        ("-0x1.9f4bb60af50bcp-1", "-0x1.a15283a23673ap-1"),
+        ("-0x1.9f4bb6094da13p-1", "-0x1.a1527ee962d68p-1"),
+        ("-0x1.9f4bb607a63a4p-1", "-0x1.a1527a308f396p-1"),
+        ("0x1.75aa2f89d093dp+0", "0x1.594f5c3064a24p+0"),
+    ],
+    [
+        ("-0x1.6d45c33a1fa90p-1", "-0x1.6d7dc8404ce59p-1"),
+        ("-0x1.6d45c33a1fa90p-1", "-0x1.6d7dc8404ce59p-1"),
+        ("-0x1.6d45c33a1fa90p-1", "-0x1.6d7dc8404ce59p-1"),
+        ("-0x1.6d45c33a1fa90p-1", "-0x1.6d7dc8404ce59p-1"),
+        ("-0x1.6d45c33a1fa90p-1", "-0x1.6d7dc8404ce55p-1"),
+        ("-0x1.6d45bf0ec774ap-1", "-0x1.6d7dc3ade3576p-1"),
+        ("-0x1.6d45bae36f3cep-1", "-0x1.6d7dbf1b79c92p-1"),
+        ("0x1.32345b3050dfdp-2", "0x1.37c19f420edb5p-2"),
+        ("0x1.8ceb87d94cdf2p+0", "0x1.8c5d87c7428b8p+0"),
+    ],
+]
+
+
+@pytest.mark.parametrize("hexes", _NEAR_COINCIDENT_POINTS)
+def test_concave_terminates_on_near_coincident_points(hexes):
+    # Termination is the property; run in a subprocess so a regression fails
+    # the test instead of hanging the suite. A cluster that collapses onto one
+    # grid point can leave too few points for a polygon, which _make reports
+    # as None like any other degenerate input.
+    code = textwrap.dedent(f"""
+        import numpy as np, shapely
+        from landau.poly import Concave
+        pp = np.array([[float.fromhex(x), float.fromhex(y)] for x, y in {hexes!r}])
+        shape = Concave()._make(pp, np.ones(len(pp), dtype=bool), np.ones(len(pp)))
+        assert shape is None or isinstance(shape, shapely.Polygon), shape
+    """)
+    subprocess.run([sys.executable, "-c", code], check=True, timeout=120)
 
 
 @settings(deadline=None)

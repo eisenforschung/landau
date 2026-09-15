@@ -152,6 +152,11 @@ class AbstractPolyMethod(abc.ABC):
         return Polygon(coords)
 
 
+_CONCAVE_GRID = 1e-5
+"""Precision grid the standardized points are snapped to before the concave hull;
+see :meth:`Concave._make`."""
+
+
 @dataclass
 class Concave(AbstractPolyMethod):
     """Find polygons by constructing a concave hull around given points.
@@ -168,7 +173,13 @@ class Concave(AbstractPolyMethod):
             pp = pp[border]
         if len(pp) == 0:
             return None
-        points = shapely.MultiPoint(pp)
+        # Snap onto a precision grid first, so no two distinct points are closer
+        # than the grid: GEOS's concave hull loops forever on a cluster of points
+        # spread over ~1e-7 in the standardized coordinates next to a far point
+        # (its triangulation completes, the hull erosion does not), and a grid
+        # finer than the cluster leaves that configuration in place. 1e-5 is
+        # negligible against the unit-variance coordinates `make` hands over.
+        points = shapely.set_precision(shapely.MultiPoint(pp), _CONCAVE_GRID)
         try:
             shape = shapely.concave_hull(points, ratio=self.ratio)
         except shapely.errors.GEOSException:
