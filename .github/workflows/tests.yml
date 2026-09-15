@@ -47,7 +47,7 @@ jobs:
       if: needs.changes.outputs.run == 'true'
       shell: bash -l {0}
       run: |
-        pip install -e .[test,constraints,fast-tsp,python-tsp]
+        pip install -e .[test,phonopy,constraints,fast-tsp,python-tsp]
     - name: run tests
       if: needs.changes.outputs.run == 'true'
       shell: bash -l {0}
