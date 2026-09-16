@@ -3,6 +3,13 @@
 Notable changes to **landau.py**, newest first. Per-PR detail lives in the
 [GitHub releases](https://github.com/eisenforschung/landau/releases).
 
+## [1.14.2](https://github.com/eisenforschung/landau/compare/1.14.1...1.14.2) (2026-09-16)
+
+
+### Bug Fixes
+
+* **refine:** size the Clausius-Clapeyron bootstrap bracket by the seed slope ([#466](https://github.com/eisenforschung/landau/issues/466)) ([3a92d0a](https://github.com/eisenforschung/landau/commit/3a92d0a11837c3cfb5dee3f77afedd1c8e9950f6))
+
 ## [1.14.1](https://github.com/eisenforschung/landau/compare/1.14.0...1.14.1) (2026-09-15)
 
 
