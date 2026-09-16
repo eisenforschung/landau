@@ -627,3 +627,82 @@ def test_to_mpl_polygon_valid_polygon_round_trips_coords():
     result = AbstractPolyMethod._to_mpl_polygon(shape)
     assert isinstance(result, Polygon)
     np.testing.assert_array_equal(result.get_xy(), np.asarray(shape.exterior.coords))
+
+
+# -- _absorb_repeated_invariant_rows ---------------------------------------
+#
+# A three-phase isotherm on which one phase appears twice (monotectic,
+# syntectic, monotectoid) gives get_transitions a two-point segment of that
+# phase: a chord across the two-phase field, which the stitch takes instead of
+# the miscibility-gap dome above it. Each such row goes to the nearest
+# two-phase segment of its phase instead.
+
+from landau.poly import _absorb_repeated_invariant_rows  # noqa: E402
+
+
+def _tdf(rows):
+    """Rows of (mu, T, c, phase, border_segment); phase_unit 0, transition unused."""
+    return pd.DataFrame(
+        [{"mu": mu, "T": T, "c": c, "phase": ph, "phase_unit": 0, "transition": "", "border_segment": seg}
+         for mu, T, c, ph, seg in rows]
+    )
+
+
+def test_absorb_hands_each_repeated_row_to_the_nearest_two_phase_segment():
+    tdf = _tdf([
+        # the dome: two liquid rows per (mu, T), no third phase (further from
+        # the feet than the liquidus rows, so the hand-over is deterministic)
+        (0.4, 1290.0, 0.19, "liquid", "liquid-liquid_0"),
+        (0.4, 1290.0, 0.81, "liquid", "liquid-liquid_0"),
+        # the liquidus branches, one liquid row each
+        (0.3, 1230.0, 0.17, "liquid", "liquid-γ_0"),
+        (0.5, 1230.0, 0.83, "liquid", "γ-liquid_0"),
+        # the syntectic: liquid twice plus γ
+        (0.45, 1236.0, 0.187, "liquid", "liquid-γ-liquid_0"),
+        (0.45, 1236.0, 0.5, "γ", "liquid-γ-liquid_0"),
+        (0.45, 1236.0, 0.813, "liquid", "liquid-γ-liquid_0"),
+    ])
+    out = _absorb_repeated_invariant_rows(tdf)
+    feet = out[(out["T"] == 1236.0) & (out["phase"] == "liquid")].sort_values("c")
+    # the left foot is nearest the left liquidus row, the right foot the right one
+    assert feet["border_segment"].tolist() == ["liquid-γ_0", "γ-liquid_0"]
+    # gamma's own row on the isotherm, and every other row, is untouched
+    assert (out.loc[out["phase"] == "γ", "border_segment"] == "liquid-γ-liquid_0").all()
+    assert out.loc[out["T"] != 1236.0, "border_segment"].tolist() == tdf.loc[tdf["T"] != 1236.0, "border_segment"].tolist()
+
+
+def test_absorb_leaves_plain_gap_points_alone():
+    """Two rows of one phase at one (mu, T) with nothing else there are a
+    miscibility-gap point: they are the dome, not a chord."""
+    tdf = _tdf([
+        (0.4, 1240.0, 0.19, "liquid", "liquid-liquid_0"),
+        (0.4, 1240.0, 0.81, "liquid", "liquid-liquid_0"),
+        (0.3, 1230.0, 0.17, "liquid", "liquid-γ_0"),
+    ])
+    out = _absorb_repeated_invariant_rows(tdf)
+    assert out["border_segment"].tolist() == tdf["border_segment"].tolist()
+
+
+def test_absorb_leaves_ordinary_invariants_alone():
+    """One point per phase on the isotherm: nothing to relabel."""
+    tdf = _tdf([
+        (0.45, 733.0, 0.0, "α", "α-liquid-β_0"),
+        (0.45, 733.0, 0.69, "liquid", "α-liquid-β_0"),
+        (0.45, 733.0, 1.0, "β", "α-liquid-β_0"),
+        (0.3, 800.0, 0.5, "liquid", "α-liquid_0"),
+    ])
+    out = _absorb_repeated_invariant_rows(tdf)
+    assert out["border_segment"].tolist() == tdf["border_segment"].tolist()
+
+
+def test_absorb_needs_a_two_phase_row_of_the_same_phase_to_hand_over_to():
+    """No other row of that phase (or only infinite-mu ones): left as is."""
+    tdf = _tdf([
+        (0.45, 1236.0, 0.187, "liquid", "liquid-γ-liquid_0"),
+        (0.45, 1236.0, 0.5, "γ", "liquid-γ-liquid_0"),
+        (0.45, 1236.0, 0.813, "liquid", "liquid-γ-liquid_0"),
+        (-np.inf, 1300.0, 0.0, "liquid", "liquid_0"),
+    ])
+    out = _absorb_repeated_invariant_rows(tdf)
+    assert out["border_segment"].tolist() == tdf["border_segment"].tolist()
+    assert _absorb_repeated_invariant_rows(tdf.iloc[:0]).empty
