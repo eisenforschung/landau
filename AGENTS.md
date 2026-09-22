@@ -99,11 +99,17 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
   - #458 (`_stationary_points` in `phases/quasiharmonic.py`)
 
-  - #460 (LTE saturation clamp in `phases/pointdefects.py`)
+  - #460 (LTE saturation clamp in `phases/pointdefects.py`) — PR #490 in flight (opened 2026-09-21, 14 direct cases in new `tests/unit/phases/test_pointdefects.py`)
 
   - #483 (extract the inline-label anchor block of `plot_excess_free_energy` to a module-level helper in `plot/labels.py`)
 
   - #484 (extract the point-cleaning prologue of `AbstractPolyMethod.make` in `poly.py` as a testable `_clean_points`)
+
+  - #491 (`StitchedFit.fit` picks its low/upp extrapolation samples by array position, so unsorted `(t, y)` input silently fits the edge models through arbitrary subsets, and `edge > len(t)` quietly fits all three models through the same points — sort inside `fit` or validate; `interpolate/basic.py`)
+
+  - #492 (extract the dynamical-stability volume selection out of `PhonopyQuasiHarmonicPhase.__post_init__` as a pure module-level `_select_stable_volumes`, testable without phonopy; adjacent to #458, no overlap)
+
+  - #493 (direct value tests for `AsePhase.line_free_energy`'s Helmholtz/Gibbs/`TypeError` dispatch, `atoms_per_formula`, and the 1 atm default — the two existing tests only assert shape)
 
   PR #422 (direct tests for `_fit_softplus` / `_fit_slice`) merged 2026-08-30 without a numbered sub-issue; #423 closed 2026-09-01 by PR #434; #390 closed 2026-09-02 by PR #394 and #413 by PR #414; #388 closed 2026-09-07 by PR #391 and #424 by PR #457; #459 (`landau/fleche.py` helpers) was filed and closed not-planned the same day — fleche is expected to take that responsibility over; #481 closed 2026-09-15 by PR #482 (six `TestSurfaceModelAndJac` cases with column-by-column finite differences). Closed sub-issues are recorded one cohort per line in [`CLAUDE.md`](CLAUDE.md)'s #116 section — check there before re-picking one.
 
@@ -137,7 +143,7 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
 - **#62 flat → `src/` layout** — long-standing. #70 (weak Hypothesis strategies for polygon tests) closed 2026-09-02 by PR #395: `poly_dataframe` now correlates `c`/`T`/`mu` per row instead of drawing them independently.
 
-- **Open PRs in flight** (check before duplicating): #462 (TDB export), the #467 → #471 → #478 → #465 stack (monotectic-type invariant tagging via a `_dominated_node` hook on the gap tracer; exact congruent-point solve + `TerminalRefiner`; miscibility-gap closure tagged as its congruent point; TransitionTemperatures notebook — the stack's base, #466's seed-slope CC bootstrap bracket, merged 2026-09-15), #474 (cost-based transition-temperature label placement, refs #463), #487 (release-please 1.14.2 — carries #466), #488 (snap points to a `set_precision` grid before the concave hull — GEOS 3.13.1's `concave_hull` loops forever on near-coincident point clusters, which is what stalled `test-minimum-deps` runs at the 6-hour job limit), the CEF stack #324/#326/#346 (+ parked #334) behind #344, and long-open design prototypes #306 (`IntermetallicPhase`), #250 (`PhaseDiagram` object interface), #249 (`BufferedSegments`).
+- **Open PRs in flight** (check before duplicating): #462 (TDB export), #490 (direct tests for the LTE saturation clamp, closes #460), the #467 → #471 → #478 → #465 stack (monotectic-type invariant tagging via a `_dominated_node` hook on the gap tracer; exact congruent-point solve + `TerminalRefiner`; miscibility-gap closure tagged as its congruent point; TransitionTemperatures notebook — the stack's base, #466's seed-slope CC bootstrap bracket, merged 2026-09-15), #474 (cost-based transition-temperature label placement, refs #463), #487 (release-please 1.14.2 — carries #466), #488 (snap points to a `set_precision` grid before the concave hull — GEOS 3.13.1's `concave_hull` loops forever on near-coincident point clusters, which is what stalled `test-minimum-deps` runs at the 6-hour job limit), the CEF stack #324/#326/#346 (+ parked #334) behind #344, and long-open design prototypes #306 (`IntermetallicPhase`), #250 (`PhaseDiagram` object interface), #249 (`BufferedSegments`).
 
 **Out of scope**
 
