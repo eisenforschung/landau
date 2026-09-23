@@ -99,7 +99,7 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
   - #458 (`_stationary_points` in `phases/quasiharmonic.py`)
 
-  - #460 (LTE saturation clamp in `phases/pointdefects.py`) — PR #490 in flight (opened 2026-09-21, 14 direct cases in new `tests/unit/phases/test_pointdefects.py`)
+  - #460 (LTE saturation clamp in `phases/pointdefects.py`) — PR #490 in flight (opened 2026-09-21, 14 direct cases in new `tests/unit/phases/test_pointdefects.py`). Reopened 2026-09-23: GitHub had auto-closed it when the #494 audit commit landed on `main` with a closing phrase in its body describing PR #490 — in commit messages and PR bodies, name another PR's issue without closing keywords ("against #460") unless closure is intended
 
   - #483 (extract the inline-label anchor block of `plot_excess_free_energy` to a module-level helper in `plot/labels.py`)
 
