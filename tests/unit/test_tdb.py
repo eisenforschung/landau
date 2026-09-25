@@ -260,7 +260,7 @@ def test_phase_names_longer_than_24_characters_raise():
 
 
 def test_24_character_names_keep_every_line_within_78_characters(line_phases):
-    """The longest names, two-letter elements and a two-sublattice compound with 17-digit site ratios."""
+    """The longest names, two-letter elements and a two-sublattice compound with full-precision site ratios."""
     phases = [LinePhase("C" * 24, 1 / 3, -2.9, kB), RegularSolution("R" * 24, line_phases, num_coeffs=2)]
     text = to_tdb(phases, elements=("MG", "CA"), temperature_range=(298.15, 6000.0))
     assert f"PHASE {'C' * 24} % 2 0.6666666666666667 0.3333333333333333 !" in text.splitlines()
@@ -360,6 +360,63 @@ def test_redlich_kister_export_is_the_least_squares_fit_when_ill_conditioned():
         exact = _least_squares_free_energy(line_phases, 5, T, CS)
         np.testing.assert_allclose(
             _solution_free_energy(text, "LIQ", ("A", "B"), T, CS), exact * J_PER_MOL, rtol=0, atol=ATOL
+        )
+
+
+@pytest.mark.parametrize(
+    "build, order",
+    [
+        (lambda phases: RegularSolution("x", phases, num_coeffs=2), (4, 1, 0, 2, 3)),
+        (lambda phases: FastInterpolatingPhase("x", phases, interpolator=RedlichKister(2)), (4, 1, 0, 2, 3)),
+        (lambda phases: FastInterpolatingPhase("x", phases, interpolator=RedlichKister(2)), (1, 5, 0, 2, 3, 4)),
+        (lambda phases: FastInterpolatingPhase("x", phases, interpolator=RedlichKister(2)), (5, 1, 0, 2, 3, 4)),
+    ],
+    ids=["regular-shuffled", "fast-shuffled", "fast-second-terminal-first", "fast-second-terminal-last"],
+)
+def test_redlich_kister_terminals_anywhere_in_phases(line_phases, build, order):
+    """The terminals are taken where the fit takes them, not from the ends of ``phases``;
+    with a second line phase at c=0 (index 5 below; RegularSolution refuses one), whichever
+    the fit picks."""
+    candidates = (*line_phases, LinePhase("fccA2", 0.0, -3.05, 1.1 * kB))
+    phases = [candidates[i] for i in order]
+    text = to_tdb([build(phases)])
+    for T in TS:
+        exact = _least_squares_free_energy(phases, 2, T, CS)
+        written = _solution_free_energy(text, "X", ("A", "B"), T, CS)
+        np.testing.assert_allclose(written, exact * J_PER_MOL, rtol=0, atol=ATOL)
+
+
+def test_interior_concentration_close_to_a_terminal_counts_as_interior():
+    """c = 0.999995 is within ``np.isclose`` of 1 but is a line phase of its own, the second of
+    the two interior concentrations two orders need."""
+    phases = [
+        LinePhase("a", 0.0, -3.0, kB),
+        LinePhase("m", 0.5, -3.1, 1.5 * kB),
+        LinePhase("n", 0.999995, -2.6, kB),
+        LinePhase("b", 1.0, -2.5, kB),
+    ]
+    text = to_tdb([RegularSolution("x", phases, num_coeffs=2, add_entropy=True)])
+    assert _interactions(text, "X") == ["L(X,A,B;0)", "L(X,A,B;1)"]
+
+
+def test_surface_phase_with_a_near_zero_terminal(line_phases):
+    """A terminal at c = 1e-12 leaves ``concentration_range = (1e-12, 1)``, which the surface
+    fit accepts as the full axis, so the export does too."""
+    phases = [LinePhase("a", 1e-12, -3.0, kB), LinePhase("m", 0.5, -3.1, 1.5 * kB), LinePhase("b", 1.0, -2.5, kB)]
+    phase = Surface2DInterpolatingPhase(
+        "x",
+        phases,
+        surface_interpolator=CalphadSurface2DInterpolator(num_coeffs=1, coeff_poly_order=1),
+        temperature_range=(300.0, 2000.0),
+    )
+    assert phase.concentration_range == (1e-12, 1)
+    text = to_tdb([phase])
+    for T in TS:
+        np.testing.assert_allclose(
+            _solution_free_energy(text, "X", ("A", "B"), T, CS),
+            phase.free_energy(T, CS) * J_PER_MOL,
+            rtol=0,
+            atol=ATOL,
         )
 
 
