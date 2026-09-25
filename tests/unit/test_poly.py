@@ -17,6 +17,7 @@ import pytest
 from matplotlib.patches import Polygon
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import pairwise_distances
 from unittest.mock import MagicMock
 
 # Check if optional dependencies are available
@@ -37,6 +38,9 @@ except ImportError:
     HAS_FAST_TSP = False
 
 
+_T_GRID = 1000
+
+
 @st.composite
 def _phase_region(draw, phase, unit):
     # One (phase, phase_unit) group, traced as a smooth curve in a scalar
@@ -47,24 +51,41 @@ def _phase_region(draw, phase, unit):
     n_border = draw(st.integers(min_value=4, max_value=10))
     n_interior = draw(st.integers(min_value=0, max_value=3))
     n_points = n_border + n_interior
+    # `t` on a grid: points at least 1 / _T_GRID apart along the curve. Drawn
+    # as free floats, Hypothesis clusters them next to 0 and 1, which puts
+    # several points within ~1e-7 of each other in the standardized coordinates
+    # the polygon methods see; GEOS's concave hull loops forever on some such
+    # clusters (five test-minimum-deps runs hit the six-hour job limit in
+    # test_concave). No phase diagram from calc_phase_diagram carries border
+    # points that close together.
     t = np.sort(
         draw(
             st.lists(
-                st.floats(min_value=0, max_value=1, allow_nan=False, allow_infinity=False),
+                st.integers(min_value=0, max_value=_T_GRID),
                 min_size=n_points,
                 max_size=n_points,
                 unique=True,
             )
         )
-    )
+    ) / _T_GRID
 
-    T0 = draw(st.floats(min_value=0, max_value=800, allow_nan=False, allow_infinity=False))
-    T_amp = draw(st.floats(min_value=0, max_value=200, allow_nan=False, allow_infinity=False))
+    # Integer, so that two flat regions share T exactly or differ by >= 1 K. A
+    # free float can put one at T0 = 5e-324 and another at 0; once the (mu, T)
+    # pairing below moves points between them, a region is flat but for a
+    # subnormal, which make() does not short-circuit and on which GEOS's
+    # concave hull segfaults.
+    T0 = draw(st.integers(min_value=0, max_value=800))
+    # Either a flat region in T (the line-phase case make() short-circuits) or
+    # a T span that keeps grid neighbours apart against T0's float spacing.
+    T_amp = draw(st.one_of(st.just(0.0), st.floats(min_value=1, max_value=200, allow_nan=False, allow_infinity=False)))
     mu0 = draw(st.floats(min_value=-8, max_value=8, allow_nan=False, allow_infinity=False))
     mu_amp = draw(st.floats(min_value=0, max_value=2, allow_nan=False, allow_infinity=False))
     c_lo = draw(st.floats(min_value=0.02, max_value=0.49, allow_nan=False, allow_infinity=False))
     c_hi = draw(st.floats(min_value=0.51, max_value=0.98, allow_nan=False, allow_infinity=False))
-    steepness = draw(st.floats(min_value=1, max_value=20, allow_nan=False, allow_infinity=False))
+    # Capped so that grid neighbours on the sigmoid's tails stay apart in c as
+    # well: a region flat in T keeps only its c spacing once the (mu, T)
+    # pairing below has moved one of its points.
+    steepness = draw(st.floats(min_value=1, max_value=8, allow_nan=False, allow_infinity=False))
 
     T = T0 + T_amp * t
     mu = mu0 + mu_amp * (2 * t - 1)
@@ -120,6 +141,25 @@ def poly_dataframe(draw):
         df.loc[bi, ["mu", "T"]] = df.loc[ai, ["mu", "T"]].to_numpy()
 
     return df
+
+
+@settings(deadline=None)
+@given(df=poly_dataframe())
+def test_poly_dataframe_keeps_points_apart(df):
+    # What the polygon methods see is each group's unique points, standardized
+    # (AbstractPolyMethod.make). The strategy keeps them apart, see
+    # _phase_region: the grid gives ~1e-3 along one region's curve and the
+    # steepness cap keeps a flat-in-T region's c spacing above 1e-4 once the
+    # (mu, T) pairing has moved one of its points off the flat. A group still
+    # flat in T is left to make()'s LineString short-circuit and not measured.
+    for _, g in df.groupby(["phase", "phase_unit"]):
+        pp = np.unique(g[["c", "T"]].to_numpy(float), axis=0)
+        if len(pp) < 2 or (np.ptp(pp, axis=0) == 0).any():
+            continue
+        pps = StandardScaler().fit_transform(pp)
+        d = pairwise_distances(pps)
+        np.fill_diagonal(d, np.inf)
+        assert d.min() > 1e-4
 
 
 @settings(deadline=None)
