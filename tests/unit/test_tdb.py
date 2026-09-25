@@ -38,7 +38,8 @@ from landau.phases import AbstractLinePhase, Phase, S, kB
 from landau.phases.pointdefects import ConstantPointDefect, PointDefectedPhase, PointDefectSublattice
 from landau.tdb import _number
 
-with ImportAlarm() as pycalphad_alarm:
+# ImportAlarm keeps its message only when the import fails, so it needs one to report the failure.
+with ImportAlarm("pycalphad is not installed; pip install 'landau[test-pycalphad]'") as pycalphad_alarm:
     from pycalphad import Database, calculate
     from pycalphad import variables as v
 
