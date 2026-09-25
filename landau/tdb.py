@@ -17,9 +17,9 @@ already has that form are exported; every other phase raises :exc:`TypeError`.
   :class:`~landau.interpolate.RedlichKister` become ``(A,B)`` phases with interaction
   parameters ``L_v(T)``.  The fit is linear in the line phases' free energies, so each
   ``L_v(T)`` is the least-squares combination of their closed forms: the solution
-  landau's own iterative fit approximates, not its last iterate.  Fits that are not
-  unique -- fewer distinct line phase concentrations between the terminals than
-  orders -- raise :exc:`ValueError`.
+  ``RedlichKister.fit`` computes at each temperature, up to that fit's own accuracy.
+  Fits that are not unique -- fewer distinct line phase concentrations between the
+  terminals than orders -- raise :exc:`ValueError`.
 - :class:`~landau.phases.Surface2DInterpolatingPhase` over a
   :class:`~landau.interpolate.CalphadSurface2DInterpolator` becomes an ``(A,B)`` phase
   from the fitted terminal and interaction models.
@@ -242,12 +242,13 @@ def _from_redlich_kister(name: str, phase: Phase, elements: tuple[str, str]) -> 
     # RedlichKister.fit takes the terminals as they sort, subtracts the chord
     # between them and least-squares fits L_v to the rest.  Every step is linear
     # in the samples, so the same steps on the samples' closed forms give
-    # closed-form parameters: the least-squares solution landau's iterative fit approximates.
+    # closed-form parameters: the least-squares solution the fit computes.
     n = len(concentrations)
     order = concentrations.argsort()
     first, last = order[0], order[-1]
     n_orders = min(interpolator.nparam, n - 2)
-    interior = np.unique(concentrations[~(np.isclose(concentrations, 0) | np.isclose(concentrations, 1))])
+    terminal = (concentrations == concentrations[first]) | (concentrations == concentrations[last])
+    interior = np.unique(concentrations[~terminal])
     if n_orders == 0:
         raise ValueError(f"{_describe(phase)}: a Redlich-Kister fit needs a line phase between the terminals")
     if len(interior) < n_orders:
@@ -298,7 +299,9 @@ def _convert(phase: Phase, elements: tuple[str, str]) -> _TdbPhase:
         return _stoichiometric(name, phase, elements)
     if isinstance(phase, IdealSolution):
         return _solution(name, _member_g(phase.phase1, phase), _member_g(phase.phase2, phase), [], elements)
-    if isinstance(phase, SlowInterpolatingPhase) and tuple(phase.concentration_range) != (0, 1):
+    if isinstance(phase, SlowInterpolatingPhase) and not (
+        np.isclose(phase.concentration_range[0], 0) and np.isclose(phase.concentration_range[1], 1)
+    ):
         raise TypeError(
             f"{_describe(phase)}: is confined to concentration_range={phase.concentration_range}, "
             "but a TDB solution phase spans the whole composition axis"
