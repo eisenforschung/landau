@@ -830,6 +830,14 @@ def test_calc_phase_diagram_dphi_refined(triple_point_phases):
     assert (df.loc[triple, "dphi"] == 0).sum() == 1
 
 
+
+def test_calc_phase_diagram_dphi_only_with_unstable(triple_point_phases):
+    """On a stable-only frame dphi is zero by construction, so it is left out."""
+    df = calc_phase_diagram(triple_point_phases, Ts=np.linspace(220, 480, 12),
+                            mu=np.linspace(-0.05, 0.55, 15))
+    assert "dphi" not in df.columns
+
+
 # --- f_excess / sub tests (issue #245) ---
 
 _SUB_ATOL = 1e-12
