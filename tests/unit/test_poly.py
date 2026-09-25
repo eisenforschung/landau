@@ -69,7 +69,12 @@ def _phase_region(draw, phase, unit):
         )
     ) / _T_GRID
 
-    T0 = draw(st.floats(min_value=0, max_value=800, allow_nan=False, allow_infinity=False))
+    # Integer, so that two flat regions share T exactly or differ by >= 1 K. A
+    # free float can put one at T0 = 5e-324 and another at 0; once the (mu, T)
+    # pairing below moves points between them, a region is flat but for a
+    # subnormal, which make() does not short-circuit and on which GEOS's
+    # concave hull segfaults.
+    T0 = draw(st.integers(min_value=0, max_value=800))
     # Either a flat region in T (the line-phase case make() short-circuits) or
     # a T span that keeps grid neighbours apart against T0's float spacing.
     T_amp = draw(st.one_of(st.just(0.0), st.floats(min_value=1, max_value=200, allow_nan=False, allow_infinity=False)))
