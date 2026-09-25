@@ -242,7 +242,7 @@ def _from_redlich_kister(name: str, phase: Phase, elements: tuple[str, str]) -> 
     # RedlichKister.fit takes the terminals as they sort, subtracts the chord
     # between them and least-squares fits L_v to the rest.  Every step is linear
     # in the samples, so the same steps on the samples' closed forms give
-    # closed-form parameters: the least-squares solution the fit computes.
+    # closed-form parameters: the least-squares solution of the fit's model.
     n = len(concentrations)
     order = concentrations.argsort()
     first, last = order[0], order[-1]

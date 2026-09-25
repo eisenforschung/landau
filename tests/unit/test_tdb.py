@@ -368,10 +368,10 @@ def test_redlich_kister_export_is_the_least_squares_fit_when_ill_conditioned():
     [
         (lambda phases: RegularSolution("x", phases, num_coeffs=2), (4, 1, 0, 2, 3)),
         (lambda phases: FastInterpolatingPhase("x", phases, interpolator=RedlichKister(2)), (4, 1, 0, 2, 3)),
-        (lambda phases: FastInterpolatingPhase("x", phases, interpolator=RedlichKister(2)), (1, 5, 0, 2, 3, 4)),
         (lambda phases: FastInterpolatingPhase("x", phases, interpolator=RedlichKister(2)), (5, 1, 0, 2, 3, 4)),
+        (lambda phases: FastInterpolatingPhase("x", phases, interpolator=RedlichKister(2)), (0, 1, 5, 2, 3, 4)),
     ],
-    ids=["regular-shuffled", "fast-shuffled", "fast-second-terminal-first", "fast-second-terminal-last"],
+    ids=["regular-shuffled", "fast-shuffled", "fast-second-terminal-before", "fast-second-terminal-after"],
 )
 def test_redlich_kister_terminals_anywhere_in_phases(line_phases, build, order):
     """The terminals are taken where the fit takes them, not from the ends of ``phases``;
