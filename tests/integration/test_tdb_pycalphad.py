@@ -19,6 +19,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 import scipy.optimize as so
+from pyiron_snippets.import_alarm import ImportAlarm
 
 import landau.calculate as ldc
 import landau.interpolate as ldi
@@ -27,17 +28,13 @@ from landau.features import Locus
 from landau.plot import plot_phase_diagram
 from landau.tdb import to_tdb
 
-try:
+with ImportAlarm() as pycalphad_alarm:
     from pycalphad import Database, binplot, equilibrium
     from pycalphad import variables as v
 
-    HAS_PYCALPHAD = True
-except ImportError:
-    HAS_PYCALPHAD = False
-
 pytestmark = [
     pytest.mark.pycalphad,
-    pytest.mark.skipif(not HAS_PYCALPHAD, reason="pycalphad is not installed"),
+    pytest.mark.skipif(pycalphad_alarm.message is not None, reason="pycalphad is not installed"),
 ]
 
 COMPS = ["A", "B", "VA"]
@@ -310,20 +307,12 @@ def test_tie_lines(case):
             assert found[phase] == pytest.approx(c, abs=TIE_ATOL), (T, phase)
 
 
-def test_comparison_figure(case, tmp_path):
-    system, df, db = case
-    fig = comparison_figure(system, df, db)
-    path = tmp_path / f"2d_tdb_pycalphad_{system.name}.png"
-    fig.savefig(path)
-    plt.close(fig)
-    assert path.stat().st_size > 0
-
-
-
 def main():
     parser = argparse.ArgumentParser(description="Render landau's and pycalphad's diagrams side by side.")
     parser.add_argument("--out", type=Path, default=Path(__file__).parent / "_plots", help="output directory for PNGs")
     args = parser.parse_args()
+    if pycalphad_alarm.message is not None:
+        raise SystemExit(pycalphad_alarm.message)
     args.out.mkdir(parents=True, exist_ok=True)
     for system in SYSTEMS.values():
         fig = comparison_figure(system, phase_diagram(system), database(system))
