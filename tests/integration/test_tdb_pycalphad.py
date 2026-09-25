@@ -28,7 +28,8 @@ from landau.features import Locus
 from landau.plot import plot_phase_diagram
 from landau.tdb import to_tdb
 
-with ImportAlarm() as pycalphad_alarm:
+# ImportAlarm keeps its message only when the import fails, so it needs one to report the failure.
+with ImportAlarm("pycalphad is not installed; pip install 'landau[test-pycalphad]'") as pycalphad_alarm:
     from pycalphad import Database, binplot, equilibrium
     from pycalphad import variables as v
 
