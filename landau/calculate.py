@@ -270,8 +270,8 @@ def calc_phase_diagram(
         ``keep_unstable=True`` the ``dphi`` column is ``phi`` minus the
         lowest ``phi`` among the rows at the same ``(T, mu)``, i.e. how far
         a phase sits above the stable one (``0`` for stable rows, ``NaN`` on
-        the synthetic ``mu = +-inf`` edges). Refined rows only carry their
-        coexisting phases, so there it measures the spread between those.
+        the synthetic ``mu = +-inf`` edges; refined rows are zero up to the
+        refiners' numerical tolerance).
     """
     if not isinstance(Ts, Iterable):
         Ts = [Ts]
