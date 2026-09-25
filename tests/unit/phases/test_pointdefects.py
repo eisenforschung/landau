@@ -10,7 +10,7 @@ tests never exercise the clamp branches.
 
 import numpy as np
 import pytest
-from numpy.testing import assert_allclose
+from numpy.testing import assert_allclose, assert_array_equal
 
 from landau.phases import LinePhase, kB
 from landau.phases.pointdefects import (
@@ -22,10 +22,18 @@ from landau.phases.pointdefects import (
 
 # the crossings are located by brentq on its default xtol of 2e-12 in dmu
 _CROSSING_ATOL = 1e-9
+# well inside the window at the fixture's energies, and the same T throughout so
+# the crossings every test reads back are one pair
+_T = 800.0
 
 
 def _b2_phase(sublattice_class):
-    """B2 phase with an antisite and a vacancy on each of the two sublattices."""
+    """B2 phase with an antisite and a vacancy on each of the two sublattices.
+
+    The two antisites differ in energy on purpose: at equal energies
+    ``c(-dmu) = 1 - c(dmu)``, which makes the two saturation crossings exact
+    mirror images and hides anything that derives one from the other.
+    """
     host = LinePhase("AB", fixed_concentration=0.5, line_energy=-0.40, line_entropy=1.0 * kB)
     alpha = sublattice_class(
         name="alpha",
@@ -41,7 +49,7 @@ def _b2_phase(sublattice_class):
         sublattice=1,
         sublattice_fraction=0.5,
         defects=[
-            ConstantPointDefect("A_b", excess_energy=0.30, excess_entropy=0.0, excess_solutes=-1),
+            ConstantPointDefect("A_b", excess_energy=0.45, excess_entropy=0.0, excess_solutes=-1),
             ConstantPointDefect("V_b", excess_energy=0.50, excess_entropy=0.0, excess_solutes=0),
         ],
     )
@@ -68,11 +76,12 @@ def test_safe_dmu_bound_grows_with_temperature():
     assert bounds[0] < bounds[1] < bounds[2]
 
 
-def test_safe_dmu_bound_stays_positive_below_the_thermal_budget():
-    """At 5 K the formation energies exceed ``_EXP_LIMIT * kB * T``, which would
-    leave a negative (i.e. reversed) bracket without the floor."""
+def test_safe_dmu_bound_falls_back_to_the_floor_below_the_thermal_budget():
+    """At 5 K the formation energies exceed ``_EXP_LIMIT * kB * T``, so the
+    expression goes negative and the bound is the floor itself -- without it the
+    bracket would come out reversed."""
     phase = _b2_phase(LowTemperatureExpansionSublattice)
-    assert phase._safe_dmu_bound(5.0) > 0.0
+    assert phase._safe_dmu_bound(5.0) == 1e-6
 
 
 # --- _saturation_window ---
@@ -90,12 +99,11 @@ def test_saturation_window_locates_the_lte_crossings():
     """For the unbounded model both crossings are finite and the raw
     concentration is exactly 0 / 1 there."""
     phase = _b2_phase(LowTemperatureExpansionSublattice)
-    T = 800.0
-    dmu_lo, dmu_hi = phase._saturation_window(T)
+    dmu_lo, dmu_hi = phase._saturation_window(_T)
     assert np.isfinite(dmu_lo) and np.isfinite(dmu_hi)
     assert dmu_lo < dmu_hi
-    assert phase._raw_phi_c(T, dmu_lo)[1] == pytest.approx(0.0, abs=_CROSSING_ATOL)
-    assert phase._raw_phi_c(T, dmu_hi)[1] == pytest.approx(1.0, abs=_CROSSING_ATOL)
+    assert phase._raw_phi_c(_T, dmu_lo)[1] == pytest.approx(0.0, abs=_CROSSING_ATOL)
+    assert phase._raw_phi_c(_T, dmu_hi)[1] == pytest.approx(1.0, abs=_CROSSING_ATOL)
 
 
 def test_saturation_window_reports_no_crossing_outside_the_safe_bound():
@@ -112,52 +120,48 @@ def test_saturation_window_reports_no_crossing_outside_the_safe_bound():
 def test_clamp_leaves_the_interior_untouched():
     """Inside the window the clamp returns the raw values unchanged."""
     phase = _b2_phase(LowTemperatureExpansionSublattice)
-    T = 800.0
-    dmu_lo, dmu_hi = phase._saturation_window(T)
+    dmu_lo, dmu_hi = phase._saturation_window(_T)
     dmu = np.linspace(dmu_lo, dmu_hi, 11)
-    phi, c = phase._clamp_fixed_T(T, dmu)
-    raw_phi, raw_c = phase._raw_phi_c(T, dmu)
-    assert_allclose(phi, raw_phi, rtol=0, atol=0)
-    assert_allclose(c, raw_c, rtol=0, atol=0)
+    phi, c = phase._clamp_fixed_T(_T, dmu)
+    raw_phi, raw_c = phase._raw_phi_c(_T, dmu)
+    assert_array_equal(phi, raw_phi)
+    assert_array_equal(c, raw_c)
 
 
 def test_clamp_above_saturation_is_a_line_phase_at_c_one():
     """Past the upper crossing the phase sits at ``c = 1`` and ``phi`` continues
     with slope ``-1``, anchored on the raw value at the crossing."""
     phase = _b2_phase(LowTemperatureExpansionSublattice)
-    T = 800.0
-    _, dmu_hi = phase._saturation_window(T)
+    _, dmu_hi = phase._saturation_window(_T)
     dmu = dmu_hi + np.array([1e-6, 0.1, 0.5])
-    phi, c = phase._clamp_fixed_T(T, dmu)
-    assert_allclose(c, 1.0, rtol=0, atol=0)
-    assert_allclose(phi, phase._raw_phi_c(T, dmu_hi)[0] - (dmu - dmu_hi), rtol=1e-14, atol=0)
+    phi, c = phase._clamp_fixed_T(_T, dmu)
+    assert_array_equal(c, 1.0)
+    assert_allclose(phi, phase._raw_phi_c(_T, dmu_hi)[0] - (dmu - dmu_hi), rtol=1e-14, atol=0)
 
 
 def test_clamp_below_saturation_is_a_line_phase_at_c_zero():
     """Past the lower crossing the phase sits at ``c = 0`` and ``phi`` is flat at
     the raw value there."""
     phase = _b2_phase(LowTemperatureExpansionSublattice)
-    T = 800.0
-    dmu_lo, _ = phase._saturation_window(T)
+    dmu_lo, _ = phase._saturation_window(_T)
     dmu = dmu_lo - np.array([1e-6, 0.1, 0.5])
-    phi, c = phase._clamp_fixed_T(T, dmu)
-    assert_allclose(c, 0.0, rtol=0, atol=0)
-    assert_allclose(phi, phase._raw_phi_c(T, dmu_lo)[0], rtol=1e-14, atol=0)
+    phi, c = phase._clamp_fixed_T(_T, dmu)
+    assert_array_equal(c, 0.0)
+    assert_allclose(phi, phase._raw_phi_c(_T, dmu_lo)[0], rtol=1e-14, atol=0)
 
 
 def test_clamp_applies_every_rule_in_one_array_call():
     """A single call mixing saturated and interior chemical potentials gets each
     region's rule, independent of the order the points arrive in."""
     phase = _b2_phase(LowTemperatureExpansionSublattice)
-    T = 800.0
-    dmu_lo, dmu_hi = phase._saturation_window(T)
+    dmu_lo, dmu_hi = phase._saturation_window(_T)
     interior = 0.5 * (dmu_lo + dmu_hi)
     dmu = np.array([dmu_hi + 0.2, dmu_lo - 0.2, interior])
-    phi, c = phase._clamp_fixed_T(T, dmu)
-    assert_allclose(c, [1.0, 0.0, phase._raw_phi_c(T, interior)[1]], rtol=1e-14, atol=0)
+    phi, c = phase._clamp_fixed_T(_T, dmu)
+    assert_allclose(c, [1.0, 0.0, phase._raw_phi_c(_T, interior)[1]], rtol=1e-14, atol=0)
     expected_phi = [
-        phase._raw_phi_c(T, dmu_hi)[0] - 0.2,
-        phase._raw_phi_c(T, dmu_lo)[0],
-        phase._raw_phi_c(T, interior)[0],
+        phase._raw_phi_c(_T, dmu_hi)[0] - 0.2,
+        phase._raw_phi_c(_T, dmu_lo)[0],
+        phase._raw_phi_c(_T, interior)[0],
     ]
     assert_allclose(phi, expected_phi, rtol=1e-14, atol=0)
