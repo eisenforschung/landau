@@ -789,6 +789,47 @@ def test_calc_phase_diagram_locus_triple(triple_point_phases):
     assert np.allclose(triple["mu"], 0.2, atol=0.05)
 
 
+
+# --- driving_force column ---
+
+
+def test_calc_phase_diagram_driving_force_grid(triple_point_phases):
+    """On the grid every phase is sampled at every (T, mu), so driving_force is
+    phi minus the closed-form minimum over all phases, zero exactly on the
+    stable rows and strictly positive elsewhere."""
+    Ts = np.linspace(220, 480, 12)
+    mus = np.linspace(-0.05, 0.55, 15)
+    df = calc_phase_diagram(triple_point_phases, Ts=Ts, mu=mus, refine=False, keep_unstable=True)
+    TT, MM = np.meshgrid(Ts, mus, indexing="ij")
+    min_phi = np.min([p.line_energy - TT * p.line_entropy - MM * p.fixed_concentration
+                      for p in triple_point_phases], axis=0)
+    ref = pd.DataFrame({"T": TT.ravel(), "mu": MM.ravel(), "min_phi": min_phi.ravel()})
+    merged = df.merge(ref, on=["T", "mu"], how="left", validate="many_to_one")
+    assert len(merged) == len(triple_point_phases) * Ts.size * mus.size
+    np.testing.assert_allclose(merged["driving_force"], merged["phi"] - merged["min_phi"], rtol=0, atol=1e-12)
+    assert (merged.loc[merged["stable"], "driving_force"] == 0).all()
+    assert (merged.loc[~merged["stable"], "driving_force"] > 0).all()
+
+
+def test_calc_phase_diagram_driving_force_refined(triple_point_phases):
+    """Refined rows carry only their coexisting phases, so driving_force is the
+    spread of those phases' phi: rounding on a two-phase boundary, at most the
+    coexistence tolerance _dominated admits on a triple point. The synthetic
+    mu=+-inf edges have no phi and stay NaN."""
+    from landau.refine import _TRIPLE_COEXIST_TOL
+    df = calc_phase_diagram(triple_point_phases, Ts=np.linspace(220, 480, 12),
+                            mu=np.linspace(-0.05, 0.55, 15), keep_unstable=True)
+    edges = df["mu"].abs() == np.inf
+    assert edges.any()
+    assert df.loc[edges, "driving_force"].isna().all()
+    boundary = df["locus"] == Locus.BOUNDARY
+    triple = df["locus"] == Locus.TRIPLE
+    assert boundary.any() and triple.any()
+    assert df.loc[boundary, "driving_force"].between(0, 1e-12).all()
+    assert df.loc[triple, "driving_force"].between(0, _TRIPLE_COEXIST_TOL).all()
+    assert (df.loc[triple, "driving_force"] == 0).sum() == 1
+
+
 # --- f_excess / sub tests (issue #245) ---
 
 _SUB_ATOL = 1e-12

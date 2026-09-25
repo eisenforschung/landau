@@ -266,7 +266,12 @@ def calc_phase_diagram(
     Returns:
         dataframe of phase points; the ``locus`` column classifies each row
         as a :class:`~landau.features.Locus` value (``"interior"``,
-        ``"boundary"``, ``"triple"`` or ``"congruent"``)
+        ``"boundary"``, ``"triple"`` or ``"congruent"``); the
+        ``driving_force`` column is ``phi`` minus the lowest ``phi`` among the
+        rows at the same ``(T, mu)``, i.e. how far a phase sits above the
+        stable one (``0`` for stable rows, ``NaN`` on the synthetic
+        ``mu = +-inf`` edges). Refined rows only carry their coexisting
+        phases, so there it measures the spread between those.
     """
     if not isinstance(Ts, Iterable):
         Ts = [Ts]
@@ -295,6 +300,7 @@ def calc_phase_diagram(
         min_c = pdf.c.min()
         max_c = pdf.c.max()
         pdf = refine_phase_diagram(pdf, phases, min_c=min_c, max_c=max_c, refiners=refiners)
+    pdf["driving_force"] = pdf.phi - pdf.groupby(["T", "mu"]).phi.transform("min")
     pdf["f"] = pdf.phi + pdf.mu * pdf.c
     pdf["f_excess"] = _apply_series(
         pdf.groupby("T", group_keys=False), _f_excess_tangent_chord, "f_excess"
