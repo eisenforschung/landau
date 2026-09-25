@@ -28,7 +28,9 @@ class Locus(StrEnum):
         share a composition, so the transformation happens without a change in
         concentration: the congruent maximum or minimum of a solidus/liquidus
         loop, or -- the terminal case -- a pure component's melting point,
-        where the line runs into c=0 or c=1.
+        where the line runs into c=0 or c=1. Also the closure of a
+        miscibility gap, its critical point, where the two branches of one
+        phase meet.
     """
 
     INTERIOR = "interior"
