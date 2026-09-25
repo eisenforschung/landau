@@ -13,6 +13,7 @@ import warnings
 import numpy as np
 import pytest
 from hypothesis import given, strategies as st
+from pyiron_snippets.import_alarm import ImportAlarm
 from scipy.constants import Avogadro, Boltzmann, eV
 
 from landau import (
@@ -37,19 +38,21 @@ from landau.phases import AbstractLinePhase, Phase, S, kB
 from landau.phases.pointdefects import ConstantPointDefect, PointDefectedPhase, PointDefectSublattice
 from landau.tdb import _number
 
-try:
+with ImportAlarm() as pycalphad_alarm:
     from pycalphad import Database, calculate
     from pycalphad import variables as v
 
-    HAS_PYCALPHAD = True
-except ImportError:
-    HAS_PYCALPHAD = False
+needs_pycalphad = pytest.mark.skipif(pycalphad_alarm.message is not None, reason="pycalphad is not installed")
 
 J_PER_MOL = eV * Avogadro
 R = Boltzmann * Avogadro
 """Not scipy's ``R``: scipy 1.11 tabulates it rounded to 8.314462618."""
 ATOL = 1e-6
-"""J/mol; the emitted numbers round-trip exactly, so this is evaluation round-off (measured ~1e-9)."""
+"""J/mol, absolute: every comparison passes ``rtol=0``.  Closed forms are written to full
+precision, so this is evaluation round-off (measured 1.5e-7 at worst)."""
+FIT_ATOL = 1e-3
+"""J/mol; landau's iterative Redlich-Kister fit against the least-squares solution the export
+writes, on the ``line_phases`` fixture (measured 1.7e-4)."""
 
 TS = (300.0, 1150.0, 2000.0)
 CS = np.linspace(0.02, 0.98, 25)
@@ -149,6 +152,24 @@ def _interactions(text, name):
     return sorted(key for key in _parameters(text) if key.startswith(f"L({name},"))
 
 
+def _least_squares_free_energy(line_phases, n_orders, T, c, add_entropy=False):
+    """landau's Redlich-Kister model solved exactly, in eV/atom: the chord through the
+    terminals plus ``L_v`` from a linear least-squares fit to the entropy-removed rest."""
+    cs = np.array([p.line_concentration for p in line_phases], dtype=float)
+    h = np.array([p.line_free_energy(T) for p in line_phases], dtype=float)
+    if not add_entropy:
+        h = h + T * S(cs)
+    order = cs.argsort()
+    cs, h = cs[order], h[order]
+
+    def mix(x):
+        return (x * (1 - x))[:, None] * np.vander(2 * x - 1, n_orders, increasing=True)
+
+    L = np.linalg.lstsq(mix(cs), h - h[0] - (h[-1] - h[0]) * cs, rcond=None)[0]
+    c = np.asarray(c, dtype=float)
+    return h[0] + (h[-1] - h[0]) * c + mix(c) @ L - T * S(c)
+
+
 # --------------------------------------------------------------------------- #
 # number formatting
 # --------------------------------------------------------------------------- #
@@ -206,7 +227,7 @@ def test_elements_are_upper_cased_and_sorted_in_header(terminals):
     assert "PHASE FCCB % 1 1" in records and "CONSTITUENT FCCB :CA:" in records
 
 
-@pytest.mark.parametrize("elements", [("ABC", "B"), ("A", "A"), ("A",), ("A", "B", "C"), ("A1", "B")])
+@pytest.mark.parametrize("elements", [("ABC", "B"), ("A", "A"), ("A",), ("A", "B", "C"), ("A1", "B"), ("VA", "B")])
 def test_elements_must_be_two_distinct_symbols(terminals, elements):
     with pytest.raises(ValueError, match="element"):
         to_tdb(terminals, elements=elements)
@@ -232,6 +253,19 @@ def test_colliding_phase_names_raise():
         to_tdb([LinePhase("fcc", 0.0, -1.0), LinePhase("FCC", 1.0, -1.0)])
 
 
+def test_phase_names_longer_than_24_characters_raise():
+    with pytest.raises(ValueError, match="longer than 24"):
+        to_tdb([LinePhase("x" * 25, 0.5, -1.0)])
+
+
+def test_24_character_names_keep_every_line_within_78_characters(line_phases):
+    """The longest names, two-letter elements and a two-sublattice compound with 17-digit site ratios."""
+    phases = [LinePhase("C" * 24, 1 / 3, -2.9, kB), RegularSolution("R" * 24, line_phases, num_coeffs=2)]
+    text = to_tdb(phases, elements=("MG", "CA"), temperature_range=(298.15, 6000.0))
+    assert f"PHASE {'C' * 24} % 2 0.6666666666666667 0.3333333333333333 !" in text.splitlines()
+    assert max(len(line) for line in text.splitlines()) <= 78
+
+
 # --------------------------------------------------------------------------- #
 # stoichiometric phases
 # --------------------------------------------------------------------------- #
@@ -252,7 +286,7 @@ def test_line_phase_sublattices(c, phase_record, constituent_record, parameter):
     params = _parameters(text)
     assert list(params) == [parameter]
     T = np.array(TS)
-    np.testing.assert_allclose(params[parameter][2](T), phase.line_free_energy(T) * J_PER_MOL, atol=ATOL)
+    np.testing.assert_allclose(params[parameter][2](T), phase.line_free_energy(T) * J_PER_MOL, rtol=0, atol=ATOL)
 
 
 def test_line_phase_entropy_of_one_kb_is_minus_gas_constant():
@@ -275,7 +309,7 @@ def test_temperature_dependent_line_phase(interpolator):
     phase = TemperatureDependentLinePhase("x", 0.25, T, G_sampled, interpolator=interpolator)
     G = _parameters(to_tdb([phase]))["G(X,A:B;0)"][2]
     Tq = np.linspace(250.0, 2100.0, 7)
-    np.testing.assert_allclose(G(Tq), phase.line_free_energy(Tq) * J_PER_MOL, atol=ATOL)
+    np.testing.assert_allclose(G(Tq), phase.line_free_energy(Tq) * J_PER_MOL, rtol=0, atol=ATOL)
 
 
 # --------------------------------------------------------------------------- #
@@ -291,22 +325,63 @@ def test_ideal_solution(terminals):
     for T in TS:
         expected = (1 - CS) * A.line_free_energy(T) + CS * B.line_free_energy(T) - T * S(CS)
         written = _solution_free_energy(text, "SOL", ("A", "B"), T, CS)
-        np.testing.assert_allclose(written, expected * J_PER_MOL, atol=ATOL)
+        np.testing.assert_allclose(written, expected * J_PER_MOL, rtol=0, atol=ATOL)
 
 
 @pytest.mark.parametrize("add_entropy", [False, True])
 @pytest.mark.parametrize("index", range(4), ids=["regular", "interpolating", "slow", "fast"])
 def test_redlich_kister_phases(line_phases, index, add_entropy):
-    """Each L_v(T) is the fit's linear combination of the line phases' closed forms, so the
-    written phase reproduces ``free_energy`` at every (T, c), least-squares fit included."""
+    """The written phase is the least-squares Redlich-Kister fit through the line phases at
+    every (T, c), and so matches ``free_energy`` to landau's own fit convergence."""
     phase = _rk_phases(line_phases, add_entropy)[index]
     text = to_tdb([phase])
     name = phase.name.upper()
     assert _interactions(text, name) == [f"L({name},A,B;0)", f"L({name},A,B;1)"]
     for T in TS:
+        written = _solution_free_energy(text, name, ("A", "B"), T, CS)
+        exact = _least_squares_free_energy(line_phases, 2, T, CS, add_entropy)
+        np.testing.assert_allclose(written, exact * J_PER_MOL, rtol=0, atol=ATOL)
+        np.testing.assert_allclose(written, phase.free_energy(T, CS) * J_PER_MOL, rtol=0, atol=FIT_ATOL)
+
+
+def test_redlich_kister_export_is_the_least_squares_fit_when_ill_conditioned():
+    """Eight line phases crowded between c=0.6 and 0.9 under the default RedlichKister(5):
+    the least-squares problem is badly conditioned, and the written phase is still its solution."""
+    cs = [0.0, 0.595, 0.619, 0.697, 0.751, 0.808, 0.888, 1.0]
+    energies = [-2.815, -3.108, -3.137, -2.994, -2.857, -2.897, -3.531, -2.857]
+    entropies = [0.873, 1.536, 0.705, 2.099, 2.529, 1.183, 1.826, 0.956]
+    line_phases = [LinePhase(f"p{i}", c, e, s * kB) for i, (c, e, s) in enumerate(zip(cs, energies, entropies))]
+    phase = FastInterpolatingPhase("liq", line_phases)
+    assert phase.interpolator == RedlichKister(5)
+    text = to_tdb([phase])
+    assert len(_interactions(text, "LIQ")) == 5
+    for T in TS:
+        exact = _least_squares_free_energy(line_phases, 5, T, CS)
         np.testing.assert_allclose(
-            _solution_free_energy(text, name, ("A", "B"), T, CS), phase.free_energy(T, CS) * J_PER_MOL, atol=ATOL
+            _solution_free_energy(text, "LIQ", ("A", "B"), T, CS), exact * J_PER_MOL, rtol=0, atol=ATOL
         )
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda A, m, twin, B: RegularSolution("x", [A, m, twin, B], num_coeffs=2),
+        lambda A, m, twin, B: FastInterpolatingPhase("x", [A, m, twin, B], interpolator=RedlichKister(2)),
+    ],
+    ids=["regular", "fast"],
+)
+def test_redlich_kister_fit_that_is_not_unique_raises(line_phases, build):
+    """Two orders fitted through a single interior concentration leave one ``L_v`` free."""
+    A, m, B = line_phases[0], line_phases[1], line_phases[-1]
+    twin = LinePhase("twin", m.line_concentration, -2.9, kB)
+    with pytest.raises(ValueError, match=r'"x".*got 1; the fit is not unique'):
+        to_tdb([build(A, m, twin, B)])
+
+
+@pytest.mark.parametrize("cls", [InterpolatingPhase, FastInterpolatingPhase])
+def test_redlich_kister_phase_over_the_terminals_alone_raises(terminals, cls):
+    with pytest.raises(ValueError, match=r'"x".*needs a line phase between the terminals'):
+        to_tdb([cls("x", terminals)])
 
 
 def test_odd_interactions_flip_sign_for_unsorted_elements(line_phases):
@@ -318,11 +393,12 @@ def test_odd_interactions_flip_sign_for_unsorted_elements(line_phases):
     reference = _parameters(to_tdb([phase]))
     written = _parameters(text)
     T = np.array(TS)
-    np.testing.assert_allclose(written["L(FAST,CA,MG;0)"][2](T), reference["L(FAST,A,B;0)"][2](T), atol=ATOL)
-    np.testing.assert_allclose(written["L(FAST,CA,MG;1)"][2](T), -reference["L(FAST,A,B;1)"][2](T), atol=ATOL)
+    np.testing.assert_allclose(written["L(FAST,CA,MG;0)"][2](T), reference["L(FAST,A,B;0)"][2](T), rtol=0, atol=ATOL)
+    np.testing.assert_allclose(written["L(FAST,CA,MG;1)"][2](T), -reference["L(FAST,A,B;1)"][2](T), rtol=0, atol=ATOL)
     for T in TS:
+        exact = _least_squares_free_energy(line_phases, 2, T, CS)
         np.testing.assert_allclose(
-            _solution_free_energy(text, "FAST", ("MG", "CA"), T, CS), phase.free_energy(T, CS) * J_PER_MOL, atol=ATOL
+            _solution_free_energy(text, "FAST", ("MG", "CA"), T, CS), exact * J_PER_MOL, rtol=0, atol=ATOL
         )
 
 
@@ -332,7 +408,10 @@ def test_surface_phase(line_phases):
     assert _interactions(text, "SURF") == ["L(SURF,A,B;0)", "L(SURF,A,B;1)"]
     for T in TS:
         np.testing.assert_allclose(
-            _solution_free_energy(text, "SURF", ("A", "B"), T, CS), phase.free_energy(T, CS) * J_PER_MOL, atol=ATOL
+            _solution_free_energy(text, "SURF", ("A", "B"), T, CS),
+            phase.free_energy(T, CS) * J_PER_MOL,
+            rtol=0,
+            atol=ATOL,
         )
 
 
@@ -385,7 +464,7 @@ def _point_defected():
         (lambda A, B, mid: _OpaquePhase("x"), "no CALPHAD form"),
         (lambda A, B, mid: _point_defected(), "no CALPHAD form"),
         (lambda A, B, mid: FastInterpolatingPhase("x", [A, mid, B], interpolator=PolyFit(3)), "only a RedlichKister"),
-        (lambda A, B, mid: FastInterpolatingPhase("x", [A, mid]), "only a RedlichKister"),
+        (lambda A, B, mid: FastInterpolatingPhase("x", [A, mid]), "confined to concentration_range"),
         (lambda A, B, mid: InterpolatingPhase("x", [mid, A, B]), "only a RedlichKister"),
         (lambda A, B, mid: RegularSolution("x", [A, _stitched("s", 0.5), B]), "no closed form in T"),
         (
@@ -408,6 +487,16 @@ def _point_defected():
             ),
             "no closed form in T",
         ),
+        (
+            lambda A, B, mid: Surface2DInterpolatingPhase(
+                "x",
+                [A, mid, B],
+                surface_interpolator=CalphadSurface2DInterpolator(num_coeffs=1),
+                temperature_range=(300.0, 2000.0),
+                concentration_range=(0.2, 0.8),
+            ),
+            "confined to concentration_range",
+        ),
     ],
     ids=[
         "stitched",
@@ -422,6 +511,7 @@ def _point_defected():
         "rk-over-stitched",
         "softplus-surface",
         "whitney-terminals",
+        "restricted-concentration-range",
     ],
 )
 def test_phases_without_a_calphad_form_raise(line_phases, build, match):
@@ -437,10 +527,11 @@ def test_phases_without_a_calphad_form_raise(line_phases, build, match):
 # pycalphad round trip
 # --------------------------------------------------------------------------- #
 @pytest.mark.pycalphad
-@pytest.mark.skipif(not HAS_PYCALPHAD, reason="pycalphad is not installed")
+@needs_pycalphad
 def test_pycalphad_reads_back_the_same_free_energies(line_phases):
-    """A real TDB reader recovers every phase's free energy, including the sign of the
-    odd interaction under non-alphabetical element order and a two-sublattice compound."""
+    """A real TDB reader forms every phase's free energy as this file's evaluator does,
+    including the sign of the odd interactions under non-alphabetical element order and a
+    two-sublattice compound."""
     A, B = line_phases[0], line_phases[-1]
     phases = [*line_phases, IdealSolution("ideal", A, B), *_rk_phases(line_phases), _surface_phase(line_phases)]
     text = to_tdb(phases, elements=("MG", "CA"), temperature_range=(1.0, 3000.0))
@@ -453,17 +544,25 @@ def test_pycalphad_reads_back_the_same_free_energies(line_phases):
     T = np.array(TS)
     for phase in line_phases:
         GM = calculate(db, comps, phase.name.upper(), T=T, P=101325, N=1).GM.values.squeeze()
-        np.testing.assert_allclose(GM, phase.line_free_energy(T) * J_PER_MOL, atol=ATOL)
+        np.testing.assert_allclose(GM, phase.line_free_energy(T) * J_PER_MOL, rtol=0, atol=ATOL)
     # pycalphad's ideal-mixing term uses a rounded gas constant; swap it in for the comparison
-    entropy_scale = J_PER_MOL - float(v.R) / kB
+    mixing = CS * np.log(CS) + (1 - CS) * np.log(1 - CS)
     points = np.column_stack([CS, 1 - CS])  # site fractions in sorted constituent order: CA, MG
     for phase in phases[len(line_phases):]:
+        name = phase.name.upper()
         for Ti in TS:
-            result = calculate(db, comps, phase.name.upper(), T=Ti, P=101325, N=1, points=points)
+            result = calculate(db, comps, name, T=Ti, P=101325, N=1, points=points)
             np.testing.assert_allclose(result.X.sel(component="CA").values.squeeze(), CS)
-            if isinstance(phase, IdealSolution):
-                f = (1 - CS) * A.line_free_energy(Ti) + CS * B.line_free_energy(Ti) - Ti * S(CS)
-            else:
-                f = phase.free_energy(Ti, CS)
-            expected = f * J_PER_MOL + Ti * S(CS) * entropy_scale
-            np.testing.assert_allclose(result.GM.values.squeeze(), expected, atol=ATOL)
+            expected = _solution_free_energy(text, name, ("MG", "CA"), Ti, CS) + (float(v.R) - R) * Ti * mixing
+            np.testing.assert_allclose(result.GM.values.squeeze(), expected, rtol=0, atol=ATOL)
+
+
+@pytest.mark.pycalphad
+@needs_pycalphad
+def test_pycalphad_evaluates_past_the_temperature_range(terminals):
+    """What ``to_tdb`` documents for ``temperature_range``: pycalphad ignores the limits."""
+    A, _ = terminals
+    db = Database.from_string(to_tdb([A], temperature_range=(500.0, 1000.0)), fmt="tdb")
+    T = np.array([300.0, 1500.0])
+    GM = calculate(db, ["A", "B", "VA"], "FCCA", T=T, P=101325, N=1).GM.values.squeeze()
+    np.testing.assert_allclose(GM, A.line_free_energy(T) * J_PER_MOL, rtol=0, atol=ATOL)

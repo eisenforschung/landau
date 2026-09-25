@@ -16,10 +16,16 @@ already has that form are exported; every other phase raises :exc:`TypeError`.
   :class:`~landau.phases.FastInterpolatingPhase` interpolating with
   :class:`~landau.interpolate.RedlichKister` become ``(A,B)`` phases with interaction
   parameters ``L_v(T)``.  The fit is linear in the line phases' free energies, so each
-  ``L_v(T)`` is an exact combination of their closed forms.
+  ``L_v(T)`` is the least-squares combination of their closed forms: the solution
+  landau's own iterative fit approximates, not its last iterate.  Fits that are not
+  unique -- fewer distinct line phase concentrations between the terminals than
+  orders -- raise :exc:`ValueError`.
 - :class:`~landau.phases.Surface2DInterpolatingPhase` over a
   :class:`~landau.interpolate.CalphadSurface2DInterpolator` becomes an ``(A,B)`` phase
   from the fitted terminal and interaction models.
+
+A TDB solution phase spans the whole composition axis, so a solution phase confined to
+a narrower ``concentration_range`` raises :exc:`TypeError`.
 
 Energies are converted from eV/atom to J/mol.  Site ratios sum to one, so a
 formula unit is one mole of atoms and every ``G`` is per atom as in landau; the
@@ -65,6 +71,9 @@ _J_PER_MOL = eV * Avogadro
 _LINE_WIDTH = 78
 """Thermo-Calc reads at most this many characters per line."""
 
+_NAME_LENGTH = 24
+"""Thermo-Calc's limit on phase names."""
+
 #: One term of a TDB temperature function: ``(power of T, multiplied by ln T)``.
 _Term = tuple[int, bool]
 
@@ -88,8 +97,6 @@ def _monomial(term: _Term) -> str:
         return ""
     if power == 1:
         return "*T"
-    if power < 0:
-        return f"*T**({power})"
     return f"*T**{power}"
 
 
@@ -232,20 +239,34 @@ def _from_redlich_kister(name: str, phase: Phase, elements: tuple[str, str]) -> 
         if not phase.add_entropy:
             h = h + _GFunction({(1, False): float(S(c))})
         samples.append(h)
-    # RedlichKister.fit is linear in the sampled free energies: fitting the unit
-    # vectors yields (f0, df, L_v) as weights on the samples, and the same weights
-    # combine the samples' closed forms into closed-form parameters.
-    fits = [interpolator.fit(concentrations, unit) for unit in np.eye(len(concentrations))]
+    # RedlichKister.fit takes the terminals as they sort, subtracts the chord
+    # between them and least-squares fits L_v to the rest.  Every step is linear
+    # in the samples, so the same steps on the samples' closed forms give
+    # closed-form parameters: the least-squares solution landau's iterative fit approximates.
+    n = len(concentrations)
+    order = concentrations.argsort()
+    first, last = order[0], order[-1]
+    n_orders = min(interpolator.nparam, n - 2)
+    interior = np.unique(concentrations[~(np.isclose(concentrations, 0) | np.isclose(concentrations, 1))])
+    if n_orders == 0:
+        raise ValueError(f"{_describe(phase)}: a Redlich-Kister fit needs a line phase between the terminals")
+    if len(interior) < n_orders:
+        raise ValueError(
+            f"{_describe(phase)}: {n_orders} Redlich-Kister orders need at least as many distinct line phase "
+            f"concentrations between the terminals, got {len(interior)}; the fit is not unique"
+        )
+    detrend = np.eye(n)
+    detrend[:, first] -= 1 - concentrations
+    detrend[:, last] -= concentrations
+    design = (concentrations * (1 - concentrations))[:, None] * np.vander(
+        2 * concentrations - 1, n_orders, increasing=True
+    )
+    weights = np.linalg.lstsq(design, detrend, rcond=None)[0]
 
-    def combine(weights):
-        return sum((w * h for w, h in zip(weights, samples)), _ZERO)
+    def combine(row):
+        return sum((w * h for w, h in zip(row, samples)), _ZERO)
 
-    g_first = combine([fit.f0 for fit in fits])
-    g_second = combine([fit.f0 + fit.df for fit in fits])
-    interactions = [
-        combine([fit.rk_parameters[v] for fit in fits]) for v in range(len(fits[0].rk_parameters))
-    ]
-    return _solution(name, g_first, g_second, interactions, elements)
+    return _solution(name, samples[first], samples[last], [combine(row) for row in weights], elements)
 
 
 def _from_surface(name: str, phase: Surface2DInterpolatingPhase, elements: tuple[str, str]) -> _TdbPhase:
@@ -266,6 +287,8 @@ def _tdb_name(phase: Phase) -> str:
     name = re.sub(r"[^A-Z0-9]+", "_", phase.name.upper()).strip("_")
     if not re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
         raise ValueError(f"cannot derive a TDB phase name from {phase.name!r}; rename the phase")
+    if len(name) > _NAME_LENGTH:
+        raise ValueError(f"TDB phase name {name!r} is longer than {_NAME_LENGTH} characters; rename the phase")
     return name
 
 
@@ -275,6 +298,11 @@ def _convert(phase: Phase, elements: tuple[str, str]) -> _TdbPhase:
         return _stoichiometric(name, phase, elements)
     if isinstance(phase, IdealSolution):
         return _solution(name, _member_g(phase.phase1, phase), _member_g(phase.phase2, phase), [], elements)
+    if isinstance(phase, SlowInterpolatingPhase) and tuple(phase.concentration_range) != (0, 1):
+        raise TypeError(
+            f"{_describe(phase)}: is confined to concentration_range={phase.concentration_range}, "
+            "but a TDB solution phase spans the whole composition axis"
+        )
     if isinstance(phase, Surface2DInterpolatingPhase):
         return _from_surface(name, phase, elements)
     if isinstance(phase, (RegularSolution, InterpolatingPhase, SlowInterpolatingPhase)):
@@ -287,8 +315,8 @@ def _check_elements(elements) -> tuple[str, str]:
     if len(elements) != 2 or len(set(elements)) != 2:
         raise ValueError(f"elements must name two distinct components, got {elements}")
     for element in elements:
-        if not re.fullmatch(r"[A-Z][A-Z]?", element):
-            raise ValueError(f"element names are one or two letters, got {element!r}")
+        if not re.fullmatch(r"[A-Z][A-Z]?", element) or element == "VA":
+            raise ValueError(f"element names are one or two letters other than VA, got {element!r}")
     return elements
 
 
@@ -327,13 +355,13 @@ def to_tdb(
 
     Args:
         phases: phases to export; each becomes one ``PHASE`` record named after the
-            phase (upper-cased, non-alphanumeric characters replaced by ``_``).
+            phase (upper-cased, non-alphanumeric characters replaced by ``_``, at most
+            24 characters).
         elements: TDB element names of the components at ``c=0`` and ``c=1``, in
-            that order; one or two letters each.
+            that order; one or two letters each, not ``VA``.
         temperature_range: ``(low, high)`` validity limits in K stamped on every
-            parameter.  Readers treat the functions as undefined outside (pycalphad
-            evaluates them to zero), so the range should cover every temperature
-            the database will be used at.
+            parameter.  pycalphad ignores them and evaluates the expressions at any
+            temperature; other readers may not.
 
     Returns:
         the TDB file contents.
@@ -341,7 +369,7 @@ def to_tdb(
     Raises:
         TypeError: a phase has no closed-form CALPHAD representation.
         ValueError: element names, temperature limits or a phase name are unusable,
-            or two phases map onto the same TDB name.
+            two phases map onto the same TDB name, or a Redlich-Kister fit is not unique.
     """
     from . import __version__
 
