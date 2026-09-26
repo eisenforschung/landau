@@ -61,7 +61,7 @@ def cluster_phase(df, distance_threshold=0.2):  # hand-tuned, issue #456
 
 def get_polygons(
     df,
-    poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
+    poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp", "contour"] | poly.AbstractPolyMethod | None = None,
     variables: list[str] | None = None,
     distance_threshold: float = 0.2,  # hand-tuned, issue #456
     **kwargs,
@@ -88,12 +88,14 @@ def get_polygons(
     """
     if variables is None:
         variables = ["c", "T"]
+    poly_method = poly.handle_poly_method(poly_method, **kwargs)
+    if poly_method.needs_unstable:
+        return poly_method.apply(df, variables=variables)
     df = df.query("stable").copy()
     df = cluster_phase(df, distance_threshold=distance_threshold)
     if (df.phase_unit == -1).any():
         warn("Clustering of phase points failed for some points, dropping them.")
         df = df.query("phase_unit>=0")
-    poly_method = poly.handle_poly_method(poly_method, **kwargs)
     return poly_method.apply(df, variables=variables)
 
 
@@ -207,7 +209,7 @@ def _plot_phase_diagram(
     color_override: dict[str, str] = {},
     triplepoints=None,
     transition_temperatures=False,
-    poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
+    poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp", "contour"] | poly.AbstractPolyMethod | None = None,
     variables: list[str] | None = None,
     inline_legend=True,
     legend=True,
@@ -261,7 +263,7 @@ def plot_phase_diagram(
     color_override: dict[str, str] = {},
     triplepoints=None,
     transition_temperatures=False,
-    poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
+    poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp", "contour"] | poly.AbstractPolyMethod | None = None,
     variables: list[str] | None = None,
     inline_legend=True,
     legend=True,
@@ -311,7 +313,7 @@ def plot_mu_phase_diagram(
     color_override: dict[str, str] = {},
     triplepoints=None,
     transition_temperatures=False,
-    poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"] | poly.AbstractPolyMethod | None = None,
+    poly_method: Literal["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp", "contour"] | poly.AbstractPolyMethod | None = None,
     inline_legend=True,
     legend=True,
     ax=None,
