@@ -131,6 +131,11 @@ def _parameters(text):
     return out
 
 
+def _phase_names(text):
+    """TDB names of the ``PHASE`` records, in order."""
+    return [record.split()[1] for record in _records(text) if record.startswith("PHASE ")]
+
+
 def _solution_free_energy(text, name, elements, T, c):
     """``G(T, c)`` in J/mol as a TDB reader forms it from an ``(A,B)`` phase block:
     end-members, ideal mixing, and ``L(name,a,b;v)`` as the coefficient of
@@ -249,14 +254,46 @@ def test_unusable_phase_names_raise(name):
         to_tdb([LinePhase(name, 0.5, -1.0)])
 
 
-def test_colliding_phase_names_raise():
-    with pytest.raises(ValueError, match=r"\['fcc', 'FCC'\].*same TDB name"):
-        to_tdb([LinePhase("fcc", 0.0, -1.0), LinePhase("FCC", 1.0, -1.0)])
+@pytest.mark.parametrize("name, tdb_name", [("x" * 25, "X" * 24), ("x" * 23 + " y", "X" * 23)])
+def test_phase_names_are_cut_to_24_characters(name, tdb_name):
+    """A name cut just after a separator loses the dangling ``_``."""
+    assert _phase_names(to_tdb([LinePhase(name, 0.5, -1.0)])) == [tdb_name]
 
 
-def test_phase_names_longer_than_24_characters_raise():
-    with pytest.raises(ValueError, match="longer than 24"):
-        to_tdb([LinePhase("x" * 25, 0.5, -1.0)])
+def test_colliding_phase_names_are_numbered_in_order():
+    """Every phase sharing a name is numbered, and each number carries its own phase's parameters."""
+    phases = [LinePhase("fcc", 0.0, -1.0), LinePhase("bcc", 0.0, -2.0), LinePhase("FCC", 0.0, -3.0)]
+    text = to_tdb(phases)
+    assert _phase_names(text) == ["FCC_1", "BCC", "FCC_2"]
+    params = _parameters(text)
+    T = np.array(TS)
+    for name, phase in zip(["FCC_1", "BCC", "FCC_2"], phases):
+        np.testing.assert_allclose(
+            params[f"G({name},A;0)"][2](T), phase.line_free_energy(T) * J_PER_MOL, rtol=0, atol=ATOL
+        )
+
+
+def test_names_cut_to_the_same_24_characters_are_numbered_within_24():
+    phases = [LinePhase("liquid_" + "x" * 20 + suffix, 0.5, -1.0) for suffix in "ab"]
+    assert _phase_names(to_tdb(phases)) == ["LIQUID_" + "X" * 15 + "_1", "LIQUID_" + "X" * 15 + "_2"]
+
+
+def test_numbering_skips_names_other_phases_have():
+    phases = [LinePhase(name, 0.5, -1.0) for name in ["fcc", "FCC_1", "FCC"]]
+    assert _phase_names(to_tdb(phases)) == ["FCC_2", "FCC_1", "FCC_3"]
+
+
+@given(st.lists(st.from_regex(r"[a-c][a-c0-9_ ]{0,30}", fullmatch=True), min_size=1, max_size=12))
+def test_tdb_phase_names_are_unique_and_fit(names):
+    """Whatever the landau names, the TDB ones are distinct, valid and at most 24 characters,
+    and a name no other phase shares is only upper-cased and cut."""
+    tdb_names = _phase_names(to_tdb([LinePhase(name, 0.5, -1.0) for name in names]))
+    assert len(set(tdb_names)) == len(names)
+    assert all(re.fullmatch(r"[A-Z][A-Z0-9_]{0,23}", name) for name in tdb_names)
+    cut = [re.sub(r"[^A-Z0-9]+", "_", name.upper()).strip("_")[:24].rstrip("_") for name in names]
+    for own, tdb_name in zip(cut, tdb_names):
+        if cut.count(own) == 1:
+            assert tdb_name == own
 
 
 def test_24_character_names_keep_every_line_within_78_characters(line_phases):
