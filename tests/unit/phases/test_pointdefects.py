@@ -118,14 +118,28 @@ def test_saturation_window_reports_no_crossing_outside_the_safe_bound():
 
 
 def test_clamp_leaves_the_interior_untouched():
-    """Inside the window the clamp returns the raw values unchanged."""
+    """Inside the window the clamp returns the raw values unchanged, save for
+    ``c`` being held inside ``[0, 1]`` at the crossings themselves."""
     phase = _b2_phase(LowTemperatureExpansionSublattice)
     dmu_lo, dmu_hi = phase._saturation_window(_T)
     dmu = np.linspace(dmu_lo, dmu_hi, 11)
     phi, c = phase._clamp_fixed_T(_T, dmu)
     raw_phi, raw_c = phase._raw_phi_c(_T, dmu)
     assert_array_equal(phi, raw_phi)
-    assert_array_equal(c, raw_c)
+    assert_array_equal(c, np.clip(raw_c, 0.0, 1.0))
+
+
+@pytest.mark.parametrize("T", [100.0, 150.0, 200.0, 300.0, 500.0, 800.0, 1000.0, 1500.0])
+def test_clamp_keeps_c_in_the_unit_interval_up_to_the_crossings(T):
+    """``brentq`` stops within ``xtol`` of each crossing on either side of it, so
+    the raw concentration at the located crossing can sit a few 1e-12 past 0 or
+    1 -- worst at low T, where ``dc/d(dmu)`` scales like ``1/(kB T)``. Which side
+    it lands on varies with T; the range is exact regardless."""
+    phase = _b2_phase(LowTemperatureExpansionSublattice)
+    dmu_lo, dmu_hi = phase._saturation_window(T)
+    dmu = np.linspace(dmu_lo, dmu_hi, 1001)
+    _, c = phase._clamp_fixed_T(T, dmu)
+    assert np.all((c >= 0.0) & (c <= 1.0))
 
 
 def test_clamp_above_saturation_is_a_line_phase_at_c_one():
