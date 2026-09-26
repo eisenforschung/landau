@@ -3,6 +3,21 @@
 Notable changes to **landau.py**, newest first. Per-PR detail lives in the
 [GitHub releases](https://github.com/eisenforschung/landau/releases).
 
+## [1.15.0](https://github.com/eisenforschung/landau/compare/1.14.1...1.15.0) (2026-09-26)
+
+
+### Features
+
+* **calculate:** add dphi column to calc_phase_diagram frames ([#496](https://github.com/eisenforschung/landau/issues/496)) ([d595e7f](https://github.com/eisenforschung/landau/commit/d595e7f059c0c06026ba95f47c58a356a61857c5))
+
+
+### Bug Fixes
+
+* **deps:** cap phonors below 0.5 in the phonopy and test extras ([#501](https://github.com/eisenforschung/landau/issues/501)) ([7920791](https://github.com/eisenforschung/landau/commit/7920791f53abf4d7685082a801e747156f2e99b6))
+* **interpolate:** solve the Redlich-Kister fit by linear least squares ([#497](https://github.com/eisenforschung/landau/issues/497)) ([e6b7ea4](https://github.com/eisenforschung/landau/commit/e6b7ea4beceb1f3bbc6cf2da5c5c307e7dfb582e))
+* **phases:** hold point-defect c inside [0, 1]; direct tests for the saturation clamp ([#490](https://github.com/eisenforschung/landau/issues/490)) ([ad4532c](https://github.com/eisenforschung/landau/commit/ad4532c6106bccccee8a9cb275d08f05724922c8))
+* **refine:** size the Clausius-Clapeyron bootstrap bracket by the seed slope ([#466](https://github.com/eisenforschung/landau/issues/466)) ([3a92d0a](https://github.com/eisenforschung/landau/commit/3a92d0a11837c3cfb5dee3f77afedd1c8e9950f6))
+
 ## [1.14.1](https://github.com/eisenforschung/landau/compare/1.14.0...1.14.1) (2026-09-15)
 
 
