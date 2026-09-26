@@ -6,6 +6,7 @@ import landau.poly as poly_module
 from landau.poly import (
     AbstractPolyMethod,
     Concave,
+    Contour,
     Segments,
     _greedy_stitch,
     _pca_sort_segment,
@@ -259,6 +260,7 @@ def test_python_tsp_clustered_points():
 def test_handle_poly_method():
     assert isinstance(handle_poly_method("concave"), Concave)
     assert isinstance(handle_poly_method("segments"), Segments)
+    assert isinstance(handle_poly_method("contour"), Contour)
     if HAS_PYTHON_TSP:
         assert isinstance(handle_poly_method("tsp"), PythonTsp)
         assert isinstance(handle_poly_method("segment-tsp"), SegmentPythonTsp)
@@ -667,3 +669,103 @@ def test_to_mpl_polygon_valid_polygon_round_trips_coords():
     result = AbstractPolyMethod._to_mpl_polygon(shape)
     assert isinstance(result, Polygon)
     np.testing.assert_array_equal(result.get_xy(), np.asarray(shape.exterior.coords))
+
+
+# --- Contour ----------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def eutectic_unstable(eutectic_phases):
+    """The eutectic system on a (mu, T) grid, all phases kept (dphi column)."""
+    import landau.calculate as ldc
+    return ldc.calc_phase_diagram(eutectic_phases, np.linspace(200.0, 1000.0, 25),
+                                  np.linspace(0.5, 1.5, 30), keep_unstable=True)
+
+
+def _shapes(polys):
+    """{phase: [shapely.Polygon]} from a Series of matplotlib polygons."""
+    out = {}
+    for (phase, _unit), poly in polys.items():
+        out.setdefault(phase, []).append(shapely.Polygon(poly.get_xy()))
+    return out
+
+
+def test_contour_requires_dphi(eutectic_diagram):
+    with pytest.raises(ValueError, match="keep_unstable"):
+        Contour().apply(eutectic_diagram)
+
+
+def test_contour_mu_T_regions_tile_the_sampled_range(eutectic_unstable):
+    """In (mu, T) the stable regions tile the plane: no overlap between phases, and
+    together they cover the sampled range up to small triangles where a boundary
+    leaves it between two sampled rows and the neighbouring phases' interpolated
+    crossings differ (a third phase is the runner-up on one side)."""
+    df = eutectic_unstable
+    shapes = _shapes(Contour(min_c_width=0.0).apply(df, variables=["mu", "T"]))
+    polys = [q for qs in shapes.values() for q in qs]
+    union = shapely.union_all(polys)
+    overlap = sum(q.area for q in polys) - union.area
+    grid = df[(df.locus == "interior") & np.isfinite(df.mu)]
+    box = shapely.box(grid.mu.min(), grid["T"].min(), grid.mu.max(), grid["T"].max())
+    assert overlap / union.area < 1e-9
+    assert box.difference(union).area / box.area < 1e-4
+
+
+def test_contour_c_T_regions_contain_their_stable_rows(eutectic_unstable):
+    """Every stable grid row (and every terminal row) lies in a region of its own phase."""
+    df = eutectic_unstable
+    shapes = _shapes(Contour().apply(df))
+    rows = df[df.stable & ((df.locus == "interior") | ~np.isfinite(df.mu))]
+    inside = [any(q.buffer(1e-9).contains(shapely.Point(r.c, r.T)) for q in shapes.get(r.phase, []))
+              for r in rows.itertuples()]
+    assert all(inside)
+
+
+def test_contour_regions_reach_the_terminals(eutectic_unstable):
+    """The mu = +-inf rows put the regions' edges at c = 0 and c = 1."""
+    shapes = _shapes(Contour(min_c_width=0.0).apply(eutectic_unstable))
+    xs = np.concatenate([np.asarray(q.exterior.coords)[:, 0] for qs in shapes.values() for q in qs])
+    assert xs.min() < 1e-6
+    assert xs.max() > 1 - 1e-6
+
+
+def test_contour_line_phase_gets_min_c_width():
+    import landau.calculate as ldc
+    from landau.phases import IdealSolution, LinePhase, kB
+    solid = IdealSolution("solid", LinePhase("A", 0, -2.0, 1.0 * kB), LinePhase("B", 1, -3.0, 1.5 * kB))
+    inter = LinePhase("AB2", 2 / 3, -2.8, 1.3 * kB)
+    df = ldc.calc_phase_diagram([solid, inter], np.linspace(300.0, 1200.0, 20), 30, keep_unstable=True)
+    width = 0.02
+    shapes = _shapes(Contour(min_c_width=width).apply(df))
+    (line,) = shapes["AB2"]
+    xmin, _, xmax, _ = line.bounds
+    assert xmin == pytest.approx(2 / 3 - width / 2, abs=1e-9)
+    assert xmax == pytest.approx(2 / 3 + width / 2, abs=1e-9)
+
+
+def test_contour_opens_a_miscibility_gap():
+    """Inside a miscibility gap (between the two branches) no region is drawn;
+    just outside each branch the phase's region is."""
+    import landau.calculate as ldc
+    from landau.interpolate import RedlichKister
+    from landau.phases import FastInterpolatingPhase, LinePhase
+    def fmix(c):
+        return c * (1 - c) * (0.10 + 0.04 * (2 * c - 1))
+
+    sub = FastInterpolatingPhase(
+        name="sub", add_entropy=True, interpolator=RedlichKister(2),
+        phases=[LinePhase(f"p{i}", fixed_concentration=c, line_energy=fmix(c), line_entropy=0.0)
+                for i, c in enumerate((0.0, 0.25, 0.5, 0.75, 1.0))],
+    )
+    df = ldc.calc_phase_diagram([sub], np.linspace(150.0, 700.0, 18), np.linspace(-0.05, 0.05, 21),
+                                keep_unstable=True)
+    gap = df[df.refined == "miscibility-gap"]
+    assert len(gap) > 0
+    shapes = _shapes(Contour(min_c_width=0.0).apply(df))["sub"]
+    union = shapely.union_all(shapes)
+    for (T, _mu), pair in gap.groupby(["T", "mu"]):
+        lo, hi = np.sort(pair.c.to_numpy())
+        if hi - lo < 0.1:
+            continue  # near the critical point the gap is narrower than the checks below
+        assert not union.contains(shapely.Point((lo + hi) / 2, T))
+        assert union.buffer(1e-9).contains(shapely.Point(lo * 0.9, T))
+        assert union.buffer(1e-9).contains(shapely.Point(hi + 0.1 * (1 - hi), T))
