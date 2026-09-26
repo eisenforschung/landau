@@ -328,7 +328,8 @@ class RedlichKister(ConcentrationInterpolator):
         df = f[-1] - f[0]
         f -= f0 + df * c
         nparam = min(self.nparam, len(c) - 2)
-        rk_parameters, _ = so.curve_fit(RedlichKisterInterpolation._eval_mix, c, f, p0=np.zeros(nparam))
+        basis = (c * (1 - c))[:, None] * np.vander(2 * c - 1, nparam, increasing=True)
+        rk_parameters = np.linalg.lstsq(basis, f, rcond=None)[0]
         return RedlichKisterInterpolation(df, f0, rk_parameters)
 
 
