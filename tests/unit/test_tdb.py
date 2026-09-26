@@ -51,9 +51,6 @@ R = Boltzmann * Avogadro
 ATOL = 1e-6
 """J/mol, absolute: every comparison passes ``rtol=0``.  Closed forms are written to full
 precision, so this is evaluation round-off (measured 1.5e-7 at worst)."""
-FIT_ATOL = 1e-3
-"""J/mol; landau's iterative Redlich-Kister fit against the least-squares solution the export
-writes, on the ``line_phases`` fixture (measured 1.7e-4)."""
 
 TS = (300.0, 1150.0, 2000.0)
 CS = np.linspace(0.02, 0.98, 25)
@@ -370,7 +367,7 @@ def test_ideal_solution(terminals):
 @pytest.mark.parametrize("index", range(4), ids=["regular", "interpolating", "slow", "fast"])
 def test_redlich_kister_phases(line_phases, index, add_entropy):
     """The written phase is the least-squares Redlich-Kister fit through the line phases at
-    every (T, c), and so matches ``free_energy`` to landau's own fit convergence."""
+    every (T, c), the same fit landau's ``free_energy`` evaluates."""
     phase = _rk_phases(line_phases, add_entropy)[index]
     text = to_tdb([phase])
     name = phase.name.upper()
@@ -379,7 +376,7 @@ def test_redlich_kister_phases(line_phases, index, add_entropy):
         written = _solution_free_energy(text, name, ("A", "B"), T, CS)
         exact = _least_squares_free_energy(line_phases, 2, T, CS, add_entropy)
         np.testing.assert_allclose(written, exact * J_PER_MOL, rtol=0, atol=ATOL)
-        np.testing.assert_allclose(written, phase.free_energy(T, CS) * J_PER_MOL, rtol=0, atol=FIT_ATOL)
+        np.testing.assert_allclose(written, phase.free_energy(T, CS) * J_PER_MOL, rtol=0, atol=ATOL)
 
 
 def test_redlich_kister_export_is_the_least_squares_fit_when_ill_conditioned():
