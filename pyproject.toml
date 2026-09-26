@@ -45,12 +45,17 @@ dependencies = [
 
 [project.optional-dependencies]
 ase = ["ase>=3.21.0"]
-phonopy = ["phonopy>=3,<4.6"]
+# phonors is phonopy's Rust backend, not used by landau directly.  phonopy 4.0-4.6
+# depend on it with no upper bound and call grid_index_from_address, which phonors
+# 0.5.0 renamed to grid_indices_from_addresses.  The floor is phonopy 4.5's own.
+# Drop the cap together with raising phonopy's to a release that calls the new name.
+phonopy = ["phonopy>=3,<4.6", "phonors>=0.3,<0.5"]
 test = [
     "pytest>=9,<10",
     "hypothesis>=6.71,<7",
     "ase>=3.21.0",
     "phonopy>=3,<4.6",
+    "phonors>=0.3,<0.5",
 ]
 # Kept out of `test` so the minimum-deps job still resolves landau's own floors:
 # fleche requires pyiron-snippets>=1.1, which would lift ours from >=1.
