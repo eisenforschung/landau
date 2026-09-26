@@ -30,13 +30,11 @@ from landau import (
     SoftplusSurface2DInterpolator,
     Surface2DInterpolatingPhase,
     TemperatureDependentLinePhase,
-    to_tdb,
-    write_tdb,
 )
 from landau.interpolate import StitchedFit, WhitneyTemperatureInterpolator
 from landau.phases import AbstractLinePhase, Phase, S, kB
 from landau.phases.pointdefects import ConstantPointDefect, PointDefectedPhase, PointDefectSublattice
-from landau.tdb import _number
+from landau.tdb import _number, dump, dumps
 
 # ImportAlarm keeps its message only when the import fails, so it needs one to report the failure.
 with ImportAlarm("pycalphad is not installed; pip install 'landau[test-pycalphad]'") as pycalphad_alarm:
@@ -188,7 +186,7 @@ def test_number_round_trips(x):
 # file layout
 # --------------------------------------------------------------------------- #
 def test_header_and_line_width(line_phases):
-    text = to_tdb(line_phases + tuple(_rk_phases(line_phases)))
+    text = dumps(line_phases + tuple(_rk_phases(line_phases)))
     records = _records(text)
     assert text.startswith("$ Thermodynamic database written by landau")
     assert records[:4] == [
@@ -201,14 +199,21 @@ def test_header_and_line_width(line_phases):
     assert max(len(line) for line in text.splitlines()) <= 78
 
 
-def test_write_tdb_writes_to_tdb_output(tmp_path, terminals):
+def test_dump_writes_dumps_output(tmp_path, terminals):
     path = tmp_path / "out.tdb"
-    write_tdb(terminals, path, elements=("Mg", "Ca"), temperature_range=(1.0, 3000.0))
-    assert path.read_text() == to_tdb(terminals, elements=("Mg", "Ca"), temperature_range=(1.0, 3000.0))
+    with open(path, "w") as fp:
+        dump(terminals, fp, elements=("Mg", "Ca"), temperature_range=(1.0, 3000.0))
+    assert path.read_text() == dumps(terminals, elements=("Mg", "Ca"), temperature_range=(1.0, 3000.0))
+
+
+def test_tdb_export_is_not_in_the_top_level_namespace():
+    import landau
+
+    assert not {"dump", "dumps"} & set(dir(landau))
 
 
 def test_temperature_range_is_stamped_on_every_parameter(line_phases):
-    text = to_tdb(_rk_phases(line_phases), temperature_range=(1.0, 3000.0))
+    text = dumps(_rk_phases(line_phases), temperature_range=(1.0, 3000.0))
     params = _parameters(text)
     assert len(params) == 4 * 4  # two end-members and two interactions per phase
     assert all((low, high) == (1.0, 3000.0) for low, high, _ in params.values())
@@ -217,14 +222,14 @@ def test_temperature_range_is_stamped_on_every_parameter(line_phases):
 @pytest.mark.parametrize("temperature_range", [(0.0, 1000.0), (1000.0, 500.0), (-1.0, 1000.0)])
 def test_temperature_range_must_be_positive_and_ordered(terminals, temperature_range):
     with pytest.raises(ValueError, match="temperature_range"):
-        to_tdb(terminals, temperature_range=temperature_range)
+        dumps(terminals, temperature_range=temperature_range)
 
 
 # --------------------------------------------------------------------------- #
 # elements and names
 # --------------------------------------------------------------------------- #
 def test_elements_are_upper_cased_and_sorted_in_header(terminals):
-    records = _records(to_tdb(terminals, elements=("mg", "ca")))
+    records = _records(dumps(terminals, elements=("mg", "ca")))
     assert records[2:4] == ["ELEMENT CA BLANK 0.0 0.0 0.0", "ELEMENT MG BLANK 0.0 0.0 0.0"]
     assert "PHASE FCCA % 1 1" in records and "CONSTITUENT FCCA :MG:" in records
     assert "PHASE FCCB % 1 1" in records and "CONSTITUENT FCCB :CA:" in records
@@ -233,14 +238,14 @@ def test_elements_are_upper_cased_and_sorted_in_header(terminals):
 @pytest.mark.parametrize("elements", [("ABC", "B"), ("A", "A"), ("A",), ("A", "B", "C"), ("A1", "B"), ("VA", "B")])
 def test_elements_must_be_two_distinct_symbols(terminals, elements):
     with pytest.raises(ValueError, match="element"):
-        to_tdb(terminals, elements=elements)
+        dumps(terminals, elements=elements)
 
 
 @pytest.mark.parametrize(
     "name, tdb_name", [("Mg2Ca-C14", "MG2CA_C14"), ("L1_2 (ordered)", "L1_2_ORDERED"), ("fcc", "FCC")]
 )
 def test_phase_names_are_upper_cased_alphanumeric(name, tdb_name):
-    records = _records(to_tdb([LinePhase(name, 0.5, -1.0)]))
+    records = _records(dumps([LinePhase(name, 0.5, -1.0)]))
     assert f"PHASE {tdb_name} % 2 0.5 0.5" in records
     assert f"CONSTITUENT {tdb_name} :A:B:" in records
 
@@ -248,19 +253,19 @@ def test_phase_names_are_upper_cased_alphanumeric(name, tdb_name):
 @pytest.mark.parametrize("name", ["α", "2H", "", "-"])
 def test_unusable_phase_names_raise(name):
     with pytest.raises(ValueError, match="TDB phase name"):
-        to_tdb([LinePhase(name, 0.5, -1.0)])
+        dumps([LinePhase(name, 0.5, -1.0)])
 
 
 @pytest.mark.parametrize("name, tdb_name", [("x" * 25, "X" * 24), ("x" * 23 + " y", "X" * 23)])
 def test_phase_names_are_cut_to_24_characters(name, tdb_name):
     """A name cut just after a separator loses the dangling ``_``."""
-    assert _phase_names(to_tdb([LinePhase(name, 0.5, -1.0)])) == [tdb_name]
+    assert _phase_names(dumps([LinePhase(name, 0.5, -1.0)])) == [tdb_name]
 
 
 def test_colliding_phase_names_are_numbered_in_order():
     """Every phase sharing a name is numbered, and each number carries its own phase's parameters."""
     phases = [LinePhase("fcc", 0.0, -1.0), LinePhase("bcc", 0.0, -2.0), LinePhase("FCC", 0.0, -3.0)]
-    text = to_tdb(phases)
+    text = dumps(phases)
     assert _phase_names(text) == ["FCC_1", "BCC", "FCC_2"]
     params = _parameters(text)
     T = np.array(TS)
@@ -272,19 +277,19 @@ def test_colliding_phase_names_are_numbered_in_order():
 
 def test_names_cut_to_the_same_24_characters_are_numbered_within_24():
     phases = [LinePhase("liquid_" + "x" * 20 + suffix, 0.5, -1.0) for suffix in "ab"]
-    assert _phase_names(to_tdb(phases)) == ["LIQUID_" + "X" * 15 + "_1", "LIQUID_" + "X" * 15 + "_2"]
+    assert _phase_names(dumps(phases)) == ["LIQUID_" + "X" * 15 + "_1", "LIQUID_" + "X" * 15 + "_2"]
 
 
 def test_numbering_skips_names_other_phases_have():
     phases = [LinePhase(name, 0.5, -1.0) for name in ["fcc", "FCC_1", "FCC"]]
-    assert _phase_names(to_tdb(phases)) == ["FCC_2", "FCC_1", "FCC_3"]
+    assert _phase_names(dumps(phases)) == ["FCC_2", "FCC_1", "FCC_3"]
 
 
 @given(st.lists(st.from_regex(r"[a-c][a-c0-9_ ]{0,30}", fullmatch=True), min_size=1, max_size=12))
 def test_tdb_phase_names_are_unique_and_fit(names):
     """Whatever the landau names, the TDB ones are distinct, valid and at most 24 characters,
     and a name no other phase shares is only upper-cased and cut."""
-    tdb_names = _phase_names(to_tdb([LinePhase(name, 0.5, -1.0) for name in names]))
+    tdb_names = _phase_names(dumps([LinePhase(name, 0.5, -1.0) for name in names]))
     assert len(set(tdb_names)) == len(names)
     assert all(re.fullmatch(r"[A-Z][A-Z0-9_]{0,23}", name) for name in tdb_names)
     cut = [re.sub(r"[^A-Z0-9]+", "_", name.upper()).strip("_")[:24].rstrip("_") for name in names]
@@ -296,7 +301,7 @@ def test_tdb_phase_names_are_unique_and_fit(names):
 def test_24_character_names_keep_every_line_within_78_characters(line_phases):
     """The longest names, two-letter elements and a two-sublattice compound with full-precision site ratios."""
     phases = [LinePhase("C" * 24, 1 / 3, -2.9, kB), RegularSolution("R" * 24, line_phases, num_coeffs=2)]
-    text = to_tdb(phases, elements=("MG", "CA"), temperature_range=(298.15, 6000.0))
+    text = dumps(phases, elements=("MG", "CA"), temperature_range=(298.15, 6000.0))
     assert f"PHASE {'C' * 24} % 2 0.6666666666666667 0.3333333333333333 !" in text.splitlines()
     assert max(len(line) for line in text.splitlines()) <= 78
 
@@ -315,7 +320,7 @@ def test_24_character_names_keep_every_line_within_78_characters(line_phases):
 def test_line_phase_sublattices(c, phase_record, constituent_record, parameter):
     """Terminals are one-sublattice, interior line phases two, with site ratios ``1-c`` and ``c``."""
     phase = LinePhase("x", c, -2.9, 1.2 * kB)
-    text = to_tdb([phase])
+    text = dumps([phase])
     records = _records(text)
     assert phase_record in records and constituent_record in records
     params = _parameters(text)
@@ -326,14 +331,14 @@ def test_line_phase_sublattices(c, phase_record, constituent_record, parameter):
 
 def test_line_phase_entropy_of_one_kb_is_minus_gas_constant():
     """The unit conversion maps ``kB`` eV/K per atom onto ``R`` J/mol/K."""
-    text = to_tdb([LinePhase("x", 0.0, 0.0, kB)])
+    text = dumps([LinePhase("x", 0.0, 0.0, kB)])
     m = re.search(r"PARAMETER G\(X,A;0\) 298.15 (\S+)\*T; 6000 N !", text)
     assert float(m.group(1)) == pytest.approx(-R, rel=1e-14)
 
 
 def test_line_phase_concentration_outside_unit_interval_raises():
     with pytest.raises(ValueError, match="outside"):
-        to_tdb([LinePhase("x", 1.5, -1.0)])
+        dumps([LinePhase("x", 1.5, -1.0)])
 
 
 @pytest.mark.parametrize("interpolator", [SGTE(4), SGTE(2), PolyFit(3), PolyFit(1)])
@@ -342,7 +347,7 @@ def test_temperature_dependent_line_phase(interpolator):
     T = np.linspace(300.0, 2000.0, 50)
     G_sampled = -3.0 + 2e-4 * T - 3e-4 * T * np.log(T)
     phase = TemperatureDependentLinePhase("x", 0.25, T, G_sampled, interpolator=interpolator)
-    G = _parameters(to_tdb([phase]))["G(X,A:B;0)"][2]
+    G = _parameters(dumps([phase]))["G(X,A:B;0)"][2]
     Tq = np.linspace(250.0, 2100.0, 7)
     np.testing.assert_allclose(G(Tq), phase.line_free_energy(Tq) * J_PER_MOL, rtol=0, atol=ATOL)
 
@@ -353,7 +358,7 @@ def test_temperature_dependent_line_phase(interpolator):
 def test_ideal_solution(terminals):
     A, B = terminals
     phase = IdealSolution("sol", B, A)
-    text = to_tdb([phase])
+    text = dumps([phase])
     records = _records(text)
     assert "PHASE SOL % 1 1" in records and "CONSTITUENT SOL :A,B:" in records
     assert sorted(_parameters(text)) == ["G(SOL,A;0)", "G(SOL,B;0)"]
@@ -369,7 +374,7 @@ def test_redlich_kister_phases(line_phases, index, add_entropy):
     """The written phase is the least-squares Redlich-Kister fit through the line phases at
     every (T, c), the same fit landau's ``free_energy`` evaluates."""
     phase = _rk_phases(line_phases, add_entropy)[index]
-    text = to_tdb([phase])
+    text = dumps([phase])
     name = phase.name.upper()
     assert _interactions(text, name) == [f"L({name},A,B;0)", f"L({name},A,B;1)"]
     for T in TS:
@@ -388,7 +393,7 @@ def test_redlich_kister_export_is_the_least_squares_fit_when_ill_conditioned():
     line_phases = [LinePhase(f"p{i}", c, e, s * kB) for i, (c, e, s) in enumerate(zip(cs, energies, entropies))]
     phase = FastInterpolatingPhase("liq", line_phases)
     assert phase.interpolator == RedlichKister(5)
-    text = to_tdb([phase])
+    text = dumps([phase])
     assert len(_interactions(text, "LIQ")) == 5
     for T in TS:
         exact = _least_squares_free_energy(line_phases, 5, T, CS)
@@ -413,24 +418,28 @@ def test_redlich_kister_terminals_anywhere_in_phases(line_phases, build, order):
     the fit picks."""
     candidates = (*line_phases, LinePhase("fccA2", 0.0, -3.05, 1.1 * kB))
     phases = [candidates[i] for i in order]
-    text = to_tdb([build(phases)])
+    text = dumps([build(phases)])
     for T in TS:
         exact = _least_squares_free_energy(phases, 2, T, CS)
         written = _solution_free_energy(text, "X", ("A", "B"), T, CS)
         np.testing.assert_allclose(written, exact * J_PER_MOL, rtol=0, atol=ATOL)
 
 
-def test_interior_concentration_close_to_a_terminal_counts_as_interior():
-    """c = 0.999995 is within ``np.isclose`` of 1 but is a line phase of its own, the second of
-    the two interior concentrations two orders need."""
+def test_interior_concentration_close_to_a_terminal_is_fitted_as_interior():
+    """c = 0.999995 is within ``np.isclose`` of 1 but is a line phase of its own, and the
+    export fits it as landau does."""
     phases = [
         LinePhase("a", 0.0, -3.0, kB),
         LinePhase("m", 0.5, -3.1, 1.5 * kB),
         LinePhase("n", 0.999995, -2.6, kB),
         LinePhase("b", 1.0, -2.5, kB),
     ]
-    text = to_tdb([RegularSolution("x", phases, num_coeffs=2, add_entropy=True)])
+    phase = RegularSolution("x", phases, num_coeffs=2, add_entropy=True)
+    text = dumps([phase])
     assert _interactions(text, "X") == ["L(X,A,B;0)", "L(X,A,B;1)"]
+    for T in TS:
+        written = _solution_free_energy(text, "X", ("A", "B"), T, CS)
+        np.testing.assert_allclose(written, phase.free_energy(T, CS) * J_PER_MOL, rtol=0, atol=ATOL)
 
 
 def test_surface_phase_with_a_near_zero_terminal(line_phases):
@@ -444,7 +453,7 @@ def test_surface_phase_with_a_near_zero_terminal(line_phases):
         temperature_range=(300.0, 2000.0),
     )
     assert phase.concentration_range == (1e-12, 1)
-    text = to_tdb([phase])
+    text = dumps([phase])
     for T in TS:
         np.testing.assert_allclose(
             _solution_free_energy(text, "X", ("A", "B"), T, CS),
@@ -462,27 +471,37 @@ def test_surface_phase_with_a_near_zero_terminal(line_phases):
     ],
     ids=["regular", "fast"],
 )
-def test_redlich_kister_fit_that_is_not_unique_raises(line_phases, build):
-    """Two orders fitted through a single interior concentration leave one ``L_v`` free."""
+def test_redlich_kister_fit_that_is_not_unique_is_written_as_landau_fits_it(line_phases, build):
+    """Two orders fitted through a single interior concentration leave one ``L_v`` free; the
+    export writes the same minimum-norm solution the phase evaluates."""
     A, m, B = line_phases[0], line_phases[1], line_phases[-1]
     twin = LinePhase("twin", m.line_concentration, -2.9, kB)
-    with pytest.raises(ValueError, match=r'"x".*got 1; the fit is not unique'):
-        to_tdb([build(A, m, twin, B)])
+    phase = build(A, m, twin, B)
+    text = dumps([phase])
+    assert len(_interactions(text, "X")) == 2
+    for T in TS:
+        written = _solution_free_energy(text, "X", ("A", "B"), T, CS)
+        np.testing.assert_allclose(written, phase.free_energy(T, CS) * J_PER_MOL, rtol=0, atol=ATOL)
 
 
 @pytest.mark.parametrize("cls", [InterpolatingPhase, FastInterpolatingPhase])
-def test_redlich_kister_phase_over_the_terminals_alone_raises(terminals, cls):
-    with pytest.raises(ValueError, match=r'"x".*needs a line phase between the terminals'):
-        to_tdb([cls("x", terminals)])
+def test_redlich_kister_phase_over_the_terminals_alone_is_the_chord(terminals, cls):
+    """With no line phase between the terminals the fit is the chord: no interaction parameters."""
+    phase = cls("x", terminals)
+    text = dumps([phase])
+    assert _interactions(text, "X") == []
+    for T in TS:
+        written = _solution_free_energy(text, "X", ("A", "B"), T, CS)
+        np.testing.assert_allclose(written, phase.free_energy(T, CS) * J_PER_MOL, rtol=0, atol=ATOL)
 
 
 def test_odd_interactions_flip_sign_for_unsorted_elements(line_phases):
     """Parameters are written with alphabetically sorted constituents, which for
     ``elements=("MG", "CA")`` puts the ``c=1`` component first and negates odd orders."""
     phase = _rk_phases(line_phases)[3]
-    text = to_tdb([phase], elements=("MG", "CA"))
+    text = dumps([phase], elements=("MG", "CA"))
     assert _interactions(text, "FAST") == ["L(FAST,CA,MG;0)", "L(FAST,CA,MG;1)"]
-    reference = _parameters(to_tdb([phase]))
+    reference = _parameters(dumps([phase]))
     written = _parameters(text)
     T = np.array(TS)
     np.testing.assert_allclose(written["L(FAST,CA,MG;0)"][2](T), reference["L(FAST,A,B;0)"][2](T), rtol=0, atol=ATOL)
@@ -496,7 +515,7 @@ def test_odd_interactions_flip_sign_for_unsorted_elements(line_phases):
 
 def test_surface_phase(line_phases):
     phase = _surface_phase(line_phases)
-    text = to_tdb([phase])
+    text = dumps([phase])
     assert _interactions(text, "SURF") == ["L(SURF,A,B;0)", "L(SURF,A,B;1)"]
     for T in TS:
         np.testing.assert_allclose(
@@ -611,7 +630,7 @@ def test_phases_without_a_calphad_form_raise(line_phases, build, match):
     A, mid, B = line_phases[0], line_phases[1], line_phases[-1]
     phase = build(A, B, mid)
     with pytest.raises(TypeError, match=match) as info:
-        to_tdb([phase])
+        dumps([phase])
     assert '"x"' in str(info.value)
 
 
@@ -626,7 +645,7 @@ def test_pycalphad_reads_back_the_same_free_energies(line_phases):
     two-sublattice compound."""
     A, B = line_phases[0], line_phases[-1]
     phases = [*line_phases, IdealSolution("ideal", A, B), *_rk_phases(line_phases), _surface_phase(line_phases)]
-    text = to_tdb(phases, elements=("MG", "CA"), temperature_range=(1.0, 3000.0))
+    text = dumps(phases, elements=("MG", "CA"), temperature_range=(1.0, 3000.0))
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         warnings.simplefilter("ignore", DeprecationWarning)  # pyparsing API deprecations inside pycalphad
@@ -652,9 +671,9 @@ def test_pycalphad_reads_back_the_same_free_energies(line_phases):
 @pytest.mark.pycalphad
 @needs_pycalphad
 def test_pycalphad_evaluates_past_the_temperature_range(terminals):
-    """What ``to_tdb`` documents for ``temperature_range``: pycalphad ignores the limits."""
+    """What ``dumps`` documents for ``temperature_range``: pycalphad ignores the limits."""
     A, _ = terminals
-    db = Database.from_string(to_tdb([A], temperature_range=(500.0, 1000.0)), fmt="tdb")
+    db = Database.from_string(dumps([A], temperature_range=(500.0, 1000.0)), fmt="tdb")
     T = np.array([300.0, 1500.0])
     GM = calculate(db, ["A", "B", "VA"], "FCCA", T=T, P=101325, N=1).GM.values.squeeze()
     np.testing.assert_allclose(GM, A.line_free_energy(T) * J_PER_MOL, rtol=0, atol=ATOL)

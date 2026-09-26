@@ -1,5 +1,8 @@
 """Export landau phases to a Thermo-Calc database (TDB) file.
 
+:func:`dumps` returns the TDB text and :func:`dump` writes it to a file object, as their
+:mod:`json` namesakes do.
+
 A TDB stores CALPHAD models: one closed-form Gibbs energy ``G(T)`` per phase
 end-member plus Redlich-Kister interaction parameters, each a polynomial in
 ``T`` with an optional ``T*LN(T)`` term.  Only landau phases whose free energy
@@ -15,11 +18,9 @@ already has that form are exported; every other phase raises :exc:`TypeError`.
   :class:`~landau.phases.SlowInterpolatingPhase` and
   :class:`~landau.phases.FastInterpolatingPhase` interpolating with
   :class:`~landau.interpolate.RedlichKister` become ``(A,B)`` phases with interaction
-  parameters ``L_v(T)``.  The fit is linear in the line phases' free energies, so each
-  ``L_v(T)`` is the least-squares combination of their closed forms: the solution
-  ``RedlichKister.fit`` computes at each temperature.
-  Fits that are not unique -- fewer distinct line phase concentrations between the
-  terminals than orders -- raise :exc:`ValueError`.
+  parameters ``L_v(T)``.  ``RedlichKister.fit`` is linear in the line phases' free
+  energies, so each ``L_v(T)`` is the combination of their closed forms that the fit
+  computes at every temperature.
 - :class:`~landau.phases.Surface2DInterpolatingPhase` over a
   :class:`~landau.interpolate.CalphadSurface2DInterpolator` becomes an ``(A,B)`` phase
   from the fitted terminal and interaction models.
@@ -39,7 +40,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from itertools import count
-from pathlib import Path
+from typing import TextIO
 
 import numpy as np
 from scipy.constants import Avogadro, eV
@@ -64,7 +65,7 @@ from .phases import (
     TemperatureDependentLinePhase,
 )
 
-__all__ = ["to_tdb", "write_tdb"]
+__all__ = ["dump", "dumps"]
 
 _J_PER_MOL = eV * Avogadro
 """eV/atom -> J/mol."""
@@ -77,6 +78,9 @@ _NAME_LENGTH = 24
 
 #: One term of a TDB temperature function: ``(power of T, multiplied by ln T)``.
 _Term = tuple[int, bool]
+
+#: The solution phases that refit their line phases with a concentration interpolator.
+_RedlichKisterPhase = RegularSolution | InterpolatingPhase | SlowInterpolatingPhase
 
 
 def _number(x: float) -> str:
@@ -213,7 +217,7 @@ def _solution(
     return _TdbPhase(name, (1.0,), ((a, b),), parameters)
 
 
-def _rk_interpolator(phase: Phase) -> RedlichKister:
+def _rk_interpolator(phase: _RedlichKisterPhase) -> RedlichKister:
     """The concentration interpolator a solution phase refits at every temperature."""
     if isinstance(phase, (RegularSolution, InterpolatingPhase)):
         interpolator = phase._concentration_interpolator
@@ -227,7 +231,7 @@ def _rk_interpolator(phase: Phase) -> RedlichKister:
     return interpolator
 
 
-def _from_redlich_kister(name: str, phase: Phase, elements: tuple[str, str]) -> _TdbPhase:
+def _from_redlich_kister(name: str, phase: _RedlichKisterPhase, elements: tuple[str, str]) -> _TdbPhase:
     interpolator = _rk_interpolator(phase)
     concentrations = np.array([p.line_concentration for p in phase.phases], dtype=float)
     if not (np.isclose(concentrations.min(), 0) and np.isclose(concentrations.max(), 1)):
@@ -240,35 +244,17 @@ def _from_redlich_kister(name: str, phase: Phase, elements: tuple[str, str]) -> 
         if not phase.add_entropy:
             h = h + _GFunction({(1, False): float(S(c))})
         samples.append(h)
-    # RedlichKister.fit takes the terminals as they sort, subtracts the chord
-    # between them and least-squares fits L_v to the rest.  Every step is linear
-    # in the samples, so the same steps on the samples' closed forms give
-    # closed-form parameters: the least-squares solution of the fit's model.
-    n = len(concentrations)
-    order = concentrations.argsort()
-    first, last = order[0], order[-1]
-    n_orders = min(interpolator.nparam, n - 2)
-    terminal = (concentrations == concentrations[first]) | (concentrations == concentrations[last])
-    interior = np.unique(concentrations[~terminal])
-    if n_orders == 0:
-        raise ValueError(f"{_describe(phase)}: a Redlich-Kister fit needs a line phase between the terminals")
-    if len(interior) < n_orders:
-        raise ValueError(
-            f"{_describe(phase)}: {n_orders} Redlich-Kister orders need at least as many distinct line phase "
-            f"concentrations between the terminals, got {len(interior)}; the fit is not unique"
-        )
-    detrend = np.eye(n)
-    detrend[:, first] -= 1 - concentrations
-    detrend[:, last] -= concentrations
-    design = (concentrations * (1 - concentrations))[:, None] * np.vander(
-        2 * concentrations - 1, n_orders, increasing=True
-    )
-    weights = np.linalg.lstsq(design, detrend, rcond=None)[0]
+    # The fit is linear in the samples, so fitting each line phase's unit sample gives
+    # the weights with which its closed form enters the terminals and the parameters.
+    fits = [interpolator.fit(concentrations, unit) for unit in np.eye(len(samples))]
 
-    def combine(row):
-        return sum((w * h for w, h in zip(row, samples)), _ZERO)
+    def combine(weights):
+        return sum((w * h for w, h in zip(weights, samples)), _ZERO)
 
-    return _solution(name, samples[first], samples[last], [combine(row) for row in weights], elements)
+    g_first = combine([fit.f0 for fit in fits])
+    g_second = g_first + combine([fit.df for fit in fits])
+    interactions = [combine(weights) for weights in zip(*(fit.rk_parameters for fit in fits))]
+    return _solution(name, g_first, g_second, interactions, elements)
 
 
 def _from_surface(name: str, phase: Surface2DInterpolatingPhase, elements: tuple[str, str]) -> _TdbPhase:
@@ -365,12 +351,13 @@ def _render(phase: _TdbPhase, low: str, high: str) -> str:
     return "\n".join(lines)
 
 
-def to_tdb(
+def dumps(
     phases: Iterable[Phase],
+    *,
     elements: tuple[str, str] = ("A", "B"),
     temperature_range: tuple[float, float] = (298.15, 6000.0),
 ) -> str:
-    """Write phases as a Thermo-Calc database (TDB).
+    """Serialize phases to a Thermo-Calc database (TDB).
 
     See the module docstring for which phases can be represented and how.
 
@@ -390,8 +377,8 @@ def to_tdb(
 
     Raises:
         TypeError: a phase has no closed-form CALPHAD representation.
-        ValueError: element names, temperature limits or a phase name are unusable,
-            or a Redlich-Kister fit is not unique.
+        ValueError: element names, temperature limits or a phase name are unusable, or a
+            line phase's concentration lies outside [0, 1].
     """
     from . import __version__
 
@@ -417,11 +404,12 @@ def to_tdb(
     return "\n".join(header) + "\n\n" + "\n\n".join(blocks) + "\n"
 
 
-def write_tdb(
+def dump(
     phases: Iterable[Phase],
-    path,
+    fp: TextIO,
+    *,
     elements: tuple[str, str] = ("A", "B"),
     temperature_range: tuple[float, float] = (298.15, 6000.0),
 ) -> None:
-    """Write :func:`to_tdb` output to ``path``; arguments as there."""
-    Path(path).write_text(to_tdb(phases, elements=elements, temperature_range=temperature_range))
+    """Write :func:`dumps` output to the text file object ``fp``; arguments as there."""
+    fp.write(dumps(phases, elements=elements, temperature_range=temperature_range))

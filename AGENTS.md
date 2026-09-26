@@ -124,7 +124,7 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
 - **#332 phase free-energy parametrization is indirect** — both `InterpolatingPhase` and `Surface2DInterpolatingPhase` reach `f(c[, T])` through a sample-and-refit round-trip. Open direction: an optional "just give me a callable" builder path so a `.tdb` importer (#138) or bespoke model can skip it. Parked with #137.
 
-- **#138 TDB file import** — scoping; feeds #332. The *export* half is in flight as PR #462 (`landau.tdb` with `to_tdb` / `write_tdb`; exact closed-form export of SGTE/PolyFit/RedlichKister-backed phases, pycalphad round-trip tests behind a `test-pycalphad` extra).
+- **#138 TDB file import** — scoping; feeds #332. The *export* half is in flight as PR #462 (`landau.tdb` with `landau.tdb.dump` / `dumps` (mirroring `json`; not re-exported from `landau`); exact closed-form export of SGTE/PolyFit/RedlichKister-backed phases, pycalphad round-trip tests behind a `test-pycalphad` extra).
 
 - **#34, #60 plot/calc API 2.0 refactor** — axes-as-arg for `plot_{mu,}_phase_diagram` + broader rearrangement for 2.0.
 
@@ -158,7 +158,7 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
 - **Open PRs in flight** (check before duplicating):
 
-  - #462 (TDB export — `landau.tdb` with `to_tdb` / `write_tdb`)
+  - #462 (TDB export — `landau.tdb` with `dump` / `dumps`)
 
   - the #467 → #471 → #478 → #465 stack (monotectic-type invariant tagging via a `_dominated_node` hook on the gap tracer; exact congruent-point solve + `TerminalRefiner`; miscibility-gap closure tagged as its congruent point; TransitionTemperatures notebook — the stack's base, #466's seed-slope CC bootstrap bracket, merged 2026-09-15 and released in 1.15.0)
 
