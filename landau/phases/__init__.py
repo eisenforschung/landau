@@ -280,6 +280,10 @@ class RegularSolution(Phase):
             "Cannot pass multiple terminal phases of the same concentration!"
         )
 
+    @property
+    def _concentration_interpolator(self):
+        return RedlichKister(self.num_coeffs)
+
     @lru_cache(maxsize=250)
     def _get_interpolation(self, T):
         cc = np.array([l.line_concentration for l in self.phases])
@@ -290,7 +294,7 @@ class RegularSolution(Phase):
         # we try to fit the redlich kister coeffs
         if not self.add_entropy:
             ff += T * S(cc)
-        return RedlichKister(self.num_coeffs).fit(cc, ff)
+        return self._concentration_interpolator.fit(cc, ff)
 
     def free_energy(self, T, c):
         return self._get_interpolation(T)(c) - T * S(c)
@@ -429,6 +433,14 @@ class InterpolatingPhase(Phase):
         object.__setattr__(self, "phases", tuple(self.phases))
         object.__setattr__(self, "num_coeffs", min(len(self.phases), self.num_coeffs or np.inf))
 
+    @property
+    def _concentration_interpolator(self):
+        """Redlich-Kister when the first and last line phases are the terminals, a polynomial otherwise."""
+        cc = [p.line_concentration for p in self.phases]
+        if cc[0] == 0 and cc[-1] == 1:
+            return RedlichKister(max(1, self.num_coeffs - 2))
+        return PolyFit(self.num_coeffs)
+
     @lru_cache(maxsize=250)
     def _get_interpolation(self, T):
         if not isinstance(T, Real):
@@ -441,10 +453,7 @@ class InterpolatingPhase(Phase):
         # we try to fit the redlich kister coeffs
         if not self.add_entropy:
             ff += T * S(cc)
-        if cc[0] == 0 and cc[-1] == 1:
-            return RedlichKister(max(1, self.num_coeffs - 2)).fit(cc, ff)
-        else:
-            return PolyFit(self.num_coeffs).fit(cc, ff)
+        return self._concentration_interpolator.fit(cc, ff)
 
     def free_energy(self, T, c):
         return np.vectorize(
