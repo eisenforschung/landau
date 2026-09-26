@@ -230,20 +230,10 @@ def TemperatureDepandantLinePhase(*args, **kwargs):
 
 @dataclass(frozen=True, eq=True)
 class IdealSolution(Phase):
-    """
-    Ideal solution between two terminal line phases.
-
-    .. deprecated::
-        Use ``FastInterpolatingPhase(name, [phase1, phase2], interpolator=PolyFit(2))`` instead; removal in 2.0.
-    """
-
     phase1: AbstractLinePhase
     phase2: AbstractLinePhase
 
     def __post_init__(self, *args, **kwargs):
-        _warn_deprecated_phase(
-            IdealSolution, "use FastInterpolatingPhase(name, [phase1, phase2], interpolator=PolyFit(2)) instead"
-        )
         phase1, phase2 = sorted((self.phase1, self.phase2), key=lambda p: p.line_concentration)
         assert phase1.line_concentration == 0 and phase2.line_concentration == 1, "Must give terminal phases!"
         # bypass frozen=True for the sake of init only
@@ -580,10 +570,6 @@ class SlowInterpolatingPhase(Phase):
     """
     A slower version of RegularSolutionPhase that does not depend on terminals.
     FIXME: These two classes should be unified.
-
-    .. deprecated::
-        Use :class:`FastInterpolatingPhase` instead; removal in 2.0. Subclasses of
-        :class:`FastInterpolatingPhase` inherit this class but do not warn.
     """
 
     phases: Iterable[AbstractLinePhase]
@@ -593,8 +579,6 @@ class SlowInterpolatingPhase(Phase):
     interpolator: Optional[ConcentrationInterpolator] = None
 
     def __post_init__(self, *args, **kwargs):
-        if not isinstance(self, FastInterpolatingPhase):
-            _warn_deprecated_phase(SlowInterpolatingPhase, "use FastInterpolatingPhase instead")
         object.__setattr__(self, "phases", tuple(self.phases))
 
         explicit_range = self.concentration_range != (0., 1.)
