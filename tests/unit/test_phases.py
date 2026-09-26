@@ -1282,6 +1282,40 @@ def test_new_pointdefect_classes_not_added_to_landau_phases(name):
     assert not hasattr(phases, name)
 
 
+# --- deprecation of the solution phases superseded by FastInterpolatingPhase ---
+
+
+def _deprecated_solution_phases():
+    a = LinePhase("A", 0, 0.0)
+    m = LinePhase("M", 0.5, -0.05)
+    b = LinePhase("B", 1, 0.0)
+    return {
+        "RegularSolution": lambda: RegularSolution("sol", [a, m, b]),
+        "InterpolatingPhase": lambda: InterpolatingPhase("sol", [a, m, b]),
+    }
+
+
+@pytest.mark.parametrize("name", list(_deprecated_solution_phases()))
+def test_deprecated_solution_phase_warns_at_caller(name):
+    """Construction warns once, naming the class and the removal version, and the
+    warning is attributed to the constructing line rather than landau internals."""
+    with pytest.warns(DeprecationWarning, match=rf"landau\.phases\.{name} is deprecated: .*2\.0") as record:
+        _deprecated_solution_phases()[name]()
+    assert len(record) == 1
+    assert record[0].filename == __file__
+
+
+@pytest.mark.parametrize("cls", [IdealSolution, SlowInterpolatingPhase, FastInterpolatingPhase])
+def test_solution_phase_is_not_deprecated(cls):
+    import warnings
+
+    a = LinePhase("A", 0, 0.0)
+    b = LinePhase("B", 1, 0.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        cls("sol", a, b) if cls is IdealSolution else cls("sol", [a, b])
+
+
 # --- check_interpolation / check_concentration_interpolation plot_error ---
 
 # residuals are recomputed with the same deterministic public methods the plot
