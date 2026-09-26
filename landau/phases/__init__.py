@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import lru_cache, cache, cached_property
 from typing import Iterable, Optional, ClassVar
+import warnings
 from pyiron_snippets.deprecate import deprecate
 
 import matplotlib.pyplot as plt
@@ -42,6 +43,21 @@ __all__ = [
 
 def S(c):
     return kB * (se.entr(c) + se.entr(1 - c))
+
+
+def _warn_deprecated_phase(cls, instead):
+    """Emit the deprecation warning for a solution phase superseded by :class:`FastInterpolatingPhase`.
+
+    Called from ``__post_init__``; ``stacklevel=4`` skips this helper, ``__post_init__`` and the dataclass
+    ``__init__`` so the warning points at the caller's constructor call. Classes cannot take the
+    ``pyiron_snippets`` decorator (it wraps only functions) without losing ``isinstance`` and subclassing.
+    """
+    warnings.warn(
+        f"{cls.__module__}.{cls.__qualname__} is deprecated: {instead}. "
+        "It is not guaranteed to be in service in vers. 2.0",
+        category=DeprecationWarning,
+        stacklevel=4,
+    )
 
 
 @dataclass(frozen=True)
@@ -214,10 +230,20 @@ def TemperatureDepandantLinePhase(*args, **kwargs):
 
 @dataclass(frozen=True, eq=True)
 class IdealSolution(Phase):
+    """
+    Ideal solution between two terminal line phases.
+
+    .. deprecated::
+        Use ``FastInterpolatingPhase(name, [phase1, phase2], interpolator=PolyFit(2))`` instead; removal in 2.0.
+    """
+
     phase1: AbstractLinePhase
     phase2: AbstractLinePhase
 
     def __post_init__(self, *args, **kwargs):
+        _warn_deprecated_phase(
+            IdealSolution, "use FastInterpolatingPhase(name, [phase1, phase2], interpolator=PolyFit(2)) instead"
+        )
         phase1, phase2 = sorted((self.phase1, self.phase2), key=lambda p: p.line_concentration)
         assert phase1.line_concentration == 0 and phase2.line_concentration == 1, "Must give terminal phases!"
         # bypass frozen=True for the sake of init only
@@ -258,6 +284,9 @@ class RegularSolution(Phase):
     """
     A regular solution model phase that interpolates through a given set of line phases using Redlich-Kister
     polynomials.
+
+    .. deprecated::
+        Use ``FastInterpolatingPhase(name, phases, interpolator=RedlichKister(num_coeffs))`` instead; removal in 2.0.
     """
 
     phases: Iterable[AbstractLinePhase]
@@ -269,6 +298,9 @@ class RegularSolution(Phase):
     True add ideal mixing entropy."""
 
     def __post_init__(self, *args, **kwargs):
+        _warn_deprecated_phase(
+            RegularSolution, "use FastInterpolatingPhase(name, phases, interpolator=RedlichKister(num_coeffs)) instead"
+        )
         # bypass frozen=True for the sake of init only
         object.__setattr__(self, "phases", tuple(self.phases))
         object.__setattr__(self, "num_coeffs", min(len(self.phases) - 2, self.num_coeffs))
@@ -417,7 +449,11 @@ from numbers import Real
 
 @dataclass(frozen=True, eq=True)
 class InterpolatingPhase(Phase):
-    """A Version of RegularSolutionPhase that does not depend on terminals.  FIXME: These two classes should be unified."""
+    """A Version of RegularSolutionPhase that does not depend on terminals.  FIXME: These two classes should be unified.
+
+    .. deprecated::
+        Use :class:`FastInterpolatingPhase` instead; removal in 2.0.
+    """
 
     phases: Iterable[AbstractLinePhase]
     num_coeffs: int = None
@@ -426,6 +462,7 @@ class InterpolatingPhase(Phase):
     maximum_extrapolation: float = 0
 
     def __post_init__(self, *args, **kwargs):
+        _warn_deprecated_phase(InterpolatingPhase, "use FastInterpolatingPhase instead")
         object.__setattr__(self, "phases", tuple(self.phases))
         object.__setattr__(self, "num_coeffs", min(len(self.phases), self.num_coeffs or np.inf))
 
@@ -543,6 +580,10 @@ class SlowInterpolatingPhase(Phase):
     """
     A slower version of RegularSolutionPhase that does not depend on terminals.
     FIXME: These two classes should be unified.
+
+    .. deprecated::
+        Use :class:`FastInterpolatingPhase` instead; removal in 2.0. Subclasses of
+        :class:`FastInterpolatingPhase` inherit this class but do not warn.
     """
 
     phases: Iterable[AbstractLinePhase]
@@ -552,6 +593,8 @@ class SlowInterpolatingPhase(Phase):
     interpolator: Optional[ConcentrationInterpolator] = None
 
     def __post_init__(self, *args, **kwargs):
+        if not isinstance(self, FastInterpolatingPhase):
+            _warn_deprecated_phase(SlowInterpolatingPhase, "use FastInterpolatingPhase instead")
         object.__setattr__(self, "phases", tuple(self.phases))
 
         explicit_range = self.concentration_range != (0., 1.)
