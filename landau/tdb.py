@@ -17,7 +17,7 @@ already has that form are exported; every other phase raises :exc:`TypeError`.
   :class:`~landau.interpolate.RedlichKister` become ``(A,B)`` phases with interaction
   parameters ``L_v(T)``.  The fit is linear in the line phases' free energies, so each
   ``L_v(T)`` is the least-squares combination of their closed forms: the solution
-  ``RedlichKister.fit`` computes at each temperature, up to that fit's own accuracy.
+  ``RedlichKister.fit`` computes at each temperature.
   Fits that are not unique -- fewer distinct line phase concentrations between the
   terminals than orders -- raise :exc:`ValueError`.
 - :class:`~landau.phases.Surface2DInterpolatingPhase` over a
