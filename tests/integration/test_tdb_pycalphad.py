@@ -1,7 +1,7 @@
 """Integration check of the TDB export against pycalphad.
 
 Each system below is defined with landau phases, solved with
-``calc_phase_diagram``, written with ``to_tdb`` and read back by pycalphad,
+``calc_phase_diagram``, written with ``dumps`` and read back by pycalphad,
 which then has to reproduce landau's diagram from the file alone: the
 tie-lines along every refined phase boundary, the temperature and compositions
 of every triple point, and the congruent transition temperatures (terminal
@@ -26,7 +26,7 @@ import landau.interpolate as ldi
 import landau.phases as ldp
 from landau.features import Locus
 from landau.plot import plot_phase_diagram
-from landau.tdb import to_tdb
+from landau.tdb import dumps
 
 # ImportAlarm keeps its message only when the import fails, so it needs one to report the failure.
 with ImportAlarm("pycalphad is not installed; pip install 'landau[test-pycalphad]'") as pycalphad_alarm:
@@ -140,7 +140,7 @@ def phase_diagram(system: System):
 def database(system: System):
     """pycalphad's view of the system: the exported TDB read back."""
     T = system.Ts
-    text = to_tdb(system.phases, temperature_range=(0.5 * T.min(), 2 * T.max()))
+    text = dumps(system.phases, temperature_range=(0.5 * T.min(), 2 * T.max()))
     return Database.from_string(text, fmt="tdb")
 
 
@@ -247,7 +247,7 @@ def comparison_figure(system: System, df, db, x_step=0.02, T_step=5.0):
     T = system.Ts
     conditions = {v.X("B"): (0, 1, x_step), v.T: (T.min(), T.max(), T_step), v.P: PRESSURE, v.N: 1}
     binplot(db, COMPS, system.tdb_names, conditions, plot_kwargs={"ax": right})
-    right.set_title("pycalphad, from to_tdb")
+    right.set_title("pycalphad, from dumps")
     right.set_ylim(left.get_ylim())
     fig.suptitle(system.name)
     return fig
