@@ -1,14 +1,11 @@
-from fractions import Fraction
-
 import numpy as np
 import pytest
 from landau.interpolate import RedlichKister, RedlichKisterInterpolation
-from landau.phases import S, kB
 from hypothesis import given, strategies as st
 from hypothesis.extra.numpy import arrays
 
-EXACT_ATOL = 1e-10
-"""eV; the fitted curve against the least-squares solution in exact arithmetic (measured 1.1e-12)."""
+EXACT_ATOL = 1e-12
+"""The fitted parameters against the least-squares ones the samples were built from (measured 3.1e-14)."""
 
 def test_RedlichKister_terminal_check():
     rk = RedlichKister(nparam=2)
@@ -18,55 +15,24 @@ def test_RedlichKister_terminal_check():
         rk.fit(c_no_term, y_no_term)
 
 @given(
-    L=arrays(dtype=float, shape=st.integers(min_value=1, max_value=3), elements=st.floats(min_value=-1, max_value=1)),
+    L=arrays(dtype=float, shape=st.integers(min_value=1, max_value=5), elements=st.floats(min_value=-1, max_value=1)),
     f0=st.floats(min_value=-1, max_value=1),
-    df=st.floats(min_value=-1, max_value=1)
+    df=st.floats(min_value=-1, max_value=1),
+    noise=arrays(dtype=float, shape=20, elements=st.floats(min_value=-1, max_value=1)),
 )
-def test_RedlichKister_hypothesis(L, f0, df):
+def test_RedlichKister_fit_is_the_least_squares_solution(L, f0, df, noise):
+    """Samples of a Redlich-Kister curve plus a residual orthogonal to the fit's basis and zero at
+    the terminals: the least-squares parameters are the curve's own, whatever the residual."""
     c = np.linspace(0, 1, 20)
-    y_mix = RedlichKisterInterpolation._eval_mix(c, *L)
-    y = y_mix + f0 + df * c
-    rk = RedlichKister(nparam=len(L))
-    fit = rk.fit(c, y)
-    assert np.allclose(fit(c), y, atol=1e-5)
-    assert np.isclose(fit.f0, f0, atol=1e-5)
-    assert np.isclose(fit.df, df, atol=1e-5)
-    assert np.allclose(fit.rk_parameters, L, atol=1e-5)
-
-
-def _exact_least_squares(c, f, nparam):
-    """``(df, f0, L)``, in the order ``RedlichKisterInterpolation`` takes them, solved from
-    the normal equations in exact rationals: the float inputs are exact binary fractions,
-    so nothing in this reference is rounded."""
-    c = [Fraction(x) for x in c]
-    f = [Fraction(y) for y in f]
-    f0, df = f[0], f[-1] - f[0]
-    r = [y - f0 - df * x for x, y in zip(c, f)]
-    B = [[x * (1 - x) * (2 * x - 1) ** v for v in range(nparam)] for x in c]
-    A = [[sum(row[i] * row[j] for row in B) for j in range(nparam)] for i in range(nparam)]
-    b = [sum(row[i] * ri for row, ri in zip(B, r)) for i in range(nparam)]
-    for i in range(nparam):
-        for k in range(i + 1, nparam):
-            factor = A[k][i] / A[i][i]
-            A[k] = [a - factor * p for a, p in zip(A[k], A[i])]
-            b[k] -= factor * b[i]
-    L = [Fraction(0)] * nparam
-    for i in reversed(range(nparam)):
-        L[i] = (b[i] - sum(A[i][j] * L[j] for j in range(i + 1, nparam))) / A[i][i]
-    return float(df), float(f0), np.array([float(v) for v in L])
-
-
-def test_RedlichKister_fit_is_the_least_squares_solution():
-    """Eight line phases at 1000 K, their free energies not a Redlich-Kister curve,
-    five parameters: the fit is the least-squares solution, not an approximation of it."""
-    c = np.array([0.0, 0.595, 0.619, 0.697, 0.751, 0.808, 0.888, 1.0])
-    energy = np.array([-2.815, -3.108, -3.137, -2.994, -2.857, -2.897, -3.531, -2.857])
-    entropy = np.array([0.873, 1.536, 0.705, 2.099, 2.529, 1.183, 1.826, 0.956]) * kB
-    f = energy - 1000.0 * entropy + 1000.0 * S(c)
-    fit = RedlichKister(5).fit(c, f.copy())
-    exact = RedlichKisterInterpolation(*_exact_least_squares(c, f, 5))
-    grid = np.linspace(0, 1, 201)
-    np.testing.assert_allclose(fit(grid), exact(grid), rtol=0, atol=EXACT_ATOL)
+    basis = (c * (1 - c))[:, None] * np.vander(2 * c - 1, len(L), increasing=True)
+    q, _ = np.linalg.qr(basis)
+    residual = noise.copy()
+    residual[[0, -1]] = 0
+    residual -= q @ (q.T @ residual)
+    fit = RedlichKister(len(L)).fit(c, RedlichKisterInterpolation(df, f0, L)(c) + residual)
+    np.testing.assert_allclose(fit.rk_parameters, L, rtol=0, atol=EXACT_ATOL)
+    assert fit.f0 == pytest.approx(f0, abs=EXACT_ATOL)
+    assert fit.df == pytest.approx(df, abs=EXACT_ATOL)
 
 
 def test_RedlichKister_fit_through_the_terminals_alone_is_the_chord():
