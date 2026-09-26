@@ -211,10 +211,13 @@ class PointDefectedPhase(Phase):
         # the exact model is unclamped (window is +-inf) and the raw expression can
         # overflow at the extreme dmu that mu-range autodetection probes; those
         # points are never stable, so ignore the overflow rather than warn
+        # brentq locates each crossing only to within its xtol, on either side, so
+        # the raw c right at a crossing can overshoot [0, 1] by round-off
         interior = (dmu >= dmu_lo) & (dmu <= dmu_hi)
         if interior.any():
             with np.errstate(over="ignore", invalid="ignore"):
-                phi[interior], c[interior] = self._raw_phi_c(T, dmu[interior])
+                phi[interior], c_raw = self._raw_phi_c(T, dmu[interior])
+            c[interior] = np.clip(c_raw, 0.0, 1.0)
 
         upper = dmu > dmu_hi  # c would exceed 1: line phase at c = 1
         if upper.any():
