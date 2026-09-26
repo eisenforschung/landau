@@ -266,7 +266,12 @@ def calc_phase_diagram(
     Returns:
         dataframe of phase points; the ``locus`` column classifies each row
         as a :class:`~landau.features.Locus` value (``"interior"``,
-        ``"boundary"``, ``"triple"`` or ``"congruent"``)
+        ``"boundary"``, ``"triple"`` or ``"congruent"``); with
+        ``keep_unstable=True`` the ``dphi`` column is ``phi`` minus the
+        lowest ``phi`` among the rows at the same ``(T, mu)``, i.e. how far
+        a phase sits above the stable one (``0`` for stable rows, ``NaN`` on
+        the synthetic ``mu = +-inf`` edges; refined rows are zero up to the
+        refiners' numerical tolerance).
     """
     if not isinstance(Ts, Iterable):
         Ts = [Ts]
@@ -299,7 +304,9 @@ def calc_phase_diagram(
     pdf["f_excess"] = _apply_series(
         pdf.groupby("T", group_keys=False), _f_excess_tangent_chord, "f_excess"
     )
-    if not keep_unstable:
+    if keep_unstable:
+        pdf["dphi"] = pdf.phi - pdf.groupby(["T", "mu"]).phi.transform("min")
+    else:
         pdf = pdf.query("stable")
     return pdf
 
