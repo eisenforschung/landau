@@ -38,6 +38,7 @@ import re
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from itertools import count
 from pathlib import Path
 
 import numpy as np
@@ -284,17 +285,34 @@ def _from_surface(name: str, phase: Surface2DInterpolatingPhase, elements: tuple
 
 
 def _tdb_name(phase: Phase) -> str:
-    """Upper-case the name and squash anything that is not alphanumeric to ``_``."""
+    """Upper-case the name, squash anything that is not alphanumeric to ``_`` and cut it to :data:`_NAME_LENGTH`."""
     name = re.sub(r"[^A-Z0-9]+", "_", phase.name.upper()).strip("_")
     if not re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
         raise ValueError(f"cannot derive a TDB phase name from {phase.name!r}; rename the phase")
-    if len(name) > _NAME_LENGTH:
-        raise ValueError(f"TDB phase name {name!r} is longer than {_NAME_LENGTH} characters; rename the phase")
-    return name
+    return name[:_NAME_LENGTH].rstrip("_")
 
 
-def _convert(phase: Phase, elements: tuple[str, str]) -> _TdbPhase:
-    name = _tdb_name(phase)
+def _tdb_names(phases: list[Phase]) -> list[str]:
+    """TDB names of ``phases``, made unique by numbering every name shared by several phases.
+
+    The phases sharing a name are numbered ``_1``, ``_2``, ... in the order given, skipping
+    any name another phase already has, and the name is cut short to fit the number.
+    """
+    names = [_tdb_name(phase) for phase in phases]
+    counts = Counter(names)
+    taken = {name for name in names if counts[name] == 1}
+    unique = []
+    for name in names:
+        if counts[name] > 1:
+            suffixes = (f"_{number}" for number in count(1))
+            numbered = (name[: _NAME_LENGTH - len(suffix)].rstrip("_") + suffix for suffix in suffixes)
+            name = next(candidate for candidate in numbered if candidate not in taken)
+        taken.add(name)
+        unique.append(name)
+    return unique
+
+
+def _convert(phase: Phase, name: str, elements: tuple[str, str]) -> _TdbPhase:
     if isinstance(phase, AbstractLinePhase):
         return _stoichiometric(name, phase, elements)
     if isinstance(phase, IdealSolution):
@@ -358,8 +376,9 @@ def to_tdb(
 
     Args:
         phases: phases to export; each becomes one ``PHASE`` record named after the
-            phase (upper-cased, non-alphanumeric characters replaced by ``_``, at most
-            24 characters).
+            phase: upper-cased, non-alphanumeric characters replaced by ``_``, cut to
+            24 characters.  Phases whose names coincide after that are numbered ``_1``,
+            ``_2``, ... in the order given.
         elements: TDB element names of the components at ``c=0`` and ``c=1``, in
             that order; one or two letters each, not ``VA``.
         temperature_range: ``(low, high)`` validity limits in K stamped on every
@@ -372,7 +391,7 @@ def to_tdb(
     Raises:
         TypeError: a phase has no closed-form CALPHAD representation.
         ValueError: element names, temperature limits or a phase name are unusable,
-            two phases map onto the same TDB name, or a Redlich-Kister fit is not unique.
+            or a Redlich-Kister fit is not unique.
     """
     from . import __version__
 
@@ -382,11 +401,7 @@ def to_tdb(
         raise ValueError(f"temperature_range must satisfy 0 < low < high, got {temperature_range}")
 
     phases = list(phases)
-    converted = [_convert(phase, elements) for phase in phases]
-    duplicates = [name for name, count in Counter(p.name for p in converted).items() if count > 1]
-    if duplicates:
-        clashes = [phase.name for phase, tdb in zip(phases, converted) if tdb.name in duplicates]
-        raise ValueError(f"phases {clashes} map onto the same TDB name(s) {duplicates}; rename them")
+    converted = [_convert(phase, name, elements) for phase, name in zip(phases, _tdb_names(phases))]
 
     header = [
         f"$ Thermodynamic database written by landau {__version__}",
