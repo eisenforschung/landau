@@ -328,9 +328,6 @@ class RedlichKister(ConcentrationInterpolator):
         df = f[-1] - f[0]
         f -= f0 + df * c
         nparam = min(self.nparam, len(c) - 2)
-        # The mixing term is linear in the L_v, so one linear least-squares solve on the
-        # basis _eval_mix sums gives the exact fit -- the minimum-norm one when there are
-        # fewer distinct interior concentrations than parameters and the fit is not unique.
         basis = (c * (1 - c))[:, None] * np.vander(2 * c - 1, nparam, increasing=True)
         rk_parameters = np.linalg.lstsq(basis, f, rcond=None)[0]
         return RedlichKisterInterpolation(df, f0, rk_parameters)
