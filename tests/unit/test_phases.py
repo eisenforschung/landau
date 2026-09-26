@@ -1282,6 +1282,59 @@ def test_new_pointdefect_classes_not_added_to_landau_phases(name):
     assert not hasattr(phases, name)
 
 
+# --- deprecation of the solution phases superseded by FastInterpolatingPhase ---
+
+
+def _deprecated_solution_phases():
+    a = LinePhase("A", 0, 0.0)
+    m = LinePhase("M", 0.5, -0.05)
+    b = LinePhase("B", 1, 0.0)
+    return {
+        "IdealSolution": lambda: IdealSolution("sol", a, b),
+        "RegularSolution": lambda: RegularSolution("sol", [a, m, b]),
+        "InterpolatingPhase": lambda: InterpolatingPhase("sol", [a, m, b]),
+        "SlowInterpolatingPhase": lambda: SlowInterpolatingPhase("sol", [a, m, b]),
+    }
+
+
+@pytest.mark.parametrize("name", list(_deprecated_solution_phases()))
+def test_deprecated_solution_phase_warns_at_caller(name):
+    """Construction warns once, naming the class and the removal version, and the
+    warning is attributed to the constructing line rather than landau internals."""
+    with pytest.warns(DeprecationWarning, match=rf"landau\.phases\.{name} is deprecated: .*2\.0") as record:
+        _deprecated_solution_phases()[name]()
+    assert len(record) == 1
+    assert record[0].filename == __file__
+
+
+def test_fast_interpolating_phase_does_not_inherit_slow_deprecation():
+    import warnings
+
+    a = LinePhase("A", 0, 0.0)
+    b = LinePhase("B", 1, 0.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        FastInterpolatingPhase("sol", [a, b])
+
+
+def test_surface2d_interpolating_phase_does_not_inherit_slow_deprecation():
+    import warnings
+
+    from landau.interpolate import WhitneySurface2DInterpolator
+    from landau.phases import Surface2DInterpolatingPhase
+
+    Ts = np.linspace(400.0, 800.0, 5)
+    lines = [
+        TemperatureDependentLinePhase(f"l{c}", c, Ts, -0.1 * c * (1 - c) - 1e-4 * Ts, interpolator=PolyFit(2))
+        for c in (0.0, 0.5, 1.0)
+    ]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        Surface2DInterpolatingPhase(
+            "sol", lines, temperature_range=(400.0, 800.0), surface_interpolator=WhitneySurface2DInterpolator()
+        )
+
+
 # --- check_interpolation / check_concentration_interpolation plot_error ---
 
 # residuals are recomputed with the same deterministic public methods the plot
