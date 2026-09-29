@@ -103,11 +103,17 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
   - #484 (extract the point-cleaning prologue of `AbstractPolyMethod.make` in `poly.py` as a testable `_clean_points`)
 
-  - #491 (`StitchedFit.fit` picks its low/upp extrapolation samples by array position, so unsorted `(t, y)` input silently fits the edge models through arbitrary subsets, and `edge > len(t)` quietly fits all three models through the same points — sort inside `fit` or validate; `interpolate/basic.py`)
+  - #491 (`StitchedFit.fit` picks its low/upp extrapolation samples by array position, so unsorted `(t, y)` input silently fits the edge models through arbitrary subsets, and `edge > len(t)` quietly fits all three models through the same points — sort inside `fit` or validate; `interpolate/basic.py`) — fix in flight as PR #507 (opened 2026-09-28: sorts `(t, f)` inside `fit` and clamps `edge` to `max(1, len(t) // 2)` per the `SplineFit.degree` degrade-don't-raise precedent)
 
   - #492 (extract the dynamical-stability volume selection out of `PhonopyQuasiHarmonicPhase.__post_init__` as a pure module-level `_select_stable_volumes`, testable without phonopy; adjacent to #458, no overlap)
 
   - #493 (direct value tests for `AsePhase.line_free_energy`'s Helmholtz/Gibbs/`TypeError` dispatch, `atoms_per_formula`, and the 1 atm default — the two existing tests only assert shape)
+
+  - #508 (`RedlichKister.fit` anchors its `f0`/`df` reference line on whichever duplicate-terminal sample came first in the input — stable `argsort` — so the whole fitted curve is row-order dependent; cashes in the `# FIXME: assumes terminals are unique`; decide averaging vs raising vs a deterministic `(c, f)` sort; `interpolate/basic.py`)
+
+  - #509 (`PolynomialInterpolation.coefficients` can come back shorter than `nparam` — `np.poly1d` trims leading zero coefficients — which crashes `test_PolyFit_hypothesis` with a shape mismatch on near-constant data; files the counterexample left unfiled during PR #441; two separable decisions: pad-or-document the length contract, and floor the Hypothesis strategy's coefficient magnitudes)
+
+  - #510 (`test_PolyFit_curvature` gates on the `polyfit` extra by branching inside the test body instead of `skipif` — against the PR #111 convention — and its already-concave data cannot distinguish `enforce_curvature=True` from a plain fit; split into two one-claim tests on convex data, or monkeypatch the fallback so it runs everywhere)
 
   PR #422 (direct tests for `_fit_softplus` / `_fit_slice`) merged 2026-08-30 without a numbered sub-issue; #423 closed 2026-09-01 by PR #434; #390 closed 2026-09-02 by PR #394 and #413 by PR #414; #388 closed 2026-09-07 by PR #391 and #424 by PR #457; #459 (`landau/fleche.py` helpers) was filed and closed not-planned the same day — fleche is expected to take that responsibility over; #481 closed 2026-09-15 by PR #482 (six `TestSurfaceModelAndJac` cases with column-by-column finite differences); #460 closed 2026-09-26 by PR #490 (22 direct cases in new `tests/unit/phases/test_pointdefects.py` plus a `c`-clip fix the tests surfaced; earlier accidentally keyword-closed by the #494 audit commit and reopened — in commit messages and PR bodies, name another PR's issue without closing keywords unless closure is intended). Closed sub-issues are recorded one cohort per line in [`CLAUDE.md`](CLAUDE.md)'s #116 section — check there before re-picking one.
 
@@ -137,7 +143,7 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
 - **#499 `f_excess` of refined rows is referenced against their own coexisting phases only** (filed 2026-09-26) — `_f_excess_tangent_chord` groups by `T`, and 2-D refiners emit rows at off-grid temperatures whose group holds only the coexisting phases; they lie on a common tangent, so refined rows' `f_excess` comes out ~0 whatever their excess against the grid's reference. Single-`T` μ scans (the usual `plot_excess_free_energy` input) are unaffected. Candidate fixes in the issue: interpolate grid references in `T`, or evaluate endpoint tangents from the `phases` objects directly.
 
-- **#502 drop the phonors cap** once phonopy's own cap moves past the `grid_index_from_address` rename (see the extras note in [`CLAUDE.md`](CLAUDE.md)).
+- **#502 drop the phonors cap** once phonopy's own cap moves past the `grid_index_from_address` rename (see the extras note in [`CLAUDE.md`](CLAUDE.md)). Mapped out on the issue 2026-09-29: phonopy 4.6.0 still calls the old name (57 failures with phonors 0.5), 4.7.0 (2026-09-27) requires `phonors>=0.5` and uses the new one — so the fix is `phonopy>=3,<4.8` with the phonors cap dropped; a ready branch off the issue awaits its PR, and dependabot PR #506 (a bare cap bump to `<4.7`, which still admits the broken 4.6.0) is superseded by it.
 
 - **#81 analytic SRO models** — prototype `QuasiChemicalPhase` (PR #123) was closed without merging; still open.
 
@@ -145,7 +151,7 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
 - **#62 flat → `src/` layout** — long-standing. #70 (weak Hypothesis strategies for polygon tests) closed 2026-09-02 by PR #395: `poly_dataframe` now correlates `c`/`T`/`mu` per row instead of drawing them independently.
 
-- **Open PRs in flight** (check before duplicating): #462 (TDB export), the #467 → #471 → #478 → #465 stack (monotectic-type invariant tagging via a `_dominated_node` hook on the gap tracer; exact congruent-point solve + `TerminalRefiner`; miscibility-gap closure tagged as its congruent point; TransitionTemperatures notebook — the stack's base, #466's seed-slope CC bootstrap bracket, merged 2026-09-15), #474 (cost-based transition-temperature label placement, refs #463), #487 (release-please 1.15.0 — carries #466, #490, #496, #497, #503 among others), #504 (a `Contour` poly method contouring a `dphi`-based stability field in (μ, T) — needs `keep_unstable=True` frames with PR #496's `dphi` column; opened 2026-09-26), the CEF stack #324/#326/#346 (+ parked #334) behind #344, and long-open design prototypes #306 (`IntermetallicPhase`), #250 (`PhaseDiagram` object interface), #249 (`BufferedSegments`).
+- **Open PRs in flight** (check before duplicating): #462 (TDB export), the #467 → #471 → #478 → #465 stack (monotectic-type invariant tagging via a `_dominated_node` hook on the gap tracer; exact congruent-point solve + `TerminalRefiner`; miscibility-gap closure tagged as its congruent point; TransitionTemperatures notebook — the stack's base, #466's seed-slope CC bootstrap bracket, merged 2026-09-15), #474 (cost-based transition-temperature label placement, refs #463), #487 (release-please 1.15.0 — carries #466, #490, #496, #497, #503 among others), #504 (a `Contour` poly method contouring a `dphi`-based stability field in (μ, T) — needs `keep_unstable=True` frames with PR #496's `dphi` column; opened 2026-09-26), #507 (StitchedFit input sort, closes #491 — opened 2026-09-28), #506 (dependabot phonopy `<4.7` — superseded by the #502 branch, see above), the CEF stack #324/#326/#346 (+ parked #334) behind #344, and long-open design prototypes #306 (`IntermetallicPhase`), #250 (`PhaseDiagram` object interface), #249 (`BufferedSegments`).
 
 **Out of scope**
 
