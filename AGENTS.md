@@ -143,8 +143,6 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
 - **#499 `f_excess` of refined rows is referenced against their own coexisting phases only** (filed 2026-09-26) — `_f_excess_tangent_chord` groups by `T`, and 2-D refiners emit rows at off-grid temperatures whose group holds only the coexisting phases; they lie on a common tangent, so refined rows' `f_excess` comes out ~0 whatever their excess against the grid's reference. Single-`T` μ scans (the usual `plot_excess_free_energy` input) are unaffected. Candidate fixes in the issue: interpolate grid references in `T`, or evaluate endpoint tangents from the `phases` objects directly.
 
-- **#502 drop the phonors cap** once phonopy's own cap moves past the `grid_index_from_address` rename (see the extras note in [`CLAUDE.md`](CLAUDE.md)). Mapped out on the issue 2026-09-29: phonopy 4.6.0 still calls the old name (57 failures with phonors 0.5), 4.7.0 (2026-09-27) requires `phonors>=0.5` and uses the new one — so the fix is `phonopy>=3,<4.8` with the phonors cap dropped; a ready branch off the issue awaits its PR, and dependabot PR #506 (a bare cap bump to `<4.7`, which still admits the broken 4.6.0) is superseded by it.
-
 - **#81 analytic SRO models** — prototype `QuasiChemicalPhase` (PR #123) was closed without merging; still open.
 
 - **#33 fast Legendre transforms**, **#59 autodiff for `concentration`** — stretch goals; no owner.
