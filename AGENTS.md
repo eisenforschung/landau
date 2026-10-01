@@ -73,7 +73,7 @@ Python `>=3.11,<3.14`. Extras: `test`, `constraints`, `fast-tsp`, `python-tsp`, 
 
 - **Git: rebase, never merge.** Merge commits are disabled on GitHub. Rebase onto `origin/main` and force-push to keep history linear.
 
-- **Conventional Commits drive releases.** `release-please` (`.github/workflows/release-please.yml`, PR #225) reads conventional-commit messages on `main` to open release PRs; non-conforming messages are ignored by the release tooling. Use `feat:`/`fix:`/`docs:`/`test:`/`chore:`/`refactor:`, `!` or `BREAKING CHANGE:` for breaks.
+- **Conventional Commits drive releases.** `release-please` (`.github/workflows/release-please.yml`, PR #225) reads conventional-commit messages on `main` to open release PRs; non-conforming messages are ignored by the release tooling. Use `feat:`/`fix:`/`docs:`/`test:`/`chore:`/`refactor:`, `!` or `BREAKING CHANGE:` for breaks. Latest release: 1.15.0 (2026-09-30).
 
 - **Do not commit** `.hypothesis/`, `_version.py`, stray top-level scripts, duplicate exploratory files.
 
@@ -149,7 +149,7 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
 - **#62 flat → `src/` layout** — long-standing. #70 (weak Hypothesis strategies for polygon tests) closed 2026-09-02 by PR #395: `poly_dataframe` now correlates `c`/`T`/`mu` per row instead of drawing them independently.
 
-- **Open PRs in flight** (check before duplicating): #462 (TDB export), the #467 → #471 → #478 → #465 stack (monotectic-type invariant tagging via a `_dominated_node` hook on the gap tracer; exact congruent-point solve + `TerminalRefiner`; miscibility-gap closure tagged as its congruent point; TransitionTemperatures notebook — the stack's base, #466's seed-slope CC bootstrap bracket, merged 2026-09-15), #474 (cost-based transition-temperature label placement, refs #463), #487 (release-please 1.15.0 — carries #466, #490, #496, #497, #503 among others), #504 (a `Contour` poly method contouring a `dphi`-based stability field in (μ, T) — needs `keep_unstable=True` frames with PR #496's `dphi` column; opened 2026-09-26), #507 (StitchedFit input sort, closes #491 — opened 2026-09-28), #506 (dependabot phonopy `<4.7` — superseded by the #502 branch, see above), the CEF stack #324/#326/#346 (+ parked #334) behind #344, and long-open design prototypes #306 (`IntermetallicPhase`), #250 (`PhaseDiagram` object interface), #249 (`BufferedSegments`).
+- **Open PRs in flight** (check before duplicating): #462 (TDB export), the #467 → #471 → #478 → #465 stack (monotectic-type invariant tagging via a `_dominated_node` hook on the gap tracer; exact congruent-point solve + `TerminalRefiner`; miscibility-gap closure tagged as its congruent point; TransitionTemperatures notebook — the stack's base, #466's seed-slope CC bootstrap bracket, merged 2026-09-15 and released in 1.15.0), #474 (cost-based transition-temperature label placement, refs #463), #504 (a `Contour` poly method contouring a `dphi`-based stability field in (μ, T) — needs `keep_unstable=True` frames with PR #496's `dphi` column; opened 2026-09-26), #507 (StitchedFit input sort, closes #491 — opened 2026-09-28), the CEF stack #324/#326/#346 (+ parked #334) behind #344, and long-open design prototypes #306 (`IntermetallicPhase`), #250 (`PhaseDiagram` object interface), #249 (`BufferedSegments`).
 
 **Out of scope**
 
