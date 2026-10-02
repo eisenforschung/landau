@@ -1,3 +1,4 @@
+import pytest
 import numpy as np
 from landau.interpolate import StitchedFit, PolyFit, SGTE, G_calphad
 from hypothesis import given, strategies as st
@@ -81,3 +82,58 @@ def test_stitched_fit_low_branch():
     np.testing.assert_allclose(fit(T), y, atol=0.1)
     # Value just below tmin should be finite (served by low branch)
     assert np.isfinite(fit(299.0))
+
+
+# shared tolerance for the exact-recovery assertions below; all of them fit a polynomial through
+# points that lie exactly on it, so the only error is PolyFit's ridge regularizer (~1e-7 relative)
+_ATOL = 1e-4
+
+
+def _quadratic(t):
+    return 1e-4 * t**2 - 0.3 * t + 5.0
+
+
+def test_stitched_fit_is_order_independent():
+    """Shuffling (t, f) must not move the fitted curve, inside or outside the window."""
+    t = np.linspace(300, 1000, 40)
+    y = _quadratic(t)
+    sf = StitchedFit(interpolating=PolyFit(3), low=PolyFit(2), upp=PolyFit(2), edge=10)
+    rng = np.random.default_rng(0)
+    perm = rng.permutation(len(t))
+
+    probe = np.array([250.0, 500.0, 1100.0])
+    np.testing.assert_allclose(sf.fit(t[perm], y[perm])(probe), sf.fit(t, y)(probe), atol=_ATOL)
+
+
+def test_stitched_fit_edges_fitted_from_the_extreme_samples():
+    """The edge fits see only the extreme samples, so they recover what the mid fit cannot."""
+    t = np.linspace(300, 1000, 40)
+    y = _quadratic(t)
+    # linear mid fit cannot represent the quadratic, quadratic edge fits recover it exactly
+    sf = StitchedFit(interpolating=PolyFit(2), low=PolyFit(3), upp=PolyFit(3), edge=10)
+    fit = sf.fit(t, y)
+
+    outside = np.array([250.0, 1100.0])
+    np.testing.assert_allclose(fit(outside), _quadratic(outside), atol=_ATOL)
+    # the mid fit is off by >10 units there, so neither it nor a wider edge window passes the above
+    assert np.abs(PolyFit(2).fit(t, y)(outside) - _quadratic(outside)).min() > 10.0
+
+
+def test_stitched_fit_edge_clamped_to_half_the_samples():
+    """An edge wider than half the data is clamped, so the two windows stay disjoint."""
+    t = np.arange(8.0)
+    # lower half on one line, upper half on another
+    y = np.where(t < 4, 2.0 * t, 10.0 - t)
+    sf = StitchedFit(interpolating=PolyFit(3), low=PolyFit(2), upp=PolyFit(2), edge=100)
+    fit = sf.fit(t, y)
+
+    assert fit(-1.0) == pytest.approx(-2.0, abs=_ATOL)  # 2 * t continued below t = 0
+    assert fit(8.0) == pytest.approx(2.0, abs=_ATOL)  # 10 - t continued above t = 7
+
+
+def test_stitched_fit_single_sample():
+    """A one-sample fit keeps one edge sample rather than an empty window."""
+    sf = StitchedFit(interpolating=PolyFit(1), low=PolyFit(1), upp=PolyFit(1), edge=10)
+    fit = sf.fit(np.array([500.0]), np.array([3.0]))
+
+    np.testing.assert_allclose(fit(np.array([400.0, 500.0, 600.0])), 3.0, atol=_ATOL)
