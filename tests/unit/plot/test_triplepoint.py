@@ -158,3 +158,24 @@ def test_real_diagram_marks_the_invariant(ax, eutectic_diagram, variables):
         (mx, my), = _markers(ax)
         assert mx == pytest.approx(triple["mu"].mean())
         assert my == pytest.approx(T_t)
+
+
+def test_same_phase_twice_spans_rival_to_far_branch(ax):
+    """A monotectic-type invariant names one phase twice (the two branches of
+    a miscibility gap, tagged by MiscibilityGapRefiner._dominated_node). The
+    rows are grouped by (mu, T), not by phase, so the isotherm still spans
+    from the rival's concentration to the far branch."""
+    df = pd.DataFrame(
+        {
+            "mu": [0.45] * 3,
+            "T": [1110.0] * 3,
+            "c": [0.12, 0.88, 0.0],
+            "phase": ["liquid", "liquid", "alpha"],
+            "locus": [Locus.TRIPLE] * 3,
+        }
+    )
+    _plot_triplepoints(df, ax=ax, variables=["c", "T"])
+    assert _hlines(ax) == pytest.approx([(1110.0, 0.0, 0.88)])
+    plt.cla()
+    _plot_triplepoints(df, ax=ax, variables=["mu", "T"])
+    assert _markers(ax) == pytest.approx([(0.45, 1110.0)])
