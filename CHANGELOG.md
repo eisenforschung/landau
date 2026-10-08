@@ -3,6 +3,18 @@
 Notable changes to **landau.py**, newest first. Per-PR detail lives in the
 [GitHub releases](https://github.com/eisenforschung/landau/releases).
 
+## [1.16.0](https://github.com/eisenforschung/landau/compare/1.15.0...1.16.0) (2026-10-08)
+
+
+### Features
+
+* **interpolate:** add knee_bounds to SoftplusSurface2DInterpolator ([#521](https://github.com/eisenforschung/landau/issues/521)) ([3bb2273](https://github.com/eisenforschung/landau/commit/3bb227319998eec5737201ea21434497369ba335))
+
+
+### Bug Fixes
+
+* **interpolate:** sort StitchedFit input before slicing its edge windows ([#507](https://github.com/eisenforschung/landau/issues/507)) ([e96d4b0](https://github.com/eisenforschung/landau/commit/e96d4b09e1a1c9d8688a0689ee562edc774d4c0c))
+
 ## [1.15.0](https://github.com/eisenforschung/landau/compare/1.14.1...1.15.0) (2026-09-30)
 
 
