@@ -520,19 +520,31 @@ class StitchedFit(TemperatureInterpolator):
     # use a straight line (constant entropy) for higher temperatures
     upp: TemperatureInterpolator | None = PolyFit(2)
 
-    """How many samples near the edges to use to fit the extrapolating interpolator."""
+    """How many samples near the edges to use to fit the extrapolating interpolator.
+
+    Clamped to `len(t) // 2` (at least one sample), so the low and upper windows never overlap.
+    """
+
     edge: int = 10
 
     def fit(self, t, f):
-        tmin = t.min()
-        tmax = t.max()
+        t = np.asarray(t)
+        f = np.asarray(f)
+        # the extrapolation windows are taken positionally, so sort first; tmin/tmax below then
+        # bound the same samples the edge fits are built from
+        order = np.argsort(t)
+        t = t[order]
+        f = f[order]
+        edge = max(1, min(self.edge, len(t) // 2))
+        tmin = t[0]
+        tmax = t[-1]
         mid = self.interpolating.fit(t, f)
         low = None
         upp = None
         if self.low is not None:
-            low = self.low.fit(t[: self.edge], f[: self.edge])
+            low = self.low.fit(t[:edge], f[:edge])
         if self.upp is not None:
-            upp = self.upp.fit(t[-self.edge :], f[-self.edge :])
+            upp = self.upp.fit(t[-edge:], f[-edge:])
 
         def interpolation(t):
             t = np.array(t)
