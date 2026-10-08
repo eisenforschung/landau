@@ -498,6 +498,15 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
     solve -- reliable for the intended convex-V wells (the opposite-slope seed
     yields ``[+, -]``), but a near-degenerate seed slice could lock in a wrong
     sign.  The default ``False`` leaves ``b_i(T)`` a free polynomial in ``1/T``."""
+    knee_bounds: tuple[float, float] | None = None
+    """Bounds ``(lo, hi)`` on the knee positions, in concentration units.  The
+    coupled fit is multimodal in the knee: on a narrow, asymmetric well the knee
+    can settle on the edge of the data instead of the well tip, depending on
+    which concentrations happen to be sampled.  Bounding it to the region where
+    the tip is known to be (e.g. around the stoichiometry of an ordered phase)
+    removes that basin.  Requires ``c_order=0`` (a constant knee, so the bound is
+    exact at every temperature) and the trust-region solver (``method='lm'``
+    does not support bounds; ``None`` selects ``'trf'``)."""
 
     # --- internal solver tuning (not dataclass fields) ---
     _SEED_MAX_NFEV: ClassVar[int] = 300
@@ -523,6 +532,14 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
             raise ValueError(
                 "method='lm' supports only loss='linear'; use method='trf' for a robust loss"
             )
+        if self.knee_bounds is not None:
+            lo, hi = self.knee_bounds
+            if not lo < hi:
+                raise ValueError(f"knee_bounds must satisfy lo < hi, got {self.knee_bounds}")
+            if self.c_order != 0:
+                raise ValueError("knee_bounds requires c_order=0 (a constant knee)")
+            if self.method == "lm":
+                raise ValueError("method='lm' does not support knee_bounds; use method='trf'")
 
     @property
     def _orders(self):
@@ -666,13 +683,15 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
         """``least_squares`` keyword arguments for the coupled solve.
 
         Uses ``method='lm'`` where scipy applies MINPACK's internal variable
-        scaling (:attr:`_LM_HAS_INTERNAL_SCALING`) and the loss is linear,
-        otherwise the trust-region solver with ``x_scale='jac'``.  An explicit
+        scaling (:attr:`_LM_HAS_INTERNAL_SCALING`), the loss is linear and no
+        :attr:`knee_bounds` are set, otherwise the trust-region solver with
+        ``x_scale='jac'``.  An explicit
         :attr:`method` overrides the version-based choice.
         """
         method = self.method
         if method is None:
-            method = "lm" if (self._LM_HAS_INTERNAL_SCALING and self.loss == "linear") else "trf"
+            lm_ok = self._LM_HAS_INTERNAL_SCALING and self.loss == "linear" and self.knee_bounds is None
+            method = "lm" if lm_ok else "trf"
         if method == "lm":
             return dict(method="lm")  # __post_init__ guarantees loss == "linear"
         return dict(method="trf", loss=self.loss, f_scale=self.f_scale, x_scale="jac")
@@ -709,6 +728,23 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
             starts.append((self._const_init(a0, b0, c0, off0, b_basis), signs))
         return starts
 
+    def _param_bounds(self, cm, cs):
+        """``(lb, ub)`` for the coupled fit: :attr:`knee_bounds` on the constant
+        knee coefficient(s), mapped to normalised concentration; all else free."""
+        lb = np.full(self._n_params, -np.inf)
+        ub = np.full(self._n_params, np.inf)
+        na, nb, nc, _ = self._orders
+        n = self.n_softplus
+        lo, hi = self.knee_bounds
+        # the knee sits where cn + c_i = 0, i.e. c_i = (cm - x) / cs
+        klo, khi = (cm - hi) / cs, (cm - lo) / cs
+        if self.shared_knee:
+            idx = [n * (na + nb)]
+        else:
+            idx = [i * (na + nb + nc) + na + nb for i in range(n)]
+        lb[idx], ub[idx] = klo, khi
+        return lb, ub
+
     def fit(self, T, c, f) -> SoftplusFittedSurface:
         T = np.asarray(T, float)
         c = np.asarray(c, float)
@@ -730,6 +766,11 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
         ridge = 1e-7 * (float(np.abs(f).max()) or 1.0)
         eye = ridge * np.eye(self._n_params)
         kwargs = self._solver_kwargs()
+        starts = self._seed_starts(T, cn, f, vt[1])
+        if self.knee_bounds is not None:
+            lb, ub = self._param_bounds(cm, cs)
+            kwargs["bounds"] = (lb, ub)
+            starts = [(np.clip(seed, lb, ub), signs) for seed, signs in starts]
 
         def coupled(seed, signs):
             mj = ((lambda p, cn_, vt_: self._model_and_jac(p, cn_, vt_, signs))
@@ -744,8 +785,7 @@ class SoftplusSurface2DInterpolator(SurfaceInterpolator):
         # so structureless data can't wander down a flat valley to a degenerate
         # huge-amplitude basin; if the short polish already converged it *is* the answer.
         race_nfev = min(self.max_nfev, self._SEED_RACE_NFEV)
-        trials = [(seed, signs, coupled(seed, signs).solve(race_nfev))
-                  for seed, signs in self._seed_starts(T, cn, f, vt[1])]
+        trials = [(seed, signs, coupled(seed, signs).solve(race_nfev)) for seed, signs in starts]
         seed, signs, trial = min(trials, key=lambda st: st[2].cost)
         res = trial if trial.status > 0 else coupled(seed, signs).solve(self.max_nfev)
 

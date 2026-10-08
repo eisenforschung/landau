@@ -183,6 +183,63 @@ def test_shared_knee_reduces_parameter_count():
 
 
 # --------------------------------------------------------------------------- #
+# knee_bounds: knee confined to a concentration window
+# --------------------------------------------------------------------------- #
+def _knees(surface, T):
+    """Knee positions of the fitted slice at ``T`` in concentration units."""
+    return surface._cm - surface.slice_at(T).c * surface._cs
+
+
+def _v_well(T, c, knee=0.5):
+    amps = [lambda t: 0.05 + 2e-5 * (t - 600), lambda t: 0.03]
+    slopes = [lambda t: 4.0 + 1e-3 * (t - 600), lambda t: -3.0 - 5e-4 * (t - 600)]
+    knees = [lambda t: -knee, lambda t: -knee]
+    return _softplus_surface(T, c, amps=amps, slopes=slopes, knees=knees, offset=-0.2)
+
+
+@pytest.mark.parametrize("shared_knee", [True, False])
+def test_knee_bounds_containing_the_knee_recover_the_surface(shared_knee):
+    """Bounds around the true knee leave an in-family surface recovered as tightly
+    as the unbounded fit, with every knee inside the window."""
+    T, c, Tg, cg = _grid()
+    surface = SoftplusSurface2DInterpolator(
+        n_softplus=2, c_order=0, shared_knee=shared_knee, knee_bounds=(0.45, 0.55)
+    ).fit(T, c, _v_well(T, c))
+    for Tq in (Tg[0], Tg[len(Tg) // 2], Tg[-1]):
+        np.testing.assert_allclose(surface.slice_at(Tq)(cg), _v_well(Tq, cg), atol=RECOVER_ATOL)
+        assert np.all((_knees(surface, Tq) >= 0.45 - 1e-12) & (_knees(surface, Tq) <= 0.55 + 1e-12))
+
+
+def test_knee_bounds_excluding_the_knee_pin_it_to_the_bound():
+    """A window that excludes the true knee (at 0.5) holds the fitted knee on the
+    nearest bound at every temperature, extrapolated ones included."""
+    T, c, *_ = _grid()
+    surface = SoftplusSurface2DInterpolator(
+        n_softplus=2, c_order=0, shared_knee=True, knee_bounds=(0.6, 0.7)
+    ).fit(T, c, _v_well(T, c))
+    for Tq in (200.0, 600.0, 950.0):
+        np.testing.assert_allclose(_knees(surface, Tq), 0.6, atol=1e-9)
+
+
+def test_knee_bounds_select_the_trust_region_solver():
+    """Bounds need ``trf``: the default picks it even for a linear loss."""
+    assert SoftplusSurface2DInterpolator(c_order=0, knee_bounds=(0.3, 0.4))._solver_kwargs()["method"] == "trf"
+
+
+@pytest.mark.parametrize(
+    "kwargs, match",
+    [
+        ({"c_order": 1, "knee_bounds": (0.3, 0.4)}, "c_order=0"),
+        ({"c_order": 0, "knee_bounds": (0.4, 0.3)}, "lo < hi"),
+        ({"c_order": 0, "knee_bounds": (0.3, 0.4), "method": "lm"}, "knee_bounds"),
+    ],
+)
+def test_knee_bounds_validation(kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        SoftplusSurface2DInterpolator(**kwargs)
+
+
+# --------------------------------------------------------------------------- #
 # monotone_slope: |b_i(T)| never reverses (a convex well only sharpens as it cools)
 # --------------------------------------------------------------------------- #
 MONO_ATOL = 1e-9  # forward-difference slack for "|b| non-increasing in T"
