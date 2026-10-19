@@ -153,7 +153,25 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
 - **#62 flat → `src/` layout** — long-standing. #70 (weak Hypothesis strategies for polygon tests) closed 2026-09-02 by PR #395: `poly_dataframe` now correlates `c`/`T`/`mu` per row instead of drawing them independently.
 
-- **Open PRs in flight** (check before duplicating): #462 (TDB export), the #467 → #471 → #478 → #465 stack (monotectic-type invariant tagging via a `_dominated_node` hook on the gap tracer; exact congruent-point solve + `TerminalRefiner`; miscibility-gap closure tagged as its congruent point; TransitionTemperatures notebook — the stack's base, #466's seed-slope CC bootstrap bracket, merged 2026-09-15 and released in 1.15.0), #474 (cost-based transition-temperature label placement, refs #463), #504 (a `Contour` poly method contouring a `dphi`-based stability field in (μ, T) — needs `keep_unstable=True` frames with PR #496's `dphi` column; opened 2026-09-26), #515 (extracts `_select_stable_volumes` out of `PhonopyQuasiHarmonicPhase.__post_init__`, closes #492 — opened 2026-10-05), the CEF stack #324/#326/#346 (+ parked #334) behind #344, and long-open design prototypes #306 (`IntermetallicPhase`), #250 (`PhaseDiagram` object interface), #249 (`BufferedSegments`).
+- **Open PRs in flight** (check before duplicating):
+
+  - #462 (TDB export — `landau.tdb` with `to_tdb` / `write_tdb`)
+
+  - the #467 → #471 → #478 → #465 stack (monotectic-type invariant tagging via a `_dominated_node` hook on the gap tracer; exact congruent-point solve + `TerminalRefiner`; miscibility-gap closure tagged as its congruent point; TransitionTemperatures notebook — the stack's base, #466's seed-slope CC bootstrap bracket, merged 2026-09-15 and released in 1.15.0)
+
+  - #474 (cost-based transition-temperature label placement, refs #463)
+
+  - #504 (a `Contour` poly method contouring a `dphi`-based stability field in (μ, T) — needs `keep_unstable=True` frames with PR #496's `dphi` column; opened 2026-09-26)
+
+  - #515 (extracts `_select_stable_volumes` out of `PhonopyQuasiHarmonicPhase.__post_init__`, closes #492 — opened 2026-10-05)
+
+  - #525 (re-renders the README Mg-Ca diagram with `transition_temperatures=True` and adds its previously missing generating script `scripts/readme_mgca.py`; the render reproduces #464 live — duplicate 436 K label, terminal melting points tagged congruent — so the script is to be re-run once #471 lands; opened 2026-10-12)
+
+  - #527 (dependabot: raises the shapely cap `<=2.1.2` → `<=2.2.0` — shapely 2.2 ships GEOS 3.14 wheels, which fix the GEOS 3.13 `concave_hull` hang that used to stall `test-minimum-deps` and is currently only worked around test-side; opened 2026-10-13)
+
+  - the CEF stack #324/#326/#346 (+ parked #334) behind #344
+
+  - long-open design prototypes #306 (`IntermetallicPhase`), #250 (`PhaseDiagram` object interface), #249 (`BufferedSegments`)
 
 **Out of scope**
 
