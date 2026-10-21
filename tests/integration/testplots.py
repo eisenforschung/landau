@@ -181,8 +181,8 @@ def plot_1d_mu_intermetallic(out_dir: Path, **_) -> Path:
     return _save(fig, out_dir, "1d_mu_intermetallic_phase_diagram")
 
 
-def plot_2d_basics(out_dir: Path, poly_method: str | None = None, tielines: bool = True, **_) -> Path:
-    """2D c-T phase diagram (hcp / fcc / liquid ideal solutions) from Basics.ipynb."""
+def _basics_phases():
+    """hcp / fcc / liquid ideal solutions from Basics.ipynb."""
     fcca = ldp.LinePhase("fccA", fixed_concentration=0, line_energy=-3.00, line_entropy=1.0 * ldp.kB)
     fccb = ldp.LinePhase("fccB", fixed_concentration=1, line_energy=-2.00, line_entropy=1.1 * ldp.kB)
     hcpa = ldp.LinePhase("hcpA", fixed_concentration=0, line_energy=-2.975, line_entropy=1.8 * ldp.kB)
@@ -192,10 +192,22 @@ def plot_2d_basics(out_dir: Path, poly_method: str | None = None, tielines: bool
     fcc = ldp.IdealSolution("fcc", fcca, fccb)
     hcp = ldp.IdealSolution("hcp", hcpa, hcpb)
     lqd = ldp.IdealSolution("liquid", lqda, lqdb)
+    return [hcp, fcc, lqd]
 
-    Ts = np.linspace(200, 1000, 50)
-    df = ldc.calc_phase_diagram([hcp, fcc, lqd], Ts, mu=100)
 
+def _calc_2d_basics():
+    """Basics c-T grid shared by the 2d_basics testplots."""
+    return ldc.calc_phase_diagram(_basics_phases(), np.linspace(200, 1000, 50), mu=100)
+
+
+def _calc_2d_basics_mu():
+    """Basics T-mu grid shared by the 2d_basics_mu testplots."""
+    return ldc.calc_phase_diagram(_basics_phases(), np.linspace(200, 1000, 100), mu=np.linspace(0.5, 1.5, 100))
+
+
+def plot_2d_basics(out_dir: Path, poly_method: str | None = None, tielines: bool = True, **_) -> Path:
+    """2D c-T phase diagram (hcp / fcc / liquid ideal solutions) from Basics.ipynb."""
+    df = _calc_2d_basics()
     fig, ax = plt.subplots(figsize=(6, 5))
     lpl.plot_phase_diagram(df, ax=ax, triplepoints=tielines, poly_method=poly_method)
     ax.set_title(f"2D c-T diagram (hcp / fcc / liquid ideal solutions){_title_suffix(poly_method, tielines)}")
@@ -204,49 +216,16 @@ def plot_2d_basics(out_dir: Path, poly_method: str | None = None, tielines: bool
 
 def plot_2d_basics_mu(out_dir: Path, poly_method: str | None = None, **_) -> Path:
     """2D T-mu phase diagram (hcp / fcc / liquid ideal solutions) from Basics.ipynb."""
-    fcca = ldp.LinePhase("fccA", fixed_concentration=0, line_energy=-3.00, line_entropy=1.0 * ldp.kB)
-    fccb = ldp.LinePhase("fccB", fixed_concentration=1, line_energy=-2.00, line_entropy=1.1 * ldp.kB)
-    hcpa = ldp.LinePhase("hcpA", fixed_concentration=0, line_energy=-2.975, line_entropy=1.8 * ldp.kB)
-    hcpb = ldp.LinePhase("hcpB", fixed_concentration=1, line_energy=-1.95, line_entropy=1.1 * ldp.kB)
-    lqda = ldp.LinePhase("liquidA", fixed_concentration=0, line_energy=-2.75, line_entropy=5.0 * ldp.kB)
-    lqdb = ldp.LinePhase("liquidB", fixed_concentration=1, line_energy=-1.75, line_entropy=4.4 * ldp.kB)
-    fcc = ldp.IdealSolution("fcc", fcca, fccb)
-    hcp = ldp.IdealSolution("hcp", hcpa, hcpb)
-    lqd = ldp.IdealSolution("liquid", lqda, lqdb)
-
-    Ts = np.linspace(200, 1000, 100)
-    mus = np.linspace(0.5, 1.5, 100)
-    df = ldc.calc_phase_diagram([hcp, fcc, lqd], Ts, mu=mus)
-
+    df = _calc_2d_basics_mu()
     fig, ax = plt.subplots(figsize=(6, 5))
     lpl.plot_mu_phase_diagram(df, ax=ax, poly_method=poly_method)
     ax.set_title(rf"2D T-$\mu$ diagram (hcp / fcc / liquid ideal solutions){_title_suffix(poly_method)}")
     return _save(fig, out_dir, "2d_basics_mu_phase_diagram", _file_suffix(poly_method))
 
 
-def _calc_2d_basics_grid():
-    """hcp/fcc/liquid (Basics.ipynb) on a c-T/T-mu grid, shared by the color_by testplots."""
-    fcc = ldp.IdealSolution(
-        "fcc",
-        ldp.LinePhase("fccA", fixed_concentration=0, line_energy=-3.00, line_entropy=1.0 * ldp.kB),
-        ldp.LinePhase("fccB", fixed_concentration=1, line_energy=-2.00, line_entropy=1.1 * ldp.kB),
-    )
-    hcp = ldp.IdealSolution(
-        "hcp",
-        ldp.LinePhase("hcpA", fixed_concentration=0, line_energy=-2.975, line_entropy=1.8 * ldp.kB),
-        ldp.LinePhase("hcpB", fixed_concentration=1, line_energy=-1.95, line_entropy=1.1 * ldp.kB),
-    )
-    lqd = ldp.IdealSolution(
-        "liquid",
-        ldp.LinePhase("liquidA", fixed_concentration=0, line_energy=-2.75, line_entropy=5.0 * ldp.kB),
-        ldp.LinePhase("liquidB", fixed_concentration=1, line_energy=-1.75, line_entropy=4.4 * ldp.kB),
-    )
-    return ldc.calc_phase_diagram([hcp, fcc, lqd], np.linspace(200, 1000, 50), mu=100)
-
-
 def plot_2d_basics_field(out_dir: Path, poly_method: str | None = None, **_) -> Path:
     """2D c-T diagram (hcp / fcc / liquid) with each phase field coloured by mu via color_by."""
-    df = _calc_2d_basics_grid()
+    df = _calc_2d_basics()
     fig, ax = plt.subplots(figsize=(7, 5))
     lpl.plot_phase_diagram(df, ax=ax, color_by="mu", poly_method=poly_method)
     ax.set_title(rf"2D c-T diagram coloured by $\Delta\mu${_title_suffix(poly_method)}")
@@ -255,7 +234,7 @@ def plot_2d_basics_field(out_dir: Path, poly_method: str | None = None, **_) -> 
 
 def plot_2d_basics_mu_field(out_dir: Path, poly_method: str | None = None, **_) -> Path:
     """2D T-mu diagram (hcp / fcc / liquid) with each phase field coloured by c via color_by."""
-    df = _calc_2d_basics_grid()
+    df = _calc_2d_basics_mu()
     fig, ax = plt.subplots(figsize=(7, 5))
     lpl.plot_mu_phase_diagram(df, ax=ax, color_by="c", poly_method=poly_method)
     ax.set_title(rf"2D T-$\mu$ diagram coloured by $c${_title_suffix(poly_method)}")

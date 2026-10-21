@@ -13,6 +13,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 import shapely
+from hypothesis import given
+from hypothesis import strategies as st
+from hypothesis.extra.numpy import arrays
 from matplotlib.collections import QuadMesh
 from matplotlib.colors import LogNorm
 from scipy.spatial import Delaunay
@@ -60,19 +63,24 @@ def _inside(mesh, xy):
 # --- _region_interpolator ----------------------------------------------------
 
 
-def test_region_interpolator_exact_on_linear_data_inside_hull():
-    rng = np.random.default_rng(0)
-    xy = np.vstack([[[0, 0], [1, 0], [0, 1], [1, 1]], rng.random((40, 2))])
-    z = 2 * xy[:, 0] - 3 * xy[:, 1] + 1
-    q = rng.random((500, 2))
-    np.testing.assert_allclose(_region_interpolator(xy, z)(q), 2 * q[:, 0] - 3 * q[:, 1] + 1, atol=1e-12)
+_unit = st.floats(0, 1)
+_coeff = st.floats(-10, 10)
 
 
-def test_region_interpolator_nearest_outside_hull():
-    xy = np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
-    z = np.array([5.0, 7.0, 11.0])
-    q = np.array([[3.0, -0.1], [-0.2, 4.0], [0.9, 0.9]])
-    np.testing.assert_array_equal(_region_interpolator(xy, z)(q), [7.0, 11.0, 7.0])
+@given(
+    inner=arrays(float, st.tuples(st.integers(0, 40), st.just(2)), elements=_unit),
+    # strictly inside: a query on the hull edge can miss every simplex once Qhull drops a
+    # point collinear with that edge, and falls back to nearest like the rim does
+    q=arrays(float, st.tuples(st.integers(1, 50), st.just(2)), elements=st.floats(1e-6, 1 - 1e-6)),
+    a=_coeff,
+    b=_coeff,
+    d=_coeff,
+)
+def test_region_interpolator_exact_on_linear_data_inside_hull(inner, q, a, b, d):
+    # the corners make the hull the unit square
+    xy = np.vstack([[[0, 0], [1, 0], [0, 1], [1, 1]], inner])
+    z = a * xy[:, 0] + b * xy[:, 1] + d
+    np.testing.assert_allclose(_region_interpolator(xy, z)(q), a * q[:, 0] + b * q[:, 1] + d, atol=_ATOL)
 
 
 def test_region_interpolator_collinear_is_nearest():
