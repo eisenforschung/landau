@@ -182,6 +182,28 @@ def test_no_color_by_draws_no_field(eutectic_diagram, ax):
     assert all(p.get_facecolor()[3] > 0 for p in ax.patches)
 
 
+@pytest.mark.parametrize("plot", [plot_phase_diagram, plot_mu_phase_diagram])
+def test_field_labels_phases_inline(eutectic_diagram, ax, plot):
+    plot(eutectic_diagram, ax=ax, color_by="T", poly_method="concave")
+    assert ax.get_legend() is None
+    labels = {t.get_text() for t in ax.texts}
+    stable = set(eutectic_diagram.query("stable")["phase"])
+    assert {lbl.rstrip("'") for lbl in labels} == stable
+
+
+@pytest.mark.parametrize("plot", [plot_phase_diagram, plot_mu_phase_diagram])
+def test_field_refuses_legend_box(eutectic_diagram, ax, plot):
+    with pytest.raises(ValueError, match="inline_legend=True"):
+        plot(eutectic_diagram, ax=ax, color_by="T", inline_legend=False, poly_method="concave")
+    assert len(ax.patches) == 0 and len(ax.collections) == 0  # nothing drawn before refusing
+
+
+def test_field_without_any_legend(eutectic_diagram, ax):
+    plot_mu_phase_diagram(eutectic_diagram, ax=ax, color_by="T", inline_legend=False, legend=False, poly_method="concave")
+    assert ax.get_legend() is None and len(ax.texts) == 0
+    assert _meshes(ax)
+
+
 def test_unknown_column_raises(eutectic_diagram, ax):
     with pytest.raises(KeyError, match="no_such_column"):
         plot_mu_phase_diagram(eutectic_diagram, ax=ax, color_by="no_such_column", poly_method="concave")

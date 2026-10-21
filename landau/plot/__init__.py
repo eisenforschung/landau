@@ -320,6 +320,13 @@ def _plot_phase_diagram(
     norm=None,
     colorbar=True,
 ):
+    # A field coloured by a scalar has no per-phase colour left for a legend
+    # box to show, so its phases can only be named on the polygons themselves.
+    if color_by is not None and legend and not inline_legend:
+        raise ValueError(
+            "color_by leaves the phases without colours a legend box could show; "
+            "use inline_legend=True to label them in place, or legend=False."
+        )
     if variables is None:
         variables = ["c", "T"]
     if ax is None:
