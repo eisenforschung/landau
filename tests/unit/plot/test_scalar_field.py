@@ -75,12 +75,12 @@ def test_region_interpolator_nearest_outside_hull():
     np.testing.assert_array_equal(_region_interpolator(xy, z)(q), [7.0, 11.0, 7.0])
 
 
-def test_region_interpolator_collinear_interpolates_along_line_and_clamps():
+def test_region_interpolator_collinear_is_nearest():
     # a c-T line phase: one concentration, many temperatures
     xy = np.column_stack([np.full(6, 0.5), [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]])
     z = 100 * xy[:, 1]
-    q = np.array([[0.4, 0.3], [0.6, 0.7], [0.5, -1.0], [0.5, 2.0]])
-    np.testing.assert_allclose(_region_interpolator(xy, z)(q), [30.0, 70.0, 0.0, 100.0], atol=1e-12)
+    q = np.array([[0.4, 0.29], [0.6, 0.71], [0.5, -1.0], [0.5, 2.0]])
+    np.testing.assert_array_equal(_region_interpolator(xy, z)(q), [20.0, 80.0, 0.0, 100.0])
 
 
 @pytest.mark.parametrize("n", [1, 2])
@@ -142,14 +142,16 @@ def test_field_does_not_blend_across_boundaries(eutectic_diagram, ax):
         assert z.max() <= c.max() + _ATOL
 
 
-def test_line_phase_field_follows_temperature(line_phase_diagram, ax):
+def test_line_phase_field_takes_nearest_temperature(line_phase_diagram, ax):
     plot_phase_diagram(line_phase_diagram, ax=ax, color_by="T", poly_method="concave")
-    T = line_phase_diagram.query("stable and phase == 'AB'")["T"]
-    T = T[np.isfinite(T)]
+    T = line_phase_diagram.query("stable and phase == 'AB'")["T"].to_numpy()
+    T = np.unique(T[np.isfinite(T)])
     (mesh,) = [m for m in _meshes(ax) if m.get_clip_path()._patch.get_label() == "AB"]
     assert np.ptp(mesh.get_coordinates()[..., 0]) < 0.05  # the strip a line phase is buffered into
     xy, z = _nodes(mesh)
-    np.testing.assert_allclose(z, np.clip(xy[:, 1], T.min(), T.max()), atol=_ATOL)
+    # every node carries a sampled temperature, and the one closest to its own
+    assert np.isin(z, T).all()
+    np.testing.assert_allclose(np.abs(z - xy[:, 1]), np.abs(T[:, None] - xy[:, 1]).min(axis=0), atol=_ATOL)
 
 
 def test_field_artists(eutectic_diagram, ax):

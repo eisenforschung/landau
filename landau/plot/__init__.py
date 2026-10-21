@@ -15,6 +15,7 @@ from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
 from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
 from scipy.spatial import QhullError
+from sklearn.preprocessing import StandardScaler
 
 from ..calculate import calc_phase_diagram, cluster, cluster_T_c, _join_phase_unit, _apply_series
 from ..features import Locus
@@ -128,18 +129,13 @@ def plot_polygons(polys, color_map, ax=None):
         ax.add_patch(p)
 
 
-_FIELD_RESOLUTION = 200
-"""Raster cells per axis drawn for each phase region by :func:`_plot_scalar_field`."""
-
-
 def _region_interpolator(xy: np.ndarray, z: np.ndarray) -> Callable[[np.ndarray], np.ndarray]:
     """Interpolate the scattered values ``z`` at points ``xy`` of one phase region.
 
     Linear on the Delaunay triangulation of the points; outside their convex hull (the
     rim a polygon gains from buffering, or a concave notch) the nearest point's value is
-    used. Points that do not span two dimensions -- a line phase in a c-T diagram has a
-    single concentration -- are interpolated along their principal axis instead, clamped
-    at the ends.
+    used. Points that cannot be triangulated -- fewer than three, or all on one line, as
+    a line phase in a c-T diagram is -- take the nearest point's value everywhere.
 
     Args:
         xy: ``(n, 2)`` coordinates, already scaled to comparable units.
@@ -154,11 +150,7 @@ def _region_interpolator(xy: np.ndarray, z: np.ndarray) -> Callable[[np.ndarray]
     try:
         linear = LinearNDInterpolator(xy, z)
     except QhullError:
-        center = xy.mean(axis=0)
-        axis = np.linalg.svd(xy - center, full_matrices=False)[2][0]
-        s = (xy - center) @ axis
-        order = np.argsort(s)
-        return lambda q: np.interp((q - center) @ axis, s[order], z[order])
+        return nearest
 
     def interpolate(q):
         out = linear(q)
@@ -169,12 +161,12 @@ def _region_interpolator(xy: np.ndarray, z: np.ndarray) -> Callable[[np.ndarray]
     return interpolate
 
 
-def _plot_scalar_field(df, polys, column, variables, ax, cmap=None, norm=None):
+def _plot_scalar_field(df, polys, column, variables, ax, cmap=None, norm=None, resolution=200):
     """Fill each phase polygon with the values of ``column`` across it.
 
-    Every polygon is rasterised on a ``_FIELD_RESOLUTION`` square grid over its bounding
-    box, interpolated (:func:`_region_interpolator`) from the stable rows of its own
-    phase that lie on it, and drawn as a ``pcolormesh`` clipped to the polygon. Two
+    Every polygon is rasterised on a ``resolution`` square grid over its bounding box,
+    interpolated (:func:`_region_interpolator`) from the stable rows of its own phase
+    that lie on it, and drawn as a ``pcolormesh`` clipped to the polygon. Two
     regions of the same phase therefore never share data, and adjacent phases never
     blend across their boundary.
 
@@ -187,17 +179,18 @@ def _plot_scalar_field(df, polys, column, variables, ax, cmap=None, norm=None):
         cmap: Matplotlib colormap or its name; ``None`` uses the default.
         norm: :class:`matplotlib.colors.Normalize`; ``None`` spans the finite values of
             ``column`` over the stable rows.
+        resolution: Raster cells per axis drawn for each polygon.
 
     Returns:
         :class:`matplotlib.cm.ScalarMappable` describing the colour mapping.
     """
     if column not in df.columns:
         raise KeyError(f"Cannot colour by {column!r}: no such column in the phase-diagram frame.")
-    df_stable = df.query("stable")
-    data = df_stable[[*variables, column]].to_numpy(dtype=float)
-    finite = np.isfinite(data).all(axis=1)
-    phases = df_stable["phase"].to_numpy()[finite]
-    data = data[finite]
+    columns = [*variables, column]
+    # abs(x) < inf drops NaN and +-inf alike; pandas does not admit isfinite in a query
+    df_stable = df.query(" and ".join(["stable", *(f"abs(`{c}`) < inf" for c in columns)]))
+    data = df_stable[columns].to_numpy(dtype=float)
+    phases = df_stable["phase"].to_numpy()
     if norm is None:
         norm = Normalize(data[:, 2].min(), data[:, 2].max()) if len(data) else Normalize()
     mappable = ScalarMappable(norm=norm, cmap=cmap)
@@ -209,18 +202,13 @@ def _plot_scalar_field(df, polys, column, variables, ax, cmap=None, norm=None):
         pts = pts[shapely.intersects_xy(region, pts[:, 0], pts[:, 1])]
         if len(pts) == 0:
             continue
-        x0, y0, x1, y1 = region.bounds
-        # scale to the region's own extent so the triangulation does not depend on units
-        scale = np.array([x1 - x0 or 1.0, y1 - y0 or 1.0])
-        origin = np.array([x0, y0])
-        interpolate = _region_interpolator((pts[:, :2] - origin) / scale, pts[:, 2])
+        # standardise so the triangulation does not depend on the axes' units
+        scaler = StandardScaler().fit(pts[:, :2])
+        interpolate = _region_interpolator(scaler.transform(pts[:, :2]), pts[:, 2])
 
-        X, Y = np.meshgrid(
-            np.linspace(x0, x1, _FIELD_RESOLUTION),
-            np.linspace(y0, y1, _FIELD_RESOLUTION),
-        )
-        q = (np.column_stack([X.ravel(), Y.ravel()]) - origin) / scale
-        Z = interpolate(q).reshape(X.shape)
+        x0, y0, x1, y1 = region.bounds
+        X, Y = np.meshgrid(np.linspace(x0, x1, resolution), np.linspace(y0, y1, resolution))
+        Z = interpolate(scaler.transform(np.column_stack([X.ravel(), Y.ravel()]))).reshape(X.shape)
         mesh = ax.pcolormesh(X, Y, Z, shading="gouraud", cmap=mappable.cmap, norm=norm, zorder=0)
         mesh.set_clip_path(patch)
     return mappable
