@@ -1,7 +1,7 @@
 """Unit tests for ``_region_interpolator``, the scattered-data interpolation behind
 ``color_by=`` on the 2d phase-diagram plotters.
 
-End-to-end tests of the coloured fields live in ``tests/integration/test_scalar_field.py``.
+End-to-end tests of the coloured fields live in ``tests/integration/test_color_by.py``.
 """
 import numpy as np
 import pytest
