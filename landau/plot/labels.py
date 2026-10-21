@@ -233,7 +233,16 @@ def _largest_inscribed_circle_center(polygon_xy, ax):
     poly = _shapely_polygon(np.column_stack([coords[:, 0] / sx, coords[:, 1] / sy]))
     if poly is None:
         return None
-    point = polylabel(poly, tolerance=1e-3)
+    tolerance = 1e-3
+    point = polylabel(poly, tolerance=tolerance)
+    # A strip has a whole segment of equally good poles and polylabel returns an arbitrary
+    # one of them (GEOS 3.13 the middle, GEOS 3.14 an end).  Take the centroid of the
+    # near-optimal plateau instead, so the anchor does not depend on the GEOS tie-break.
+    shrink = 0.99 * poly.boundary.distance(point)
+    if shrink > 0:
+        plateau = poly.buffer(-shrink).centroid
+        if not plateau.is_empty and poly.contains(plateau) and poly.boundary.distance(plateau) >= shrink:
+            point = plateau
     return point.x * sx, point.y * sy
 
 
