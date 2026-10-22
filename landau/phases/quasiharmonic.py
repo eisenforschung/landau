@@ -166,6 +166,57 @@ def _stationary_points(derivative, mid, span):
     return [float((u[i] - d[i] * (u[i + 1] - u[i]) / (d[i + 1] - d[i])) * span + mid) for i in crossings]
 
 
+def _select_stable_volumes(volumes_per_atom, lowest, min_frequency, name, eos):
+    """Which sampled volumes the equation of state may be fitted through.
+
+    A volume whose lowest mode is imaginary still returns a smooth free energy -- the
+    mode sum drops the imaginary branches rather than raising on them -- so it has to be
+    excluded here or it corrupts the fit every other volume feeds.
+
+    Takes the lowest frequencies already extracted by :func:`_lowest_frequency` (the one
+    step that needs phonopy) so the decision itself is plain Python.
+
+    Args:
+        volumes_per_atom (sequence of float): sampled volumes, cubic Angstrom per atom
+        lowest (sequence of float): lowest mode of each, in THz, negative for imaginary
+        min_frequency (float): volumes below this are dropped; the cut is strict, so a
+            mode exactly at it is kept
+        name (str): phase name, for the warning
+        eos: the equation of state, for the error message
+
+    Returns:
+        tuple of int: indices into ``volumes_per_atom``, ordered by volume per atom --
+        the order :attr:`PhonopyQuasiHarmonicPhase.sampled_volumes` and the fit rely on
+
+    Raises:
+        ValueError: fewer than four volumes survive, which cannot constrain the four
+            equation-of-state parameters
+
+    Warns:
+        DynamicalInstabilityWarning: some volumes were dropped
+    """
+    unstable = tuple(i for i, f in enumerate(lowest) if f < min_frequency)
+    stable = tuple(sorted((i for i in range(len(volumes_per_atom)) if i not in unstable),
+                          key=lambda i: volumes_per_atom[i]))
+    if len(stable) < 4:
+        raise ValueError(
+            f"{len(stable)} dynamically stable volume(s) out of {len(volumes_per_atom)}, but fitting "
+            f"{eos} needs at least four; lowest frequency by volume per atom (A^3, THz) "
+            f"was {_pairs(volumes_per_atom, lowest)}, and {min_frequency} THz is the cut"
+        )
+    if unstable:
+        warnings.warn(
+            f"{name}: dropped {len(unstable)} of {len(volumes_per_atom)} volumes carrying modes below "
+            f"{min_frequency} THz -- volume per atom, lowest frequency (A^3, THz): "
+            f"{_pairs([volumes_per_atom[i] for i in unstable], [lowest[i] for i in unstable])}; "
+            f"the equation of state is fitted through the remaining {len(stable)}",
+            DynamicalInstabilityWarning,
+            # construction is two frames up: __post_init__ calls this, __init__ calls that
+            stacklevel=3,
+        )
+    return stable
+
+
 @phonopy_alarm
 def _lowest_frequency(thermal_properties):
     """Lowest mode of a ``ThermalProperties``, in THz, negative for an imaginary one.
@@ -341,24 +392,9 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
             raise ValueError(f"the sampled volumes must be distinct, got {per_atom} per atom")
 
         object.__setattr__(self, "_lowest", tuple(_lowest_frequency(tp) for tp in self.thermal_properties))
-        unstable = tuple(i for i, f in enumerate(self._lowest) if f < self.min_frequency)
-        stable = tuple(sorted((i for i in range(len(per_atom)) if i not in unstable), key=lambda i: per_atom[i]))
-        if len(stable) < 4:
-            raise ValueError(
-                f"{len(stable)} dynamically stable volume(s) out of {len(per_atom)}, but fitting "
-                f"{self.eos} needs at least four; lowest frequency by volume per atom (A^3, THz) "
-                f"was {_pairs(per_atom, self._lowest)}, and {self.min_frequency} THz is the cut"
-            )
-        if unstable:
-            warnings.warn(
-                f"{self.name}: dropped {len(unstable)} of {len(per_atom)} volumes carrying modes below "
-                f"{self.min_frequency} THz -- volume per atom, lowest frequency (A^3, THz): "
-                f"{_pairs([per_atom[i] for i in unstable], [self._lowest[i] for i in unstable])}; "
-                f"the equation of state is fitted through the remaining {len(stable)}",
-                DynamicalInstabilityWarning,
-                stacklevel=2,
-            )
-        object.__setattr__(self, "_stable", stable)
+        object.__setattr__(
+            self, "_stable", _select_stable_volumes(per_atom, self._lowest, self.min_frequency, self.name, self.eos)
+        )
         object.__setattr__(self, "_key", self._content_key())
         # Deliberately *not* a dataclass field: it is derived from _key, and being
         # salted per interpreter (hash of pickled bytes) it would make any content
