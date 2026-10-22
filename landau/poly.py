@@ -2,6 +2,7 @@
 
 import abc
 from dataclasses import dataclass
+from typing import ClassVar
 from warnings import warn
 
 from pyiron_snippets.import_alarm import ImportAlarm
@@ -21,6 +22,9 @@ from .calculate import get_transitions, _split_phase_unit
 class AbstractPolyMethod(abc.ABC):
     min_c_width: float = 0.01
     '''If line phases are detected, make them at least this thick in c space.'''
+    needs_unstable: ClassVar[bool] = False
+    '''If True, :func:`~landau.plot.get_polygons` passes the whole ``keep_unstable=True``
+    frame to :meth:`apply` instead of the clustered stable rows.'''
 
     def prepare(self, df: pd.DataFrame) -> pd.DataFrame:
         """Massage data set into format so that :method:`.make` can by applied
@@ -138,9 +142,13 @@ class AbstractPolyMethod(abc.ABC):
                 if not new.is_empty:
                     trimmed = new
                 if isinstance(trimmed, shapely.MultiPolygon):
-                    trimmed = max(trimmed.geoms, key=shapely.area)
+                    trimmed = self._collapse_parts(trimmed)
             out[k] = trimmed
         return pd.Series(out, name=shapes.name).reindex(shapes.index)
+
+    def _collapse_parts(self, shape: shapely.MultiPolygon) -> shapely.Geometry:
+        """What to keep of a region that trimming split apart: its largest part."""
+        return max(shape.geoms, key=shapely.area)
 
     @staticmethod
     def _to_mpl_polygon(shape: shapely.Geometry) -> Polygon | None:
@@ -414,7 +422,200 @@ def _segment_tsp_polygon(
     return shapely.Polygon(coords)
 
 
-__all__ = ["Concave", "Segments"]
+def _split_rings(verts, codes):
+    """Closed rings of a matplotlib path given as (vertices, codes)."""
+    rings, start = [], None
+    for i, code in enumerate(codes):
+        if code == 1:  # MOVETO
+            start = i
+        elif code == 79:  # CLOSEPOLY
+            rings.append(verts[start:i + 1])
+    return [r for r in rings if len(r) >= 4]
+
+
+def _contour_rings(pts: np.ndarray, z: np.ndarray, level: float):
+    """Rings bounding ``z <= level`` on the Delaunay triangulation of ``pts``, and the triangulation."""
+    from matplotlib.tri import Triangulation
+    from matplotlib._tri import TriContourGenerator
+
+    tri = Triangulation(pts[:, 0], pts[:, 1])
+    gen = TriContourGenerator(tri.get_cpp_triangulation(), z)
+    verts, codes = gen.create_filled_contour(-1.0, level)
+    return [r for v, c in zip(verts, codes) for r in _split_rings(v, c)], tri
+
+
+@dataclass
+class Contour(AbstractPolyMethod):
+    """Find polygons by contouring each phase's ``dphi`` in (mu, T).
+
+    Needs a ``calc_phase_diagram(..., keep_unstable=True)`` frame.  A phase's
+    ``dphi`` is zero where it is stable and positive elsewhere, so the rings
+    bounding ``dphi = 0`` on the triangulation of the phase's own (mu, T) rows
+    enclose its stable regions; stable phase regions tile the (mu, T) plane, so
+    the rings come out ordered.  Each ring is then replaced by the phase's own
+    border rows (and rows on the edge of the sampled range) in the ring's order,
+    which puts the vertices on the refined boundary and gives them the phase's
+    own coordinates in ``variables``, e.g. ``c`` for a c-T diagram.  Disconnected
+    regions of one phase come out as separate rings, so no clustering is needed.
+
+    The synthetic ``mu = +-inf`` terminal rows are placed one sampling step
+    beyond the grid in mu, so regions reach the pure components.  Refined rows
+    traced beyond the sampled range are dropped: there is no grid around them to
+    contour against.
+
+    A miscibility gap puts one phase on both sides of the gap line.  Its two rows
+    are moved off the line by ``gap_shift`` (fraction of the mu range), each
+    towards its own side, and the line itself, interpolated ``gap_densify`` times
+    between gap rows, is marked as not stable, so the gap becomes a channel the
+    contour runs around.
+    """
+
+    gap_shift: float = 3e-3
+    """Offset of miscibility-gap rows from the gap line, as a fraction of the sampled mu range."""
+    gap_densify: int = 8
+    """Points per gap-row interval marking the gap line; keeps triangles from bridging the channel."""
+
+    needs_unstable: ClassVar[bool] = True
+
+    def _make(self, pp, border, segment_label):
+        raise NotImplementedError("Contour builds all regions of a phase at once in apply().")
+
+    def apply(self, df: pd.DataFrame, variables: list[str] = ["c", "T"]) -> pd.Series:
+        if "dphi" not in df.columns:
+            raise ValueError("Contour needs a calc_phase_diagram(..., keep_unstable=True) frame (dphi column).")
+        grid = df[(df["locus"] == "interior") & np.isfinite(df["mu"])]
+        lo = grid[["mu", "T"]].min().to_numpy(float)
+        span = grid[["mu", "T"]].max().to_numpy(float) - lo
+        span[span == 0] = 1.0
+        mus = np.unique(grid["mu"])
+        step = np.diff(mus).min() if len(mus) > 1 else span[0]
+
+        df = df.copy()
+        df.loc[df["mu"] == -np.inf, "mu"] = lo[0] - step
+        df.loc[df["mu"] == np.inf, "mu"] = lo[0] + span[0] + step
+        xy = (df[["mu", "T"]].to_numpy(float) - lo) / span
+        pad = step / span[0] + 1e-9
+        inside = (np.isfinite(xy).all(axis=1)
+                  & (xy[:, 0] >= -pad) & (xy[:, 0] <= 1 + pad)
+                  & (xy[:, 1] >= -1e-9) & (xy[:, 1] <= 1 + 1e-9))
+        df = df[inside]
+        # stable rows are on or inside their region: zeroes the refiners' tolerance on
+        # refined rows and gives the terminal rows (dphi NaN) their value
+        df.loc[df["stable"], "dphi"] = 0.0
+        # Signed distance to the region: a phase's dphi minus the lowest dphi of the other
+        # rows at the same (mu, T).  Negative inside, positive outside, zero on refined
+        # boundary rows, so its zero crossing interpolates between competing phases rather
+        # than hugging the stable rows.  Rows alone at their (mu, T) (terminal rows) get 0.
+        key = [df["mu"], df["T"]]
+        first = df.groupby(key)["dphi"].transform("min")
+        runner_up = df["dphi"].where(df["dphi"] > first).groupby(key).transform("min")
+        tied = (df["dphi"] == first).groupby(key).transform("sum") > 1
+        second = first.where(tied, runner_up)
+        df["dphi"] = np.where(df["dphi"] > first, df["dphi"] - first, first - second)
+        df["dphi"] = df["dphi"].fillna(0.0)
+
+        shapes = {}
+        for phase, dd in df.groupby("phase"):
+            for unit, shape in enumerate(self._phase_regions(dd, lo, span, variables)):
+                shapes[(phase, unit)] = shape
+        if not shapes:
+            return pd.Series(dtype=object)
+        shapes = pd.Series(shapes).rename_axis(["phase", "phase_unit"])
+        shapes = shapes[~shapes.map(lambda s: s.is_empty)]
+        trimmed = self._trim_overlaps(shapes)
+        # a region trimming split apart keeps all its parts, each as its own unit
+        parts = {}
+        for (phase, _), shape in trimmed.items():
+            for g in getattr(shape, "geoms", [shape]):
+                if not g.is_empty:
+                    parts[(phase, sum(k[0] == phase for k in parts))] = g
+        parts = pd.Series(parts, dtype=object).rename_axis(["phase", "phase_unit"])
+        return parts.map(self._to_mpl_polygon).dropna()
+
+    def _collapse_parts(self, shape):
+        return shape
+
+    def _phase_regions(self, dd, lo, span, variables):
+        dd = dd[np.isfinite(dd["dphi"])].copy()
+        gap = dd.duplicated(["mu", "T"], keep=False)
+        marks = pd.DataFrame({"mu": [], "T": [], "dphi": []})
+        if gap.any():
+            line = dd.loc[gap, ["mu", "T"]].drop_duplicates().sort_values("T")
+            k = np.linspace(0, len(line) - 1, max(len(line) - 1, 0) * self.gap_densify + 1)
+            idx = np.arange(len(line))
+            marks = pd.DataFrame({"mu": np.interp(k, idx, line["mu"]), "T": np.interp(k, idx, line["T"]), "dphi": 1.0})
+            side = np.sign(dd.loc[gap, "c"] - dd[gap].groupby(["mu", "T"])["c"].transform("mean"))
+            dd.loc[gap, "mu"] = dd.loc[gap, "mu"] + side * self.gap_shift * span[0]
+            dd.loc[gap, "border"] = True
+        pts = pd.concat([dd[["mu", "T", "dphi"] + [v for v in variables if v not in ("mu", "T")]], marks],
+                        ignore_index=True)
+        xy = (pts[["mu", "T"]].to_numpy(float) - lo) / span
+        rings, tri = _contour_rings(xy, pts["dphi"].to_numpy(float), level=1e-12)
+
+        own = dd[dd["stable"]]
+        oxy = (own[["mu", "T"]].to_numpy(float) - lo) / span
+        on_edge = (oxy.min(axis=1) < 1e-9) | (oxy.max(axis=1) > 1 - 1e-9)
+        cand = own.loc[own["border"].to_numpy(bool) | on_edge, variables]
+        cand_xy = oxy[own["border"].to_numpy(bool) | on_edge]
+        # Where a boundary leaves the sampled range (or the terminal column) between two rows,
+        # the contour crosses the range's edge there; that crossing is a vertex too, its
+        # variables interpolated on the triangulation.
+        walls = shapely.union(shapely.MultiPoint(xy).convex_hull.exterior, shapely.box(0, 0, 1, 1).exterior)
+        ring_xy = np.concatenate(rings) if rings else np.empty((0, 2))
+        ring_pts = shapely.points(ring_xy)
+        cross = ring_xy[(shapely.distance(walls, ring_pts) < 1e-9)
+                        & (shapely.distance(shapely.MultiPoint(cand_xy), ring_pts) > 1e-9)]
+        if len(cross):
+            from matplotlib.tri import LinearTriInterpolator
+            vals = {}
+            for v in variables:
+                if v in ("mu", "T"):
+                    i = ("mu", "T").index(v)
+                    vals[v] = cross[:, i] * span[i] + lo[i]
+                else:
+                    interp = LinearTriInterpolator(tri, pts[v].to_numpy(float))
+                    vals[v] = np.ma.filled(interp(cross[:, 0], cross[:, 1]), np.nan)
+            extra = pd.DataFrame(vals)
+            ok = np.isfinite(extra.to_numpy(float)).all(axis=1)
+            cand = pd.concat([cand, extra[ok]], ignore_index=True)
+            cand_xy = np.concatenate([cand_xy, cross[ok]])
+        cand_pts = shapely.points(cand_xy)
+
+        # filled-contour rings are exteriors and holes; a hole is a ring inside an exterior
+        rings = sorted((shapely.Polygon(r) for r in rings), key=lambda q: -q.area)
+        parent = []
+        for i, q in enumerate(rings):
+            inner = q.representative_point()
+            parent.append(next((j for j in range(i) if parent[j] is None and rings[j].contains(inner)), None))
+        mapped = [self._along_ring(q.exterior, cand, cand_pts, variables) for q in rings]
+        out = []
+        for i, (shape, p) in enumerate(zip(mapped, parent)):
+            if p is not None or shape is None:
+                continue
+            holes = [mapped[j] for j, pj in enumerate(parent) if pj == i and mapped[j] is not None]
+            if holes:
+                shape = shape.difference(shapely.union_all([h.buffer(0) for h in holes]))
+            shape = shape.buffer(self.min_c_width / 2)
+            # regions that touch only along a collapsed edge come apart here; each is its own region
+            out.extend(g for g in getattr(shape, "geoms", [shape]) if not g.is_empty)
+        return out
+
+    @staticmethod
+    def _along_ring(ring, cand, cand_pts, variables):
+        """The candidate rows on ``ring``, in ring order, as a geometry in ``variables``."""
+        on = shapely.distance(ring, cand_pts) < 1e-7
+        if on.sum() < 2:
+            return None
+        order = np.argsort(shapely.line_locate_point(ring, cand_pts[on]), kind="stable")
+        coords = cand[on].to_numpy(float)[order]
+        shape = shapely.Polygon(coords) if len(coords) >= 3 else shapely.LineString(coords)
+        if isinstance(shape, shapely.Polygon) and shape.area > 0:
+            return shapely.make_valid(shape) if not shape.is_valid else shape
+        # a line phase: all vertices share one c, so the ring collapses onto a line
+        return shapely.LineString(coords)
+
+
+__all__ = ["Concave", "Segments", "Contour"]
 
 
 with ImportAlarm("'python_tsp' package required for PythonTsp.  Install from conda or pip.") as python_tsp_alarm:
@@ -540,6 +741,7 @@ def handle_poly_method(poly_method, **kwargs):
     allowed = {
                 'concave': Concave(**kwargs, ratio=ratio),
                 'segments': Segments(**kwargs),
+                'contour': Contour(**kwargs),
     }
     if 'PythonTsp' in __all__:
         allowed['tsp'] = PythonTsp(**kwargs)
