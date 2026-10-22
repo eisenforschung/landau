@@ -212,6 +212,23 @@ def _curve_obstacles(ax):
     return shapely.union_all(geoms) if geoms else None
 
 
+def _polylabel(poly, tolerance=1e-3):
+    """:func:`shapely.ops.polylabel`, centred on the plateau of equally good poles.
+
+    A strip has a whole segment of equally good poles and ``polylabel`` returns an arbitrary
+    one of them (GEOS 3.13 the middle, GEOS 3.14 an end).  The centroid of the near-optimal
+    plateau does not depend on that tie-break; it is used whenever it lies inside the polygon
+    at least as far from the boundary as the shrunk radius.
+    """
+    point = polylabel(poly, tolerance=tolerance)
+    shrink = 0.99 * poly.boundary.distance(point)
+    if shrink > 0:
+        plateau = poly.buffer(-shrink).centroid
+        if not plateau.is_empty and poly.contains(plateau) and poly.boundary.distance(plateau) >= shrink:
+            point = plateau
+    return point
+
+
 def _largest_inscribed_circle_center(polygon_xy, ax):
     """Centre of the largest circle inscribable in a polygon, in data units.
 
@@ -233,16 +250,7 @@ def _largest_inscribed_circle_center(polygon_xy, ax):
     poly = _shapely_polygon(np.column_stack([coords[:, 0] / sx, coords[:, 1] / sy]))
     if poly is None:
         return None
-    tolerance = 1e-3
-    point = polylabel(poly, tolerance=tolerance)
-    # A strip has a whole segment of equally good poles and polylabel returns an arbitrary
-    # one of them (GEOS 3.13 the middle, GEOS 3.14 an end).  Take the centroid of the
-    # near-optimal plateau instead, so the anchor does not depend on the GEOS tie-break.
-    shrink = 0.99 * poly.boundary.distance(point)
-    if shrink > 0:
-        plateau = poly.buffer(-shrink).centroid
-        if not plateau.is_empty and poly.contains(plateau) and poly.boundary.distance(plateau) >= shrink:
-            point = plateau
+    point = _polylabel(poly)
     return point.x * sx, point.y * sy
 
 
