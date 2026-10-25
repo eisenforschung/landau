@@ -47,7 +47,7 @@ EPS = 0.02
 
 @pytest.fixture(scope="module")
 def hcp_fcc_liquid_df():
-    """hcp/fcc/liquid ideal solutions on a T-mu grid (the Basics.ipynb system)."""
+    """hcp/fcc/liquid ideal solutions on a T-mu grid (the Basics.ipynb system), all phases kept."""
     fcca = ldp.LinePhase("fccA", fixed_concentration=0, line_energy=-3.00, line_entropy=1.0 * ldp.kB)
     fccb = ldp.LinePhase("fccB", fixed_concentration=1, line_energy=-2.00, line_entropy=1.1 * ldp.kB)
     hcpa = ldp.LinePhase("hcpA", fixed_concentration=0, line_energy=-2.975, line_entropy=1.8 * ldp.kB)
@@ -60,7 +60,7 @@ def hcp_fcc_liquid_df():
 
     Ts = np.linspace(200, 1000, 50)
     mus = np.linspace(0.5, 1.5, 50)
-    return ldc.calc_phase_diagram([hcp, fcc, lqd], Ts, mu=mus)
+    return ldc.calc_phase_diagram([hcp, fcc, lqd], Ts, mu=mus, keep_unstable=True)
 
 
 def max_border_distance(df, polys, variables):
@@ -91,4 +91,10 @@ def test_border_points_on_outline(hcp_fcc_liquid_df, poly_method, variables):
             "at the diagram edge (documented in Segments._sort_segments)"
         )
     polys = get_polygons(hcp_fcc_liquid_df, poly_method=poly_method, variables=variables)
+    assert max_border_distance(hcp_fcc_liquid_df, polys, variables) < EPS
+
+
+@pytest.mark.parametrize("variables", [["c", "T"], ["mu", "T"]], ids=["c-T", "mu-T"])
+def test_contour_border_points_on_outline(hcp_fcc_liquid_df, variables):
+    polys = get_polygons(hcp_fcc_liquid_df, poly_method="contour", variables=variables)
     assert max_border_distance(hcp_fcc_liquid_df, polys, variables) < EPS
