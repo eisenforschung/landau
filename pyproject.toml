@@ -66,7 +66,7 @@ docs = [
 ]
 constraints = ["polyfit"]
 python-tsp = ["python-tsp>=0.4.2,<=0.5"]
-fast-tsp = ["fast-tsp>=0.1.4,<=0.1.5"]
+fast-tsp = ["fast-tsp>=0.1.4,<=0.2.2"]
 
 # Digest hooks so landau objects can be passed to fleche-cached functions; loaded by
 # fleche's entry point machinery, landau never imports fleche itself.
