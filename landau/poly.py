@@ -350,9 +350,27 @@ def _segments_from_labels(pp: np.ndarray, segment_label: np.ndarray) -> list[np.
     return segments
 
 
+def _integer_distances(dm: np.ndarray, max_value: int | None = None) -> np.ndarray:
+    """Convert a float distance matrix with at least one positive entry to the integer matrix TSP solvers expect.
+
+    Without `max_value` the smallest positive distance is scaled to 1.  Solvers that bound their entries pass
+    `max_value` and the largest distance is scaled to it instead, so the whole integer range resolves the distances
+    and large distances stay large.  Every positive distance rounds to at least 1, so distinct points never become
+    coincident; only differences below the integer resolution are lost.  Zeros stay zero.
+    """
+    positive = dm > 0
+    scale = 1 / dm[positive].min() if max_value is None else max_value / dm.max()
+    return np.where(positive, np.maximum(np.round(dm * scale), 1), 0).astype(int)
+
+
+# fast_tsp >= 0.2 rejects distance matrices with entries above this.
+_FAST_TSP_MAX_DISTANCE = 65535
+
+
 def _segment_tsp_polygon(
         segments: list[np.ndarray],
         solve_tour,
+        max_distance: int | None = None,
 ) -> shapely.Geometry | None:
     """Stitch already-sorted border segments into a polygon by solving a TSP on
     segment endpoints.
@@ -365,7 +383,8 @@ def _segment_tsp_polygon(
     is the desired notion of "segment distance".
 
     `solve_tour` is a callable taking an integer distance matrix and returning a
-    list of node indices forming the tour.
+    list of node indices forming the tour.  `max_distance` is the largest entry
+    the solver accepts, see :func:`_integer_distances`.
     """
     if len(segments) == 0:
         return None
@@ -382,10 +401,9 @@ def _segment_tsp_polygon(
         dm[2 * i, 2 * i + 1] = 0
         dm[2 * i + 1, 2 * i] = 0
 
-    pos = dm[dm > 0]
-    if len(pos) == 0:
+    if not (dm > 0).any():
         return shapely.convex_hull(shapely.MultiPoint(np.vstack(segments)))
-    dm_int = (dm / pos.min()).round().astype(int)
+    dm_int = _integer_distances(dm, max_distance)
 
     tour = list(solve_tour(dm_int))
 
@@ -447,7 +465,7 @@ with ImportAlarm("'python_tsp' package required for PythonTsp.  Install from con
             dm = pairwise_distances(pp)
             if not (dm > 0).any():
                 return shapely.convex_hull(shapely.MultiPoint(pp))
-            dm = (dm / dm[dm > 0].min()).round().astype(int)
+            dm = _integer_distances(dm)
             x0 = np.argsort(np.arctan2(pp[:, 1], pp[:, 0])).tolist()
             iterations = self.max_iterations
             for _ in range(self.retries + 1):
@@ -503,7 +521,7 @@ with ImportAlarm("'fast-tsp' package required for FastTsp.  Install from pip.") 
             dm = pairwise_distances(pp)
             if not (dm > 0).any():
                 return shapely.convex_hull(shapely.MultiPoint(pp))
-            dm = (dm / dm[dm > 0].min()).round().astype(int)
+            dm = _integer_distances(dm, _FAST_TSP_MAX_DISTANCE)
             tour = fast_tsp.find_tour(dm, self.duration_seconds)
             return shapely.Polygon(pp[tour]) if len(tour) > 2 else None
 
@@ -526,7 +544,7 @@ with ImportAlarm("'fast-tsp' package required for FastTsp.  Install from pip.") 
             def solve(dm_int):
                 return fast_tsp.find_tour(dm_int, self.duration_seconds)
 
-            return _segment_tsp_polygon(segments, solve)
+            return _segment_tsp_polygon(segments, solve, _FAST_TSP_MAX_DISTANCE)
 
     __all__ += ["FastTsp", "SegmentFastTsp"]
 

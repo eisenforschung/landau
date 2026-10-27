@@ -8,6 +8,7 @@ from landau.poly import (
     Concave,
     Segments,
     _greedy_stitch,
+    _integer_distances,
     _pca_sort_segment,
     _segment_tsp_polygon,
     _segments_from_labels,
@@ -254,6 +255,37 @@ def test_python_tsp_clustered_points():
     df = pd.DataFrame(data)
     result = PythonTsp().apply(df)
     assert isinstance(result, pd.Series)
+
+
+def _skewed_border_points():
+    # Square outline, 1e-7 apart in the first coordinate within one corner cluster:
+    # span / smallest gap ~ 1e7, beyond fast_tsp's 65535 entry limit when normalised by the gap.
+    corners = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+    cluster = np.array([[0.0, 0.0], [1e-7, 0.0], [2e-7, 0.0]])
+    pp = np.vstack([cluster, corners[1:], [[0.5, 0.0], [1.0, 0.5], [0.5, 1.0], [0.0, 0.5]]])
+    return pp
+
+
+@pytest.mark.skipif(not HAS_FAST_TSP, reason="fast-tsp not installed")
+def test_fast_tsp_skewed_spacing():
+    pp = _skewed_border_points()
+    n = len(pp)
+    poly = FastTsp(duration_seconds=0.1)._make(pp, np.ones(n, dtype=bool), np.ones(n))
+    assert isinstance(poly, shapely.Polygon)
+    assert poly.is_valid
+    assert poly.area == pytest.approx(1.0, abs=1e-6)
+
+
+@pytest.mark.skipif(not HAS_FAST_TSP, reason="fast-tsp not installed")
+def test_segment_fast_tsp_skewed_spacing():
+    # bottom edge starting in the clustered corner, and the top edge
+    bottom = [[0.0, 0.0], [1e-7, 0.0], [2e-7, 0.0], [0.5, 0.0], [1.0, 0.0]]
+    rest = [[1.0, 1.0], [0.5, 1.0], [0.0, 1.0]]
+    pp = np.array(bottom + rest)
+    label = np.array([0] * len(bottom) + [1] * len(rest))
+    poly = SegmentFastTsp(duration_seconds=0.1)._make(pp, np.ones(len(pp), dtype=bool), label)
+    assert isinstance(poly, shapely.Polygon)
+    assert poly.is_valid
 
 
 def test_handle_poly_method():
@@ -551,6 +583,64 @@ def test_segments_from_labels_each_group_pca_sorted():
     ys = result[1][:, 1]
     assert np.all(np.diff(xs) >= 0) or np.all(np.diff(xs) <= 0)
     assert np.all(np.diff(ys) >= 0) or np.all(np.diff(ys) <= 0)
+
+
+# --- _integer_distances tests ---
+
+
+def test_integer_distances_unbounded_normalises_to_smallest_gap():
+    dm = np.array([[0.0, 0.5, 1.5], [0.5, 0.0, 2.0], [1.5, 2.0, 0.0]])
+    np.testing.assert_array_equal(_integer_distances(dm), [[0, 1, 3], [1, 0, 4], [3, 4, 0]])
+
+
+def test_integer_distances_bound_scales_largest_to_limit():
+    # span / smallest gap = 1e6, far beyond the limit.
+    dm = np.array([[0.0, 1e-6, 1.0], [1e-6, 0.0, 1.0], [1.0, 1.0, 0.0]])
+    out = _integer_distances(dm, 1000)
+    assert out.max() == 1000
+    # the large distances keep their relative size ...
+    assert out[0, 2] == out[1, 2] == 1000
+    # ... and the tiny positive one is neither dropped to zero nor inflated.
+    assert out[0, 1] == out[1, 0] == 1
+    assert (out.diagonal() == 0).all()
+
+
+@given(
+    gaps=st.lists(st.floats(1e-9, 1.0), min_size=2, max_size=12),
+    limit=st.integers(10, 65535),
+)
+def test_integer_distances_bound_never_collapses(gaps, limit):
+    x = np.concatenate([[0.0], np.cumsum(gaps)])
+    dm = np.abs(x[:, None] - x[None, :])
+    out = _integer_distances(dm, limit)
+    assert out.max() <= limit
+    assert np.array_equal(out == 0, dm == 0)
+    # monotone: a larger distance never gets a smaller integer.
+    order = np.argsort(dm, axis=None)
+    assert (np.diff(out.ravel()[order]) >= 0).all()
+
+
+def test_integer_distances_bound_resolves_comparable_distances():
+    # Normalising by the smallest gap would round 1.0 and sqrt(2) to the same integer.
+    dm = np.array([[0.0, 1.0, np.sqrt(2)], [1.0, 0.0, 1.0], [np.sqrt(2), 1.0, 0.0]])
+    out = _integer_distances(dm, 65535)
+    assert out[0, 2] == 65535
+    assert out[0, 1] == round(65535 / np.sqrt(2))
+
+
+def test_segment_tsp_polygon_passes_bounded_matrix_to_solver():
+    # Endpoint spacing ratio of ~1e7 would overflow a 65535-bounded solver if normalised by the smallest gap.
+    seg0 = np.array([[0.0, 0.0], [0.5, 0.0]])
+    seg1 = np.array([[0.5 + 1e-7, 0.0], [1.0, 1.0]])
+    seen = []
+
+    def tour(dm):
+        seen.append(dm)
+        return [0, 1, 2, 3]
+
+    _segment_tsp_polygon([seg0, seg1], tour, max_distance=65535)
+    assert seen[0].max() == 65535
+    assert seen[0][1, 0] == 0  # intra-segment edge stays zero
 
 
 # --- _segment_tsp_polygon tests ---
