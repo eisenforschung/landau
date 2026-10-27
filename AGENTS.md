@@ -166,6 +166,8 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
   - #504 (a `Contour` poly method contouring a `dphi`-based stability field in (μ, T) — needs `keep_unstable=True` frames with PR #496's `dphi` column; opened 2026-09-26, parked 2026-10-22 pending the #467 refiner stack — the gap-top bridge below the untraced three-phase point is the confirmed blocker)
 
+  - #538 (dependabot: raise the `fast-tsp` extra's cap `<=0.1.5` → `<=0.2.2`; opened 2026-10-26)
+
   - the CEF stack #324/#326/#346 (+ parked #334) behind #344
 
   - long-open design prototypes #306 (`IntermetallicPhase`), #250 (`PhaseDiagram` object interface), #249 (`BufferedSegments`)
