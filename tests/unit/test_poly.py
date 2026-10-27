@@ -277,6 +277,24 @@ def test_fast_tsp_skewed_spacing():
 
 
 @pytest.mark.skipif(not HAS_FAST_TSP, reason="fast-tsp not installed")
+@pytest.mark.parametrize("method_cls", [FastTsp, SegmentFastTsp] if HAS_FAST_TSP else [])
+@pytest.mark.parametrize("stop", [False, True])
+def test_fast_tsp_stop_when_converged_forwarding(monkeypatch, method_cls, stop):
+    # Only forwarded when set: fast-tsp < 0.2.2 does not accept the keyword.
+    calls = []
+
+    def find_tour(dists, duration_seconds, **kwargs):
+        calls.append(kwargs)
+        return list(range(len(dists)))
+
+    monkeypatch.setattr(fast_tsp, "find_tour", find_tour)
+    pp = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+    label = np.array([0, 0, 1, 1])
+    method_cls(stop_when_converged=stop)._make(pp, np.ones(4, dtype=bool), label)
+    assert calls == [{"stop_when_converged": True} if stop else {}]
+
+
+@pytest.mark.skipif(not HAS_FAST_TSP, reason="fast-tsp not installed")
 def test_segment_fast_tsp_skewed_spacing():
     # bottom edge starting in the clustered corner, and the top edge
     bottom = [[0.0, 0.0], [1e-7, 0.0], [2e-7, 0.0], [0.5, 0.0], [1.0, 0.0]]
