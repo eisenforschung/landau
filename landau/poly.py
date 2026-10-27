@@ -505,6 +505,9 @@ with ImportAlarm("'python_tsp' package required for PythonTsp.  Install from con
 with ImportAlarm("'fast-tsp' package required for FastTsp.  Install from pip.") as fast_tsp_alarm:
     import fast_tsp
 
+    def _converged_kwargs(stop_when_converged: bool) -> dict:
+        return {"stop_when_converged": True} if stop_when_converged else {}
+
     @dataclass
     class FastTsp(AbstractPolyMethod):
         """Find polygons by solving the Traveling Salesman Problem with the `fast_tsp` module.
@@ -513,6 +516,11 @@ with ImportAlarm("'fast-tsp' package required for FastTsp.  Install from pip.") 
         """
         duration_seconds: float = 1.0
         """Maxixum time spent per search."""
+        stop_when_converged: bool = False
+        """Return before `duration_seconds` is up once the search has stopped improving.
+
+        Only forwarded to the solver when set, since it needs fast-tsp>=0.2.2; fast-tsp 0.2 otherwise uses the whole
+        budget on every call."""
 
         def _make(self, pp: np.ndarray, border: np.ndarray, segment_label: np.ndarray) -> shapely.Geometry | None:
             pp = pp[border]
@@ -522,7 +530,7 @@ with ImportAlarm("'fast-tsp' package required for FastTsp.  Install from pip.") 
             if not (dm > 0).any():
                 return shapely.convex_hull(shapely.MultiPoint(pp))
             dm = _integer_distances(dm, _FAST_TSP_MAX_DISTANCE)
-            tour = fast_tsp.find_tour(dm, self.duration_seconds)
+            tour = fast_tsp.find_tour(dm, self.duration_seconds, **_converged_kwargs(self.stop_when_converged))
             return shapely.Polygon(pp[tour]) if len(tour) > 2 else None
 
     @dataclass
@@ -535,6 +543,8 @@ with ImportAlarm("'fast-tsp' package required for FastTsp.  Install from pip.") 
         formulation with zero-cost intra-segment edges.
         """
         duration_seconds: float = 0.01
+        stop_when_converged: bool = False
+        """See :attr:`FastTsp.stop_when_converged`."""
 
         def _make(self, pp, border, segment_label):
             if np.all(segment_label == 1):
@@ -542,7 +552,9 @@ with ImportAlarm("'fast-tsp' package required for FastTsp.  Install from pip.") 
             segments = _segments_from_labels(pp, segment_label)
 
             def solve(dm_int):
-                return fast_tsp.find_tour(dm_int, self.duration_seconds)
+                return fast_tsp.find_tour(
+                    dm_int, self.duration_seconds, **_converged_kwargs(self.stop_when_converged)
+                )
 
             return _segment_tsp_polygon(segments, solve, _FAST_TSP_MAX_DISTANCE)
 
