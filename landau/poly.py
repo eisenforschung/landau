@@ -515,7 +515,7 @@ with ImportAlarm("'fast-tsp' package required for FastTsp.  Install from pip.") 
         Much faster and higher quality than PythonTsp, but not yet on conda.
         """
         duration_seconds: float = 1.0
-        """Maxixum time spent per search."""
+        """Maximum time spent per search."""
         stop_when_converged: bool = False
         """Return before `duration_seconds` is up once the search has stopped improving.
 
