@@ -37,7 +37,10 @@ jobs:
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v5
         if: needs.changes.outputs.run == 'true'
-      - run: uv venv
+      # Pin the interpreter to the requires-python floor: a bare `uv venv` takes
+      # whatever the runner image provides, and the declared floors (e.g.
+      # scikit-learn 1.3.2) have no wheels for newer interpreters.
+      - run: uv venv --python 3.11
         if: needs.changes.outputs.run == 'true'
       # --resolution lowest-direct pins every direct dependency to the lowest
       # version its bound allows, exercising the floors declared in pyproject.
