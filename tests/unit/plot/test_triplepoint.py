@@ -87,8 +87,9 @@ def triple_df():
 def test_draws_one_mark_per_invariant(ax, triple_df, variables, lines, markers):
     """Each three-phase invariant is marked once, ignoring non-TRIPLE rows."""
     _plot_triplepoints(triple_df, ax=ax, variables=variables)
-    assert sorted(_hlines(ax)) == pytest.approx(lines)
-    assert sorted(_markers(ax)) == pytest.approx(markers)
+    # pytest.approx rejects nested sequences; approximate each tuple instead.
+    assert sorted(_hlines(ax)) == [pytest.approx(t) for t in lines]
+    assert sorted(_markers(ax)) == [pytest.approx(t) for t in markers]
     if markers:  # markers are black
         assert all(line.get_color() in ("k", "black", (0.0, 0.0, 0.0, 1.0)) for line in ax.lines)
 
