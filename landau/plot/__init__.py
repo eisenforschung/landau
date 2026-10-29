@@ -28,6 +28,7 @@ from .labels import (
     _place_transition_labels,
 )
 from .style import styled, theme
+from .svg import save_layered_svg, tag
 import landau.poly as poly
 
 
@@ -36,6 +37,7 @@ __all__ = [
     "plot_mu_phase_diagram",
     "plot_1d_mu_phase_diagram",
     "plot_1d_T_phase_diagram",
+    "save_layered_svg",
 ]
 
 
@@ -128,6 +130,7 @@ def plot_polygons(polys, color_map, ax=None):
         p.set_color(color_map[phase])
         p.set(**theme.phase_boundary)
         p.set_label(phase + "'" * rep)
+        tag(p, "phases", kind="phase", name=(phase, rep), phase=phase, unit=rep, label=phase + "'" * rep)
         ax.add_patch(p)
 
 
@@ -199,7 +202,7 @@ def _plot_scalar_field(df, polys, column, variables, ax, cmap=None, norm=None, r
     mappable = ScalarMappable(norm=norm, cmap=cmap)
 
     for key, patch in polys.items():
-        phase = key[0] if isinstance(key, tuple) else key
+        phase, rep = key if isinstance(key, tuple) else (key, 0)
         region = shapely.Polygon(patch.get_xy())
         pts = data[phases == phase]
         pts = pts[shapely.intersects_xy(region, pts[:, 0], pts[:, 1])]
@@ -216,6 +219,7 @@ def _plot_scalar_field(df, polys, column, variables, ax, cmap=None, norm=None, r
             X, Y, Z, shading="gouraud", cmap=mappable.cmap, norm=norm, zorder=0, rasterized=True
         )
         mesh.set_clip_path(patch)
+        tag(mesh, "scalar-field", kind="field", name=(phase, rep), phase=phase, unit=rep, column=column)
     return mappable
 
 
@@ -253,11 +257,21 @@ def _plot_triplepoints(df, ax=None, variables=None):
         return
     triple = df[df["locus"] == Locus.TRIPLE]
     if variables[0] == "c":
-        for (_mu, T), grp in triple.groupby(["mu", "T"], sort=False)[["c"]]:
-            ax.hlines(T, grp["c"].min(), grp["c"].max(), **{"zorder": -2, **theme.tie_line})
+        for (mu, T), grp in triple.groupby(["mu", "T"], sort=False)[["c", "phase"]]:
+            line = ax.hlines(T, grp["c"].min(), grp["c"].max(), **{"zorder": -2, **theme.tie_line})
+            tag(line, "transitions", kind="triple", t=T, mu=mu, phases=sorted(set(grp["phase"])))
     elif variables[0] == "mu":
-        for (mu, T), _grp in triple.groupby(["mu", "T"], sort=False):
-            ax.plot(mu, T, **{"zorder": 3, **theme.invariant_marker})
+        for (mu, T), grp in triple.groupby(["mu", "T"], sort=False):
+            line = ax.plot(mu, T, **{"zorder": 3, **theme.invariant_marker})
+            tag(line, "transitions", kind="triple", t=T, mu=mu, phases=sorted(set(grp["phase"])))
+
+
+def _triple_isotherms(df):
+    """``(T, c_min, c_max)`` of every triple point in a phase-diagram frame."""
+    if "locus" not in df.columns:
+        return []
+    triple = df[df["locus"] == Locus.TRIPLE]
+    return [(T, grp["c"].min(), grp["c"].max()) for (_mu, T), grp in triple.groupby(["mu", "T"], sort=False)[["c"]]]
 
 
 _DELTA_MU = r"\Delta\mu"
@@ -399,6 +413,12 @@ def _plot_phase_diagram(
     if transition_temperatures:
         _annotate_transition_temperatures(df, polys, ax=ax, variables=variables)
     ax.set_ylabel(_column_label("T"))
+    # What save_layered_svg needs to add the two-phase regions and boundaries.
+    ax._landau_phase_diagram = {
+        "variables": variables,
+        "fields": [(*(key if isinstance(key, tuple) else (key, 0)), p) for key, p in polys.items()],
+        "triples": _triple_isotherms(df),
+    }
 
 
 @deprecate(
@@ -630,6 +650,28 @@ def _subtract_reference_phase(df, scan_col, reference_phase):
     return df
 
 
+def _tag_segment_lines(lines, df, scan_col):
+    """Tag the curves seaborn drew for a 1d diagram with their phase.
+
+    seaborn draws one line per ``_seg_id`` without saying which; each line is
+    matched to the segment whose points it passes through.
+    """
+    segments = {}
+    for seg_id, g in df.groupby("_seg_id", sort=False):
+        g = g.sort_values(scan_col)
+        # a segment is stable or not throughout; bridge rows join unstable ones
+        segments[seg_id] = (g["phase"].iloc[0], bool(g["stable"].all()),
+                            g[scan_col].to_numpy(dtype=float), g["phi"].to_numpy(dtype=float))
+    counts = {}
+    for line in lines:
+        x, y = np.asarray(line.get_xdata(), dtype=float), np.asarray(line.get_ydata(), dtype=float)
+        for phase, stable, sx, sy in segments.values():
+            if len(sx) == len(x) and np.allclose(np.sort(sx), np.sort(x)) and np.allclose(np.sort(sy), np.sort(y)):
+                k = counts[phase] = counts.get(phase, -1) + 1
+                tag(line, "phases", kind="curve", name=(phase, k), phase=phase, stable=stable)
+                break
+
+
 @dataclass(frozen=True)
 class _Axis1D:
     """Everything that differs between the two 1d phase diagrams.
@@ -690,14 +732,17 @@ def _plot_1d_phase_diagram(
         df = _subtract_reference_phase(df, scan_col, reference_phase)
 
     df["_seg_id"] = _assign_segment_ids(df, scan_col=scan_col)
+    bridged = _bridge_unstable_segments(df, scan_col=scan_col)
+    n_lines = len(ax.lines)
     sns.lineplot(
-        data=_bridge_unstable_segments(df, scan_col=scan_col),
+        data=bridged,
         x=scan_col, y='phi',
         hue='phase', hue_order=list(palette), palette=palette,
         style='stable', style_order=[True, False], dashes=theme.stability_dashes(),
         units='_seg_id', estimator=None, errorbar=None,
         ax=ax,
     )
+    _tag_segment_lines(ax.lines[n_lines:], bridged, scan_col)
 
     _add_1d_phase_legend(ax, df, scan_col=scan_col, top_labels=top_labels, side_labels=side_labels, ylim=ylim,
                          top_label_rotation=top_label_rotation)
@@ -709,11 +754,15 @@ def _plot_1d_phase_diagram(
         positions, labels = [], []
         for xt, dd in df.query(f"{scan_col}.min()<{scan_col}<{scan_col}.max() and border").groupby(scan_col):
             ft = dd['phi'].iloc[0]
-            ax.axvline(xt, **theme.transition_guide)
-            ax.scatter(xt, ft, **{"zorder": 10, **theme.invariant_marker})
+            phases = sorted(set(dd['phase']))
+            tag(ax.axvline(xt, **theme.transition_guide),
+                "transitions", kind="transition", value=xt, phases=phases)
+            tag(ax.scatter(xt, ft, **{"zorder": 10, **theme.invariant_marker}),
+                "transitions", kind="transition-point", value=xt, phases=phases)
             positions.append(xt)
             labels.append(axis.transition_label(xt, element))
-        _place_transition_labels(ax, positions, labels, side="left")
+        for text, xt in zip(_place_transition_labels(ax, positions, labels, side="left"), sorted(positions)):
+            tag(text, "transition-labels", kind="transition-label", value=xt)
 
     ax.set_xlabel(_column_label(scan_col, element))
     ylabel = _column_label("phi")

@@ -18,6 +18,7 @@ from shapely.ops import polylabel
 
 from ..features import Locus
 from .style import theme
+from .svg import tag
 
 
 def _text_with_outline(ax, x, y, s, *, outline_width=None, **kwargs):
@@ -35,8 +36,15 @@ def _text_with_outline(ax, x, y, s, *, outline_width=None, **kwargs):
     stroke = dict(theme.label_outline)
     if outline_width is not None:
         stroke["linewidth"] = outline_width
+    own = "path_effects" not in kwargs
     kwargs.setdefault("path_effects", [patheffects.withStroke(**stroke)])
-    return ax.text(x, y, s, **kwargs)
+    text = ax.text(x, y, s, **kwargs)
+    if own:
+        # lets save_layered_svg write the outline as an SVG stroke on live text
+        text._landau_outline = {
+            "effects": text.get_path_effects(), "width": stroke["linewidth"], "color": stroke["foreground"],
+        }
+    return text
 
 
 def _get_renderer(fig):
@@ -307,6 +315,7 @@ def _add_inline_polygon_labels(ax, polys):
             ax, center[0], center[1], _bold_math(phase + "'" * rep),
             ha="center", va="center", **{"color": "black", **theme.region_label},
         )
+        tag(text, "labels", kind="label", name=(phase, rep), phase=phase, unit=rep)
         poly_px = _shapely_polygon(ax.transData.transform(p.get_xy()))
         if poly_px is None or _label_fits(poly_px, text, renderer):
             continue
@@ -484,10 +493,11 @@ def _annotate_transition_temperatures(df, polys=(), ax=None, variables=None):
     else:
         triple_modes = congruent_modes = ("field", "free")
 
-    def _label(x, y, modes, x_weight):
+    def _label(x, y, modes, x_weight, locus, mu):
         text = _text_with_outline(
             ax, x, y, f"{y:.0f} K", ha="center", va="center", **{"zorder": 11, **theme.value_label},
         )
+        tag(text, "transition-labels", kind="transition-label", locus=str(locus), t=y, mu=mu)
         bbox = text.get_window_extent(renderer)
         size = (bbox.width, bbox.height)
         anchor = tuple(ax.transData.transform((x, y)))
@@ -511,15 +521,15 @@ def _annotate_transition_temperatures(df, polys=(), ax=None, variables=None):
 
     triple = df[df["locus"] == Locus.TRIPLE]
     if variables[0] == "c":
-        for (_mu, T), grp in triple.groupby(["mu", "T"], sort=False)[["c"]]:
+        for (mu, T), grp in triple.groupby(["mu", "T"], sort=False)[["c"]]:
             # Anchored on the invariant's own composition -- the middle of the
             # three, the one that melts or decomposes into the outer two, and
             # where the eutectic or peritectic point is drawn -- rather than
             # the midpoint of the isotherm it spans.
-            _label(grp["c"].median(), T, triple_modes, x_weight=3.0)
+            _label(grp["c"].median(), T, triple_modes, 3.0, Locus.TRIPLE, mu)
     elif variables[0] == "mu":
         for (mu, T), _grp in triple.groupby(["mu", "T"], sort=False):
-            _label(mu, T, triple_modes, x_weight=3.0)
+            _label(mu, T, triple_modes, 3.0, Locus.TRIPLE, mu)
 
     congruent = df[df["locus"] == Locus.CONGRUENT]
     finite_mu = df["mu"][np.isfinite(df["mu"])]
@@ -537,7 +547,7 @@ def _annotate_transition_temperatures(df, polys=(), ax=None, variables=None):
             x = finite_mu.min() if mu < 0 else finite_mu.max()
             if not np.isfinite(x):
                 x = ax.get_xlim()[0 if mu < 0 else 1]
-        _label(x, T, congruent_modes, x_weight=1.5)
+        _label(x, T, congruent_modes, 1.5, Locus.CONGRUENT, mu)
 
 
 def _place_side_labels(ax, df, scan_col, phase_colors, top_texts=()):
@@ -600,6 +610,8 @@ def _place_side_labels(ax, df, scan_col, phase_colors, top_texts=()):
 
     right_texts = make_texts(right, "left")
     left_texts = make_texts(left, "right")
+    for (phase, _), text in zip(right + left, right_texts + left_texts):
+        tag(text, "labels", kind="label", name=(phase, "side"), phase=phase, position="side")
 
     def measure(texts):
         if not texts:
@@ -785,6 +797,7 @@ def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True, yl
         ax2.set_ticks(transitions)
         ax2.set_xticklabels([])
         ax2.tick_params(**theme.transition_tick)
+        tag(ax2, "transitions", kind="transition-ticks", values=transitions)
 
         # Phase-name labels near the top of the axis, centered between boundaries.
         # get_xaxis_transform(): x in data coords, y in axes [0,1] fraction.
@@ -809,13 +822,13 @@ def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True, yl
                 )
             phase = stable_phases[0]
             # White outline keeps the bold label legible on top of tielines.
-            top_texts.append(_text_with_outline(
+            top_texts.append(tag(_text_with_outline(
                 ax, mid, 0.97, _bold_math(phase),
                 transform=xform,
                 rotation=top_label_rotation,
                 ha="center", va="top",
                 **{"color": phase_colors.get(phase, "black"), **theme.region_label},
-            ))
+            ), "labels", kind="label", name=(phase, "top", len(top_texts)), phase=phase, position="top"))
 
     if side_labels and not df["stable"].all():
         _place_side_labels(ax, df, scan_col, phase_colors, top_texts)
