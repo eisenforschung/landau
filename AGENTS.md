@@ -164,6 +164,8 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
   - #474 (cost-based transition-temperature label placement, refs #463)
 
+  - #543 (`save_layered_svg` in new `landau/plot/svg.py` — layered, addressable SVG export of the diagrams: every element in its own `<g>` with `data-phase`-style attributes, Inkscape-layer groups, invisible two-phase / per-pair boundary hit targets computed from the phase-field outlines at save time, `id_prefix` namespacing for inlining several files into one page, and a `landau.plot.svg.tag` hook for caller overlays; opened 2026-10-30)
+
   - #504 (a `Contour` poly method contouring a `dphi`-based stability field in (μ, T) — needs `keep_unstable=True` frames with PR #496's `dphi` column; opened 2026-09-26, parked 2026-10-22 pending the #467 refiner stack — the gap-top bridge below the untraced three-phase point is the confirmed blocker)
 
   - the CEF stack #324/#326/#346 (+ parked #334) behind #344
