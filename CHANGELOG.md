@@ -3,6 +3,19 @@
 Notable changes to **landau.py**, newest first. Per-PR detail lives in the
 [GitHub releases](https://github.com/eisenforschung/landau/releases).
 
+## [1.17.0](https://github.com/eisenforschung/landau/compare/1.16.0...1.17.0) (2026-10-31)
+
+
+### Features
+
+* **plot:** colour 2d phase fields by a scalar column ([#532](https://github.com/eisenforschung/landau/issues/532)) ([2cfb5fc](https://github.com/eisenforschung/landau/commit/2cfb5fc1c35bfc4234a80ef2d4c616d553cbbb89))
+* **poly:** expose stop_when_converged on FastTsp and SegmentFastTsp ([5a9abed](https://github.com/eisenforschung/landau/commit/5a9abed7b8ce44eb98e0299e1dbb86d80f85d255))
+
+
+### Bug Fixes
+
+* **poly:** scale TSP distance matrices to the solver's entry limit ([4548001](https://github.com/eisenforschung/landau/commit/4548001008c78dba9091c594a020b858c3a9a175))
+
 ## [1.16.0](https://github.com/eisenforschung/landau/compare/1.15.0...1.16.0) (2026-10-08)
 
 
