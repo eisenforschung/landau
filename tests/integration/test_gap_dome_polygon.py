@@ -41,7 +41,13 @@ def test_liquid_polygon_leaves_the_dome_open(syntectic_diagram, poly_method):
     polys = get_polygons(syntectic_diagram, poly_method=poly_method)
     liquid = shapely.Polygon(polys.loc["liquid"].iloc[0].get_xy())
     triple = syntectic_diagram[syntectic_diagram["locus"] == "triple"]
-    T_syn = triple.loc[triple["phase"] == "γ", "T"].max()
+    # the syntectic node itself: the liquid's two branches either side of the compound
+    node = triple[triple["refined"] == "miscibility-gap"]
+    assert node["T"].nunique() == 1
+    assert sorted(node["phase"]) == ["liquid", "liquid", "γ"]
+    c_liquid = node.loc[node["phase"] == "liquid", "c"]
+    assert c_liquid.min() < 0.5 < c_liquid.max()
+    T_syn = node["T"].iloc[0]
     # the two-liquid field: above the syntectic isotherm, below the dome's top
     assert not liquid.contains(shapely.Point(0.5, T_syn + 60.0))
     # the one-phase liquid: above the critical point
