@@ -202,14 +202,13 @@ def _state_row(phase: Phase, T: float, mu: float) -> dict:
     }
 
 
-# eV; largest spread in a *triple*'s own-phase potentials still read as one
-# coexistence. Bounded below by the refiner's own convergence — the eutectic
+# eV; largest spread in a refined point's own-phase potentials still read as
+# one coexistence. Bounded below by the refiners' own convergence — the eutectic
 # invariant of the `eutectic_diagram` fixture converges to a 2e-8 spread and
 # disappears from the diagram entirely once this constant reaches 1e-8 — and
 # above by the smallest gap that must still read as domination. Both sides are
-# pinned in tests/unit/test_refine.py. Not applied to two-phase boundaries,
-# which may be genuinely first-order (see _dominated).
-_TRIPLE_COEXIST_TOL = 1e-4
+# pinned in tests/unit/test_refine.py.
+_COEXIST_TOL = 1e-4
 
 
 def _dominated(pt, phases: Mapping[str, Phase]) -> bool:
@@ -225,12 +224,10 @@ def _dominated(pt, phases: Mapping[str, Phase]) -> bool:
       phase — then the own set isn't the top-|own| most stable, so this isn't
       the boundary it claims to be (a Clausius-Clapeyron trace that oversteps an
       invariant lands here).
-    * For a **triple** only, its three phases don't share one potential (spread
-      ``> _TRIPLE_COEXIST_TOL``) — a genuine three-phase point is a single
-      ``(T, mu)`` where all three are degenerate. Two-phase boundaries are
-      exempt: a first-order boundary is a real boundary where the two phases'
-      potentials jump rather than cross, and clamping it to coexistence would
-      drop it.
+    * Its own phases don't share one potential (spread ``> _COEXIST_TOL``).
+      Coexisting phases are degenerate in ``phi``, whether two or three of them:
+      ``phi`` is a Legendre transform of the free energy, hence continuous, and
+      at a first-order boundary it is ``c = -dphi/dmu`` that jumps, not ``phi``.
 
     The reference for the outside comparison is ``max(own_phi)`` rather than an
     arbitrary member of the ``own`` set, so the verdict does not depend on
@@ -241,7 +238,7 @@ def _dominated(pt, phases: Mapping[str, Phase]) -> bool:
     if not np.all(np.isfinite(own_phi)):
         return True
     hi = max(own_phi)
-    if len(own) >= 3 and hi - min(own_phi) > _TRIPLE_COEXIST_TOL:
+    if hi - min(own_phi) > _COEXIST_TOL:
         return True
     return any(
         p.semigrand_potential(pt.T, pt.mu) < hi

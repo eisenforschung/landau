@@ -29,7 +29,7 @@ from landau.refine import (
     ScanRefiner,
 )
 from landau.refine import (
-    _TRIPLE_COEXIST_TOL,
+    _COEXIST_TOL,
     _point_on_line,
     _simplex_brackets,
     _simplex_straddles,
@@ -1116,8 +1116,8 @@ def test_scan_refiner_splits_dominated_crossing_T_scan():
 # orthogonally: empty rival set, lower / equal / higher rival, the strictness
 # of "<", an absent (phi = +inf) own phase, a triple whose own phases don't
 # share one potential, an outside dominator in a triple, and multiple rivals.
-# The spread branch is pinned on both sides of _TRIPLE_COEXIST_TOL, together
-# with the two-phase exemption and the headroom a real refined triple leaves.
+# The spread branch is pinned on both sides of _COEXIST_TOL, for triples and
+# two-phase points alike, together with the headroom real refined points leave.
 
 
 def _dom_phases(*specs):
@@ -1159,14 +1159,15 @@ def test_dominated_rival_equal_phi_returns_false():
 
 
 def test_dominated_outside_rival_between_own_potentials_returns_true():
-    """Two-phase boundary with unequal own potentials (phi_A=0, phi_B=0.5;
-    allowed since the coexistence-tolerance check only applies to triples).
-    Rival X sits at 0.3 - strictly between the two own potentials, so it beats
-    B but not A. The reference is ``max(own_phi)``, i.e. "does X beat the
-    least-stable own phase": X beats B, so the own set is not the top-2 most
-    stable and the point is dominated whichever way the ``own`` set happens to
-    iterate."""
-    phases = _dom_phases(("A", 0.0, 0.0), ("B", 1.0, 0.5), ("X", 0.5, 0.3))
+    """Two-phase boundary with own potentials apart by less than _COEXIST_TOL
+    (phi_A=0, phi_B=0.5*tol), so the spread branch passes it. Rival X sits at
+    0.3*tol - strictly between the two own potentials, so it beats B but not A.
+    The reference is ``max(own_phi)``, i.e. "does X beat the least-stable own
+    phase": X beats B, so the own set is not the top-2 most stable and the point
+    is dominated whichever way the ``own`` set happens to iterate."""
+    phases = _dom_phases(
+        ("A", 0.0, 0.0), ("B", 1.0, 0.5 * _COEXIST_TOL), ("X", 0.5, 0.3 * _COEXIST_TOL),
+    )
     pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B"))
     assert _dominated(pt, phases) is True
 
@@ -1175,7 +1176,7 @@ def test_dominated_own_phase_below_others_returns_true():
     """A claimed triple point whose own phases don't share a potential is not a
     real coexistence: D lies far below A and B at ``(T, mu)``, so only D is
     stable there and the A+B+D point is spurious. The own-phase spread (1.0 eV)
-    exceeds ``_TRIPLE_COEXIST_TOL``, so it is dropped regardless of set
+    exceeds ``_COEXIST_TOL``, so it is dropped regardless of set
     order."""
     phases = _dom_phases(
         ("A", 0.0, 0.0), ("B", 1.0, 0.0), ("D", 0.5, -1.0),
@@ -1212,12 +1213,12 @@ def test_dominated_triple_with_outside_dominator_returns_true():
 
 
 def test_dominated_triple_spread_just_below_tolerance_survives():
-    """`_TRIPLE_COEXIST_TOL` is a real threshold, not a formality: a triple whose
+    """`_COEXIST_TOL` is a real threshold, not a formality: a triple whose
     own potentials span half of it still reads as one coexistence. At mu = 0 a
     LinePhase's potential is its line energy, so the spread here is exactly
-    0.5 * _TRIPLE_COEXIST_TOL. No phase sits outside `own`, so the spread branch
+    0.5 * _COEXIST_TOL. No phase sits outside `own`, so the spread branch
     is the only one that can fire."""
-    eps = 0.5 * _TRIPLE_COEXIST_TOL
+    eps = 0.5 * _COEXIST_TOL
     phases = _dom_phases(
         ("A", 0.0, 0.0), ("B", 1.0, eps), ("C", 0.5, 0.5 * eps),
     )
@@ -1231,7 +1232,7 @@ def test_dominated_triple_spread_just_above_tolerance_is_dropped():
     a factor of four, where the 1.0 eV spread of
     test_dominated_own_phase_below_others_returns_true would pass for any
     tolerance below 1 eV."""
-    eps = 2.0 * _TRIPLE_COEXIST_TOL
+    eps = 2.0 * _COEXIST_TOL
     phases = _dom_phases(
         ("A", 0.0, 0.0), ("B", 1.0, eps), ("C", 0.5, 0.5 * eps),
     )
@@ -1239,14 +1240,22 @@ def test_dominated_triple_spread_just_above_tolerance_is_dropped():
     assert _dominated(pt, phases) is True
 
 
-def test_dominated_two_phase_spread_far_above_tolerance_survives():
-    """The tolerance is triple-only. Two phases whose potentials differ by 5000x
-    _TRIPLE_COEXIST_TOL are a first-order boundary, where the stable phase jumps
-    rather than crosses - a real boundary that must survive. Nothing sits outside
-    `own`, so only the (skipped) spread branch could drop it."""
-    phases = _dom_phases(("A", 0.0, 0.0), ("B", 1.0, 5000.0 * _TRIPLE_COEXIST_TOL))
+def test_dominated_two_phase_spread_just_below_tolerance_survives():
+    """Two coexisting phases share one potential just as three do: a first-order
+    boundary is a jump in ``c = -dphi/dmu``, not in ``phi``. Half the tolerance
+    apart still reads as coexistence. Nothing sits outside `own`, so the spread
+    branch is the only one that can fire."""
+    phases = _dom_phases(("A", 0.0, 0.0), ("B", 1.0, 0.5 * _COEXIST_TOL))
     pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B"))
     assert _dominated(pt, phases) is False
+
+
+def test_dominated_two_phase_spread_just_above_tolerance_is_dropped():
+    """The other side of the threshold for two phases: twice the tolerance apart,
+    A and B do not coexist at (T, mu) and the point is dropped."""
+    phases = _dom_phases(("A", 0.0, 0.0), ("B", 1.0, 2.0 * _COEXIST_TOL))
+    pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B"))
+    assert _dominated(pt, phases) is True
 
 
 def test_refined_triple_point_leaves_orders_of_magnitude_of_headroom(
@@ -1254,7 +1263,7 @@ def test_refined_triple_point_leaves_orders_of_magnitude_of_headroom(
 ):
     """The tolerance is a filter for spurious triples, not a bound the solver
     strains against: a converged eutectic invariant sits far inside it. Asserting
-    a hard fraction of _TRIPLE_COEXIST_TOL rather than the tolerance itself keeps
+    a hard fraction of _COEXIST_TOL rather than the tolerance itself keeps
     this a statement about refinement quality - the emitted rows are already past
     the `_dominated` gate, so comparing to the tolerance would be circular."""
     by_name = {p.name: p for p in eutectic_phases}
@@ -1266,7 +1275,24 @@ def test_refined_triple_point_leaves_orders_of_magnitude_of_headroom(
         names = sorted(set(rows["phase"]))
         assert len(names) == 3
         phi = [by_name[n].semigrand_potential(T, mu) for n in names]
-        assert max(phi) - min(phi) < _TRIPLE_COEXIST_TOL / 100
+        assert max(phi) - min(phi) < _COEXIST_TOL / 100
+
+
+def test_refined_two_phase_points_leave_orders_of_magnitude_of_headroom(
+    eutectic_phases, eutectic_diagram
+):
+    """Every refined two-phase point of the eutectic diagram sits far inside the
+    tolerance, so applying it to two-phase boundaries filters nothing a refiner
+    solved: each one root-finds ``phi_1 - phi_2 = 0``."""
+    by_name = {p.name: p for p in eutectic_phases}
+    boundary = eutectic_diagram[eutectic_diagram["locus"] == Locus.BOUNDARY]
+    points = list(boundary.groupby(["T", "mu"]))
+    assert len(points) > 50
+    for (T, mu), rows in points:
+        names = sorted(set(rows["phase"]))
+        assert len(names) == 2
+        phi = [by_name[n].semigrand_potential(T, mu) for n in names]
+        assert max(phi) - min(phi) < _COEXIST_TOL / 100
 
 
 def test_dominated_picks_any_lower_rival_among_many():
