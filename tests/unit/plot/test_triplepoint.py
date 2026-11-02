@@ -176,7 +176,7 @@ def test_same_phase_twice_spans_rival_to_far_branch(ax):
         }
     )
     _plot_triplepoints(df, ax=ax, variables=["c", "T"])
-    assert _hlines(ax) == pytest.approx([(1110.0, 0.0, 0.88)])
+    assert _hlines(ax) == [pytest.approx((1110.0, 0.0, 0.88))]
     plt.cla()
     _plot_triplepoints(df, ax=ax, variables=["mu", "T"])
-    assert _markers(ax) == pytest.approx([(0.45, 1110.0)])
+    assert _markers(ax) == [pytest.approx((0.45, 1110.0))]
