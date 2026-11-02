@@ -206,9 +206,12 @@ def _state_row(phase: Phase, T: float, mu: float) -> dict:
 # one coexistence. Bounded below by the refiners' own convergence — the eutectic
 # invariant of the `eutectic_diagram` fixture converges to a 2e-8 spread and
 # disappears from the diagram entirely once this constant reaches 1e-8 — and
-# above by the smallest gap that must still read as domination. Both sides are
-# pinned in tests/unit/test_refine.py.
-_COEXIST_TOL = 1e-4
+# above by the smallest gap that must still read as domination. The two-phase
+# root-finds stop at xtol = 1e-6 in mu or T, which leaves a converged spread of
+# order |c_1 - c_2| * 1e-6 eV at most; benchmarks/coexist_spread.py measures the
+# spread of every refined point on the testplots diagrams. Both sides are pinned
+# in tests/unit/test_refine.py.
+_COEXIST_TOL = 1e-5
 
 
 def _dominated(pt, phases: Mapping[str, Phase]) -> bool:
