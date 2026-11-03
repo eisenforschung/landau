@@ -58,3 +58,13 @@ the class removes. Reports the fit residual, the leave-one-out error (shape
 rather than freedom), and the spread of the reported free energy across
 `vinet` / `birch_murnaghan` / `murnaghan`, on two volume sets of equal size but
 different span so the span is separated from the degrees of freedom.
+
+## `color_by_vector_size.py`
+
+```bash
+python benchmarks/color_by_vector_size.py
+```
+
+Saves the README quickstart diagram with `color_by="mu"` to SVG and PDF with the
+colour-field meshes rasterised and not, next to the plain `color_by=None` diagram,
+and prints file size, `<path>` count and save time for each.
