@@ -15,6 +15,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.patches
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import pytest
 import shapely
@@ -168,6 +169,39 @@ def test_congruent_label_anchors_on_the_shared_composition(ax):
     label, = ax.texts
     x, _y = label.get_position()
     assert x == pytest.approx(0.05)
+
+
+def test_terminal_congruent_label_anchors_on_the_mu_axis_edge(ax):
+    """A pure component's transition sits at mu = -+inf (TerminalRefiner): in
+    mu-T the boundary runs off to that edge of the axes, so the label anchors
+    there and lands inside the axes; in c-T it anchors on c = 0 / 1 as usual."""
+    df = _congruent_df([(-np.inf, 320.0, 0.0), (np.inf, 400.0, 1.0)])
+    _annotate_transition_temperatures(df, ax=ax, variables=["mu", "T"])
+    labels = {t.get_text(): t.get_position() for t in ax.texts}
+    assert set(labels) == {"320 K", "400 K"}
+    x0, x1 = ax.get_xlim()
+    for (x, y), text in zip(labels.values(), labels):
+        assert np.isfinite(x) and np.isfinite(y)
+        assert x0 <= x <= x1 and ax.get_ylim()[0] <= y <= ax.get_ylim()[1]
+    # the -inf one sits in the left half, the +inf one in the right half
+    assert labels["320 K"][0] < (x0 + x1) / 2 < labels["400 K"][0]
+
+
+def test_terminal_congruent_label_anchors_on_the_sampled_mu_edge(ax):
+    """The anchor is the edge of the sampled mu range, read off the frame, not
+    whatever the axes' limits happen to be when the labels are placed."""
+    df = pd.concat([
+        _congruent_df([(-np.inf, 320.0, 0.0), (np.inf, 400.0, 1.0)]),
+        pd.DataFrame({"mu": [-1.0, 1.0], "T": [350.0, 350.0], "c": [0.1, 0.9], "phase": ["S", "L"],
+                      "locus": Locus.BOUNDARY, "boundary_id": 1}),
+    ], ignore_index=True)
+    ax.set_xlim(-5.0, 5.0)
+    ax.set_ylim(300.0, 420.0)
+    _annotate_transition_temperatures(df, ax=ax, variables=["mu", "T"])
+    labels = {t.get_text(): t.get_position()[0] for t in ax.texts}
+    assert set(labels) == {"320 K", "400 K"}
+    # placed within a label's reach of the data edge, well inside the axes' slack
+    assert abs(labels["320 K"] + 1.0) < 1.0 and abs(labels["400 K"] - 1.0) < 1.0
 
 
 def test_boundary_rows_are_not_labelled(ax):
