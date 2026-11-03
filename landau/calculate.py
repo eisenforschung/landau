@@ -261,7 +261,7 @@ def calc_phase_diagram(
             picks defaults based on which of ``T``/``mu`` are sampled, ``False``
             skips refinement, and an explicit sequence of
             :class:`~landau.refine.Refiner` instances applies just those.
-        keep_unstable (bool): only keep entries of stable phases, otherwise keep entries of all phases at all sampling points
+        keep_unstable (bool): if ``True``, keep entries of all phases at all sampling points, otherwise only keep entries of stable phases
 
     Returns:
         dataframe of phase points; the ``locus`` column classifies each row
@@ -354,10 +354,13 @@ def cluster_T_c(dd, *, distance_threshold) -> pd.Series:
 
     Args:
         dd: DataFrame with columns 'T' and 'c'.
-        distance_threshold: Agglomerative clustering cut-off in normalised (T, c) space.
-            Smaller values split more aggressively; larger values merge more. 0.5 was
-            hand-tuned for 2D T-c diagrams — lower it (e.g. 0.2) when disconnected
-            stable segments within one phase are incorrectly merged.
+        distance_threshold: Required. Agglomerative clustering cut-off in normalised
+            (T, c) space. Smaller values split more aggressively; larger values merge
+            more. Values of roughly 0.01-0.3 keep the test fixtures' disconnected
+            same-phase fields apart (see ``tests/regression/test_issue_456.py``), while
+            over-splitting of connected fields starts between 0.05 and 0.1. The
+            user-facing default lives on :func:`~landau.plot.cluster_phase` and
+            :func:`~landau.plot.get_polygons`.
     """
     if dd.empty:
         return pd.Series(dtype=np.intp)

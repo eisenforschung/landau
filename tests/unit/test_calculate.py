@@ -116,6 +116,12 @@ def test_cluster_T_c_empty():
     assert labels.dtype.kind == "i"
 
 
+def test_cluster_T_c_requires_distance_threshold():
+    dd = pd.DataFrame({"T": [300.0, 400.0], "c": [0.1, 0.2]})
+    with pytest.raises(TypeError):
+        cluster_T_c(dd)
+
+
 # --- cluster_T_c_mu tests ---
 
 def test_cluster_T_c_mu_inf_get_own_labels():
@@ -147,6 +153,12 @@ def test_cluster_T_c_mu_empty():
     labels = cluster_T_c_mu(dd, distance_threshold=0.5)
     assert len(labels) == 0
     assert labels.dtype.kind == "i"
+
+
+def test_cluster_T_c_mu_requires_distance_threshold():
+    dd = pd.DataFrame({"T": [300.0, 400.0], "c": [0.1, 0.2], "mu": [0.0, 0.0]})
+    with pytest.raises(TypeError):
+        cluster_T_c_mu(dd)
 
 
 # --- _apply_series tests ---
@@ -724,6 +736,12 @@ def test_cluster_use_mu_true_dispatches_to_cluster_T_c_mu():
     labels = cluster(dd, distance_threshold=0.5)
     assert labels.loc[dd["mu"] == np.inf].nunique() == 1
     assert labels.loc[dd["mu"] == np.inf].iloc[0] != labels.loc[dd["mu"] == 0.0].iloc[0]
+
+
+def test_cluster_requires_distance_threshold():
+    dd = pd.DataFrame({"T": [300.0, 400.0], "c": [0.1, 0.2], "mu": [0.0, 0.0]})
+    with pytest.raises(TypeError):
+        cluster(dd)
 
 
 def test_cluster_use_mu_false_dispatches_to_cluster_T_c():
