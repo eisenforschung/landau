@@ -4,6 +4,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import to_rgba
+import numpy as np
 import pandas as pd
 import pytest
 import seaborn as sns
@@ -65,6 +66,16 @@ def test_empty_df_raises():
     empty = pd.DataFrame(columns=["c", "f_excess", "phase", "T", "stable"])
     with pytest.raises(ValueError, match="empty"):
         plot_excess_free_energy(empty)
+
+
+def test_missing_f_excess_raises():
+    """A frame without f_excess (phases short of a pure component) is refused by name."""
+    a = LinePhase("A", fixed_concentration=0.0, line_energy=0.0)
+    m = LinePhase("M", fixed_concentration=0.5, line_energy=-0.1)
+    df = calc_phase_diagram([a, m], Ts=[300.0], mu=np.array([-0.1, 0.0, 0.1]), refine=False,
+                            keep_unstable=True)
+    with pytest.raises(ValueError, match="f_excess"):
+        plot_excess_free_energy(df)
 
 
 def test_scalar_temperature_accepted():
