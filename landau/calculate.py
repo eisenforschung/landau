@@ -311,15 +311,27 @@ def calc_phase_diagram(
     return pdf
 
 
-def reduce(dd):
-    dd = dd.sort_values("c")
-    return pd.Series(
-        {
-            "transition": "-".join(dd.phase.tolist()),
-            "c": dd.c.tolist(),
-            "phase": dd.phase.tolist(),
-        }
-    )
+def _tie_lines(dd):
+    """Pair the border rows at one ``(mu, T)`` into two-phase tie-lines.
+
+    ``dd`` must hold only the ``border`` rows of a single ``(mu, T)``, sorted
+    by ``c``, with columns ``c`` and ``phase``. Neighbouring rows form a
+    tie-line named ``"A-B"`` in ascending ``c``, so ``n`` rows give ``n - 1``
+    tie-lines and a row between two others is emitted once per tie-line. A
+    single row (the ``mu = +-inf`` edges) is emitted under its own phase name.
+
+    Returns one row per tie-line end, with columns ``transition``, ``c`` and
+    ``phase``.
+    """
+    c, phase = dd["c"].to_numpy(), dd["phase"].to_numpy()
+    if len(dd) == 1:
+        return pd.DataFrame({"transition": [phase[0]], "c": c, "phase": phase})
+    rows = []
+    for i in range(len(dd) - 1):
+        name = f"{phase[i]}-{phase[i + 1]}"
+        rows.append((name, c[i], phase[i]))
+        rows.append((name, c[i + 1], phase[i + 1]))
+    return pd.DataFrame(rows, columns=["transition", "c", "phase"])
 
 
 def _rescale_T(t):
@@ -395,12 +407,12 @@ def get_transitions(df):
     Useful for plotting below, but potentially also to augment the existing refining routines and
     acquire additional Free energies from calphy/etc. to improve the diagram.
     """
-    bdf = df.query("border")
-    # go from a table of mu/c/T points that are on the phase boundaries to a table where the two points that are at the same mu/T are grouped together
-    # use this information to add 'transition' column; handles also the case where border points are at mu=+-inf, there we have only one point
-    tdf = bdf.groupby(["mu", "T"])[["c", "phase"]].apply(reduce, include_groups=False)
-    # immediately explode again to go back to our familiar representation, but now with the added 'transition' column
-    tdf = tdf.reset_index().explode(["c", "phase"]).infer_objects().reset_index(drop=True)
+    bdf = df.query("border").sort_values("c")
+    # the border points at one (mu, T) are the ends of tie-lines: pair them up
+    # into two-phase transitions (a lone point at mu=+-inf is its own) and add
+    # the 'transition' column; groupby keeps the c order within each group
+    tdf = bdf.groupby(["mu", "T"])[["c", "phase"]].apply(_tie_lines, include_groups=False)
+    tdf = tdf.reset_index(level=["mu", "T"]).reset_index(drop=True)
 
     # cluster points that are assigned as one transition, because the same transition can appear multiple times in "disconnected" manner in a phase
     # diagram, e.g. a solid solution in contact with the melt interrupted by a higher melting intermetallic
