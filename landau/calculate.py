@@ -13,7 +13,7 @@ from sklearn.cluster import AgglomerativeClustering
 
 from .features import Locus
 from .phases import Phase, AbstractLinePhase
-from .refine import Refiner, ScanRefiner, default_refiners, _find_one_point as find_one_point  # noqa: F401
+from .refine import Refiner, ScanRefiner, default_refiners, _drop_terminal_triples, _find_one_point as find_one_point  # noqa: F401
 
 
 kB = Boltzmann / eV
@@ -224,10 +224,9 @@ def refine_phase_diagram(
         data.extend(_border_edges(sdf, min_c, max_c))
     if refiners is None:
         refiners = default_refiners(sdf)
-    for r in refiners:
-        out = r.run(sdf, phases)
-        if not out.empty:
-            data.append(out)
+    refined = [out for r in refiners if not (out := r.run(sdf, phases)).empty]
+    if refined:
+        data.append(_drop_terminal_triples(pd.concat(refined, ignore_index=True)))
     return pd.concat(data, ignore_index=True)
 
 

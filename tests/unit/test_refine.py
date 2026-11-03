@@ -31,6 +31,7 @@ from landau.refine import (
 )
 from landau.refine import (
     _COEXIST_TOL,
+    _drop_terminal_triples,
     _point_on_line,
     _simplex_brackets,
     _simplex_straddles,
@@ -1976,6 +1977,52 @@ def test_tag_features_leaves_a_terminal_closure_untagged():
     assert not any(pt.congruent for pt in out)
 
 
+_DILUTE_T = 900.0
+
+
+def _dilute_congruent(c_g):
+    """An ideal liquid and a line phase at ``c_g`` built to melt congruently at
+    ``_DILUTE_T``: its free energy is set on the liquid's there, one kB of
+    entropy below it."""
+    E_A, E_B, S_l, S_g = -2.8, -2.35, 3.0 * kB, 1.0 * kB
+    liquid = IdealSolution("liquid",
+                           LinePhase("lA", fixed_concentration=0, line_energy=E_A, line_entropy=S_l),
+                           LinePhase("lB", fixed_concentration=1, line_energy=E_B, line_entropy=S_l))
+    f_liq = ((1 - c_g) * E_A + c_g * E_B - S_l * _DILUTE_T
+             + kB * _DILUTE_T * (c_g * np.log(c_g) + (1 - c_g) * np.log(1 - c_g)))
+    gamma = LinePhase("γ", fixed_concentration=c_g, line_energy=f_liq + S_g * _DILUTE_T, line_entropy=S_g)
+    return liquid, gamma
+
+
+@pytest.mark.parametrize("c_g", [0.005, 0.05])
+def test_dilute_interior_congruent_point_is_tagged(c_g):
+    """A line phase melting congruently near a pure component is an interior
+    congruent point however dilute it is: what makes a closure terminal is
+    both phases reaching c = 0 / 1, not its composition. Nothing reaches the
+    terminals here but the liquid, so these are the only tags."""
+    liquid, gamma = _dilute_congruent(c_g)
+    df = calc_phase_diagram([liquid, gamma], np.linspace(600.0, 1200.0, 31), mu=100)
+    tagged = df[df["locus"] == Locus.CONGRUENT]
+    assert sorted(tagged["phase"]) == ["liquid", "γ"]
+    assert tagged["T"].to_numpy() == pytest.approx([_DILUTE_T, _DILUTE_T], abs=1e-3)
+    assert tagged["c"].to_numpy() == pytest.approx([c_g, c_g], abs=1e-6)
+    assert np.isfinite(tagged["mu"]).all()
+
+
+def test_dilute_closure_keeps_the_traced_tag_when_the_solve_fails(monkeypatch):
+    """The traced fallback asks the same question as the solve's edge check --
+    is this closure at a pure component? -- so a dilute interior closure is
+    tagged even when the exact solve gives nothing."""
+    monkeypatch.setattr(ClausiusClapeyronRefiner, "_solve_congruent", lambda self, pt, phases: None)
+    liquid, gamma = _dilute_congruent(0.005)
+    df = calc_phase_diagram([liquid, gamma], np.linspace(600.0, 1200.0, 31), mu=100)
+    tagged = df[df["locus"] == Locus.CONGRUENT]
+    assert sorted(tagged["phase"]) == ["liquid", "γ"]
+    assert (tagged["refined"] == "clausius-clapeyron").all()
+    # a traced point: within a trace step of the fold, not on it
+    assert tagged["T"].to_numpy() == pytest.approx([_DILUTE_T, _DILUTE_T], abs=ClausiusClapeyronRefiner().dT_max)
+
+
 # -- TerminalRefiner ----------------------------------------------------------
 
 
@@ -2053,6 +2100,96 @@ def test_terminal_refiner_solve_is_empty_across_an_unchanged_step():
     pt, = refiner.solve(across, {"A": a, "B": b})
     assert np.isfinite(pt.mu) and pt.terminal == 0.0 and pt.congruent
     assert {row["mu"] for row in pt.to_rows({"A": a, "B": b})} == {-np.inf}
+
+
+def test_terminal_refiner_sees_through_a_dilute_line_phase():
+    """A line phase at c = 0.005 undercuts both pure-A phases' potentials at
+    the finite far mu, but it is not at c = 0 and cannot be pure A's phase:
+    the solid-liquid transition at pure A is found behind it, and the
+    _dominated filter of run does not take it for a competitor there."""
+    liquid, _ = _dilute_congruent(0.005)
+    gamma = LinePhase("γ", fixed_concentration=0.005, line_energy=-3.3, line_entropy=1.0 * kB)
+    solid = LinePhase("solid", fixed_concentration=0, line_energy=-3.0, line_entropy=1.0 * kB)
+    T_m = 0.2 / (2.0 * kB)
+    Ts = np.linspace(600.0, 1800.0, 7)
+    frame = _terminal_frame(Ts, mus=(-0.3, 0.3))
+    phases = {"liquid": liquid, "γ": gamma, "solid": solid}
+    refiner = TerminalRefiner()
+    at0 = [c for c in refiner.propose(frame) if c.side == 0.0 and c.bracket[0] < T_m < c.bracket[1]][0]
+    pt, = refiner.solve(at0, phases)
+    assert pt.T == pytest.approx(T_m, abs=1e-6) and set(pt.phases) == {"solid", "liquid"}
+    # the dilute phase really is the lowest potential at the far mu ...
+    assert gamma.semigrand_potential(pt.T, pt.mu) < min(p.semigrand_potential(pt.T, pt.mu) for p in (solid, liquid))
+    # ... and still not a competitor at the terminal
+    assert not _dominated(pt, phases)
+    out = refiner.run(frame, phases)
+    assert set(out["phase"]) == {"solid", "liquid"} and out["T"].to_numpy() == pytest.approx([T_m, T_m], abs=1e-6)
+
+
+def test_terminal_refiner_warns_when_no_phase_reaches_the_terminal():
+    """Phases whose concentration ranges stop short of a pure component leave
+    nothing to refine there, which is said once per side rather than skipped
+    silently."""
+    a = LinePhase("A", fixed_concentration=0.01, line_energy=-2.0, line_entropy=1.0 * kB)
+    b = LinePhase("B", fixed_concentration=0.02, line_energy=-1.8, line_entropy=2.5 * kB)
+    with pytest.warns(UserWarning, match=r"No phase reaches c = 0 .* A at c = 0\.01") as record:
+        out = TerminalRefiner().run(_terminal_frame(np.linspace(400.0, 2000.0, 9)), {"A": a, "B": b})
+    assert out.empty
+    messages = [str(w.message) for w in record if "No phase reaches" in str(w.message)]
+    assert len(messages) == 2 and any("c = 1 " in m and "B at c = 0.02" in m for m in messages)
+
+
+def _terminal_rows(names, T, mu, c):
+    return [{"T": T, "mu": mu, "phase": n, "c": c, "locus": Locus.CONGRUENT, "refined": "terminal"} for n in names]
+
+
+def _triple_rows(names, T, mu, cs):
+    return [{"T": T, "mu": mu, "phase": n, "c": c, "locus": Locus.TRIPLE, "refined": "delaunay"}
+            for n, c in zip(names, cs)]
+
+
+def test_drop_terminal_triples_drops_a_restated_triple():
+    """A terminal pair that is part of a three-phase point at the same T is
+    that invariant restated; one a whole degree off, or with a phase the
+    triple lacks, is its own."""
+    same = pd.DataFrame(_terminal_rows(["α", "β"], 500.0, -np.inf, 0.0)
+                        + _triple_rows(["α", "β", "M"], 500.0 + 1e-5, -0.2, [0.0, 0.0, 0.5]))
+    out = _drop_terminal_triples(same)
+    assert list(out["locus"]) == [Locus.TRIPLE] * 3
+    off = pd.DataFrame(_terminal_rows(["α", "β"], 500.0, -np.inf, 0.0)
+                       + _triple_rows(["α", "β", "M"], 501.0, -0.2, [0.0, 0.0, 0.5]))
+    assert len(_drop_terminal_triples(off)) == 5
+    other = pd.DataFrame(_terminal_rows(["α", "β"], 500.0, -np.inf, 0.0)
+                         + _triple_rows(["α", "γ", "M"], 500.0, -0.2, [0.0, 0.1, 0.5]))
+    assert len(_drop_terminal_triples(other)) == 5
+
+
+def test_drop_terminal_triples_leaves_frames_without_both_alone():
+    bare = pd.DataFrame(_terminal_rows(["α", "β"], 500.0, -np.inf, 0.0))
+    assert _drop_terminal_triples(bare).equals(bare)
+    assert _drop_terminal_triples(bare.drop(columns="refined")).equals(bare.drop(columns="refined"))
+
+
+def test_terminal_allotropic_transition_with_a_compound_is_one_invariant():
+    """Two line phases at pure A transform at one T whatever mu is, so where a
+    compound coexists with both the triple point sits at that T too: the
+    diagram carries the three-phase isotherm, reaching c = 0 through the two
+    line phases, and not a second row for the pure component."""
+    alpha = LinePhase("α", fixed_concentration=0, line_energy=-3.0, line_entropy=1.0 * kB)
+    beta = LinePhase("β", fixed_concentration=0, line_energy=-2.9, line_entropy=2.0 * kB)
+    compound = LinePhase("M", fixed_concentration=0.5, line_energy=-3.2, line_entropy=1.5 * kB)
+    liquid = IdealSolution("liquid",
+                           LinePhase("lA", fixed_concentration=0, line_energy=-2.65, line_entropy=4.0 * kB),
+                           LinePhase("lB", fixed_concentration=1, line_energy=-2.9, line_entropy=4.0 * kB))
+    T_t = 0.1 / (1.0 * kB)  # α -> β at pure A
+    df = calc_phase_diagram([alpha, beta, compound, liquid], np.linspace(400.0, 1600.0, 25), mu=120)
+    at = df[(np.abs(df["T"] - T_t) < 1e-2) & df["locus"].isin([Locus.TRIPLE, Locus.CONGRUENT])]
+    assert set(at["locus"]) == {Locus.TRIPLE}
+    assert sorted(at["phase"]) == ["M", "α", "β"] and (at["c"][at["phase"] != "M"] == 0.0).all()
+    # the pure-A melting point, which no triple restates, is still marked
+    terminal = df[(df["locus"] == Locus.CONGRUENT) & (df["mu"] == -np.inf)]
+    assert sorted(terminal["phase"]) == ["liquid", "β"]
+    assert terminal["T"].to_numpy() == pytest.approx([0.25 / (2.0 * kB)] * 2, abs=1e-3)
 
 
 def test_terminal_refiner_nothing_when_the_terminal_phase_never_changes():

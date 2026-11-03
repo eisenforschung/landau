@@ -187,6 +187,23 @@ def test_terminal_congruent_label_anchors_on_the_mu_axis_edge(ax):
     assert labels["320 K"][0] < (x0 + x1) / 2 < labels["400 K"][0]
 
 
+def test_terminal_congruent_label_anchors_on_the_sampled_mu_edge(ax):
+    """The anchor is the edge of the sampled mu range, read off the frame, not
+    whatever the axes' limits happen to be when the labels are placed."""
+    df = pd.concat([
+        _congruent_df([(-np.inf, 320.0, 0.0), (np.inf, 400.0, 1.0)]),
+        pd.DataFrame({"mu": [-1.0, 1.0], "T": [350.0, 350.0], "c": [0.1, 0.9], "phase": ["S", "L"],
+                      "locus": Locus.BOUNDARY, "boundary_id": 1}),
+    ], ignore_index=True)
+    ax.set_xlim(-5.0, 5.0)
+    ax.set_ylim(300.0, 420.0)
+    _annotate_transition_temperatures(df, ax=ax, variables=["mu", "T"])
+    labels = {t.get_text(): t.get_position()[0] for t in ax.texts}
+    assert set(labels) == {"320 K", "400 K"}
+    # placed within a label's reach of the data edge, well inside the axes' slack
+    assert abs(labels["320 K"] + 1.0) < 1.0 and abs(labels["400 K"] - 1.0) < 1.0
+
+
 def test_boundary_rows_are_not_labelled(ax):
     """Only tagged invariants are annotated; plain boundary rows are not."""
     df = _congruent_df([(0.2, 320.0, 0.05)]).assign(locus=Locus.BOUNDARY)

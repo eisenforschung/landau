@@ -521,6 +521,7 @@ def _annotate_transition_temperatures(df, polys=(), ax=None, variables=None):
             _label(mu, T, triple_modes, x_weight=3.0)
 
     congruent = df[df["locus"] == Locus.CONGRUENT]
+    finite_mu = df["mu"][np.isfinite(df["mu"])]
     for (mu, T), grp in congruent.groupby(["mu", "T"], sort=False)[["c"]]:
         # The two phases meet here, so their concentrations agree to within the
         # refiner's tolerance; the mean is the composition of the invariant.
@@ -530,8 +531,11 @@ def _annotate_transition_temperatures(df, polys=(), ax=None, variables=None):
             x = mu
         else:
             # A pure component's transition sits at mu = -+inf: the boundary
-            # runs off to that edge of the axes, so the label anchors there.
-            x = ax.get_xlim()[0 if mu < 0 else 1]
+            # runs off to that edge of the sampled mu range, so the label
+            # anchors there (the axes' own limit if nothing finite was sampled).
+            x = finite_mu.min() if mu < 0 else finite_mu.max()
+            if not np.isfinite(x):
+                x = ax.get_xlim()[0 if mu < 0 else 1]
         _label(x, T, congruent_modes, x_weight=1.5)
 
 
