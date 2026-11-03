@@ -325,7 +325,7 @@ def _plot_phase_diagram(
     if ax is None:
         ax = plt.gca()
     df_stable = df.query("stable")
-    color_map = get_phase_colors(sorted(df.phase.unique()), color_override)
+    color_map = get_phase_colors(df.phase.unique(), color_override)
 
     polys = get_polygons(df, poly_method=poly_method, variables=variables, min_c_width=min_c_width, alpha=alpha)
 
@@ -408,23 +408,21 @@ def plot_phase_diagram(
 
 
 def get_phase_colors(phase_names, override: dict[str, str] | None = None, palette: str = "pastel"):
-    """Map phase names to colours, in the order given.
+    """Map phase names to colours.
 
-    Every plotter passes ``sorted(df.phase.unique())``, so a phase gets the
-    same palette index in every plot of frames holding the same phases,
-    whatever their row order.  Fills use ``"pastel"``, lines ``"muted"``; both
-    derive from seaborn's ``"deep"`` and share a hue per index.
+    Names are sorted before assignment, so a phase gets the same colour from
+    any ordering of the same set of names.
 
     Args:
-        phase_names: phase names; position ``i`` gets palette entry ``i``,
-            cycling past the palette's 10 entries.
+        phase_names: phase names; the ``i``-th in sorted order gets palette
+            entry ``i``, cycling past the palette's 10 entries.
         override: ``dict[name -> color]``; a phase whose default colour is
             claimed by an override takes the overridden phase's default instead.
         palette: name of a seaborn palette in ``SEABORN_PALETTES``.
     """
     if override is None:
         override = {}
-    color_map = dict(zip(phase_names, cycle(sns.palettes.SEABORN_PALETTES[palette])))
+    color_map = dict(zip(sorted(set(phase_names)), cycle(sns.palettes.SEABORN_PALETTES[palette])))
     # disregard overriden phases that are not present
     override = {p: c for p, c in override.items() if p in color_map}
     # if the override uses the same colors as the default map, multiple phases
@@ -654,7 +652,7 @@ def _plot_1d_phase_diagram(
     if ax is None:
         fig, ax = plt.subplots()
 
-    palette = get_phase_colors(sorted(df.phase.unique()), color_override, palette="muted")
+    palette = get_phase_colors(df.phase.unique(), color_override, palette="muted")
     df = df.sort_values(scan_col).copy()
 
     if reference_phase is not None:
@@ -906,7 +904,7 @@ def plot_excess_free_energy(
     col_wrap = min(col_wrap, len(temperatures))
 
     # Line phases have a fixed concentration — detect by zero range across all rows.
-    phase_names = sorted(df["phase"].unique())
+    phase_names = list(df["phase"].unique())
     c_range = df.groupby("phase")["c"].apply(lambda s: s.max() - s.min())
     line_phase_names = set(c_range[c_range < 1e-9].index)
 

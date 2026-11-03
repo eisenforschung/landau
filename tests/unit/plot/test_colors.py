@@ -62,7 +62,7 @@ def test_get_phase_colors_more_than_palette_size():
     colors = get_phase_colors(phase_names)
 
     assert set(phase_names) == set(colors)
-    for i, name in enumerate(phase_names):
+    for i, name in enumerate(sorted(phase_names)):
         assert colors[name] == pastel[i % len(pastel)]
 
 def test_get_phase_colors_multiple_duplicates():
@@ -90,6 +90,11 @@ def test_get_phase_colors_multiple_duplicates():
 
 PASTEL = sns.palettes.SEABORN_PALETTES["pastel"]
 MUTED = sns.palettes.SEABORN_PALETTES["muted"]
+
+
+def test_get_phase_colors_sorts_names():
+    assert get_phase_colors(["Gamma", "Alpha", "Beta"]) == get_phase_colors(["Alpha", "Beta", "Gamma"])
+    assert get_phase_colors(["Beta", "Alpha"])["Alpha"] == PASTEL[0]
 
 
 def test_get_phase_colors_palette():
