@@ -1,11 +1,11 @@
 """Sampling density of ``ClausiusClapeyronRefiner`` on a flat-in-mu boundary.
 
-The predictor-corrector step size ``_dT_adapt`` bounds the *mu* drift per
-step (``half_width / |dmu/dT|``, clamped to ``[dT_min, dT_max]``). That keeps
+The predictor-corrector step size ``_dx_adapt`` bounds the *mu* drift per
+step (``half_width / |dmu/dT|``, clamped to ``[dx_min, dx_max]``). That keeps
 the corrector bracket valid but ties the T-sampling density to the
 coexistence slope: a boundary that is nearly flat in mu (equal phase
 entropies, so ``dmu/dT -> 0`` by Clausius-Clapeyron ``dmu/dT = -ds/dc``)
-always saturates at ``dT_max`` and is sampled coarsely -- even where its
+always saturates at ``dx_max`` and is sampled coarsely -- even where its
 concentration sweeps a lot, which is what actually gets plotted in the c-T
 diagram. This is the asymmetry behind a densely-sampled solid/liquid line
 next to a coarsely-sampled intermetallic.
@@ -54,23 +54,23 @@ class DriftLinePhase(Phase):
         return self._c(T) + 0.0 * np.asarray(mu, float)
 
 
-def trace(dT_max: float, dc_max: float):
+def trace(dx_max: float, dc_max: float):
     # Equal e -> coexistence at mu = 0 for every T (flat boundary); P's
     # composition sweeps 0.8 -> 0.2 over the sampled T window, fast enough
-    # that the dc_max cap binds below dT_min in the new-defaults run.
+    # that the dc_max cap binds below dx_min in the new-defaults run.
     P = DriftLinePhase(name="P", e=-2.0, c0=0.8, slope=-0.6 / 300.0, T0=700.0)
     Q = DriftLinePhase(name="Q", e=-2.0, c0=0.05, slope=0.0)
     cand = _InterCandidate(
-        phase1="P", phase2="Q", T_seed=850.0,
-        mu_bracket=(-0.05, 0.05), T_bracket=(800.0, 900.0),
-        T_min=700.0, T_max=1000.0,
+        phase1="P", phase2="Q", x_seed=850.0,
+        y_bracket=(-0.05, 0.05), x_bracket=(800.0, 900.0),
+        x_min=700.0, x_max=1000.0,
         proj_p1=(800.0, -0.1), proj_p2=(900.0, 0.1),
     )
-    refiner = ClausiusClapeyronRefiner(dT_max=dT_max, dc_max=dc_max)
-    pts = sorted(refiner.solve(cand, {"P": P, "Q": Q}), key=lambda p: p.T)
-    T = np.array([p.T for p in pts])
-    c = np.array([float(P.concentration(p.T, p.mu)) for p in pts])
-    mu = np.array([p.mu for p in pts])
+    refiner = ClausiusClapeyronRefiner(dx_max=dx_max, dc_max=dc_max)
+    pts = sorted(refiner.solve(cand, {"P": P, "Q": Q}), key=lambda p: p.x)
+    T = np.array([p.x for p in pts])
+    c = np.array([float(P.concentration(p.x, p.y)) for p in pts])
+    mu = np.array([p.y for p in pts])
     return T, c, mu
 
 
@@ -80,12 +80,12 @@ def main() -> None:
     args = ap.parse_args()
 
     runs = [
-        ("old defaults (dT_max=50, no dc cap)", 50.0, 1e9),
-        ("new defaults (dT_max=5, dc_max=0.01)", 5.0, 0.01),
+        ("old defaults (dx_max=50, no dc cap)", 50.0, 1e9),
+        ("new defaults (dx_max=5, dc_max=0.01)", 5.0, 0.01),
     ]
     series = []
-    for label, dT_max, dc_max in runs:
-        T, c, mu = trace(dT_max, dc_max)
+    for label, dx_max, dc_max in runs:
+        T, c, mu = trace(dx_max, dc_max)
         max_dc = float(np.abs(np.diff(c)).max()) if len(c) > 1 else 0.0
         print(f"{label:>38}: n={len(T):3d}  max|dc/step|={max_dc:.4f}  "
               f"|mu|max={np.abs(mu).max():.2e}")

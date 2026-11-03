@@ -2,32 +2,38 @@
 Strategies for refining a coarsely-sampled phase diagram.
 
 A :class:`Refiner` is a single, self-contained algorithm that proposes
-candidate regions of the ``(T, mu)`` plane that likely bracket a phase
-transition, locates the exact transition inside each one, and emits
+candidate regions of a plane of two intensive variables that likely bracket
+a phase transition, locates the exact transition inside each one, and emits
 dataframe rows tagged with ``refined=<label>``.
+
+The plane is described by an :class:`Axes`: the frame columns of the two
+intensive variables ``x`` and ``y`` -- equal in every phase coexisting at a
+point -- and of ``-dphi/dy``, the extensive conjugate of ``y``, which jumps
+across a first-order boundary. The default is the semigrand plane ``(T,
+mu)`` with the concentration ``c`` as the extensive column; the refiners read
+nothing else about what the variables are.
 
 The orchestrator :func:`landau.calculate.refine_phase_diagram` picks a
 default list of refiners with :func:`default_refiners` based on which
-axes the input samples (``mu``, ``T``, or both), but you can pass any
+axes the input samples (``x``, ``y``, or both), but you can pass any
 sequence of :class:`Refiner` instances to swap or extend it.
 
 Refiners shipped here
 ---------------------
 
 * :class:`ScanRefiner` — 1-D bisection between adjacent samples
-  whose stable phase label disagrees. Used when only one of ``mu`` or
-  ``T`` is sampled.
+  whose stable phase label disagrees. Used when only one axis is sampled.
 * :class:`DelaunayLineRefiner` — one transition per Delaunay simplex
   that spans two phases.
 * :class:`DelaunayTripleRefiner` — locate triple points from three-
   phase simplices.
 * :class:`ClausiusClapeyronRefiner` — *predictor-corrector* trace of
   a two-phase coexistence line; seeds from each two-phase simplex
-  and walks the line in both T directions.
+  and walks the line in both ``x`` directions.
 * :class:`MiscibilityGapRefiner` — same predictor-corrector idea but
   for an intra-phase miscibility gap (a single phase that splits
-  into two coexisting compositions). Seeds from single-phase
-  simplices with a wide c-spread.
+  into two coexisting values of the extensive variable). Seeds from
+  single-phase simplices with a wide spread in it.
 
 The two Clausius-Clapeyron refiners share their skeleton via the
 private :class:`_CCBase` ABC; see the comment block right above it
@@ -39,9 +45,9 @@ Writing a new refiner
 Subclass :class:`Refiner` and implement ``propose`` and ``solve``.
 ``propose`` yields candidate dataclasses; ``solve`` turns one
 candidate into zero or more :class:`RefinedPoint` /
-:class:`RefinedMiscibilityGap`. The base class's ``run`` then
-filters out negative-T or dominated points and packages the rest
-into the output dataframe.
+:class:`RefinedMiscibilityGap`, built with the refiner's ``axes``. The base
+class's ``run`` then filters out inadmissible (:meth:`Axes.admissible`) or
+dominated points and packages the rest into the output dataframe.
 """
 
 from abc import ABC, abstractmethod
@@ -55,6 +61,7 @@ import numpy as np
 import pandas as pd
 import scipy.optimize as so
 import shapely
+from pyiron_snippets.deprecate import deprecate
 from scipy.spatial import Delaunay
 
 from .features import Locus
@@ -66,14 +73,14 @@ from .phases import Phase, kB
 # Used across the module to keep nested-tuple annotations readable.
 #
 #   Bracket      = (lo, hi) endpoints of a 1-D range.
-#   TMuPoint     = a single (T, mu) location.
-#   Trace        = one completed coexistence trace, T-sorted.
+#   Point        = a single (x, y) location in the refiner's Axes.
+#   Trace        = one completed coexistence trace, x-sorted.
 #   TraceList    = all completed traces for a single coexistence line
 #                  (per phase pair / per miscibility-gap phase).
 
 Bracket = tuple[float, float]
-TMuPoint = tuple[float, float]
-Trace = tuple[TMuPoint, ...]
+Point = tuple[float, float]
+Trace = tuple[Point, ...]
 TraceList = tuple[Trace, ...]
 
 
@@ -128,11 +135,11 @@ class Axes:
     ``x`` and ``y`` name the frame columns of the two intensive variables,
     which every phase coexisting at a point shares; ``extensive`` names the
     column of ``-dphi/dy``, the conjugate of ``y``, which jumps across a
-    first-order boundary.
+    first-order boundary. The Clausius-Clapeyron tracers step along ``x`` and
+    root-find along ``y``; the Delaunay refiners treat both alike.
 
-    A refiner written against :class:`Axes` (see :meth:`Refiner.supports`)
-    reads the frame through these names and evaluates phases only through
-    :meth:`potential` and :meth:`conjugate`. The defaults bind ``x`` to the temperature and ``y`` to
+    The refiners evaluate phases only through :meth:`potential` and
+    :meth:`conjugate`. The defaults bind ``x`` to the temperature and ``y`` to
     the chemical potential of :meth:`~landau.phases.Phase.semigrand_potential`
     and :meth:`~landau.phases.Phase.concentration`, so the column names alone
     only relabel the semigrand plane. Subclass and override both (and
@@ -194,9 +201,8 @@ _ROW_COLUMNS = frozenset({"phi", "phase", "boundary_id", "locus", "stable", "bor
 _DEFAULT_AXES = Axes()
 
 
-def _coordinate_alias(name):
-    """The ``T``/``mu`` spelling of a point's coordinate, resolved by column name
-    against the point's axes."""
+def _deprecated_coordinate(owner, name):
+    """Read-only ``T``/``mu`` accessor kept for points built before :class:`Axes`."""
 
     def get(self):
         if self.axes.x == name:
@@ -205,7 +211,8 @@ def _coordinate_alias(name):
             return self.y
         raise AttributeError(f"{type(self).__name__} has no {name!r} axis (axes: {self.axes})")
 
-    return property(get)
+    get.__name__ = get.__qualname__ = f"{owner}.{name}"
+    return property(deprecate("Read x / y; the point's axes say which column each is", version="2.0")(get))
 
 
 class RefinedBase(ABC):
@@ -276,8 +283,8 @@ class RefinedPoint(RefinedBase):
     :attr:`~landau.features.Locus.CONGRUENT` for a two-phase point marked
     ``congruent``, :attr:`~landau.features.Locus.BOUNDARY` otherwise.
 
-    ``T``/``mu`` are accepted as constructor keywords and read as attributes:
-    aliases of ``x``/``y``, resolved by column name against ``axes``.
+    The ``T``/``mu`` constructor keywords and attributes are deprecated
+    spellings of ``x``/``y`` on the default axes.
     """
 
     x: float
@@ -289,6 +296,7 @@ class RefinedPoint(RefinedBase):
     terminal: float | None = None
     axes: Axes = _DEFAULT_AXES
 
+    @deprecate(T="Use x", mu="Use y", version="2.0")
     def __init__(self, x=None, y=None, phases=None, boundary_id=0, congruent=False,
                  concentrations=None, terminal=None, axes=_DEFAULT_AXES, T=None, mu=None):
         x, y = _legacy_xy(type(self), x, y, T, mu)
@@ -299,8 +307,8 @@ class RefinedPoint(RefinedBase):
                             ("terminal", terminal), ("axes", axes)):
             object.__setattr__(self, name, value)
 
-    T = _coordinate_alias("T")
-    mu = _coordinate_alias("mu")
+    T = _deprecated_coordinate("RefinedPoint", "T")
+    mu = _deprecated_coordinate("RefinedPoint", "mu")
 
     def phase_names(self) -> set[str]:
         return set(self.phases)
@@ -373,8 +381,8 @@ class RefinedMiscibilityGap(RefinedBase):
     axes : Axes
         The plane ``x`` and ``y`` live in, and how phases are evaluated there.
 
-    ``T``/``mu`` are accepted as constructor keywords and read as attributes:
-    aliases of ``x``/``y``, resolved by column name against ``axes``.
+    The ``T``/``mu`` constructor keywords and attributes are deprecated
+    spellings of ``x``/``y`` on the default axes.
     """
 
     x: float
@@ -386,6 +394,7 @@ class RefinedMiscibilityGap(RefinedBase):
     congruent: bool = False
     axes: Axes = _DEFAULT_AXES
 
+    @deprecate(T="Use x", mu="Use y", version="2.0")
     def __init__(self, x=None, y=None, phase=None, c_left=None, c_right=None, boundary_id=0,
                  congruent=False, axes=_DEFAULT_AXES, T=None, mu=None):
         x, y = _legacy_xy(type(self), x, y, T, mu)
@@ -397,8 +406,8 @@ class RefinedMiscibilityGap(RefinedBase):
                             ("congruent", congruent), ("axes", axes)):
             object.__setattr__(self, name, value)
 
-    T = _coordinate_alias("T")
-    mu = _coordinate_alias("mu")
+    T = _deprecated_coordinate("RefinedMiscibilityGap", "T")
+    mu = _deprecated_coordinate("RefinedMiscibilityGap", "mu")
 
     def phase_names(self) -> set[str]:
         return {self.phase}
@@ -420,14 +429,14 @@ class RefinedMiscibilityGap(RefinedBase):
 
 
 def _legacy_xy(cls, x, y, T, mu):
-    """Resolve the ``T``/``mu`` constructor keywords onto ``x``/``y``."""
+    """Resolve the deprecated ``T``/``mu`` constructor keywords onto ``x``/``y``."""
     if T is not None:
         if x is not None:
-            raise TypeError(f"{cls.__name__}() got both x and its alias T")
+            raise TypeError(f"{cls.__name__}() got both x and its deprecated spelling T")
         x = T
     if mu is not None:
         if y is not None:
-            raise TypeError(f"{cls.__name__}() got both y and its alias mu")
+            raise TypeError(f"{cls.__name__}() got both y and its deprecated spelling mu")
         y = mu
     if x is None or y is None:
         raise TypeError(f"{cls.__name__}() missing required arguments: 'x' and 'y'")
@@ -518,7 +527,7 @@ def _find_one_point(phase1, phase2, potential, var_range):
 
     Thin wrapper around :func:`scipy.optimize.root_scalar` used by every
     refiner that needs to locate where two phases share a potential
-    along a single parameter (mu at fixed T, T at fixed mu, or a
+    along a single parameter (y at fixed x, x at fixed y, or a
     convex combination along a simplex edge). The caller passes a
     bracket ``var_range`` over which the difference is known to change
     sign.
@@ -573,7 +582,8 @@ class Refiner(ABC):
         The base accepts the default semigrand plane ``Axes()`` only: a refiner
         that reads the frame's ``T``/``mu``/``c`` columns and evaluates phases
         itself works there and nowhere else. A refiner written against
-        :class:`Axes` overrides this.
+        :class:`Axes` overrides this; one whose numerics carry scales tied to
+        one binding restricts itself to that binding, never to column names.
         """
         return axes == _DEFAULT_AXES
 
@@ -621,7 +631,8 @@ def _drop_terminal_triples(df: pd.DataFrame, T_tol: float = _CONGRUENT_DEDUP_T) 
     whose isotherm already reaches c = 0 / 1 through the two line phases'
     rows. A terminal row whose phases are among those of a
     :attr:`~landau.features.Locus.TRIPLE` point within ``T_tol`` of it is
-    dropped (``df`` is the concatenated refiner output).
+    dropped (``df`` is the concatenated refiner output, in the default
+    semigrand columns).
     """
     if "refined" not in df.columns:
         return df
@@ -780,11 +791,16 @@ class TerminalRefiner(Refiner):
     :attr:`~landau.features.Locus.CONGRUENT` with both concentrations equal
     to the terminal's.
 
+    Supports the semigrand binding only (:meth:`supports`): pure components,
+    and thermal energies as the scale of ``mu``, are its terms.
+
     Parameters
     ----------
     kT_far : float
         How far past the sampled ``mu`` range, in units of ``kB T``, the
         potentials are evaluated. Default 40.
+    axes : Axes, optional
+        See :class:`Refiner`.
 
     Warns
     -----
@@ -797,16 +813,21 @@ class TerminalRefiner(Refiner):
 
     label = "terminal"
 
-    def __init__(self, *, kT_far: float = _KT_FAR):
+    def __init__(self, *, kT_far: float = _KT_FAR, axes: Axes | None = None):
+        super().__init__(axes=axes)
         self.kT_far = kT_far
+
+    @classmethod
+    def supports(cls, axes: Axes) -> bool:
+        return _semigrand(axes)
 
     def _mu_far(self, cand: _TerminalCandidate, T: float) -> float:
         return _far_mu(cand.edge, cand.side, T, self.kT_far)
 
     def propose(self, df: pd.DataFrame) -> Iterator[_TerminalCandidate]:
-        mus = df["mu"].to_numpy(dtype=float)
+        mus = df[self.axes.y].to_numpy(dtype=float)
         mus = mus[np.isfinite(mus)]
-        Ts = np.sort(df["T"].unique())
+        Ts = np.sort(df[self.axes.x].unique())
         if mus.size == 0 or Ts.size < 2:
             return
         for side, edge in ((0.0, float(mus.min())), (1.0, float(mus.max()))):
@@ -814,15 +835,17 @@ class TerminalRefiner(Refiner):
                 yield _TerminalCandidate(side=side, edge=edge, bracket=(float(lo), float(hi)))
 
     def solve(self, cand: _TerminalCandidate, phases) -> list[RefinedPoint]:
+        ax = self.axes
+
         def potential(p, T):
-            return float(p.semigrand_potential(T, self._mu_far(cand, T)))
+            return float(ax.potential(p, T, self._mu_far(cand, T)))
 
         def at_terminal(T):
             # The phases at the terminal at T and the stable one among them:
             # a phase that cannot reach the pure component is not a candidate
             # for being its phase, however low its potential at the finite far
             # mu (a dilute line phase undercuts it there at any finite mu).
-            cs = {p.name: float(p.concentration(T, self._mu_far(cand, T))) for p in phases.values()}
+            cs = {p.name: float(ax.conjugate(p, T, self._mu_far(cand, T))) for p in phases.values()}
             there = {n: phases[n] for n, c in cs.items() if abs(c - cand.side) < _TERMINAL_C_TOL}
             if not there:
                 closest = min(cs, key=lambda n: abs(cs[n] - cand.side))
@@ -840,8 +863,8 @@ class TerminalRefiner(Refiner):
             return []
 
         def point(T, pair):
-            return RefinedPoint(T=float(T), mu=self._mu_far(cand, T), phases=pair,
-                                congruent=True, terminal=cand.side)
+            return RefinedPoint(x=float(T), y=self._mu_far(cand, T), phases=pair,
+                                congruent=True, terminal=cand.side, axes=ax)
 
         return _solve_pair(name_lo, name_hi, cand.bracket, potential, point, {**lo, **hi})
 
@@ -874,7 +897,7 @@ class _Simplex:
         """Distinct phase names in vertex-appearance order."""
         return pd.unique(self.phase)
 
-    def centroids(self) -> dict[str, TMuPoint]:
+    def centroids(self) -> dict[str, Point]:
         """Map each distinct phase to its vertices' ``(x, y)`` centroid.
 
         For a 2-phase simplex (3 vertices, one phase appears once and the
@@ -883,7 +906,7 @@ class _Simplex:
         :class:`ClausiusClapeyronRefiner` a reliable seed bracket. Entries are
         in :meth:`unique_phases` (vertex-appearance) order.
         """
-        out: dict[str, TMuPoint] = {}
+        out: dict[str, Point] = {}
         for name in self.unique_phases():
             m = self.phase == name
             out[str(name)] = (float(self.x[m].mean()), float(self.y[m].mean()))
@@ -923,7 +946,7 @@ def _delaunay_simplices(df: pd.DataFrame, axes: Axes = _DEFAULT_AXES) -> list[tu
     return result
 
 
-def _simplex_containment(point: TMuPoint, simplex: _Simplex) -> float:
+def _simplex_containment(point: Point, simplex: _Simplex) -> float:
     """Smallest barycentric coordinate of ``(x, y)`` w.r.t. the triangle.
 
     ``>= 0`` iff the point lies inside (or on an edge of) the simplex; the
@@ -1069,25 +1092,25 @@ class DelaunayTripleRefiner(Refiner):
 # -- Clausius-Clapeyron tracers ----------------------------------------------
 #
 # Both Clausius-Clapeyron refiners (ClausiusClapeyronRefiner and
-# MiscibilityGapRefiner) trace a coexistence line through (T, mu)
-# space with the same predictor-corrector skeleton, factored into
+# MiscibilityGapRefiner) trace a coexistence line through the (x, y)
+# plane with the same predictor-corrector skeleton, factored into
 # `_CCBase` below. The skeleton, in pseudocode:
 #
 #   for each candidate from propose(df):
 #       if simplex straddles an already-traced segment of this line:
 #           skip                                                  (dedup)
-#       (T0, mu0) = _seed_step(cand)         # land on the line   (seed)
-#       emit at (T0, mu0)
-#       walk T upward and downward from T0:
-#           predict mu_next = _predict_mu(mu_star, dmu/dT, dT)    (predict)
-#           refine mu_next via _refine_step at T_next              (correct)
-#           update dmu/dT, emit at (T_next, mu_next)
-#           dT = clip(_dT_adapt(...), dT_min, dT_max)              (adapt)
-#       stop on T-bound, ValueError from _refine_step (e.g. gap
+#       (x0, y0) = _seed_step(cand)          # land on the line   (seed)
+#       emit at (x0, y0)
+#       walk x upward and downward from x0:
+#           predict y_next = _predict_y(y_star, dy/dx, dx)        (predict)
+#           refine y_next via _refine_step at x_next               (correct)
+#           update dy/dx, emit at (x_next, y_next)
+#           dx = clip(_dx_adapt(...), dx_min, dx_max)              (adapt)
+#       stop on x-bound, ValueError from _refine_step (e.g. gap
 #       closed), or when the walker steps onto a prior trace.
 #
 # Subclasses only implement propose / _seed_step / _refine_step /
-# _emit / _pair_key, plus optional _predict_mu and _dT_adapt overrides.
+# _emit / _pair_key, plus optional _predict_y and _dx_adapt overrides.
 
 
 # -- Shared geometry / bookkeeping helpers -----------------------------------
@@ -1110,7 +1133,7 @@ def _simplex_brackets(simplex: "_Simplex"):
     )
 
 
-def _trace_geom(points: list[TMuPoint]):
+def _trace_geom(points: list[Point]):
     """One trace -> one shapely geometry. ``Point`` for length 1,
     ``LineString`` otherwise."""
     if len(points) == 1:
@@ -1118,12 +1141,12 @@ def _trace_geom(points: list[TMuPoint]):
     return shapely.LineString(points)
 
 
-def _point_on_line(T: float, mu: float,
-                   traces: TraceList, tol_mu: float) -> bool:
-    """Is ``(T, mu)`` within ``tol_mu`` of any traced segment?
+def _point_on_line(x: float, y: float,
+                   traces: TraceList, tol: float) -> bool:
+    """Is ``(x, y)`` within ``tol`` of any traced segment?
 
     ``traces`` is one entry per previously completed trace on the same
-    coexistence line; each entry is a tuple of ``(T, mu)`` points.
+    coexistence line; each entry is a tuple of ``(x, y)`` points.
     Each trace becomes its own shapely geometry (Point or LineString)
     and we test the query point against each independently — concatenating
     them into a single line would invent spurious cross-segments
@@ -1131,43 +1154,43 @@ def _point_on_line(T: float, mu: float,
 
     Parameters
     ----------
-    T, mu : float
+    x, y : float
         Query point.
     traces : tuple of tuples
-        Outer dimension = traces; inner dimension = ``(T, mu)`` points of
+        Outer dimension = traces; inner dimension = ``(x, y)`` points of
         one trace. May be empty.
-    tol_mu : float
-        Euclidean-distance tolerance. For a typical near-horizontal
-        coexistence line this is essentially the vertical mu offset.
+    tol : float
+        Euclidean-distance tolerance. For a coexistence line that is nearly
+        flat in ``y`` this is essentially the offset in ``y``.
     """
     if not traces:
         return False
-    p = shapely.Point(T, mu)
-    return any(p.distance(_trace_geom(list(tr))) <= tol_mu for tr in traces)
+    p = shapely.Point(x, y)
+    return any(p.distance(_trace_geom(list(tr))) <= tol for tr in traces)
 
 
 def _simplex_straddles(cand, traces: TraceList) -> bool:
     """True if any previously traced segment passes within one bracket
-    width of the candidate simplex's (T, mu) bounding box.
+    width of the candidate simplex's (x, y) bounding box.
 
     The bbox is inflated by the simplex's own width on each axis so
-    that a converged mu* sitting one scan-grid spacing outside a
+    that a converged y* sitting one scan-grid spacing outside a
     neighbouring simplex (the common case when two simplices share a
     grid edge at the coexistence line) is still detected.
 
     ``traces`` is a list-of-traces (one entry per completed solve()
     call). Each trace is tested independently; concatenating them
     would invent spurious cross-segments that block unrelated
-    simplices at the same temperature.
+    simplices at the same ``x``.
     """
     if not traces:
         return False
-    mu_lo, mu_hi = cand.mu_bracket
-    T_lo, T_hi = cand.T_bracket
-    mu_pad = mu_hi - mu_lo
-    T_pad = T_hi - T_lo
-    bbox = shapely.box(T_lo - T_pad, mu_lo - mu_pad,
-                       T_hi + T_pad, mu_hi + mu_pad)
+    y_lo, y_hi = cand.y_bracket
+    x_lo, x_hi = cand.x_bracket
+    y_pad = y_hi - y_lo
+    x_pad = x_hi - x_lo
+    bbox = shapely.box(x_lo - x_pad, y_lo - y_pad,
+                       x_hi + x_pad, y_hi + y_pad)
     return any(bbox.intersects(_trace_geom(list(tr))) for tr in traces)
 
 
@@ -1176,30 +1199,29 @@ def _simplex_straddles(cand, traces: TraceList) -> bool:
 
 @dataclass(frozen=True)
 class _StepResult:
-    """One isothermal refinement step.
+    """One refinement step at fixed ``x``.
 
-    ``mu_star`` is the converged coexistence chemical potential.
+    ``y_star`` is the converged coexistence ``y``.
     ``extra`` is a refiner-specific payload (a value, dataclass, or
     ``None``) read back by :meth:`_CCBase._emit` and
-    :meth:`_CCBase._dT_adapt`; the base class itself never inspects it.
+    :meth:`_CCBase._dx_adapt`; the base class itself never inspects it.
     """
 
-    mu_star: float
+    y_star: float
     extra: object = None
 
 
 class _CCBase(Refiner):
     """Shared predictor-corrector trace skeleton.
 
-    Both Clausius-Clapeyron refiners walk T in two directions from a
-    seed point, predicting mu* by linear extrapolation along
-    ``dmu*/dT`` and correcting via an isothermal refinement inside a
-    bracket centred on the prediction. This base implements that walk
-    plus the per-phase-pair straddle dedup; subclasses only have to
-    supply ``propose`` plus four small hooks
-    (``_seed_step``, ``_refine_step``, ``_emit``, ``_pair_key``) and
-    optionally override ``_predict_mu`` / ``_dT_adapt`` for a fancier
-    predictor or step scaling.
+    Both Clausius-Clapeyron refiners walk ``x`` in two directions from a
+    seed point, predicting y* by linear extrapolation along ``dy*/dx`` and
+    correcting via a refinement at fixed ``x`` inside a bracket centred on
+    the prediction. This base implements that walk plus the per-phase-pair
+    straddle dedup; subclasses only have to supply ``propose`` plus four
+    small hooks (``_seed_step``, ``_refine_step``, ``_emit``,
+    ``_pair_key``) and optionally override ``_predict_y`` / ``_dx_adapt``
+    for a fancier predictor or step scaling.
 
     A subclass's ``_refine_step`` may raise :class:`ValueError` to
     abort the trace cleanly (used by the miscibility-gap refiner to
@@ -1207,45 +1229,51 @@ class _CCBase(Refiner):
 
     Parameters
     ----------
-    dT_max : float
-        Maximum allowed temperature step (K).
-    dT_min : float
-        Minimum allowed temperature step (K) and the bootstrap step
-        right after the seed.
+    dx_max : float
+        Maximum allowed step along ``x`` (K on the default axes). Default 5.
+    dx_min : float
+        Minimum allowed step along ``x`` and the bootstrap step right after
+        the seed. Default 1.
     dc_max : float
-        Maximum concentration drift allowed per step. ``_dT_adapt``
-        bounds the *mu* drift, which keeps the corrector bracket valid
-        but leaves the T-sampling density proportional to ``dmu/dT``: a
-        boundary that is nearly flat in mu (``dmu/dT -> 0``, so the step
-        saturates at ``dT_max``) but curves in c gets sampled coarsely.
-        Capping the per-step concentration drift gives the trace a
-        density floor tied to the curve that is actually plotted; a
-        straight constant-c boundary keeps ``dc/dT ~ 0`` and the cap
-        never engages, so nothing is over-sampled. The cap is applied
-        after the ``[dT_min, dT_max]`` clamp, so ``dT_min`` yields when
-        it would otherwise block the drift target.
+        Maximum drift of the extensive variable ``c`` (the conjugate of ``y``)
+        allowed per step. ``_dx_adapt`` bounds the *y* drift, which keeps the
+        corrector bracket valid but leaves the sampling density along ``x``
+        proportional to ``dy/dx``: a boundary that is nearly flat in y
+        (``dy/dx -> 0``, so the step saturates at ``dx_max``) but curves in
+        c gets sampled coarsely. Capping the per-step drift in c gives the
+        trace a density floor tied to the curve that is actually plotted; a
+        straight constant-c boundary keeps ``dc/dx ~ 0`` and the cap never
+        engages, so nothing is over-sampled. The cap is applied after the
+        ``[dx_min, dx_max]`` clamp, so ``dx_min`` yields when it would
+        otherwise block the drift target.
     dc_min : float
-        Minimum concentration drift required per step, the complement of
+        Minimum drift in c required per step, the complement of
         ``dc_max``: a density *ceiling* that coarsens a boundary which is
-        steep in mu (``_dT_adapt`` shrinks the step toward ``dT_min``) but
+        steep in y (``_dx_adapt`` shrinks the step toward ``dx_min``) but
         nearly flat in c, where ``dc_max`` never engages and the curve
-        gets over-sampled. The step grows so the plotted concentration
-        moves at least ``dc_min``, but never past ``dT_max``. The ``max``
-        bounds take precedence over the ``min`` bounds: the floor is
-        applied before the ``dc_max`` cap, so a ``dc_min`` set at or above
-        ``dc_max`` yields to it and the per-step drift never exceeds
-        ``dc_max``. Disabled by default (``0.0``); set it below ``dc_max``
-        to thin redundant points without losing resolution.
+        gets over-sampled. The step grows so c moves at least ``dc_min``,
+        but never past ``dx_max``. The ``max`` bounds take precedence over
+        the ``min`` bounds: the floor is applied before the ``dc_max`` cap, so
+        a ``dc_min`` set at or above ``dc_max`` yields to it and the per-step
+        drift never exceeds ``dc_max``. Disabled by default (``0.0``); set it
+        below ``dc_max`` to thin redundant points without losing resolution.
     max_steps : int
         Hard cap on steps per trace direction, just in case the
         adaptive logic somehow fails to terminate.
+    axes : Axes, optional
+        See :class:`Refiner`.
+    dT_max, dT_min : float, optional
+        Deprecated spellings of ``dx_max`` / ``dx_min``; passing both
+        spellings of one raises :class:`TypeError`.
     """
 
-    def __init__(self, *, dT_max: float = 5.0, dT_min: float = 1.0,
+    def __init__(self, *, dx_max: float | None = None, dx_min: float | None = None,
                  dc_max: float = 0.01, dc_min: float = 0.0,
-                 max_steps: int = 500):
-        self.dT_max = dT_max
-        self.dT_min = dT_min
+                 max_steps: int = 500, axes: Axes | None = None,
+                 dT_max: float | None = None, dT_min: float | None = None):
+        super().__init__(axes=axes)
+        self.dx_max = _step(type(self), "dx_max", dx_max, "dT_max", dT_max, 5.0)
+        self.dx_min = _step(type(self), "dx_min", dx_min, "dT_min", dT_min, 1.0)
         self.dc_max = dc_max
         self.dc_min = dc_min
         self.max_steps = max_steps
@@ -1267,14 +1295,14 @@ class _CCBase(Refiner):
         Returns
         -------
         tuple[float, _StepResult] | None
-            ``(T0, step0)`` to start tracing from, or ``None`` if no
+            ``(x0, step0)`` to start tracing from, or ``None`` if no
             valid seed could be produced for this candidate.
         """
 
     @abstractmethod
-    def _refine_step(self, cand, phases, T: float,
-                     mu_lo: float, mu_hi: float) -> _StepResult:
-        """Run one isothermal refinement.
+    def _refine_step(self, cand, phases, x: float,
+                     y_lo: float, y_hi: float) -> _StepResult:
+        """Run one refinement at fixed ``x``.
 
         Parameters
         ----------
@@ -1282,24 +1310,24 @@ class _CCBase(Refiner):
             The propose() candidate.
         phases : Mapping[str, Phase]
             All known phases.
-        T : float
-            Temperature for this isothermal step.
-        mu_lo, mu_hi : float
-            Bracket on mu inside which to locate the coexistence.
+        x : float
+            Value of ``x`` for this step.
+        y_lo, y_hi : float
+            Bracket on y inside which to locate the coexistence.
 
         Returns
         -------
         _StepResult
-            The converged mu* (and any subclass-specific payload).
+            The converged y* (and any subclass-specific payload).
 
         Raises
         ------
         ValueError
-            To stop the trace at this T (e.g. miscibility-gap closure).
+            To stop the trace at this x (e.g. miscibility-gap closure).
         """
 
     @abstractmethod
-    def _emit(self, cand, T: float, step: _StepResult):
+    def _emit(self, cand, x: float, step: _StepResult):
         """Build a :class:`RefinedPoint` or :class:`RefinedMiscibilityGap`
         from one converged step.
 
@@ -1307,8 +1335,8 @@ class _CCBase(Refiner):
         ----------
         cand
             The propose() candidate (carries phase names etc.).
-        T : float
-            Temperature of the refined transition.
+        x : float
+            ``x`` of the refined transition.
         step : _StepResult
             Output of :meth:`_seed_step` or :meth:`_refine_step`.
         """
@@ -1319,8 +1347,8 @@ class _CCBase(Refiner):
         coexistence line, used by :meth:`run` to maintain a per-line
         list of already-traced points for the straddle dedup."""
 
-    def _predict_mu(self, mu_star: float, dmu_dT: float, dT: float) -> float:
-        """Predict the next mu* given the current point and slope.
+    def _predict_y(self, y_star: float, dy_dx: float, dx: float) -> float:
+        """Predict the next y* given the current point and slope.
 
         Default is plain linear extrapolation. Subclasses can override
         to put a fancier predictor here (higher-order, with curvature,
@@ -1328,57 +1356,58 @@ class _CCBase(Refiner):
 
         Parameters
         ----------
-        mu_star : float
-            Last converged coexistence mu.
-        dmu_dT : float
+        y_star : float
+            Last converged coexistence y.
+        dy_dx : float
             Local Clausius-Clapeyron slope from the previous step.
-        dT : float
-            Signed temperature increment for the next step.
+        dx : float
+            Signed increment in x for the next step.
         """
-        return mu_star + dmu_dT * dT
+        return y_star + dy_dx * dx
 
-    def _dT_adapt(self, step: _StepResult, dmu_dT: float,
+    def _dx_adapt(self, step: _StepResult, dy_dx: float,
                   half_width: float) -> float:
         """Step size for the next predictor step.
 
-        Default keeps the predicted mu drift bounded by ``half_width``:
-        ``dT ~ half_width / |dmu/dT|``. Subclasses can override to scale
+        Default keeps the predicted y drift bounded by ``half_width``:
+        ``dx ~ half_width / |dy/dx|``. Subclasses can override to scale
         on something else (the miscibility-gap refiner uses
-        ``dT_max * gap^2`` to tighten naturally near T_c).
+        ``dx_max * gap^2`` to tighten naturally near the critical point).
 
         Parameters
         ----------
         step : _StepResult
             Result of the previous refinement; subclasses can read
             ``step.extra`` for their own quantities.
-        dmu_dT : float
+        dy_dx : float
             Local Clausius-Clapeyron slope.
         half_width : float
-            Half the seed simplex's mu bracket width.
+            Half the seed simplex's y bracket width.
 
         Returns
         -------
         float
             Unsigned step size; the trace loop applies sign and clamps
-            to ``[dT_min, dT_max]``.
+            to ``[dx_min, dx_max]``.
         """
         # 1e-9 is a tiny floor on the slope so we don't divide by zero
         # when the coexistence line is essentially flat (e.g. a symmetric
         # miscibility gap, where the gap-based override below kicks in).
-        slope = max(abs(dmu_dT), 1e-9)
+        slope = max(abs(dy_dx), 1e-9)
         return half_width / slope
 
-    def _seed_slope(self, cand, phases, T0: float, mu0: float) -> float:
-        """``dmu*/dT`` at the seed, used to size the bootstrap bracket.
+    def _seed_slope(self, cand, phases, x0: float, y0: float) -> float:
+        """``dy*/dx`` at the seed, used to size the bootstrap bracket.
 
         The main trace loop brackets each corrector by the drift the previous
         step measured, but the bootstrap step has no previous step, so without
-        an estimate its bracket is the seed simplex's mu half-width alone --
+        an estimate its bracket is the seed simplex's y half-width alone --
         a grid spacing, which says nothing about how fast the line moves. On a
-        vapour-liquid lens (an entropy difference of ~13 kB) the coexistence
-        mu drifts ~0.02 eV/K, an order of magnitude past any reasonable mu
-        grid, so every bootstrap fails to bracket a root one ``dT_min`` away
-        and the line comes back as scattered seed-only points.
+        vapour-liquid lens in the semigrand plane (an entropy difference of
+        ~13 kB) the coexistence mu drifts ~0.02 eV/K, an order of magnitude
+        past any reasonable mu grid, so every bootstrap fails to bracket a
+        root one ``dx_min`` away and the line comes back as scattered
+        seed-only points.
 
         The base implementation returns ``0`` (unknown), which leaves the
         bracket at the half-width; :class:`ClausiusClapeyronRefiner` overrides
@@ -1386,12 +1415,12 @@ class _CCBase(Refiner):
         """
         return 0.0
 
-    def _dominated_node(self, cand, phases, T_ok, mu_ok, T_dom, mu_dom, half_width):
+    def _dominated_node(self, cand, phases, x_ok, y_ok, x_dom, y_dom, half_width):
         """Hook: the point where a phase outside the traced line takes over.
 
         Called by :meth:`_trace` when a step lands in a region where an outside
         phase is more stable (``_dominated``), with the last kept step
-        ``(T_ok, mu_ok)`` and the dominated one ``(T_dom, mu_dom)``: the line
+        ``(x_ok, y_ok)`` and the dominated one ``(x_dom, y_dom)``: the line
         crosses an invariant between the two. Returns the refined point to emit
         for it, or ``None`` to stop silently. The base implementation returns
         ``None``: a two-phase line's invariants are triple points, which
@@ -1403,24 +1432,24 @@ class _CCBase(Refiner):
 
     # -- shared trace skeleton ---------------------------------------------
 
-    def _crossed_invariant(self, cand, phases, T_ok, mu_ok, T_dom, mu_dom, half_width):
-        """Points to emit when the trace steps from the kept ``(T_ok, mu_ok)``
-        into domination at ``(T_dom, mu_dom)``: the invariant it crossed, when
+    def _crossed_invariant(self, cand, phases, x_ok, y_ok, x_dom, y_dom, half_width):
+        """Points to emit when the trace steps from the kept ``(x_ok, y_ok)``
+        into domination at ``(x_dom, y_dom)``: the invariant it crossed, when
         the subclass solves it (:meth:`_dominated_node`), else nothing."""
-        node = self._dominated_node(cand, phases, T_ok, mu_ok, T_dom, mu_dom, half_width)
+        node = self._dominated_node(cand, phases, x_ok, y_ok, x_dom, y_dom, half_width)
         return [] if node is None else [node]
 
-    def _trace(self, cand, phases, T0, mu0, seed_c, half_width, T_target, sign):
-        """Walk from the seed ``(T0, mu0)`` toward ``T_target``.
+    def _trace(self, cand, phases, x0, y0, seed_c, half_width, x_target, sign):
+        """Walk from the seed ``(x0, y0)`` toward ``x_target``.
 
-        On each step the next mu* is given by :meth:`_predict_mu` and
-        corrected by an isothermal :meth:`_refine_step` inside a
+        On each step the next y* is given by :meth:`_predict_y` and
+        corrected by a :meth:`_refine_step` at fixed x inside a
         bracket centred on the prediction. The step size comes from
-        :meth:`_dT_adapt`, clamped to ``[dT_min, dT_max]``.
+        :meth:`_dx_adapt`, clamped to ``[dx_min, dx_max]``.
 
         Stops on any of:
 
-        * stepping past ``T_target`` (bounded walk);
+        * stepping past ``x_target`` (bounded walk);
         * ``_refine_step`` raising :class:`ValueError` — used both for
           "natural" stops (the miscibility gap closed) and for
           downright failures (no root in the bracket). Either way the
@@ -1443,20 +1472,19 @@ class _CCBase(Refiner):
             The propose() candidate.
         phases : Mapping[str, Phase]
             All known phases.
-        T0, mu0 : float
+        x0, y0 : float
             Seed location.
         seed_c : tuple[float, ...]
-            Concentrations plotted at the seed, used to prime the
+            Extensive values plotted at the seed, used to prime the
             ``dc_max`` density floor from the very first step so the
             curve resolution isn't lost on the bootstrap step.
         half_width : float
-            Half-width of the seed simplex's mu bracket; sets the
-            scale of subsequent isothermal brackets and the on-line
-            tolerance.
-        T_target : float
-            Walk bound (typically ``cand.T_min`` or ``cand.T_max``).
+            Half-width of the seed simplex's y bracket; sets the
+            scale of subsequent brackets and the on-line tolerance.
+        x_target : float
+            Walk bound (typically ``cand.x_min`` or ``cand.x_max``).
         sign : int
-            ``+1`` for an upward walk in T, ``-1`` for downward.
+            ``+1`` for an upward walk in x, ``-1`` for downward.
 
         Yields
         ------
@@ -1464,142 +1492,142 @@ class _CCBase(Refiner):
             One refined transition per converged step (excluding the
             seed itself, which the caller emits separately).
         """
-        dT_boot = sign * min(self.dT_min, abs(T_target - T0))
-        if dT_boot == 0:
+        dx_boot = sign * min(self.dx_min, abs(x_target - x0))
+        if dx_boot == 0:
             return
 
-        slope0 = self._seed_slope(cand, phases, T0, mu0)
+        slope0 = self._seed_slope(cand, phases, x0, y0)
 
-        def boot(dT):
-            # One bootstrap refinement at T0 + dT; returns (step, pt, drift).
+        def boot(dx):
+            # One bootstrap refinement at x0 + dx; returns (step, pt, drift).
             # Same bracket rule as the main loop below, with the seed slope in
             # place of the previous step's measured drift.
-            bracket = max(half_width, abs(slope0 * dT) * 2.0)
+            bracket = max(half_width, abs(slope0 * dx) * 2.0)
             step = self._refine_step(
-                cand, phases, T0 + dT, mu0 - bracket, mu0 + bracket)
-            pt = self._emit(cand, T0 + dT, step)
+                cand, phases, x0 + dx, y0 - bracket, y0 + bracket)
+            pt = self._emit(cand, x0 + dx, step)
             c = pt.emitted_concentrations(phases)
             drift = max((abs(a - b) for a, b in zip(c, seed_c)), default=0.0)
             return step, pt, c, drift
 
         try:
-            step, pt, c_b, drift = boot(dT_boot)
-            # The bootstrap is a fixed dT_min kick, so it can overshoot
-            # dc_max where dT_min would otherwise block the drift target,
-            # so dT_min yields: re-solve once at the concentration-capped
-            # step (drift is ~linear in dT locally).
+            step, pt, c_b, drift = boot(dx_boot)
+            # The bootstrap is a fixed dx_min kick, so it can overshoot
+            # dc_max where dx_min would otherwise block the drift target,
+            # so dx_min yields: re-solve once at the c-capped
+            # step (drift is ~linear in dx locally).
             if drift > self.dc_max:
-                dT_boot *= self.dc_max / drift
-                step, pt, c_b, drift = boot(dT_boot)
+                dx_boot *= self.dc_max / drift
+                step, pt, c_b, drift = boot(dx_boot)
         except ValueError:
             # Bootstrap step failed. Exercised mainly when the seed
             # already sits at the gap's closure (refine raises
             # because gap < gap_close) or when brentq can't bracket
-            # a root one dT_min away from a boundary seed. Both are
+            # a root one dx_min away from a boundary seed. Both are
             # benign: leave the seed-only point alone, let the
             # straddle dedup downstream decide whether to absorb it.
             return
-        T_b = T0 + dT_boot
+        x_b = x0 + dx_boot
         # Abort as soon as the pair goes metastable (see the docstring's
         # stop conditions) rather than tracing a tail run() would drop --
         # after solving the invariant it just crossed, if the subclass knows
         # how (_dominated_node).
         if _dominated(pt, phases):
             yield from self._crossed_invariant(
-                cand, phases, T0, mu0, T_b, step.mu_star, half_width)
+                cand, phases, x0, y0, x_b, step.y_star, half_width)
             return
         yield pt
-        mu_star = step.mu_star
-        dmu_dT = (mu_star - mu0) / dT_boot
-        dc_dT = drift / abs(dT_boot)
+        y_star = step.y_star
+        dy_dx = (y_star - y0) / dx_boot
+        dc_dx = drift / abs(dx_boot)
         c_prev = c_b
-        T = T_b
+        x = x_b
 
         for _ in range(self.max_steps):
-            # Reached the walk's T-boundary (tolerance just shy of zero
+            # Reached the walk's x-boundary (tolerance just shy of zero
             # so the last step's truncation below doesn't trip us).
-            if sign * (T_target - T) <= 1e-12:
+            if sign * (x_target - x) <= 1e-12:
                 return
 
-            # Adaptive temperature step from the mu-drift heuristic,
-            # clipped to [dT_min, dT_max].
-            dT_adapt = self._dT_adapt(step, dmu_dT, half_width)
-            dT_adapt = min(self.dT_max, max(self.dT_min, dT_adapt))
-            # Concentration-drift floor (density ceiling): grow the step so
-            # |dc| per step reaches dc_min where it would otherwise over-sample
-            # a steep-in-mu, flat-in-c boundary. Capped at dT_max. Off when
+            # Adaptive step from the y-drift heuristic, clipped to
+            # [dx_min, dx_max].
+            dx_adapt = self._dx_adapt(step, dy_dx, half_width)
+            dx_adapt = min(self.dx_max, max(self.dx_min, dx_adapt))
+            # Drift floor in c (density ceiling): grow the step so |dc| per
+            # step reaches dc_min where it would otherwise over-sample a
+            # steep-in-y, flat-in-c boundary. Capped at dx_max. Off when
             # dc_min == 0. Applied before the dc_max cap below so the max
             # parameters take precedence over the min ones.
-            if dc_dT > 0 and self.dc_min > 0:
-                dT_adapt = min(max(dT_adapt, self.dc_min / dc_dT), self.dT_max)
-            # Concentration-drift cap: keep |dc| per step under dc_max using
-            # the drift observed over the previous step. On a flat-in-mu but
-            # curved-in-c boundary the mu-drift step saturates at dT_max and
-            # this is what keeps the c-T curve resolved; on a straight
-            # constant-c boundary dc_dT stays ~0 and it's a no-op. Applied
-            # last — after the [dT_min, dT_max] clamp and the dc_min floor —
-            # so dT_min and dc_min both yield to it (max wins). A tiny
-            # absolute floor keeps the walk progressing.
-            if dc_dT > 0:
-                dT_adapt = max(min(dT_adapt, self.dc_max / dc_dT), 1e-3)
-            dT = sign * dT_adapt
-            # Don't step past the walk boundary; clip dT instead.
-            if sign * (T + dT - T_target) > 0:
-                dT = T_target - T
+            if dc_dx > 0 and self.dc_min > 0:
+                dx_adapt = min(max(dx_adapt, self.dc_min / dc_dx), self.dx_max)
+            # Drift cap in c: keep |dc| per step under dc_max using the drift
+            # observed over the previous step. On a flat-in-y but curved-in-c
+            # boundary the y-drift step saturates at dx_max and this is what
+            # keeps the c-x curve resolved; on a straight constant-c boundary
+            # dc_dx stays ~0 and it's a no-op. Applied last — after the
+            # [dx_min, dx_max] clamp and the dc_min floor — so dx_min and
+            # dc_min both yield to it (max wins). A tiny absolute floor keeps
+            # the walk progressing.
+            if dc_dx > 0:
+                dx_adapt = max(min(dx_adapt, self.dc_max / dc_dx), 1e-3)
+            dx = sign * dx_adapt
+            # Don't step past the walk boundary; clip dx instead.
+            if sign * (x + dx - x_target) > 0:
+                dx = x_target - x
 
-            T_next = T + dT
-            mu_predicted = self._predict_mu(mu_star, dmu_dT, dT)
+            x_next = x + dx
+            y_predicted = self._predict_y(y_star, dy_dx, dx)
             # Corrector bracket: wide enough to absorb the linear
-            # extrapolation error (|dmu/dT * dT| * 2) and never
+            # extrapolation error (|dy/dx * dx| * 2) and never
             # narrower than half the seed bracket — too tight a
             # bracket would let the root drift outside.
-            bracket = max(half_width * 0.5, abs(dmu_dT * dT) * 2.0)
+            bracket = max(half_width * 0.5, abs(dy_dx * dx) * 2.0)
             try:
                 step = self._refine_step(
-                    cand, phases, T_next,
-                    mu_predicted - bracket, mu_predicted + bracket)
+                    cand, phases, x_next,
+                    y_predicted - bracket, y_predicted + bracket)
             except ValueError:
                 # Trace stops cleanly here — natural closure (gap_close
                 # in MiscibilityGapRefiner), or numerical failure of
                 # the corrector (e.g. brentq can't bracket a root).
                 return
-            dmu_dT = (step.mu_star - mu_star) / dT
-            pt = self._emit(cand, T_next, step)
+            dy_dx = (step.y_star - y_star) / dx
+            pt = self._emit(cand, x_next, step)
             # Stop once the pair is no longer globally stable here, emitting
             # the invariant crossed on the way if the subclass can solve it.
             if _dominated(pt, phases):
                 yield from self._crossed_invariant(
-                    cand, phases, T, mu_star, T_next, step.mu_star, half_width)
+                    cand, phases, x, y_star, x_next, step.y_star, half_width)
                 return
-            T, mu_star = T_next, step.mu_star
+            x, y_star = x_next, step.y_star
             yield pt
             c_now = pt.emitted_concentrations(phases)
-            dc_dT = max((abs(a - b) for a, b in zip(c_now, c_prev)),
-                        default=0.0) / abs(dT)
+            dc_dx = max((abs(a - b) for a, b in zip(c_now, c_prev)),
+                        default=0.0) / abs(dx)
             c_prev = c_now
             # If we've walked back onto an already-traced segment of
             # the same coexistence line, stop instead of duplicating it.
-            if _point_on_line(T, mu_star, cand.existing, tol_mu=half_width):
+            if _point_on_line(x, y_star, cand.existing, tol=half_width):
                 return
 
     def solve(self, cand, phases):
         seed = self._seed_step(cand, phases)
         if seed is None:
             return []
-        T0, step0 = seed
-        mu_lo, mu_hi = cand.mu_bracket
-        half_width = (mu_hi - mu_lo) / 2.0
-        seed_pt = self._emit(cand, T0, step0)
+        x0, step0 = seed
+        y_lo, y_hi = cand.y_bracket
+        half_width = (y_hi - y_lo) / 2.0
+        seed_pt = self._emit(cand, x0, step0)
         seed_c = seed_pt.emitted_concentrations(phases)
         # A seed can project just past a triple point into a metastable
         # region; emit it only if it is globally stable. The traces still run
         # in both directions and recover the stable segment if the seed sits
         # just inside a dominated sliver.
         out = [] if _dominated(seed_pt, phases) else [seed_pt]
-        out.extend(self._trace(cand, phases, T0, step0.mu_star, seed_c,
-                               half_width, cand.T_max, +1))
-        out.extend(self._trace(cand, phases, T0, step0.mu_star, seed_c,
-                               half_width, cand.T_min, -1))
+        out.extend(self._trace(cand, phases, x0, step0.y_star, seed_c,
+                               half_width, cand.x_max, +1))
+        out.extend(self._trace(cand, phases, x0, step0.y_star, seed_c,
+                               half_width, cand.x_min, -1))
         return out
 
     def _tag_features(self, points, phases):
@@ -1618,7 +1646,7 @@ class _CCBase(Refiner):
     def run(self, df: pd.DataFrame, phases: Mapping[str, Phase]) -> pd.DataFrame:
         rows: list[dict] = []
         # Per-pair list of completed traces; each trace is a tuple of
-        # (T, mu) points in walk order. Keeping traces separate (rather
+        # (x, y) points in walk order. Keeping traces separate (rather
         # than flattening into one polyline) is what stops
         # _simplex_straddles inventing fake cross-segments between
         # unrelated single-point seed traces.
@@ -1638,14 +1666,14 @@ class _CCBase(Refiner):
             pts = list(self.solve(cand, phases))
             if pts:
                 new_trace = tuple(
-                    sorted(((p.T, p.mu) for p in pts), key=lambda tm: tm[0]))
+                    sorted(((p.x, p.y) for p in pts), key=lambda xy: xy[0]))
                 traced.setdefault(key, []).append(new_trace)
             if key not in boundary_ids:
                 boundary_ids[key] = next_bid
                 next_bid += 1
             by_line.setdefault(boundary_ids[key], []).extend(pts)
         for bid, pts in by_line.items():
-            keep = [pt for pt in pts if pt.T >= 0 and not _dominated(pt, phases)]
+            keep = [pt for pt in pts if pt.axes.admissible(pt.x, pt.y) and not _dominated(pt, phases)]
             for pt in self._tag_features(keep, phases):
                 rows.extend(replace(pt, boundary_id=bid).to_rows(phases))
         out = pd.DataFrame(rows)
@@ -1664,21 +1692,33 @@ class _CCBase(Refiner):
 class _InterCandidate:
     """Seed for :class:`ClausiusClapeyronRefiner` — inter-phase boundary.
 
-    ``proj_p1`` and ``proj_p2`` are the in-simplex (T, mu) vertex
+    ``proj_p1`` and ``proj_p2`` are the in-simplex (x, y) vertex
     centroids of each phase. The line between them is guaranteed to
     cross the boundary, so brentq always has a bracket for the seed.
     """
 
     phase1: str
     phase2: str
-    T_seed: float
-    mu_bracket: Bracket
-    T_bracket: Bracket
-    T_min: float
-    T_max: float
-    proj_p1: TMuPoint
-    proj_p2: TMuPoint
+    x_seed: float
+    y_bracket: Bracket
+    x_bracket: Bracket
+    x_min: float
+    x_max: float
+    proj_p1: Point
+    proj_p2: Point
     existing: TraceList = field(default=())
+
+
+def _step(cls, name, value, legacy_name, legacy, default):
+    """Resolve a tracer step size against its deprecated spelling."""
+    if legacy is not None:
+        if value is not None:
+            raise TypeError(f"{cls.__name__}() got both {name} and its deprecated spelling {legacy_name}")
+        return legacy
+    return default if value is None else value
+
+
+_DEPRECATED_STEPS = {"dT_max": "Use dx_max", "dT_min": "Use dx_min", "version": "2.0"}
 
 
 class ClausiusClapeyronRefiner(_CCBase):
@@ -1686,21 +1726,23 @@ class ClausiusClapeyronRefiner(_CCBase):
 
     For each two-phase Delaunay simplex, projects across the line
     between the two phases' vertex centroids to land a seed point on
-    the boundary, then walks T in both directions via isothermal
-    root-finding on ``phi1 - phi2``. The default ``_dT_adapt`` keeps
-    each step's mu drift bounded by the seed bracket's half-width.
+    the boundary, then walks ``x`` in both directions via root-finding
+    on ``phi1 - phi2`` along ``y``. The default ``_dx_adapt`` keeps
+    each step's y drift bounded by the seed bracket's half-width.
 
     Parameters
     ----------
-    dT_max : float
-        Maximum allowed temperature step (K). See :class:`_CCBase`.
-    dT_min : float
-        Minimum temperature step / bootstrap step (K). See
-        :class:`_CCBase`.
+    dx_max : float
+        Maximum allowed step along x. See :class:`_CCBase`.
+    dx_min : float
+        Minimum step along x / bootstrap step. See :class:`_CCBase`.
     dc_max, dc_min : float
-        Per-step concentration-drift cap / floor. See :class:`_CCBase`.
+        Per-step drift cap / floor in the extensive variable. See
+        :class:`_CCBase`.
     max_steps : int
         Hard cap on steps per trace direction. See :class:`_CCBase`.
+    axes : Axes, optional
+        See :class:`Refiner`.
     congruent_tol : float
         How narrow the field has to get, as a fraction of its own widest point,
         for the two phases to count as sharing a composition -- tagging the
@@ -1712,13 +1754,24 @@ class ClausiusClapeyronRefiner(_CCBase):
         congruently) and an order below a line that never closes (0.98). Only
         the detection is a tolerance: an interior closure is then solved
         exactly (see :meth:`_solve_congruent`).
+    dT_max, dT_min : float, optional
+        Deprecated spellings of ``dx_max`` / ``dx_min``.
+
+    Supports the semigrand binding only (:meth:`supports`): the congruent and
+    terminal-closure solves of :meth:`_tag_features` are written in pure
+    components and thermal energies.
     """
 
     label = "clausius-clapeyron"
 
+    @deprecate(**_DEPRECATED_STEPS)
     def __init__(self, *, congruent_tol: float = 0.1, **kwargs):
         super().__init__(**kwargs)
         self.congruent_tol = congruent_tol
+
+    @classmethod
+    def supports(cls, axes: Axes) -> bool:
+        return _semigrand(axes)
 
     def _tag_features(self, points, phases):
         """Tag the points where the two phases' compositions meet.
@@ -1772,7 +1825,7 @@ class ClausiusClapeyronRefiner(_CCBase):
         solved: list[RefinedPoint] = []
 
         def near(a, b):
-            return abs(a.T - b.T) <= _CONGRUENT_DEDUP_T and abs(a.mu - b.mu) <= _CONGRUENT_DEDUP_MU
+            return abs(a.x - b.x) <= _CONGRUENT_DEDUP_T and abs(a.y - b.y) <= _CONGRUENT_DEDUP_MU
 
         for i in self._closures(points, phases):
             pt = points[i]
@@ -1828,7 +1881,7 @@ class ClausiusClapeyronRefiner(_CCBase):
 
         It is when both phases reach that terminal (both sit within
         :data:`_TERMINAL_C_TOL` of it :data:`_KT_FAR` thermal energies past
-        ``pt.mu``), the line ends at ``pt`` (no point of it lies closer to the
+        ``pt.y``), the line ends at ``pt`` (no point of it lies closer to the
         terminal in shared composition) and the gap, extrapolated to zero
         along the line from ``pt`` and its neighbour, closes within ``dc_max``
         of the terminal. The composition of ``pt`` says nothing on its own: a
@@ -1844,8 +1897,8 @@ class ClausiusClapeyronRefiner(_CCBase):
         gap = np.array([abs(c[0] - c[1]) for c in cs])
         c0, g0 = np.mean(pt.emitted_concentrations(phases)), abs(np.subtract(*pt.emitted_concentrations(phases)))
         side = 0.0 if c0 < 0.5 else 1.0
-        mu = _far_mu(pt.mu, side, pt.T)
-        if any(abs(float(phases[n].concentration(pt.T, mu)) - side) >= _TERMINAL_C_TOL for n in pt.phases):
+        mu = _far_mu(pt.y, side, pt.x)
+        if any(abs(float(self.axes.conjugate(phases[n], pt.x, mu)) - side) >= _TERMINAL_C_TOL for n in pt.phases):
             return False
         toward = shared - c0 if side == 0 else c0 - shared
         if (toward < -_TERMINAL_C_TOL).any():
@@ -1873,59 +1926,60 @@ class ClausiusClapeyronRefiner(_CCBase):
         and ``kB T``, seeded from ``pt``.
 
         Returns ``None`` when the solver does not converge or the solution is
-        not the closure it was seeded from: further than ``2 dT_max`` from the
+        not the closure it was seeded from: further than ``2 dx_max`` from the
         seed in ``T``, at a pure component (within :data:`_TERMINAL_C_TOL` of
         c = 0 / 1 -- a terminal closure is reached only as ``mu`` diverges, so
         the solver runs off toward it), or no longer the globally stable pair
         there.
         """
+        ax = self.axes
         p1, p2 = (phases[n] for n in pt.phases)
-        T_s = max(abs(pt.T), 1.0)
-        mu_s = max(kB * abs(pt.T), 1e-3)
+        T_s = max(abs(pt.x), 1.0)
+        mu_s = max(kB * abs(pt.x), 1e-3)
 
-        def F(x):
-            T, mu = x[0] * T_s, x[1] * mu_s
+        def F(v):
+            T, mu = v[0] * T_s, v[1] * mu_s
             return [
-                float(p1.semigrand_potential(T, mu) - p2.semigrand_potential(T, mu)) / mu_s,
-                float(p1.concentration(T, mu) - p2.concentration(T, mu)),
+                float(ax.potential(p1, T, mu) - ax.potential(p2, T, mu)) / mu_s,
+                float(ax.conjugate(p1, T, mu) - ax.conjugate(p2, T, mu)),
             ]
 
         try:
-            sol = so.root(F, [pt.T / T_s, pt.mu / mu_s], method="hybr",
+            sol = so.root(F, [pt.x / T_s, pt.y / mu_s], method="hybr",
                           options={"xtol": 1e-12, "maxfev": 200})
         except (ValueError, FloatingPointError):
             return None
         if not sol.success:
             return None
         T, mu = float(sol.x[0] * T_s), float(sol.x[1] * mu_s)
-        if not np.isfinite(T) or not np.isfinite(mu) or abs(T - pt.T) > 2 * self.dT_max:
+        if not np.isfinite(T) or not np.isfinite(mu) or abs(T - pt.x) > 2 * self.dx_max:
             return None
-        c = float(p1.concentration(T, mu))
+        c = float(ax.conjugate(p1, T, mu))
         if min(c, 1 - c) < _TERMINAL_C_TOL:
             return None
-        exact = RefinedPoint(T=T, mu=mu, phases=pt.phases, congruent=True)
+        exact = RefinedPoint(x=T, y=mu, phases=pt.phases, congruent=True, axes=ax)
         if _dominated(exact, phases):
             return None
         return exact
 
     def propose(self, df: pd.DataFrame) -> Iterator[_InterCandidate]:
-        T_min = float(df["T"].min())
-        T_max = float(df["T"].max())
-        for simplex, n in _delaunay_simplices(df):
+        x_min = float(df[self.axes.x].min())
+        x_max = float(df[self.axes.x].max())
+        for simplex, n in _delaunay_simplices(df, self.axes):
             if n != 2:
                 continue
-            mu_lo, mu_hi, T_lo, T_hi, T_seed = _simplex_brackets(simplex)
-            if mu_hi <= mu_lo:
+            y_lo, y_hi, x_lo, x_hi, x_seed = _simplex_brackets(simplex)
+            if y_hi <= y_lo:
                 continue
             name1, name2 = simplex.unique_phases()
             cents = simplex.centroids()
             p1xy, p2xy = cents[name1], cents[name2]
             yield _InterCandidate(
                 phase1=name1, phase2=name2,
-                T_seed=T_seed,
-                mu_bracket=(mu_lo, mu_hi),
-                T_bracket=(T_lo, T_hi),
-                T_min=T_min, T_max=T_max,
+                x_seed=x_seed,
+                y_bracket=(y_lo, y_hi),
+                x_bracket=(x_lo, x_hi),
+                x_min=x_min, x_max=x_max,
                 proj_p1=p1xy, proj_p2=p2xy,
             )
 
@@ -1933,100 +1987,106 @@ class ClausiusClapeyronRefiner(_CCBase):
         return frozenset((cand.phase1, cand.phase2))
 
     def _seed_step(self, cand, phases):
+        ax = self.axes
         p1xy = np.array(cand.proj_p1)
         p2xy = np.array(cand.proj_p2)
         p1, p2 = phases[cand.phase1], phases[cand.phase2]
 
         def project(t):
-            T, mu = p1xy + (p2xy - p1xy) * t
-            return float(T), float(mu)
+            x, y = p1xy + (p2xy - p1xy) * t
+            return float(x), float(y)
 
         try:
             t = _find_one_point(
                 p1, p2,
-                lambda p, x: p.semigrand_potential(*project(x)),
+                lambda p, v: ax.potential(p, *project(v)),
                 (0.0, 1.0),
             )
         except ValueError:
             warnings.warn(
                 f"CC refiner: projection failed for "
-                f"{cand.phase1}/{cand.phase2} at simplex T~{cand.T_seed:.2f}",
+                f"{cand.phase1}/{cand.phase2} at simplex {ax.x}~{cand.x_seed:.2f}",
                 stacklevel=2,
             )
             return None
-        T0, mu0 = project(t)
-        return T0, _StepResult(mu_star=mu0)
+        x0, y0 = project(t)
+        return x0, _StepResult(y_star=y0)
 
-    def _seed_slope(self, cand, phases, T0, mu0):
-        """Clausius-Clapeyron slope ``dmu*/dT`` at the seed.
+    def _seed_slope(self, cand, phases, x0, y0):
+        """Clausius-Clapeyron slope ``dy*/dx`` at the seed.
 
-        Implicit differentiation of ``F(T, mu) = phi1 - phi2 = 0``: since
-        ``c = -dphi/dmu``, ``dF/dmu = c2 - c1`` exactly, and ``dF/dT`` is a
-        central difference in ``T``, so ``dmu*/dT = -F_T / F_mu = F_T / (c1 -
-        c2)``. Two potential evaluations; for two line phases at c=0 / c=1 this
-        is exact.
+        Implicit differentiation of ``F(x, y) = phi1 - phi2 = 0``: since
+        ``c = -dphi/dy``, ``dF/dy = c2 - c1`` exactly, and ``dF/dx`` is a
+        central difference in ``x``, so ``dy*/dx = -F_x / F_y = F_x / (c1 -
+        c2)``. Two potential evaluations; for two line phases at c=0 / c=1 on
+        the default axes this is exact.
         """
+        ax = self.axes
         p1, p2 = phases[cand.phase1], phases[cand.phase2]
-        dc = float(p1.concentration(T0, mu0) - p2.concentration(T0, mu0))
+        dc = float(ax.conjugate(p1, x0, y0) - ax.conjugate(p2, x0, y0))
         if abs(dc) < 1e-12:
             return 0.0
-        h = max(1e-3 * abs(T0), 1e-3)
+        h = max(1e-3 * abs(x0), 1e-3)
 
-        def F(T):
-            return float(p1.semigrand_potential(T, mu0) - p2.semigrand_potential(T, mu0))
+        def F(x):
+            return float(ax.potential(p1, x, y0) - ax.potential(p2, x, y0))
 
-        return (F(T0 + h) - F(T0 - h)) / (2.0 * h) / dc
+        return (F(x0 + h) - F(x0 - h)) / (2.0 * h) / dc
 
-    def _refine_step(self, cand, phases, T, mu_lo, mu_hi):
+    def _refine_step(self, cand, phases, x, y_lo, y_hi):
+        ax = self.axes
         p1, p2 = phases[cand.phase1], phases[cand.phase2]
-        mu = _find_one_point(
+        y = _find_one_point(
             p1, p2,
-            lambda p, x: p.semigrand_potential(T, x),
-            (mu_lo, mu_hi),
+            lambda p, v: ax.potential(p, x, v),
+            (y_lo, y_hi),
         )
-        return _StepResult(mu_star=mu)
+        return _StepResult(y_star=y)
 
-    def _emit(self, cand, T, step):
+    def _emit(self, cand, x, step):
         return RefinedPoint(
-            T=T, mu=step.mu_star, phases=(cand.phase1, cand.phase2))
+            x=x, y=step.y_star, phases=(cand.phase1, cand.phase2), axes=self.axes)
 
 
 # -- Intra-phase miscibility gap ----------------------------------------------
 
 
-def _gap_jump(phase, T: float, mu_lo: float, mu_hi: float, *, eps: float = 1e-9):
-    """The exact jump of ``c(mu)`` at fixed ``T`` inside ``[mu_lo, mu_hi]``.
+def _gap_jump(phase, x: float, y_lo: float, y_hi: float, *, eps: float = 1e-9,
+              axes: Axes = _DEFAULT_AXES):
+    """The exact jump of ``c(y)`` at fixed ``x`` inside ``[y_lo, y_hi]``.
 
-    Where a phase is split by a miscibility gap, ``c(mu)`` jumps between the
-    two branches at the coexistence ``mu*``; above the gap's critical point it
+    Where a phase is split by a miscibility gap, ``c(y)`` jumps between the
+    two branches at the coexistence ``y*``; above the gap's critical point it
     is merely steep. The 50-point scan of :meth:`MiscibilityGapRefiner._scan`
     cannot tell a jump from a steep slope at its own resolution, so this
-    bisects the scan's steepest segment on which branch ``c(mu)`` lands on
-    until ``mu*`` is pinned to ``eps``, and reads the jump as ``c(mu* + eps) -
-    c(mu* - eps)``: the true gap below the critical point, ``2 eps dc/dmu`` (as
-    good as zero) above it.
+    bisects the scan's steepest segment on which branch ``c(y)`` lands on
+    until ``y*`` is pinned to ``eps``, and reads the jump as ``c(y* + eps) -
+    c(y* - eps)``: the true gap below the critical point, ``2 eps dc/dy`` (as
+    good as zero) above it. ``c`` is ``axes.conjugate``.
 
-    Returns ``(mu_star, c_left, c_right)``; ``c_right - c_left`` is the jump.
-    Raises :class:`ValueError` where ``c(mu)`` does not increase in the
+    Returns ``(y_star, c_left, c_right)``; ``c_right - c_left`` is the jump.
+    Raises :class:`ValueError` where ``c(y)`` does not increase in the
     bracket.
     """
-    mus = np.linspace(mu_lo, mu_hi, 50)
-    cs = np.array([float(phase.concentration(T, m)) for m in mus])
+    def c(y):
+        return float(axes.conjugate(phase, x, y))
+
+    ys = np.linspace(y_lo, y_hi, 50)
+    cs = np.array([c(v) for v in ys])
     dcs = np.diff(cs)
     if dcs.max() <= 0:
-        raise ValueError(f"c(mu) is not increasing in [{mu_lo}, {mu_hi}] at T={T}")
+        raise ValueError(f"c(y) is not increasing in [{y_lo}, {y_hi}] at x={x}")
     i = int(np.argmax(dcs))
-    lo, hi = float(mus[i]), float(mus[i + 1])
+    lo, hi = float(ys[i]), float(ys[i + 1])
     c_mid = (float(cs[i]) + float(cs[i + 1])) / 2.0
     while hi - lo > eps:
         mid = (lo + hi) / 2.0
-        if float(phase.concentration(T, mid)) < c_mid:
+        if c(mid) < c_mid:
             lo = mid
         else:
             hi = mid
-    mu_star = (lo + hi) / 2.0
-    return mu_star, float(phase.concentration(T, mu_star - eps)), float(phase.concentration(T, mu_star + eps))
-
+    y_star = (lo + hi) / 2.0
+    return y_star, c(y_star - eps), c(y_star + eps)
 
 
 @dataclass(frozen=True)
@@ -2043,31 +2103,32 @@ class _GapCandidate:
     """Seed for :class:`MiscibilityGapRefiner` — intra-phase gap."""
 
     phase: str
-    T_seed: float
-    mu_bracket: Bracket
-    T_bracket: Bracket
-    T_min: float
-    T_max: float
+    x_seed: float
+    y_bracket: Bracket
+    x_bracket: Bracket
+    x_min: float
+    x_max: float
     existing: TraceList = field(default=())
 
 
 class MiscibilityGapRefiner(_CCBase):
     """Predictor-corrector tracer of intra-phase miscibility gaps.
 
-    For each single-phase simplex with a wide-enough c-spread, scans
-    c(mu) on the simplex's mu bracket and locates the steepest-dc/dmu
-    segment — the binodal jump. The trace walks T in both directions
-    with step size ``dT_max * gap^2`` (gap shrinks naturally toward T_c).
+    For each single-phase simplex with a wide-enough spread in the extensive
+    variable c, scans c(y) on the simplex's y bracket and locates the
+    steepest-dc/dy segment — the binodal jump. The trace walks x in both
+    directions with step size ``dx_max * gap^2`` (the gap shrinks naturally
+    toward the critical point).
 
     Stops when:
 
     * the gap shrinks below ``gap_close`` (essentially closed), or
     * the dominant scan segment carries less than ``gap_share_min`` of
-      the total c-variation, signalling a smooth supercritical c(mu).
+      the total c-variation, signalling a smooth supercritical c(y).
 
     Each transition emits a :class:`RefinedMiscibilityGap` carrying
     the steepest-segment endpoints so its :meth:`~RefinedMiscibilityGap.to_rows`
-    reads concentrations on each side of the jump.
+    reads c on each side of the jump.
 
     Once a line is traced, :meth:`_tag_features` locates the point where the
     gap closes exactly and emits it tagged
@@ -2076,7 +2137,7 @@ class MiscibilityGapRefiner(_CCBase):
 
     Parameters
     ----------
-    dT_max, dT_min, dc_max, dc_min, max_steps :
+    dx_max, dx_min, dc_max, dc_min, max_steps :
         See :class:`_CCBase`.
     c_jump_min : float
         Minimum c-spread of a simplex's vertices for it to be seeded.
@@ -2085,49 +2146,64 @@ class MiscibilityGapRefiner(_CCBase):
     gap_share_min : float
         Dominant-segment share of total scan c-variation below which
         the bracket is judged supercritical (default 0.1). Raise
-        toward 0.5 to stop the trace further below T_c; lower toward
-        0 to push closer to T_c at the cost of some drift.
+        toward 0.5 to stop the trace further from the critical point; lower
+        toward 0 to push closer to it at the cost of some drift.
     closure_xtol : float
-        Temperature tolerance (K) to which the gap's closure -- its critical
+        Tolerance in ``x`` (K) to which the gap's closure -- its critical
         point -- is bisected (default 1e-3); see :meth:`_tag_features`.
+    axes : Axes, optional
+        See :class:`Refiner`.
+    dT_max, dT_min : float, optional
+        Deprecated spellings of ``dx_max`` / ``dx_min``.
     """
 
     label = "miscibility-gap"
 
-    def __init__(self, *, dT_max: float = 5.0, dT_min: float = 1.0,
+    @classmethod
+    def supports(cls, axes: Axes) -> bool:
+        """The semigrand binding only (any column names): ``c_jump_min`` and
+        ``gap_close`` are absolute concentration thresholds, which have no
+        meaning for another extensive variable, and the closure search scales
+        its brackets by thermal energies."""
+        return _semigrand(axes)
+
+    @deprecate(**_DEPRECATED_STEPS)
+    def __init__(self, *, dx_max: float | None = None, dx_min: float | None = None,
                  dc_max: float = 0.01, dc_min: float = 0.0,
                  max_steps: int = 500, c_jump_min: float = 0.3,
                  gap_close: float = 1e-3, gap_share_min: float = 0.1,
-                 closure_xtol: float = 1e-3):
-        super().__init__(dT_max=dT_max, dT_min=dT_min, dc_max=dc_max,
-                         dc_min=dc_min, max_steps=max_steps)
+                 closure_xtol: float = 1e-3, axes: Axes | None = None,
+                 dT_max: float | None = None, dT_min: float | None = None):
+        super().__init__(dx_max=dx_max, dx_min=dx_min, dc_max=dc_max,
+                         dc_min=dc_min, max_steps=max_steps, axes=axes,
+                         dT_max=dT_max, dT_min=dT_min)
         self.c_jump_min = c_jump_min
         self.gap_close = gap_close
         self.gap_share_min = gap_share_min
         self.closure_xtol = closure_xtol
 
     def propose(self, df: pd.DataFrame) -> Iterator[_GapCandidate]:
-        T_min = float(df["T"].min())
-        T_max = float(df["T"].max())
+        x_min = float(df[self.axes.x].min())
+        x_max = float(df[self.axes.x].max())
         # Yield widest-c-spread simplex first: the most reliable
         # simplex seeds the trace, and neighbouring ones get straddle-
         # skipped on subsequent iterations.
         candidates: list[tuple[float, _GapCandidate]] = []
-        for simplex, n in _delaunay_simplices(df):
+        for simplex, n in _delaunay_simplices(df, self.axes):
             if n != 1:
                 continue
-            mu_lo, mu_hi, T_lo, T_hi, T_seed = _simplex_brackets(simplex)
-            if mu_hi <= mu_lo:
+            y_lo, y_hi, x_lo, x_hi, x_seed = _simplex_brackets(simplex)
+            if y_hi <= y_lo:
                 continue
             c_spread = float(simplex.c.max() - simplex.c.min())
             if c_spread < self.c_jump_min:
                 continue
             candidates.append((-c_spread, _GapCandidate(
                 phase=simplex.phase[0],
-                T_seed=T_seed,
-                mu_bracket=(mu_lo, mu_hi),
-                T_bracket=(T_lo, T_hi),
-                T_min=T_min, T_max=T_max,
+                x_seed=x_seed,
+                y_bracket=(y_lo, y_hi),
+                x_bracket=(x_lo, x_hi),
+                x_min=x_min, x_max=x_max,
             )))
         candidates.sort(key=lambda kv: kv[0])
         for _, cand in candidates:
@@ -2136,69 +2212,69 @@ class MiscibilityGapRefiner(_CCBase):
     def _pair_key(self, cand):
         return cand.phase
 
-    def _scan(self, ph, T, mu_lo, mu_hi) -> _StepResult:
-        """Dense c(mu) scan picking the steepest-dc/dmu segment."""
-        mus = np.linspace(mu_lo, mu_hi, 50)
-        cs = np.array([float(ph.concentration(T, m)) for m in mus])
+    def _scan(self, ph, x, y_lo, y_hi) -> _StepResult:
+        """Dense c(y) scan picking the steepest-dc/dy segment."""
+        ys = np.linspace(y_lo, y_hi, 50)
+        cs = np.array([float(self.axes.conjugate(ph, x, v)) for v in ys])
         dcs = np.diff(cs)
         if dcs.max() <= 0:
             raise ValueError(
-                f"c(mu) is not increasing in [{mu_lo}, {mu_hi}] at T={T}")
+                f"c(y) is not increasing in [{y_lo}, {y_hi}] at x={x}")
         i = int(np.argmax(dcs))
-        mu_l, mu_r = float(mus[i]), float(mus[i + 1])
+        y_l, y_r = float(ys[i]), float(ys[i + 1])
         c_l, c_r = float(cs[i]), float(cs[i + 1])
         total = float(cs.max() - cs.min())
         gap = c_r - c_l
-        # Concentration ratio: at a sharp binodal the dominant segment
-        # holds essentially all of the c variation in the bracket; for
-        # a smooth supercritical c(mu) it spreads across the scan and
-        # this ratio drops toward 1/49.
+        # Ratio of the jump to the total variation: at a sharp binodal the
+        # dominant segment holds essentially all of the c variation in the
+        # bracket; for a smooth supercritical c(y) it spreads across the scan
+        # and this ratio drops toward 1/49.
         if total > 0 and gap / total < self.gap_share_min:
             gap = 0.0
         return _StepResult(
-            mu_star=(mu_l + mu_r) / 2.0,
+            y_star=(y_l + y_r) / 2.0,
             extra=_GapStep(c_left=c_l, c_right=c_r, gap=gap),
         )
 
     def _seed_step(self, cand, phases):
         try:
-            step = self._scan(phases[cand.phase], cand.T_seed, *cand.mu_bracket)
+            step = self._scan(phases[cand.phase], cand.x_seed, *cand.y_bracket)
         except ValueError:
             warnings.warn(
                 f"miscibility-gap refiner: no jump for {cand.phase} at "
-                f"T={cand.T_seed:.2f} in mu={cand.mu_bracket}",
+                f"{self.axes.x}={cand.x_seed:.2f} in {self.axes.y}={cand.y_bracket}",
                 stacklevel=2,
             )
             return None
-        return cand.T_seed, step
+        return cand.x_seed, step
 
-    def _refine_step(self, cand, phases, T, mu_lo, mu_hi):
-        step = self._scan(phases[cand.phase], T, mu_lo, mu_hi)
+    def _refine_step(self, cand, phases, x, y_lo, y_hi):
+        step = self._scan(phases[cand.phase], x, y_lo, y_hi)
         if step.extra.gap < self.gap_close:
             raise ValueError("miscibility gap closed")
         return step
 
-    def _dT_adapt(self, step, dmu_dT, half_width):
-        # Step shrinks naturally as the gap closes near T_c.
-        return self.dT_max * step.extra.gap ** 2
+    def _dx_adapt(self, step, dy_dx, half_width):
+        # Step shrinks naturally as the gap closes near the critical point.
+        return self.dx_max * step.extra.gap ** 2
 
-    def _emit(self, cand, T, step):
-        x = step.extra
+    def _emit(self, cand, x, step):
+        e = step.extra
         return RefinedMiscibilityGap(
-            T=T, mu=step.mu_star, phase=cand.phase,
-            c_left=x.c_left, c_right=x.c_right)
+            x=x, y=step.y_star, phase=cand.phase,
+            c_left=e.c_left, c_right=e.c_right, axes=self.axes)
 
     def _tag_features(self, points, phases):
         """Locate the closure of the gap exactly and tag it congruent.
 
         The trace approaches the critical (consolute) point in steps of at
-        least ``dT_min`` and, reading the steep but continuous ``c(mu)`` just
+        least ``dx_min`` and, reading the steep but continuous ``c(y)`` just
         above it as a small jump at the scan's resolution, overshoots it by a
         few steps. So at each end of the line the exact jump of
         :func:`_gap_jump` decides: an end where the jump is still open is no
         closure (the gap left the sampled window, or ran into another phase
         -- a monotectic, see :meth:`_dominated_node`); an end where it has
-        vanished is past the closure, which is then bisected in ``T`` between
+        vanished is past the closure, which is then bisected in ``x`` between
         the last open point and the first closed one to ``closure_xtol``. The
         closure is emitted as a :class:`RefinedMiscibilityGap` with both
         branches at the critical composition and ``congruent`` set, and the
@@ -2210,7 +2286,7 @@ class MiscibilityGapRefiner(_CCBase):
         shallow minima: a gap narrower than that reads as closed.
         """
         gaps = sorted((i for i, pt in enumerate(points) if isinstance(pt, RefinedMiscibilityGap)),
-                      key=lambda i: points[i].T)
+                      key=lambda i: points[i].x)
         if len(gaps) < 2:
             return points
         ph = phases[points[gaps[0]].phase]
@@ -2230,43 +2306,43 @@ class MiscibilityGapRefiner(_CCBase):
             if closure is None:
                 continue
             closures.append(closure)
-            sign = 1.0 if closure.T > points[i_open].T else -1.0
-            drop.update(i for i in gaps if sign * (points[i].T - closure.T) > 0)
+            sign = 1.0 if closure.x > points[i_open].x else -1.0
+            drop.update(i for i in gaps if sign * (points[i].x - closure.x) > 0)
         out = [pt for i, pt in enumerate(points) if i not in drop]
         return out + closures
 
     def _jump_at(self, ph, pt):
-        """:func:`_gap_jump` at a traced point, bracketing ``mu`` around it."""
-        width = max(abs(pt.c_right - pt.c_left), self.gap_close) * kB * max(abs(pt.T), 1.0)
+        """:func:`_gap_jump` at a traced point, bracketing ``y`` around it."""
+        width = max(abs(pt.c_right - pt.c_left), self.gap_close) * kB * max(abs(pt.x), 1.0)
         for _ in range(6):
             try:
-                return _gap_jump(ph, pt.T, pt.mu - width, pt.mu + width)
+                return _gap_jump(ph, pt.x, pt.y - width, pt.y + width, axes=self.axes)
             except ValueError:
                 width *= 4.0
         return None
 
     def _bisect_closure(self, ph, open_pt, closed_pt):
-        """Bisect in T between an open gap point and a closed one for the
+        """Bisect in x between an open gap point and a closed one for the
         closure, returning it as a congruent :class:`RefinedMiscibilityGap`."""
-        T_open, T_closed = open_pt.T, closed_pt.T
-        mu = open_pt.mu
+        x_open, x_closed = open_pt.x, closed_pt.x
+        y = open_pt.y
         c_l, c_r = open_pt.c_left, open_pt.c_right
-        while abs(T_closed - T_open) > self.closure_xtol:
-            T = (T_open + T_closed) / 2.0
-            width = max(abs(c_r - c_l), self.gap_close) * kB * max(abs(T), 1.0)
+        while abs(x_closed - x_open) > self.closure_xtol:
+            x = (x_open + x_closed) / 2.0
+            width = max(abs(c_r - c_l), self.gap_close) * kB * max(abs(x), 1.0)
             try:
-                mu_star, cl, cr = _gap_jump(ph, T, mu - 4 * width, mu + 4 * width)
+                y_star, cl, cr = _gap_jump(ph, x, y - 4 * width, y + 4 * width, axes=self.axes)
             except ValueError:
                 return None
             if cr - cl > self.gap_close:
-                T_open, mu, c_l, c_r = T, mu_star, cl, cr
+                x_open, y, c_l, c_r = x, y_star, cl, cr
             else:
-                T_closed = T
+                x_closed = x
         c_c = (c_l + c_r) / 2.0
-        return RefinedMiscibilityGap(T=(T_open + T_closed) / 2.0, mu=mu, phase=open_pt.phase,
-                                     c_left=c_c, c_right=c_c, congruent=True)
+        return RefinedMiscibilityGap(x=(x_open + x_closed) / 2.0, y=y, phase=open_pt.phase,
+                                     c_left=c_c, c_right=c_c, congruent=True, axes=self.axes)
 
-    def _dominated_node(self, cand, phases, T_ok, mu_ok, T_dom, mu_dom, half_width):
+    def _dominated_node(self, cand, phases, x_ok, y_ok, x_dom, y_dom, half_width):
         """Solve the invariant where the gap runs into another phase.
 
         A miscibility gap that meets a two-phase boundary ends in a three-phase
@@ -2276,38 +2352,40 @@ class MiscibilityGapRefiner(_CCBase):
         phases per simplex and this one has only two. The gap trace does run
         into it, though: it is where the trace steps from a kept point into
         one where an outside phase is more stable. So on the gap's own
-        ``mu*(T)`` line, ``phi_rival - phi_own`` changes sign between ``T_ok``
-        and ``T_dom``, and a root-find in ``T`` locates the invariant to the
-        precision the isothermal scan gives ``mu*``.
+        ``y*(x)`` line, ``phi_rival - phi_own`` changes sign between ``x_ok``
+        and ``x_dom``, and a root-find in ``x`` locates the invariant to the
+        precision the scan at fixed ``x`` gives ``y*``.
 
         The emitted :class:`RefinedPoint` names the gap phase twice and the
-        rival once, carrying the two branch concentrations of the scan and the
+        rival once, carrying the two branch values of the scan and the
         rival's own, so its rows tag :attr:`~landau.features.Locus.TRIPLE` and
         span the isotherm from the rival to the far branch.
         """
+        ax = self.axes
         ph = phases[cand.phase]
         rivals = [p for p in phases.values() if p.name != cand.phase]
         if not rivals:
             return None
-        lo, hi = sorted((mu_ok, mu_dom))
+        lo, hi = sorted((y_ok, y_dom))
         pad = max(hi - lo, half_width)
 
-        def at(T):
-            step = self._refine_step(cand, phases, T, lo - pad, hi + pad)
-            own = float(ph.semigrand_potential(T, step.mu_star))
-            rival = min(rivals, key=lambda p: float(p.semigrand_potential(T, step.mu_star)))
-            return step, rival, float(rival.semigrand_potential(T, step.mu_star)) - own
+        def at(x):
+            step = self._refine_step(cand, phases, x, lo - pad, hi + pad)
+            own = float(ax.potential(ph, x, step.y_star))
+            rival = min(rivals, key=lambda p: float(ax.potential(p, x, step.y_star)))
+            return step, rival, float(ax.potential(rival, x, step.y_star)) - own
 
         try:
-            T = so.brentq(lambda T: at(T)[2], T_ok, T_dom, xtol=1e-6)
-            step, rival, _ = at(T)
+            x = so.brentq(lambda x: at(x)[2], x_ok, x_dom, xtol=1e-6)
+            step, rival, _ = at(x)
         except ValueError:
             return None
         return RefinedPoint(
-            T=float(T), mu=step.mu_star,
+            x=float(x), y=step.y_star,
             phases=(cand.phase, cand.phase, rival.name),
             concentrations=(step.extra.c_left, step.extra.c_right,
-                            float(rival.concentration(T, step.mu_star))),
+                            float(ax.conjugate(rival, x, step.y_star))),
+            axes=ax,
         )
 
 
@@ -2325,15 +2403,16 @@ def default_refiners(df: pd.DataFrame, axes: Axes | None = None) -> Sequence[Ref
     * Only one axis sampled (1-D scan) → just the
       :class:`ScanRefiner` walking that axis.
 
-    ``axes`` defaults to the semigrand plane ``Axes()``; refiners that do not
-    :meth:`~Refiner.supports` it are left out.
+    ``axes`` defaults to the semigrand plane ``Axes()`` and is handed to
+    every refiner returned; refiners that do not :meth:`~Refiner.supports` it
+    are left out.
     """
     axes = _DEFAULT_AXES if axes is None else axes
     multiple_ys = len(df[axes.y].unique()) > 1
     multiple_xs = len(df[axes.x].unique()) > 1
     if multiple_ys and multiple_xs:
         return [
-            cls() if axes == _DEFAULT_AXES else cls(axes=axes)
+            cls(axes=axes)
             for cls in (DelaunayTripleRefiner, ClausiusClapeyronRefiner, MiscibilityGapRefiner, TerminalRefiner)
             if cls.supports(axes)
         ]
