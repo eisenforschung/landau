@@ -325,7 +325,7 @@ def _plot_phase_diagram(
     if ax is None:
         ax = plt.gca()
     df_stable = df.query("stable")
-    color_map = get_phase_colors(df_stable.phase.unique(), color_override)
+    color_map = get_phase_colors(df.phase.unique(), color_override)
 
     polys = get_polygons(df, poly_method=poly_method, variables=variables, min_c_width=min_c_width, alpha=alpha)
 
@@ -407,12 +407,22 @@ def plot_phase_diagram(
     )
 
 
-def get_phase_colors(phase_names, override: dict[str, str] | None = None):
+def get_phase_colors(phase_names, override: dict[str, str] | None = None, palette: str = "pastel"):
+    """Map phase names to colours.
+
+    Names are sorted before assignment, so a phase gets the same colour from
+    any ordering of the same set of names.
+
+    Args:
+        phase_names: phase names; the ``i``-th in sorted order gets palette
+            entry ``i``, cycling past the palette's 10 entries.
+        override: ``dict[name -> color]``; a phase whose default colour is
+            claimed by an override takes the overridden phase's default instead.
+        palette: name of a seaborn palette in ``SEABORN_PALETTES``.
+    """
     if override is None:
         override = {}
-    # the default map; cycle the palette so every phase gets a color even
-    # past the pastel palette's 10 entries
-    color_map = dict(zip(phase_names, cycle(sns.palettes.SEABORN_PALETTES["pastel"])))
+    color_map = dict(zip(sorted(set(phase_names)), cycle(sns.palettes.SEABORN_PALETTES[palette])))
     # disregard overriden phases that are not present
     override = {p: c for p, c in override.items() if p in color_map}
     # if the override uses the same colors as the default map, multiple phases
@@ -628,7 +638,8 @@ def _plot_1d_phase_diagram(
         side_labels=True,
         ylim=None,
         element=None,
-        top_label_rotation="horizontal"):
+        top_label_rotation="horizontal",
+        color_override=None):
     """Draw the semi-grandcanonical potential of every phase along a 1d cut.
 
     Shared body of :func:`plot_1d_mu_phase_diagram` and
@@ -641,6 +652,7 @@ def _plot_1d_phase_diagram(
     if ax is None:
         fig, ax = plt.subplots()
 
+    palette = get_phase_colors(df.phase.unique(), color_override, palette="muted")
     df = df.sort_values(scan_col).copy()
 
     if reference_phase is not None:
@@ -650,7 +662,7 @@ def _plot_1d_phase_diagram(
     sns.lineplot(
         data=_bridge_unstable_segments(df, scan_col=scan_col),
         x=scan_col, y='phi',
-        hue='phase', hue_order=sorted(df.phase.unique()),
+        hue='phase', hue_order=list(palette), palette=palette,
         style='stable', style_order=[True, False],
         units='_seg_id', estimator=None, errorbar=None,
         ax=ax,
@@ -692,7 +704,8 @@ def plot_1d_mu_phase_diagram(
         side_labels=True,
         ylim=None,
         element=None,
-        top_label_rotation="horizontal"):
+        top_label_rotation="horizontal",
+        color_override=None):
     """
     Plot a one dimensional isothermal phase diagram of the semi-grandcanonical
     potential as function of the chemical potential difference.
@@ -729,6 +742,9 @@ def plot_1d_mu_phase_diagram(
             Rotation of the top stable-phase labels: ``"horizontal"`` (default),
             ``"vertical"`` or an angle in degrees. Vertical labels fit stable
             windows too narrow for the horizontal name.
+        color_override (dict, optional):
+            ``dict[name -> color]`` overriding phase colours, as in
+            :func:`get_phase_colors`.
 
     Returns:
         matplotlib.axes.Axes:
@@ -746,6 +762,7 @@ def plot_1d_mu_phase_diagram(
         ylim=ylim,
         element=element,
         top_label_rotation=top_label_rotation,
+        color_override=color_override,
     )
 
 
@@ -760,6 +777,7 @@ def plot_1d_T_phase_diagram(
         side_labels=True,
         ylim=None,
         top_label_rotation="horizontal",
+        color_override=None,
         ):
     """
     Plots a one-dimensional equipotential phase diagram as a function of temperature.
@@ -792,6 +810,9 @@ def plot_1d_T_phase_diagram(
             Rotation of the top stable-phase labels: ``"horizontal"`` (default),
             ``"vertical"`` or an angle in degrees. Vertical labels fit stable
             windows too narrow for the horizontal name.
+        color_override (dict, optional):
+            ``dict[name -> color]`` overriding phase colours, as in
+            :func:`get_phase_colors`.
 
     Returns:
         matplotlib.axes.Axes:
@@ -808,6 +829,7 @@ def plot_1d_T_phase_diagram(
         side_labels=side_labels,
         ylim=ylim,
         top_label_rotation=top_label_rotation,
+        color_override=color_override,
     )
 
 
@@ -886,10 +908,7 @@ def plot_excess_free_energy(
     c_range = df.groupby("phase")["c"].apply(lambda s: s.max() - s.min())
     line_phase_names = set(c_range[c_range < 1e-9].index)
 
-    muted_colors = sns.color_palette("muted")
-    palette = {name: muted_colors[i % len(muted_colors)] for i, name in enumerate(phase_names)}
-    if color_override:
-        palette.update({k: v for k, v in color_override.items() if k in palette})
+    palette = get_phase_colors(phase_names, color_override, palette="muted")
 
     df_sol = df[~df["phase"].isin(line_phase_names)].copy()
     df_lp = df[df["phase"].isin(line_phase_names)].copy()
