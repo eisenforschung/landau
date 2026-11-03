@@ -30,8 +30,8 @@ from landau.refine import (
     RefinedMiscibilityGap,
     Refiner,
     ScanRefiner,
-    TerminalRefiner,
     default_refiners,
+    TerminalRefiner,
 )
 from landau.refine import (
     _COEXIST_TOL,
@@ -99,7 +99,7 @@ def test_clausius_clapeyron_refiner_traces_coexistence(two_phase_system):
     # Sanity: both phases should appear stable somewhere
     assert set(df.phase.unique()) == {"A", "B"}
 
-    refiner = ClausiusClapeyronRefiner(dT_max=100.0)
+    refiner = ClausiusClapeyronRefiner(dx_max=100.0)
     out = refiner.run(df, mapping)
 
     # Each RefinedPoint is expanded to one row per phase, so coexistence
@@ -155,22 +155,22 @@ def test_clausius_clapeyron_refiner_skips_straddling_simplices(two_phase_system)
     pairs = [frozenset((c.phase1, c.phase2)) for c in cands]
     assert pairs.count(frozenset(("A", "B"))) > 1
     # ...but run() should skip retraces and emit roughly one line's worth:
-    # the point count tracks a single T-sweep (span / dT_max), not ~one
+    # the point count tracks a single T-sweep (span / dx_max), not ~one
     # full trace per straddling simplex stacked on the same line.
     out = refiner.run(df, mapping)
     n_points = out.groupby(["T", "mu"]).ngroups
     T_span = df["T"].max() - df["T"].min()
-    assert n_points < 3 * T_span / refiner.dT_max
+    assert n_points < 3 * T_span / refiner.dx_max
 
 
 def test_clausius_clapeyron_refiner_respects_dT_min(two_phase_system):
     phases, mapping = two_phase_system
     df = _two_phase_diagram_df(phases)
-    refiner = ClausiusClapeyronRefiner(dT_min=20.0, dT_max=50.0)
+    refiner = ClausiusClapeyronRefiner(dx_min=20.0, dx_max=50.0)
     out = refiner.run(df, mapping)
     Ts = np.sort(out["T"].unique())
     dTs = np.diff(Ts)
-    # Median step honors dT_min; the only exceptions are the truncation
+    # Median step honors dx_min; the only exceptions are the truncation
     # at each trace's boundary toward T_min / T_max.
     assert np.median(dTs) >= 20.0
     assert np.median(dTs) <= 50.0
@@ -208,16 +208,16 @@ def test_cc_refiner_trace_aborts_in_dominated_region():
     ab = [pt for c in cands if {c.phase1, c.phase2} == {"A", "B"}
           for pt in refiner.solve(c, phases)]
     assert ab, "grid should contain an A-B two-phase simplex"
-    assert max(pt.T for pt in ab) > 450.0
-    assert min(pt.T for pt in ab) > 285.0
+    assert max(pt.x for pt in ab) > 450.0
+    assert min(pt.x for pt in ab) > 285.0
 
 
 # -- dc_max concentration-drift cap ------------------------------------------
 
 # Physical drift slope: c sweeps ~0.8 -> 0.1 across the sampled T range.
 _DRIFT_SLOPE = -0.7 / 1100.0
-# Tight enough that the cap binds below the default dT_min = 1.0 K, so the
-# "dT_min yields to dc_max" path is exercised.
+# Tight enough that the cap binds below the default dx_min = 1.0 K, so the
+# "dx_min yields to dc_max" path is exercised.
 _DC_TIGHT = 5e-4
 
 
@@ -228,8 +228,8 @@ class _DriftLinePhase(Phase):
     ``phi(T, mu) = e - mu * c(T)`` so ``c = -dphi/dmu = c(T)`` exactly and
     sweeps with T at fixed mu.  Two of these with equal ``e`` coexist at
     ``mu = 0`` for every T — a boundary that is exactly flat in mu — which
-    isolates the ``dc_max`` density floor: ``_dT_adapt`` saturates at
-    ``dT_max`` because ``dmu/dT = 0``, yet ``c`` still moves, so only the
+    isolates the ``dc_max`` density floor: ``_dx_adapt`` saturates at
+    ``dx_max`` because ``dmu/dT = 0``, yet ``c`` still moves, so only the
     concentration cap limits the step.
     """
 
@@ -249,12 +249,12 @@ class _DriftLinePhase(Phase):
 
 
 def _drift_candidate(T_min=300.0, T_max=1400.0):
-    T_seed = (T_min + T_max) / 2.0
+    x_seed = (T_min + T_max) / 2.0
     return _InterCandidate(
-        phase1="P", phase2="Q", T_seed=T_seed,
-        mu_bracket=(-0.05, 0.05), T_bracket=(T_seed - 50.0, T_seed + 50.0),
-        T_min=T_min, T_max=T_max,
-        proj_p1=(T_seed - 50.0, -0.1), proj_p2=(T_seed + 50.0, 0.1),
+        phase1="P", phase2="Q", x_seed=x_seed,
+        y_bracket=(-0.05, 0.05), x_bracket=(x_seed - 50.0, x_seed + 50.0),
+        x_min=T_min, x_max=T_max,
+        proj_p1=(x_seed - 50.0, -0.1), proj_p2=(x_seed + 50.0, 0.1),
     )
 
 
@@ -263,26 +263,26 @@ def _solve_drift(dc_max, p_slope, T_min=300.0, T_max=1400.0):
     Q = _DriftLinePhase(name="Q", e=-2.0, c0=0.05, slope=0.0)
     pts = ClausiusClapeyronRefiner(dc_max=dc_max).solve(
         _drift_candidate(T_min, T_max), {"P": P, "Q": Q})
-    return P, sorted(pts, key=lambda p: p.T)
+    return P, sorted(pts, key=lambda p: p.x)
 
 
 def test_cc_refiner_dc_max_bounds_concentration_drift():
     """On a boundary flat in mu but sweeping in c, dc_max caps every
-    per-step concentration jump, and dT_min yields so the cap holds."""
-    # A short T window keeps c physical while dc_max binds below dT_min.
+    per-step concentration jump, and dx_min yields so the cap holds."""
+    # A short T window keeps c physical while dc_max binds below dx_min.
     P, pts = _solve_drift(_DC_TIGHT, p_slope=_DRIFT_SLOPE, T_min=800.0, T_max=900.0)
     # Regime check: the located boundary is exactly flat in mu, so the
-    # mu-drift step heuristic alone would saturate at dT_max.
-    assert max(abs(p.mu) for p in pts) < 1e-9
+    # mu-drift step heuristic alone would saturate at dx_max.
+    assert max(abs(p.y) for p in pts) < 1e-9
     # The fine stepping does not truncate the walk: it spans the window
     # in both directions.
-    Ts = np.array([p.T for p in pts])
+    Ts = np.array([p.x for p in pts])
     assert Ts.min() < 805.0 and Ts.max() > 895.0
     # Every consecutive step keeps the plotted concentration drift under
     # the cap (priming from the seed leaves no coarse bootstrap step).
-    cs = np.array([float(P.concentration(p.T, p.mu)) for p in pts])
+    cs = np.array([float(P.concentration(p.x, p.y)) for p in pts])
     assert np.abs(np.diff(cs)).max() <= _DC_TIGHT + 1e-9
-    # dT_min (default 1.0 K) gives way to the drift target: steps go finer.
+    # dx_min (default 1.0 K) gives way to the drift target: steps go finer.
     assert np.diff(Ts).min() < 1.0
 
 
@@ -316,7 +316,7 @@ class _SteepMuFlatCPhase(Phase):
     boundary whose mu-slope is set by ``k`` alone. ``concentration`` is
     defined independently as a near-flat ``c0 + cslope * (T - T0)``; the toy
     need not satisfy ``c = -dphi/dmu``, so the boundary can be steep in mu
-    (``_dT_adapt`` pins the step at ``dT_min``) while c barely drifts —
+    (``_dx_adapt`` pins the step at ``dx_min``) while c barely drifts —
     exactly the regime the ``dc_min`` density ceiling targets.
     """
 
@@ -335,34 +335,34 @@ class _SteepMuFlatCPhase(Phase):
 
 def _steep_candidate(T_min=840.0, T_max=860.0, T_c=850.0):
     return _InterCandidate(
-        phase1="A", phase2="B", T_seed=T_c,
-        mu_bracket=(-0.05, 0.05), T_bracket=(T_c - 5.0, T_c + 5.0),
-        T_min=T_min, T_max=T_max,
+        phase1="A", phase2="B", x_seed=T_c,
+        y_bracket=(-0.05, 0.05), x_bracket=(T_c - 5.0, T_c + 5.0),
+        x_min=T_min, x_max=T_max,
         proj_p1=(T_c, -0.1), proj_p2=(T_c, 0.1),
     )
 
 
 def _solve_steep(dc_min, cslope=1e-3, K=0.025):
-    # mu* = K * (T - 850); |dmu/dT| = K, so _dT_adapt = half_width / K = 2 K,
-    # finer than dT_max = 5 K (the boundary is over-sampled) yet the dT_min
+    # mu* = K * (T - 850); |dmu/dT| = K, so _dx_adapt = half_width / K = 2 K,
+    # finer than dx_max = 5 K (the boundary is over-sampled) yet the dx_min
     # bootstrap shift K * 1 = 0.025 stays inside the half-width bracket.
     A = _SteepMuFlatCPhase(name="A", a=1.0, k=0.0, c0=0.5, cslope=cslope)
     B = _SteepMuFlatCPhase(name="B", a=0.0, k=K, c0=0.2, cslope=0.0)
     pts = ClausiusClapeyronRefiner(dc_min=dc_min).solve(
         _steep_candidate(), {"A": A, "B": B})
-    return A, sorted(pts, key=lambda p: p.T)
+    return A, sorted(pts, key=lambda p: p.x)
 
 
 def test_cc_refiner_dc_min_floors_concentration_drift():
     """On a steep-in-mu, flat-in-c boundary the floor grows each steady step
-    until the plotted concentration drifts exactly dc_min (capped at dT_max)."""
+    until the plotted concentration drifts exactly dc_min (capped at dx_max)."""
     A, pts = _solve_steep(dc_min=4e-3)
     assert len(pts) > 4  # genuinely traced
-    order = np.argsort([p.T for p in pts])
-    Ts = np.array([p.T for p in pts])[order]
-    cs = np.array([float(A.concentration(p.T, p.mu)) for p in pts])[order]
+    order = np.argsort([p.x for p in pts])
+    Ts = np.array([p.x for p in pts])[order]
+    cs = np.array([float(A.concentration(p.x, p.y)) for p in pts])[order]
     # Steady steps sit on the floor: dT = dc_min / cslope = 4 K, dc = dc_min.
-    # Nothing drifts more (dc_max is slack, dT_max = 5 K is not reached); the
+    # Nothing drifts more (dc_max is slack, dx_max = 5 K is not reached); the
     # bootstrap and the truncated end steps drift less.
     assert np.abs(np.diff(cs)).max() == pytest.approx(4e-3, abs=1e-9)
     assert np.diff(Ts).max() == pytest.approx(4.0, abs=1e-9)
@@ -370,11 +370,11 @@ def test_cc_refiner_dc_min_floors_concentration_drift():
 
 def test_cc_refiner_dc_min_thins_oversampled_boundary():
     """Without the floor the over-sampled steep-in-mu boundary steps at the
-    bare _dT_adapt size; the floor coarsens it to fewer points."""
+    bare _dx_adapt size; the floor coarsens it to fewer points."""
     _, dense = _solve_steep(dc_min=0.0)
     _, thin = _solve_steep(dc_min=4e-3)
-    # Regime check: with the floor off every step is the 2 K _dT_adapt size.
-    assert np.diff(sorted(p.T for p in dense)).max() == pytest.approx(2.0, abs=1e-9)
+    # Regime check: with the floor off every step is the 2 K _dx_adapt size.
+    assert np.diff(sorted(p.x for p in dense)).max() == pytest.approx(2.0, abs=1e-9)
     assert len(thin) < len(dense)
 
 
@@ -392,28 +392,28 @@ def _solve_steep_caps(dc_max, dc_min, cslope):
     B = _SteepMuFlatCPhase(name="B", a=0.0, k=0.025, c0=0.2, cslope=0.0)
     pts = ClausiusClapeyronRefiner(dc_max=dc_max, dc_min=dc_min).solve(
         _steep_candidate(), {"A": A, "B": B})
-    return A, sorted(pts, key=lambda p: p.T)
+    return A, sorted(pts, key=lambda p: p.x)
 
 
 def test_cc_refiner_dc_max_takes_precedence_over_dc_min():
     """The max bound wins: a dc_min set above dc_max still cannot drive a step
     past the dc_max cap, so the per-step drift is pinned at dc_max."""
-    # dc_min = 0.05 alone wants dT = 0.05 / 4e-3 = 12.5 K (clamped to dT_max),
+    # dc_min = 0.05 alone wants dT = 0.05 / 4e-3 = 12.5 K (clamped to dx_max),
     # but dc_max = 0.01 caps the drift at dT = 0.01 / 4e-3 = 2.5 K.
     A, pts = _solve_steep_caps(dc_max=0.01, dc_min=0.05, cslope=4e-3)
     assert len(pts) > 4
-    cs = np.array([float(A.concentration(p.T, p.mu)) for p in pts])
+    cs = np.array([float(A.concentration(p.x, p.y)) for p in pts])
     assert np.abs(np.diff(cs)).max() == pytest.approx(0.01, abs=1e-9)
 
 
 def test_cc_refiner_dT_max_bounds_dc_min_floor():
-    """The dc_min floor never oversteps dT_max even when the drift target
+    """The dc_min floor never oversteps dx_max even when the drift target
     would call for a larger step."""
     # dc_min = 0.05 wants dT = 50 K with cslope = 1e-3; dc_max = 1.0 is slack,
-    # so only dT_max = 5 K bounds the step.
+    # so only dx_max = 5 K bounds the step.
     _, pts = _solve_steep_caps(dc_max=1.0, dc_min=0.05, cslope=1e-3)
     assert len(pts) > 4
-    Ts = np.sort([p.T for p in pts])
+    Ts = np.sort([p.x for p in pts])
     assert np.diff(Ts).max() == pytest.approx(5.0, abs=1e-9)
 
 
@@ -423,34 +423,34 @@ def test_simplex_straddles_segment_crossing():
     # Trace: two points T=100→500, mu sweeping -1 → +1.
     cand = _InterCandidate(
         phase1="A", phase2="B",
-        T_seed=300.0,
-        mu_bracket=(-0.1, 0.1),
-        T_bracket=(250.0, 350.0),  # neither traced T is inside
-        T_min=0.0, T_max=1000.0,
+        x_seed=300.0,
+        y_bracket=(-0.1, 0.1),
+        x_bracket=(250.0, 350.0),  # neither traced T is inside
+        x_min=0.0, x_max=1000.0,
         proj_p1=(250.0, -0.1), proj_p2=(350.0, 0.1),
     )
     traces = (((100.0, -1.0), (500.0, 1.0)),)
     assert _simplex_straddles(cand, traces)
     # Shift the bbox below the line; no longer crosses.
-    cand2 = replace_candidate(cand, mu_bracket=(-2.0, -1.5))
+    cand2 = replace_candidate(cand, y_bracket=(-2.0, -1.5))
     assert not _simplex_straddles(cand2, traces)
 
 
-def _make_inter_cand(*, mu_bracket, T_bracket=(250.0, 350.0)):
+def _make_inter_cand(*, y_bracket, x_bracket=(250.0, 350.0)):
     """Helper: minimal _InterCandidate for straddle-only tests."""
     return _InterCandidate(
-        phase1="A", phase2="B", T_seed=sum(T_bracket) / 2,
-        mu_bracket=mu_bracket, T_bracket=T_bracket,
-        T_min=0.0, T_max=1000.0,
-        proj_p1=(T_bracket[0], mu_bracket[0]),
-        proj_p2=(T_bracket[1], mu_bracket[1]),
+        phase1="A", phase2="B", x_seed=sum(x_bracket) / 2,
+        y_bracket=y_bracket, x_bracket=x_bracket,
+        x_min=0.0, x_max=1000.0,
+        proj_p1=(x_bracket[0], y_bracket[0]),
+        proj_p2=(x_bracket[1], y_bracket[1]),
     )
 
 
 def test_simplex_straddles_single_point_trace_inside_bbox():
     """A previous trace that emitted only its seed point should still
     block any later simplex whose inflated bbox contains it."""
-    cand = _make_inter_cand(mu_bracket=(0.10, 0.15))
+    cand = _make_inter_cand(y_bracket=(0.10, 0.15))
     seed_inside = (((300.0, 0.12),),)
     assert _simplex_straddles(cand, seed_inside)
 
@@ -458,7 +458,7 @@ def test_simplex_straddles_single_point_trace_inside_bbox():
 def test_simplex_straddles_single_point_trace_outside_bbox():
     """A single-point trace far away in mu must not block a candidate
     in an unrelated region of mu."""
-    cand = _make_inter_cand(mu_bracket=(0.10, 0.15))  # inflated to [0.05, 0.20]
+    cand = _make_inter_cand(y_bracket=(0.10, 0.15))  # inflated to [0.05, 0.20]
     seed_far = (((300.0, 2.0),),)
     assert not _simplex_straddles(cand, seed_far)
 
@@ -473,7 +473,7 @@ def test_simplex_straddles_disjoint_seed_traces_do_not_fake_a_line():
     into a fake polyline that swept the whole mu range at that T,
     blocking the real left-side liquid/solid trace.
     """
-    cand = _make_inter_cand(mu_bracket=(0.45, 0.55))  # mid-range
+    cand = _make_inter_cand(y_bracket=(0.45, 0.55))  # mid-range
     # Two disjoint seeds at the same T, far from the bbox:
     traces = (
         ((300.0, -0.30),),  # to the left of cand
@@ -489,29 +489,29 @@ def replace_candidate(cand, **kw):
 
 def test_point_on_line_helper():
     traces = (((100.0, 0.0), (200.0, 1.0), (300.0, 2.0)),)
-    assert _point_on_line(150.0, 0.5, traces, tol_mu=0.01)
-    assert _point_on_line(250.0, 1.5, traces, tol_mu=0.01)
+    assert _point_on_line(150.0, 0.5, traces, tol=0.01)
+    assert _point_on_line(250.0, 1.5, traces, tol=0.01)
     # Outside the trace's T range -- distance to nearest endpoint
     # dominates and exceeds tol.
-    assert not _point_on_line(50.0, 0.0, traces, tol_mu=0.1)
-    assert not _point_on_line(400.0, 2.0, traces, tol_mu=0.1)
+    assert not _point_on_line(50.0, 0.0, traces, tol=0.1)
+    assert not _point_on_line(400.0, 2.0, traces, tol=0.1)
     # Too far in mu
-    assert not _point_on_line(150.0, 5.0, traces, tol_mu=0.1)
+    assert not _point_on_line(150.0, 5.0, traces, tol=0.1)
     # Two disjoint traces: hit on the second one only.
     traces2 = (((0.0, 0.0),), ((100.0, 10.0), (200.0, 10.0)))
-    assert _point_on_line(150.0, 10.0, traces2, tol_mu=0.01)
-    assert not _point_on_line(150.0, 0.0, traces2, tol_mu=0.01)
+    assert _point_on_line(150.0, 10.0, traces2, tol=0.01)
+    assert not _point_on_line(150.0, 0.0, traces2, tol=0.01)
 
 
 def test_simplex_brackets_returns_mu_T_extents_and_T_centroid():
-    """The (mu_lo, mu_hi, T_lo, T_hi, T_seed) tuple is the seed simplex's
+    """The (mu_lo, mu_hi, T_lo, T_hi, x_seed) tuple is the seed simplex's
     mu/T bounding box plus the centroid T that ``_CCBase._trace`` walks
     from — verified on a hand-built 3-row simplex."""
     simplex = _mk_simplex(T=[100.0, 200.0, 300.0], mu=[0.5, 0.2, 0.8], phase=["A", "B", "A"])
-    mu_lo, mu_hi, T_lo, T_hi, T_seed = _simplex_brackets(simplex)
+    mu_lo, mu_hi, T_lo, T_hi, x_seed = _simplex_brackets(simplex)
     assert (mu_lo, mu_hi) == (0.2, 0.8)
     assert (T_lo, T_hi) == (100.0, 300.0)
-    assert T_seed == 200.0  # arithmetic mean of the T column
+    assert x_seed == 200.0  # arithmetic mean of the T column
 
 
 def test_simplex_brackets_row_order_agnostic():
@@ -738,7 +738,7 @@ def test_refined_miscibility_gap_emits_two_rows_with_equal_mu():
             return 0.5
 
     pt = RefinedMiscibilityGap(
-        T=400.0, mu=0.0, phase="p", c_left=0.1, c_right=0.9)
+        x=400.0, y=0.0, phase="p", c_left=0.1, c_right=0.9)
     rows = pt.to_rows({"p": StickyPhase()})
     assert len(rows) == 2
     assert rows[0]["mu"] == rows[1]["mu"] == 0.0
@@ -901,8 +901,8 @@ def test_delaunay_triple_solve_is_pure_and_simplex_owned():
     assert [c for c in cands if refiner.solve(c, phases)] == emitting
 
     pt = refiner.solve(emitting[0], phases)[0]
-    assert np.isclose(pt.T, 300.0, atol=10.0)
-    assert np.isclose(pt.mu, 0.2, atol=0.05)
+    assert np.isclose(pt.x, 300.0, atol=10.0)
+    assert np.isclose(pt.y, 0.2, atol=0.05)
 
 
 def test_simplex_containment_scores_ownership():
@@ -933,7 +933,7 @@ def test_boundary_id_cc_refiner_single_line(two_phase_system):
     """All rows from a single two-phase trace share one boundary_id."""
     phases, mapping = two_phase_system
     df = _two_phase_diagram_df(phases)
-    out = ClausiusClapeyronRefiner(dT_max=100.0).run(df, mapping)
+    out = ClausiusClapeyronRefiner(dx_max=100.0).run(df, mapping)
 
     assert "boundary_id" in out.columns
     # Two-phase system → one coexistence line → all rows share the same id.
@@ -947,7 +947,7 @@ def test_boundary_id_cc_refiner_two_lines():
     Ts = np.linspace(220.0, 480.0, 12)
     mus = np.linspace(-0.05, 0.55, 15)
     df = _coarse_df(phases, Ts, mus)
-    out = ClausiusClapeyronRefiner(dT_max=100.0).run(df, phases)
+    out = ClausiusClapeyronRefiner(dx_max=100.0).run(df, phases)
 
     assert not out.empty
     assert "boundary_id" in out.columns
@@ -988,7 +988,7 @@ def test_boundary_id_miscibility_gap_refiner():
 def test_boundary_id_refined_point_to_rows():
     """RefinedPoint.to_rows propagates boundary_id into every emitted row."""
     ph = LinePhase(name="x", fixed_concentration=0.3, line_energy=-1.0, line_entropy=0.0)
-    pt = RefinedPoint(T=500.0, mu=0.05, phases=("x",), boundary_id=7)
+    pt = RefinedPoint(x=500.0, y=0.05, phases=("x",), boundary_id=7)
     rows = pt.to_rows({"x": ph})
     assert all(row["boundary_id"] == 7 for row in rows)
 
@@ -1001,7 +1001,7 @@ def test_boundary_id_refined_miscibility_gap_to_rows():
         def semigrand_potential(self, T, mu):
             return 0.0
 
-    pt = RefinedMiscibilityGap(T=400.0, mu=0.0, phase="p",
+    pt = RefinedMiscibilityGap(x=400.0, y=0.0, phase="p",
                                c_left=0.1, c_right=0.9, boundary_id=3)
     rows = pt.to_rows({"p": _Phase()})
     assert len(rows) == 2
@@ -1015,9 +1015,9 @@ def test_locus_refined_point_to_rows():
         n: LinePhase(name=n, fixed_concentration=c, line_energy=-1.0, line_entropy=0.0)
         for n, c in [("x", 0.1), ("y", 0.5), ("z", 0.9)]
     }
-    pair = RefinedPoint(T=500.0, mu=0.05, phases=("x", "y"))
+    pair = RefinedPoint(x=500.0, y=0.05, phases=("x", "y"))
     assert all(row["locus"] is Locus.BOUNDARY for row in pair.to_rows(mapping))
-    triple = RefinedPoint(T=500.0, mu=0.05, phases=("x", "y", "z"))
+    triple = RefinedPoint(x=500.0, y=0.05, phases=("x", "y", "z"))
     assert all(row["locus"] is Locus.TRIPLE for row in triple.to_rows(mapping))
 
 
@@ -1029,7 +1029,7 @@ def test_locus_refined_miscibility_gap_to_rows():
         def semigrand_potential(self, T, mu):
             return 0.0
 
-    pt = RefinedMiscibilityGap(T=400.0, mu=0.0, phase="p", c_left=0.1, c_right=0.9)
+    pt = RefinedMiscibilityGap(x=400.0, y=0.0, phase="p", c_left=0.1, c_right=0.9)
     rows = pt.to_rows({"p": _Phase()})
     assert all(row["locus"] is Locus.BOUNDARY for row in rows)
 
@@ -1118,7 +1118,7 @@ def test_scan_refiner_splits_dominated_crossing_T_scan():
 #
 # `_dominated(pt, phases)` is the predicate every refiner's run() uses to drop
 # a refined transition that isn't a valid piece of the global phase boundary
-# at (pt.T, pt.mu). The cases below cover each branch of that contract
+# at (pt.x, pt.y). The cases below cover each branch of that contract
 # orthogonally: empty rival set, lower / equal / higher rival, the strictness
 # of "<", an absent (phi = +inf) own phase, a triple whose own phases don't
 # share one potential, an outside dominator in a triple, and multiple rivals.
@@ -1136,7 +1136,7 @@ def test_dominated_no_rivals_returns_false():
     """Two phases coexist, the mapping carries only those two: nothing else
     can dominate. The generator is empty and any() returns False."""
     phases = _dom_phases(("A", 0.0, 0.0), ("B", 1.0, 0.0))
-    pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B"))
+    pt = RefinedPoint(x=300.0, y=0.0, phases=("A", "B"))
     assert _dominated(pt, phases) is False
 
 
@@ -1144,14 +1144,14 @@ def test_dominated_rival_with_lower_phi_returns_true():
     """phi_A = 0, phi_B = -mu = 0, phi_C = E_C - 0.5*mu = -0.1 at (T, mu=0).
     C is outside pt.phase_names() and strictly lower, so it dominates."""
     phases = _dom_phases(("A", 0.0, 0.0), ("B", 1.0, 0.0), ("C", 0.5, -0.1))
-    pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B"))
+    pt = RefinedPoint(x=300.0, y=0.0, phases=("A", "B"))
     assert _dominated(pt, phases) is True
 
 
 def test_dominated_rival_with_higher_phi_returns_false():
     """phi_C = +0.5 > phi_A = phi_B = 0 at mu = 0: no dominator."""
     phases = _dom_phases(("A", 0.0, 0.0), ("B", 1.0, 0.0), ("C", 0.5, 0.5))
-    pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B"))
+    pt = RefinedPoint(x=300.0, y=0.0, phases=("A", "B"))
     assert _dominated(pt, phases) is False
 
 
@@ -1160,7 +1160,7 @@ def test_dominated_rival_equal_phi_returns_false():
     degenerate rival is not treated as dominating. At a true triple point
     we want this so the refined point survives instead of getting dropped."""
     phases = _dom_phases(("A", 0.0, 0.0), ("B", 1.0, 0.0), ("C", 0.5, 0.0))
-    pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B"))
+    pt = RefinedPoint(x=300.0, y=0.0, phases=("A", "B"))
     assert _dominated(pt, phases) is False
 
 
@@ -1174,7 +1174,7 @@ def test_dominated_outside_rival_between_own_potentials_returns_true():
     phases = _dom_phases(
         ("A", 0.0, 0.0), ("B", 1.0, 0.5 * _COEXIST_TOL), ("X", 0.5, 0.3 * _COEXIST_TOL),
     )
-    pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B"))
+    pt = RefinedPoint(x=300.0, y=0.0, phases=("A", "B"))
     assert _dominated(pt, phases) is True
 
 
@@ -1187,7 +1187,7 @@ def test_dominated_own_phase_below_others_returns_true():
     phases = _dom_phases(
         ("A", 0.0, 0.0), ("B", 1.0, 0.0), ("D", 0.5, -1.0),
     )
-    pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B", "D"))
+    pt = RefinedPoint(x=300.0, y=0.0, phases=("A", "B", "D"))
     assert _dominated(pt, phases) is True
 
 
@@ -1205,7 +1205,7 @@ def test_dominated_absent_own_phase_returns_true():
             return 0.0
 
     phases = {**_dom_phases(("A", 0.0, 0.0), ("B", 1.0, 0.0)), "C": _Absent()}
-    pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B", "C"))
+    pt = RefinedPoint(x=300.0, y=0.0, phases=("A", "B", "C"))
     assert _dominated(pt, phases) is True
 
 
@@ -1214,7 +1214,7 @@ def test_dominated_triple_with_outside_dominator_returns_true():
     phases = _dom_phases(
         ("A", 0.0, 0.0), ("B", 1.0, 0.0), ("C", 0.5, 0.0), ("X", 0.25, -0.5),
     )
-    pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B", "C"))
+    pt = RefinedPoint(x=300.0, y=0.0, phases=("A", "B", "C"))
     assert _dominated(pt, phases) is True
 
 
@@ -1228,7 +1228,7 @@ def test_dominated_triple_spread_just_below_tolerance_survives():
     phases = _dom_phases(
         ("A", 0.0, 0.0), ("B", 1.0, eps), ("C", 0.5, 0.5 * eps),
     )
-    pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B", "C"))
+    pt = RefinedPoint(x=300.0, y=0.0, phases=("A", "B", "C"))
     assert _dominated(pt, phases) is False
 
 
@@ -1242,7 +1242,7 @@ def test_dominated_triple_spread_just_above_tolerance_is_dropped():
     phases = _dom_phases(
         ("A", 0.0, 0.0), ("B", 1.0, eps), ("C", 0.5, 0.5 * eps),
     )
-    pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B", "C"))
+    pt = RefinedPoint(x=300.0, y=0.0, phases=("A", "B", "C"))
     assert _dominated(pt, phases) is True
 
 
@@ -1250,14 +1250,14 @@ def test_dominated_two_phase_spread_just_below_tolerance_survives():
     """Two phases half the tolerance apart still coexist. Nothing sits outside
     `own`, so only the spread branch can fire."""
     phases = _dom_phases(("A", 0.0, 0.0), ("B", 1.0, 0.5 * _COEXIST_TOL))
-    pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B"))
+    pt = RefinedPoint(x=300.0, y=0.0, phases=("A", "B"))
     assert _dominated(pt, phases) is False
 
 
 def test_dominated_two_phase_spread_just_above_tolerance_is_dropped():
     """Two phases twice the tolerance apart are dropped."""
     phases = _dom_phases(("A", 0.0, 0.0), ("B", 1.0, 2.0 * _COEXIST_TOL))
-    pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B"))
+    pt = RefinedPoint(x=300.0, y=0.0, phases=("A", "B"))
     assert _dominated(pt, phases) is True
 
 
@@ -1304,7 +1304,7 @@ def test_dominated_picks_any_lower_rival_among_many():
         ("A", 0.0, 0.0), ("B", 1.0, 0.0),
         ("hi", 0.25, +0.5), ("lo", 0.75, -0.2),
     )
-    pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B"))
+    pt = RefinedPoint(x=300.0, y=0.0, phases=("A", "B"))
     assert _dominated(pt, phases) is True
 
 
@@ -1394,7 +1394,7 @@ def test_simplex_centroids_ordering_follows_unique_phases():
     assert cents["alpha"] == pytest.approx((500.0, 0.0))  # single vertex
 
 
-# -- _CCBase._predict_mu / default _dT_adapt -----------------------------------
+# -- _CCBase._predict_y / default _dx_adapt -----------------------------------
 #
 # Shared predictor and step scaler for both ClausiusClapeyronRefiner and
 # MiscibilityGapRefiner (refine.py:819, refine.py:837). Only the override in
@@ -1402,27 +1402,27 @@ def test_simplex_centroids_ordering_follows_unique_phases():
 # these pin the base defaults directly via a concrete subclass instance.
 
 
-def test_predict_mu_linear_extrapolation():
+def test_predict_y_linear_extrapolation():
     """Default predictor is plain linear extrapolation: mu* + dmu/dT * dT."""
     refiner = ClausiusClapeyronRefiner()
-    assert refiner._predict_mu(0.5, 0.02, 3.0) == pytest.approx(0.56)
+    assert refiner._predict_y(0.5, 0.02, 3.0) == pytest.approx(0.56)
 
 
-def test_dT_adapt_default_half_width_over_slope():
+def test_dx_adapt_default_half_width_over_slope():
     """Default step size is half_width / |dmu_dT|; the sign of dmu_dT does
     not matter since only its magnitude is used."""
     refiner = ClausiusClapeyronRefiner()
-    step = _StepResult(mu_star=0.0, extra=None)
-    assert refiner._dT_adapt(step, 0.02, half_width=0.1) == pytest.approx(5.0)
-    assert refiner._dT_adapt(step, -0.02, half_width=0.1) == pytest.approx(5.0)
+    step = _StepResult(y_star=0.0, extra=None)
+    assert refiner._dx_adapt(step, 0.02, half_width=0.1) == pytest.approx(5.0)
+    assert refiner._dx_adapt(step, -0.02, half_width=0.1) == pytest.approx(5.0)
 
 
-def test_dT_adapt_slope_floor_at_zero():
+def test_dx_adapt_slope_floor_at_zero():
     """A flat coexistence line (dmu_dT == 0) does not divide by zero; the
     slope is floored at 1e-9 so the step saturates at half_width / 1e-9."""
     refiner = ClausiusClapeyronRefiner()
-    step = _StepResult(mu_star=0.0, extra=None)
-    assert refiner._dT_adapt(step, 0.0, half_width=0.1) == pytest.approx(1e8)
+    step = _StepResult(y_star=0.0, extra=None)
+    assert refiner._dx_adapt(step, 0.0, half_width=0.1) == pytest.approx(1e8)
 
 
 # -- RefinedBase.emitted_concentrations ----------------------------------------
@@ -1436,7 +1436,7 @@ def test_dT_adapt_slope_floor_at_zero():
 def test_emitted_concentrations_gap_returns_stored_pair():
     """RefinedMiscibilityGap: the stored c_left/c_right pass through unchanged,
     not re-queried from the phase."""
-    gap = RefinedMiscibilityGap(T=400.0, mu=0.0, phase="p", c_left=0.1, c_right=0.9)
+    gap = RefinedMiscibilityGap(x=400.0, y=0.0, phase="p", c_left=0.1, c_right=0.9)
     assert gap.emitted_concentrations({}) == (0.1, 0.9)
 
 
@@ -1447,9 +1447,9 @@ def test_emitted_concentrations_point_queries_each_coexisting_phase():
         "A": LinePhase(name="A", fixed_concentration=0.2, line_energy=0.0),
         "B": LinePhase(name="B", fixed_concentration=0.7, line_energy=1.0),
     }
-    pt = RefinedPoint(T=500.0, mu=0.05, phases=("A", "B"))
+    pt = RefinedPoint(x=500.0, y=0.05, phases=("A", "B"))
     got = pt.emitted_concentrations(phases)
-    expected = tuple(phases[n].concentration(pt.T, pt.mu) for n in pt.phases)
+    expected = tuple(phases[n].concentration(pt.x, pt.y) for n in pt.phases)
     assert got == pytest.approx(expected)
     assert got == pytest.approx((0.2, 0.7))
 
@@ -1457,12 +1457,12 @@ def test_emitted_concentrations_point_queries_each_coexisting_phase():
 def test_emitted_concentrations_returns_plain_floats():
     """Both classes return plain float, not numpy scalars, since the
     caller does arithmetic against dc_max."""
-    gap = RefinedMiscibilityGap(T=400.0, mu=0.0, phase="p", c_left=0.1, c_right=0.9)
+    gap = RefinedMiscibilityGap(x=400.0, y=0.0, phase="p", c_left=0.1, c_right=0.9)
     for c in gap.emitted_concentrations({}):
         assert type(c) is float
 
     phases = {"A": LinePhase(name="A", fixed_concentration=0.2, line_energy=0.0)}
-    pt = RefinedPoint(T=500.0, mu=0.05, phases=("A",))
+    pt = RefinedPoint(x=500.0, y=0.05, phases=("A",))
     for c in pt.emitted_concentrations(phases):
         assert type(c) is float
 
@@ -1511,7 +1511,7 @@ def _gap_phases(gaps, shared):
 
 
 def _gap_points(n):
-    return [RefinedPoint(T=300.0 + i, mu=float(i), phases=("lo", "hi")) for i in range(n)]
+    return [RefinedPoint(x=300.0 + i, y=float(i), phases=("lo", "hi")) for i in range(n)]
 
 
 def _closes_at(gaps, shared=_GRID, **kwargs):
@@ -1587,9 +1587,9 @@ def test_tag_congruent_leaves_other_emitted_types_alone():
     hook must not touch it."""
     refiner = ClausiusClapeyronRefiner()
     points = [
-        RefinedMiscibilityGap(T=1.0, mu=0.0, phase="p", c_left=0.1, c_right=0.9),
-        RefinedPoint(T=300.0, mu=0.0, phases=("lo", "hi")),
-        RefinedPoint(T=301.0, mu=1.0, phases=("lo", "hi")),
+        RefinedMiscibilityGap(x=1.0, y=0.0, phase="p", c_left=0.1, c_right=0.9),
+        RefinedPoint(x=300.0, y=0.0, phases=("lo", "hi")),
+        RefinedPoint(x=301.0, y=1.0, phases=("lo", "hi")),
     ]
     # an interior closure, so the fakes' constant potential (no interior solve)
     # falls back to tagging the traced point
@@ -1692,7 +1692,7 @@ def test_terminal_melting_points_are_tagged_end_to_end(eutectic_diagram):
 #
 # The bootstrap step brackets the corrector by the seed simplex's mu
 # half-width alone, which assumes the coexistence mu drifts less than one
-# grid spacing per dT_min. A vapour-liquid lens (entropy difference ~13 kB)
+# grid spacing per dx_min. A vapour-liquid lens (entropy difference ~13 kB)
 # drifts ~0.02 eV/K, so on any reasonable mu grid every bootstrap fails and the
 # line comes back as scattered seed-only points.
 
@@ -1726,8 +1726,8 @@ def test_cc_seed_slope_matches_line_phase_clausius_clapeyron():
     T0 = 700.0
     mu0 = (b.line_energy - a.line_energy) + T0 * (S1 - S2)
     cand = _InterCandidate(
-        phase1="A", phase2="B", T_seed=T0, mu_bracket=(mu0 - 0.01, mu0 + 0.01),
-        T_bracket=(T0 - 10, T0 + 10), T_min=0.0, T_max=1000.0,
+        phase1="A", phase2="B", x_seed=T0, y_bracket=(mu0 - 0.01, mu0 + 0.01),
+        x_bracket=(T0 - 10, T0 + 10), x_min=0.0, x_max=1000.0,
         proj_p1=(T0, mu0 - 0.01), proj_p2=(T0, mu0 + 0.01),
     )
     slope = ClausiusClapeyronRefiner()._seed_slope(cand, mapping, T0, mu0)
@@ -1755,7 +1755,7 @@ def test_cc_refiner_bootstraps_a_steep_coexistence_line():
 
     Before the slope-sized bootstrap bracket, solve() returned exactly the seed
     point for every candidate here: both bootstrap correctors failed to bracket
-    a root one dT_min away."""
+    a root one dx_min away."""
     liquid, vapour, T_A, T_B = _steep_lens()
     mapping = {"liquid": liquid, "vapour": vapour}
     coarse = calc_phase_diagram(
@@ -1767,8 +1767,8 @@ def test_cc_refiner_bootstraps_a_steep_coexistence_line():
     for cand in cands[:5]:
         pts = refiner.solve(cand, mapping)
         assert len(pts) > 1
-        Ts = np.array([p.T for p in pts])
-        assert Ts.max() - Ts.min() > 2 * refiner.dT_min
+        Ts = np.array([p.x for p in pts])
+        assert Ts.max() - Ts.min() > 2 * refiner.dx_min
 
 
 
@@ -1851,21 +1851,21 @@ def test_gap_refiner_node_is_at_the_end_of_the_gap_trace():
     df = calc_phase_diagram([alpha, beta, liquid], Ts=np.linspace(300.0, 1600.0, 80), mu=120)
     gap = df[(df["refined"] == "miscibility-gap") & (df["locus"] == Locus.BOUNDARY)]
     assert gap["T"].min() >= T_star - 1e-6
-    assert gap["T"].min() - T_star < MiscibilityGapRefiner().dT_max
+    assert gap["T"].min() - T_star < MiscibilityGapRefiner().dx_max
 
 
 def test_refined_point_concentrations_override_the_requery():
     a = LinePhase("A", fixed_concentration=0, line_energy=-1.0)
     b = LinePhase("B", fixed_concentration=1, line_energy=-1.0)
     mapping = {"A": a, "B": b}
-    pt = RefinedPoint(T=500.0, mu=0.0, phases=("A", "A", "B"), concentrations=(0.1, 0.9, 1.0))
+    pt = RefinedPoint(x=500.0, y=0.0, phases=("A", "A", "B"), concentrations=(0.1, 0.9, 1.0))
     rows = pt.to_rows(mapping)
     assert [r["c"] for r in rows] == [0.1, 0.9, 1.0]
     assert [r["phase"] for r in rows] == ["A", "A", "B"]
     assert all(r["locus"] == Locus.TRIPLE for r in rows)
     assert pt.emitted_concentrations(mapping) == (0.1, 0.9, 1.0)
     # without the override the re-query is used, as before
-    plain = RefinedPoint(T=500.0, mu=0.0, phases=("A", "B"))
+    plain = RefinedPoint(x=500.0, y=0.0, phases=("A", "B"))
     assert [r["c"] for r in plain.to_rows(mapping)] == [0.0, 1.0]
     assert plain.emitted_concentrations(mapping) == (0.0, 1.0)
 
@@ -1874,8 +1874,8 @@ def test_cc_base_dominated_node_default_is_none():
     alpha, beta, liquid, _ = _monotectic_system()
     mapping = {p.name: p for p in (alpha, beta, liquid)}
     cand = _InterCandidate(
-        phase1="alpha", phase2="liquid", T_seed=1000.0, mu_bracket=(0.4, 0.5),
-        T_bracket=(990.0, 1010.0), T_min=300.0, T_max=1600.0,
+        phase1="alpha", phase2="liquid", x_seed=1000.0, y_bracket=(0.4, 0.5),
+        x_bracket=(990.0, 1010.0), x_min=300.0, x_max=1600.0,
         proj_p1=(1000.0, 0.4), proj_p2=(1000.0, 0.5),
     )
     assert ClausiusClapeyronRefiner()._dominated_node(cand, mapping, 1000.0, 0.45, 1005.0, 0.45, 0.05) is None
@@ -2020,7 +2020,7 @@ def test_one_sided_congruent_minimum_keeps_the_traced_tag_when_the_solve_fails(i
     assert df[df["locus"] == Locus.BOUNDARY]["c"].max() < 0.75, "the branch beyond the minimum is not sampled"
     tagged = df[(df["locus"] == Locus.CONGRUENT) & np.isfinite(df["mu"])]
     assert len(tagged) == 2 and (tagged["refined"] == "clausius-clapeyron").all()
-    assert tagged["T"].to_numpy() == pytest.approx([T_min, T_min], abs=ClausiusClapeyronRefiner().dT_max)
+    assert tagged["T"].to_numpy() == pytest.approx([T_min, T_min], abs=ClausiusClapeyronRefiner().dx_max)
     assert tagged["c"].to_numpy() == pytest.approx([c_min, c_min], abs=0.03)
 
 
@@ -2064,7 +2064,7 @@ def test_dilute_closure_keeps_the_traced_tag_when_the_solve_fails(monkeypatch):
     assert sorted(tagged["phase"]) == ["liquid", "γ"]
     assert (tagged["refined"] == "clausius-clapeyron").all()
     # a traced point: within a trace step of the fold, not on it
-    assert tagged["T"].to_numpy() == pytest.approx([_DILUTE_T, _DILUTE_T], abs=ClausiusClapeyronRefiner().dT_max)
+    assert tagged["T"].to_numpy() == pytest.approx([_DILUTE_T, _DILUTE_T], abs=ClausiusClapeyronRefiner().dx_max)
 
 
 # -- TerminalRefiner ----------------------------------------------------------
@@ -2142,7 +2142,7 @@ def test_terminal_refiner_solve_is_empty_across_an_unchanged_step():
     T_m = 0.2 / (1.5 * kB)
     across, = [c for c in refiner.propose(_terminal_frame(np.array([T_m - 100, T_m + 100]))) if c.side == 0.0]
     pt, = refiner.solve(across, {"A": a, "B": b})
-    assert np.isfinite(pt.mu) and pt.terminal == 0.0 and pt.congruent
+    assert np.isfinite(pt.y) and pt.terminal == 0.0 and pt.congruent
     assert {row["mu"] for row in pt.to_rows({"A": a, "B": b})} == {-np.inf}
 
 
@@ -2161,9 +2161,9 @@ def test_terminal_refiner_sees_through_a_dilute_line_phase():
     refiner = TerminalRefiner()
     at0 = [c for c in refiner.propose(frame) if c.side == 0.0 and c.bracket[0] < T_m < c.bracket[1]][0]
     pt, = refiner.solve(at0, phases)
-    assert pt.T == pytest.approx(T_m, abs=1e-6) and set(pt.phases) == {"solid", "liquid"}
+    assert pt.x == pytest.approx(T_m, abs=1e-6) and set(pt.phases) == {"solid", "liquid"}
     # the dilute phase really is the lowest potential at the far mu ...
-    assert gamma.semigrand_potential(pt.T, pt.mu) < min(p.semigrand_potential(pt.T, pt.mu) for p in (solid, liquid))
+    assert gamma.semigrand_potential(pt.x, pt.y) < min(p.semigrand_potential(pt.x, pt.y) for p in (solid, liquid))
     # ... and still not a competitor at the terminal
     assert not _dominated(pt, phases)
     out = refiner.run(frame, phases)
@@ -2264,25 +2264,25 @@ def test_solve_congruent_line_phase_melting_congruently():
     T_exact = (E_g - (E_A + E_B) / 2) / (kB * (S_g - S - np.log(2)))
     mu_exact = E_B - E_A  # symmetric ideal liquid: c = 0.5 at the chord slope
     phases = {"liquid": liquid, "γ": gamma}
-    seed = RefinedPoint(T=T_exact + 3.0, mu=mu_exact + 0.02, phases=("liquid", "γ"))
+    seed = RefinedPoint(x=T_exact + 3.0, y=mu_exact + 0.02, phases=("liquid", "γ"))
     exact = ClausiusClapeyronRefiner()._solve_congruent(seed, phases)
     assert exact is not None and exact.congruent
-    assert exact.T == pytest.approx(T_exact, abs=1e-6)
-    assert exact.mu == pytest.approx(mu_exact, abs=1e-9)
-    assert liquid.concentration(exact.T, exact.mu) == pytest.approx(0.5, abs=1e-9)
+    assert exact.x == pytest.approx(T_exact, abs=1e-6)
+    assert exact.y == pytest.approx(mu_exact, abs=1e-9)
+    assert liquid.concentration(exact.x, exact.y) == pytest.approx(0.5, abs=1e-9)
 
 
 def test_solve_congruent_gives_up_on_two_line_phases():
     """Two line phases never share a composition: no root, no point."""
     a = LinePhase("A", fixed_concentration=0, line_energy=-2.0, line_entropy=1.0 * kB)
     b = LinePhase("B", fixed_concentration=1, line_energy=-2.4, line_entropy=2.5 * kB)
-    seed = RefinedPoint(T=700.0, mu=-0.4 + 700.0 * (1.0 - 2.5) * kB, phases=("A", "B"))
+    seed = RefinedPoint(x=700.0, y=-0.4 + 700.0 * (1.0 - 2.5) * kB, phases=("A", "B"))
     assert ClausiusClapeyronRefiner()._solve_congruent(seed, {"A": a, "B": b}) is None
 
 
 def test_solve_congruent_rejects_a_solution_far_from_its_seed():
     """The solve polishes the closure it was seeded from; a root more than
-    2 dT_max away in T is some other feature and is not taken."""
+    2 dx_max away in T is some other feature and is not taken."""
     E_A, E_B, S = -2.8, -2.35, 3.0
     liquid = IdealSolution(
         "liquid",
@@ -2292,8 +2292,8 @@ def test_solve_congruent_rejects_a_solution_far_from_its_seed():
     gamma = LinePhase("γ", fixed_concentration=0.5, line_energy=-2.85, line_entropy=1.0 * kB)
     phases = {"liquid": liquid, "γ": gamma}
     T_exact = (-2.85 - (E_A + E_B) / 2) / (kB * (1.0 - S - np.log(2)))
-    refiner = ClausiusClapeyronRefiner(dT_max=5.0)
-    far = RefinedPoint(T=T_exact + 40.0, mu=E_B - E_A, phases=("liquid", "γ"))
+    refiner = ClausiusClapeyronRefiner(dx_max=5.0)
+    far = RefinedPoint(x=T_exact + 40.0, y=E_B - E_A, phases=("liquid", "γ"))
     assert refiner._solve_congruent(far, phases) is None
 
 
@@ -2369,10 +2369,10 @@ def test_gap_jump_needs_an_increasing_c_of_mu():
 
 def test_refined_miscibility_gap_congruent_rows():
     liquid = _gap_liquid(0.25)
-    rows = RefinedMiscibilityGap(T=1450.0, mu=0.45, phase="liquid", c_left=0.5, c_right=0.5,
+    rows = RefinedMiscibilityGap(x=1450.0, y=0.45, phase="liquid", c_left=0.5, c_right=0.5,
                                  congruent=True).to_rows({"liquid": liquid})
     assert [r["locus"] for r in rows] == [Locus.CONGRUENT] * 2
-    plain = RefinedMiscibilityGap(T=1000.0, mu=0.45, phase="liquid", c_left=0.2, c_right=0.8)
+    plain = RefinedMiscibilityGap(x=1000.0, y=0.45, phase="liquid", c_left=0.2, c_right=0.8)
     assert [r["locus"] for r in plain.to_rows({"liquid": liquid})] == [Locus.BOUNDARY] * 2
 
 
@@ -2436,10 +2436,9 @@ def test_gap_leaving_the_window_has_no_closure():
 
 # -- Axes ----------------------------------------------------------------------
 #
-# A refiner written against Axes reads the frame and evaluates phases only
-# through it. Column names alone relabel the semigrand plane; a subclass binding
-# other variables puts a different plane under the same numerics. ScanRefiner and
-# the Delaunay refiners are written against it; the others support Axes() only.
+# The refiners read the frame and evaluate phases only through an Axes. Column
+# names alone relabel the semigrand plane; a subclass binding other variables
+# puts a different plane under the same numerics.
 
 _RENAMED = Axes(x="temperature", y="dmu", extensive="x_B")
 _RENAME = {"T": "temperature", "mu": "dmu", "c": "x_B"}
@@ -2455,20 +2454,22 @@ def _refine_each(refiners, df, phases):
 
 
 def test_renamed_columns_reproduce_default_refinement(eutectic_phases):
-    """The same frame with its T/mu/c columns renamed, refined by the Delaunay
-    refiners with an Axes naming them, gives bit-identical rows under the new
-    names: the names relabel columns and nothing else."""
+    """The same frame with its T/mu/c columns renamed, refined with an Axes
+    naming them, gives bit-identical rows under the new names: the names relabel
+    columns and nothing else."""
     phases = {p.name: p for p in eutectic_phases}
     df = calc_phase_diagram(eutectic_phases, np.linspace(200.0, 1000.0, 13), mu=30, refine=False)
     renamed = df.rename(columns=_RENAME)
 
     def all_refiners(axes):
-        return [DelaunayTripleRefiner(axes=axes), DelaunayLineRefiner(axes=axes)]
+        return [DelaunayTripleRefiner(axes=axes), DelaunayLineRefiner(axes=axes),
+                ClausiusClapeyronRefiner(axes=axes), MiscibilityGapRefiner(axes=axes),
+                TerminalRefiner(axes=axes)]
 
     ref = _refine_each(all_refiners(None), df, phases)
     new = _refine_each(all_refiners(_RENAMED), renamed, phases)
     assert set(ref) == set(new)
-    assert all(len(v) > 0 for v in ref.values())  # both fired on the eutectic
+    assert all(len(v) > 0 for v in ref.values())  # every refiner fired on the eutectic
     for label in ref:
         pd.testing.assert_frame_equal(new[label].rename(columns={v: k for k, v in _RENAME.items()}),
                                       ref[label], check_exact=True)
@@ -2618,16 +2619,44 @@ def test_delaunay_line_refiner_lands_on_lines_in_turned_plane():
 
 
 @pytest.mark.parametrize("cls", [ClausiusClapeyronRefiner, MiscibilityGapRefiner, TerminalRefiner])
-def test_unconverted_refiners_support_the_default_axes_only(cls):
-    """A refiner not written against Axes reads T/mu/c itself, so even a mere
-    renaming of the columns is outside what it supports."""
-    assert cls.supports(Axes())
-    assert not cls.supports(_RENAMED) and not cls.supports(_MuT())
+def test_semigrand_refiners_support_only_the_semigrand_binding(cls):
+    """Column names do not matter; a different binding does."""
+    assert cls.supports(Axes()) and cls.supports(_RENAMED)
+    assert not cls.supports(_MuT())
+    with pytest.raises(ValueError, match=f"{cls.__name__} does not support"):
+        cls(axes=_MuT())
 
 
-@pytest.mark.parametrize("cls", [ScanRefiner, DelaunayLineRefiner, DelaunayTripleRefiner])
-def test_converted_refiners_support_any_axes(cls):
-    assert cls.supports(_RENAMED) and cls.supports(_MuT())
+def test_semigrand_gate_ignores_the_admissible_rule():
+    """Only how phases are evaluated gates; an admissibility filter does not."""
+
+    @dataclass(frozen=True)
+    class Unfiltered(Axes):
+        def admissible(self, x, y):
+            return True
+
+    assert ClausiusClapeyronRefiner.supports(Unfiltered())
+
+
+@dataclass(frozen=True)
+class _Rescaled(Axes):
+    def potential(self, phase, x, y):
+        return 2 * phase.semigrand_potential(x, y)
+
+
+@dataclass(frozen=True)
+class _Reconjugated(Axes):
+    def conjugate(self, phase, x, y):
+        return -phase.concentration(x, y)
+
+
+@pytest.mark.parametrize("axes", [_Rescaled(), _Reconjugated()], ids=["potential", "conjugate"])
+def test_semigrand_gate_rejects_either_evaluation_override(axes):
+    assert not ClausiusClapeyronRefiner.supports(axes)
+
+
+def test_plane_agnostic_refiners_support_any_binding():
+    assert all(cls.supports(_MuT()) for cls in (ScanRefiner, DelaunayLineRefiner, DelaunayTripleRefiner))
 
 
 def test_constructing_on_unsupported_axes_raises():
@@ -2647,24 +2676,25 @@ def test_constructing_on_unsupported_axes_raises():
         DefaultOnly(axes=_RENAMED)
 
 
-def test_default_refiners_leave_out_unsupported(eutectic_phases):
-    df = calc_phase_diagram(eutectic_phases, np.linspace(200.0, 1000.0, 5), mu=5, refine=False)
-    assert [r.label for r in default_refiners(df)] == [
+def test_default_refiners_leave_out_unsupported():
+    labels = [r.label for r in default_refiners(_mut_triple_frame(), axes=_MuT())]
+    assert labels == ["delaunay-triple"]
+    renamed = _mut_triple_frame().rename(columns={"mu": "dmu", "T": "temperature"})
+    assert [r.label for r in default_refiners(renamed, axes=_RENAMED)] == [
         "delaunay-triple", "clausius-clapeyron", "miscibility-gap", "terminal"]
-    assert [r.label for r in default_refiners(df.rename(columns=_RENAME), axes=_RENAMED)] == ["delaunay-triple"]
 
 
 def test_admissible_filters_on_the_axes_rule():
-    """Run drops what the axes call inadmissible: with T on y, a crossing the
-    scan locates below T = 0 is dropped and one above it kept."""
+    """Run drops what the axes call inadmissible: with T on y, the points the
+    line refiner locates below T = 0 are dropped and the others kept."""
     phases = {p.name: p for p in _MUT_PHASES}
-    df = _mut_frame([0.05, 0.1], np.linspace(-400.0, 600.0, 11))  # T* = 200 K and -100 K
-    r = ScanRefiner("T", axes=_MuT())
+    df = _mut_frame(np.linspace(0.05, 0.15, 11), np.linspace(-400.0, 600.0, 11))
+    r = DelaunayLineRefiner(axes=_MuT())
     located = [pt for cand in r.propose(df) for pt in r.solve(cand, phases)]
-    np.testing.assert_allclose(sorted(pt.y for pt in located), [-100.0, 200.0], rtol=0, atol=1e-5)
+    assert any(pt.y < 0 for pt in located) and any(pt.y >= 0 for pt in located)
     out = r.run(df, phases)
-    np.testing.assert_allclose(out["T"], 200.0, rtol=0, atol=1e-5)
-    assert sorted(out["phase"]) == ["A", "B"]
+    assert len(out) == 2 * sum(pt.y >= 0 for pt in located)
+    assert (out["T"] >= 0).all()
 
 
 def test_delaunay_simplices_cache_keyed_on_axes():
@@ -2767,10 +2797,10 @@ def test_refined_rows_write_fixed_conditions():
     assert len(rows) == 6 and all(r["p"] == 1e-3 for r in rows)
 
 
-# -- T/mu aliases ----------------------------------------------------------------
+# -- deprecated T/mu spellings -------------------------------------------------
 #
-# The refiners not yet written against Axes build and read points as T/mu; on a
-# point those are aliases of x/y, resolved by column name against its axes.
+# Warnings are pinned by count and by where they point (the caller's file), not
+# by text: the message is pyiron_snippets' and differs across its versions.
 
 
 def _deprecations(fn):
@@ -2785,12 +2815,14 @@ def _deprecations(fn):
     (RefinedPoint, {"phases": ("a", "b")}),
     (RefinedMiscibilityGap, {"phase": "p", "c_left": 0.1, "c_right": 0.9}),
 ])
-def test_refined_T_mu_keywords_map_onto_x_y(cls, extra):
+def test_refined_T_mu_keywords_warn_and_map_onto_x_y(cls, extra):
     old, warned = _deprecations(lambda: cls(T=300.0, mu=0.25, **extra))
-    assert old == cls(x=300.0, y=0.25, **extra) and not warned
+    assert old == cls(x=300.0, y=0.25, **extra)
+    assert len(warned) == 2 and {w.filename for w in warned} == {__file__}
     for name, value in (("T", 300.0), ("mu", 0.25)):
         got, warned = _deprecations(lambda name=name: getattr(old, name))
-        assert got == value and not warned
+        assert got == value
+        assert len(warned) == 1 and warned[0].filename == __file__
 
 
 @pytest.mark.parametrize("cls, extra", [
@@ -2800,16 +2832,19 @@ def test_refined_T_mu_keywords_map_onto_x_y(cls, extra):
 @pytest.mark.parametrize("new, old", [("x", "T"), ("y", "mu")])
 def test_refined_both_spellings_raise(cls, extra, new, old):
     coords = {"x": 1.0, "y": 0.0, old: 1.0}
-    with pytest.raises(TypeError, match=f"both {new} and its alias {old}"):
+    with pytest.warns(DeprecationWarning), pytest.raises(TypeError, match=f"both {new} and its deprecated spelling {old}"):
         cls(**coords, **extra)
 
 
 def test_refined_T_mu_attributes_resolve_by_column_name():
     """On turned axes .T is the y coordinate; an axis that does not exist raises."""
     pt = RefinedPoint(x=0.01, y=440.0, phases=("A", "B"), axes=_MuT())
-    assert (pt.T, pt.mu) == (440.0, 0.01)
+    with pytest.warns(DeprecationWarning):
+        assert pt.T == 440.0
+    with pytest.warns(DeprecationWarning):
+        assert pt.mu == 0.01
     pt = RefinedPoint(x=300.0, y=1.0, phases=("A", "B"), axes=Axes(y="p", extensive="v"))
-    with pytest.raises(AttributeError, match="no 'mu' axis"):
+    with pytest.warns(DeprecationWarning), pytest.raises(AttributeError, match="no 'mu' axis"):
         _ = pt.mu
 
 
@@ -2837,3 +2872,25 @@ def test_refined_miscibility_gap_requires_phase_and_branches(missing):
     del kwargs[missing]
     with pytest.raises(TypeError, match=repr(missing)):
         RefinedMiscibilityGap(**kwargs)
+
+
+@pytest.mark.parametrize("cls", [ClausiusClapeyronRefiner, MiscibilityGapRefiner])
+def test_dT_step_keywords_warn_and_map_onto_dx(cls):
+    r, warned = _deprecations(lambda: cls(dT_max=7.0, dT_min=0.5))
+    assert (r.dx_max, r.dx_min) == (7.0, 0.5)
+    assert len(warned) == 2 and {w.filename for w in warned} == {__file__}
+
+
+@pytest.mark.parametrize("cls", [ClausiusClapeyronRefiner, MiscibilityGapRefiner])
+def test_dx_step_defaults_construct_without_warning(cls):
+    r, warned = _deprecations(cls)
+    assert not warned and (r.dx_max, r.dx_min) == (5.0, 1.0)
+    r, warned = _deprecations(lambda: cls(dx_max=3.0, dx_min=0.5))
+    assert not warned and (r.dx_max, r.dx_min) == (3.0, 0.5)
+
+
+@pytest.mark.parametrize("cls", [ClausiusClapeyronRefiner, MiscibilityGapRefiner])
+@pytest.mark.parametrize("new, old", [("dx_max", "dT_max"), ("dx_min", "dT_min")])
+def test_dT_step_both_spellings_raise(cls, new, old):
+    with pytest.warns(DeprecationWarning), pytest.raises(TypeError, match=f"both {new} and its deprecated spelling {old}"):
+        cls(**{new: 3.0, old: 7.0})

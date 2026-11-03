@@ -207,7 +207,7 @@ def test_derived_hash_does_not_enter_the_digest():
 @pytest.mark.parametrize(
     "left,right",
     [
-        (lambda R: R.ClausiusClapeyronRefiner(dT_max=5.0), lambda R: R.ClausiusClapeyronRefiner(dT_max=4.0)),
+        (lambda R: R.ClausiusClapeyronRefiner(dx_max=5.0), lambda R: R.ClausiusClapeyronRefiner(dx_max=4.0)),
         (lambda R: R.MiscibilityGapRefiner(dc_max=0.01), lambda R: R.MiscibilityGapRefiner(dc_max=0.02)),
         (lambda R: R.ScanRefiner("mu"), lambda R: R.ScanRefiner("T")),
         (lambda R: R.DelaunayLineRefiner(), lambda R: R.DelaunayTripleRefiner()),

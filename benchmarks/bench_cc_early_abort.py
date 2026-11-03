@@ -81,7 +81,7 @@ def main() -> None:
         if not pts:
             continue
         assert all(not _dominated(pt, phases) for pt in pts)
-        lo, hi = min(pt.T for pt in pts), max(pt.T for pt in pts)
+        lo, hi = min(pt.x for pt in pts), max(pt.x for pt in pts)
         skipped = 1.0 - (hi - lo) / T_span
         label = "-".join(sorted(pair))
         print(f"  {label:>10}: {lo:6.1f}-{hi:6.1f} K   {skipped:5.0%}")
