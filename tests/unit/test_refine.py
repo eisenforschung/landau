@@ -1,4 +1,5 @@
 """Unit tests for refiners in landau.refine."""
+import warnings as _warnings
 from dataclasses import dataclass, replace
 
 import numpy as np
@@ -20,14 +21,17 @@ from landau.phases import (
 from landau.interpolate import SGTE
 from landau.interpolate.basic import G_calphad
 from landau.refine import (
+    Axes,
     ClausiusClapeyronRefiner,
     MiscibilityGapRefiner,
     DelaunayLineRefiner,
     DelaunayTripleRefiner,
     RefinedPoint,
     RefinedMiscibilityGap,
+    Refiner,
     ScanRefiner,
     TerminalRefiner,
+    default_refiners,
 )
 from landau.refine import (
     _COEXIST_TOL,
@@ -2428,3 +2432,327 @@ def test_gap_leaving_the_window_has_no_closure():
     df = calc_phase_diagram([liquid], np.linspace(1000.0, 1300.0, 20), mu=100)
     assert _closures(df) == []
     assert (df[df["refined"] == "miscibility-gap"]["locus"] == Locus.BOUNDARY).all()
+
+
+# -- Axes ----------------------------------------------------------------------
+#
+# A refiner written against Axes reads the frame and evaluates phases only
+# through it. Column names alone relabel the semigrand plane; a subclass binding
+# other variables puts a different plane under the same numerics. ScanRefiner is
+# the one written against it so far; the others support the default Axes() only.
+
+_RENAMED = Axes(x="temperature", y="dmu", extensive="x_B")
+_RENAME = {"T": "temperature", "mu": "dmu", "c": "x_B"}
+
+
+def test_renamed_columns_reproduce_default_scan(eutectic_phases):
+    """Both ScanRefiner directions and default_refiners follow the axes' names."""
+    phases = {p.name: p for p in eutectic_phases}
+    cut_mu = calc_phase_diagram(eutectic_phases, 600.0, mu=30, refine=False)
+    cut_T = calc_phase_diagram(eutectic_phases, np.linspace(200.0, 1000.0, 41), mu=0.6, refine=False)
+    for cut, by in ((cut_mu, "mu"), (cut_T, "T")):
+        renamed = cut.rename(columns=_RENAME)
+        (default,) = default_refiners(renamed, axes=_RENAMED)
+        assert isinstance(default, ScanRefiner) and default.by == _RENAME[by]
+        ref = ScanRefiner(by).run(cut, phases)
+        new = default.run(renamed, phases)
+        assert len(ref) > 0
+        new = new.rename(columns={v: k for k, v in _RENAME.items()})
+        new["refined"] = by
+        pd.testing.assert_frame_equal(new, ref, check_exact=True)
+
+
+def test_scan_refiner_rejects_a_column_off_its_axes():
+    with pytest.raises(ValueError, match="'temperature' or 'dmu'"):
+        ScanRefiner("T", axes=_RENAMED)
+
+
+@dataclass(frozen=True)
+class _MuT(Axes):
+    """The semigrand plane turned around: step along mu, root-find in T, with
+    the entropy ``s = -dphi/dT`` as the extensive column (exact for LinePhase)."""
+
+    x: str = "mu"
+    y: str = "T"
+    extensive: str = "s"
+
+    def potential(self, phase, x, y):
+        return phase.semigrand_potential(y, x)
+
+    def conjugate(self, phase, x, y):
+        return phase.line_entropy
+
+    def admissible(self, x, y):
+        return y >= 0
+
+
+# phi_A = phi_B along T*(mu) = (de - dc * mu) / ds = 500 K - 6000 K/eV * mu.
+# LinePhase potentials are linear in T and mu, so the root finds below land on
+# this to round-off: the tolerances are loose bounds, not a measure of the
+# root finders' precision, and should not be carried over to curved phases.
+_MUT_PHASES = (
+    LinePhase("A", fixed_concentration=0.2, line_energy=0.0, line_entropy=1e-4),
+    LinePhase("B", fixed_concentration=0.8, line_energy=0.05, line_entropy=2e-4),
+)
+
+
+def _mut_line(mu):
+    return 500.0 - 6000.0 * np.asarray(mu)
+
+
+def _mut_frame(mus, Ts):
+    rows = []
+    for mu in mus:
+        for T in Ts:
+            phis = {p.name: float(p.semigrand_potential(T, mu)) for p in _MUT_PHASES}
+            name = min(phis, key=phis.get)
+            rows.append({"mu": mu, "T": T, "phi": phis[name], "phase": name,
+                         "s": {p.name: p for p in _MUT_PHASES}[name].line_entropy})
+    return pd.DataFrame(rows)
+
+
+def test_scan_refiner_root_finds_along_y_of_turned_plane():
+    """Rows carry the axes' potential and extensive, not the semigrand ones:
+    phi at the crossing (T* = 440 K, mu = 0.01) is -0.046 eV for both phases,
+    and the extensive column is each phase's entropy."""
+    phases = {p.name: p for p in _MUT_PHASES}
+    df = _mut_frame([0.01], np.linspace(0.0, 1000.0, 11))
+    out = ScanRefiner("T", axes=_MuT()).run(df, phases).sort_values("phase")
+    assert list(out["phase"]) == ["A", "B"]
+    np.testing.assert_allclose(out["T"], _mut_line(0.01), rtol=0, atol=1e-5)
+    np.testing.assert_allclose(out["phi"], -0.046, rtol=0, atol=1e-9)
+    assert list(out["s"]) == [1e-4, 2e-4]
+
+
+def test_scan_refiner_root_finds_along_x_of_turned_plane():
+    """Walking x = mu at fixed T root-finds mu*(T) = (500 K - T) / 6000 K/eV."""
+    phases = {p.name: p for p in _MUT_PHASES}
+    df = _mut_frame(np.linspace(-0.05, 0.05, 11), [380.0])
+    out = ScanRefiner("mu", axes=_MuT()).run(df, phases)
+    assert sorted(out["phase"]) == ["A", "B"]
+    np.testing.assert_allclose(out["mu"], (500.0 - 380.0) / 6000.0, rtol=0, atol=1e-9)
+    assert (out["T"] == 380.0).all()
+
+
+def test_refined_rows_evaluate_through_the_axes():
+    """to_rows and emitted_concentrations of both point types go through the
+    axes' potential and conjugate, under the axes' column names."""
+    phases = {p.name: p for p in _MUT_PHASES}
+    a, b = _MUT_PHASES
+    phi = a.semigrand_potential(440.0, 0.01)
+    assert phi == b.semigrand_potential(440.0, 0.01)
+    pt = RefinedPoint(x=0.01, y=440.0, phases=("A", "B"), axes=_MuT())
+    assert pt.emitted_concentrations(phases) == (1e-4, 2e-4)
+    assert [(r["mu"], r["T"], r["phi"], r["s"], r["phase"]) for r in pt.to_rows(phases)] == [
+        (0.01, 440.0, phi, 1e-4, "A"), (0.01, 440.0, phi, 2e-4, "B")]
+    gap = RefinedMiscibilityGap(x=0.01, y=440.0, phase="A", c_left=1.0, c_right=3.0, axes=_MuT())
+    assert gap.emitted_concentrations(phases) == (1.0, 3.0)
+    assert [(r["mu"], r["T"], r["phi"], r["s"]) for r in gap.to_rows(phases)] == [
+        (0.01, 440.0, phi, 1.0), (0.01, 440.0, phi, 3.0)]
+
+
+@pytest.mark.parametrize("cls", [DelaunayLineRefiner, DelaunayTripleRefiner, ClausiusClapeyronRefiner,
+                                 MiscibilityGapRefiner, TerminalRefiner])
+def test_unconverted_refiners_support_the_default_axes_only(cls):
+    """A refiner not written against Axes reads T/mu/c itself, so even a mere
+    renaming of the columns is outside what it supports."""
+    assert cls.supports(Axes())
+    assert not cls.supports(_RENAMED) and not cls.supports(_MuT())
+
+
+def test_scan_refiner_supports_any_axes():
+    assert ScanRefiner.supports(_RENAMED) and ScanRefiner.supports(_MuT())
+
+
+def test_constructing_on_unsupported_axes_raises():
+    """A refiner that does not override supports takes the default axes only."""
+
+    class DefaultOnly(Refiner):
+        label = "default-only"
+
+        def propose(self, df):
+            return iter(())
+
+        def solve(self, cand, phases):
+            return []
+
+    assert DefaultOnly().axes == Axes()
+    with pytest.raises(ValueError, match="DefaultOnly does not support"):
+        DefaultOnly(axes=_RENAMED)
+
+
+def test_default_refiners_leave_out_unsupported(eutectic_phases):
+    df = calc_phase_diagram(eutectic_phases, np.linspace(200.0, 1000.0, 5), mu=5, refine=False)
+    assert [r.label for r in default_refiners(df)] == [
+        "delaunay-triple", "clausius-clapeyron", "miscibility-gap", "terminal"]
+    assert default_refiners(df.rename(columns=_RENAME), axes=_RENAMED) == []
+
+
+def test_admissible_filters_on_the_axes_rule():
+    """Run drops what the axes call inadmissible: with T on y, a crossing the
+    scan locates below T = 0 is dropped and one above it kept."""
+    phases = {p.name: p for p in _MUT_PHASES}
+    df = _mut_frame([0.05, 0.1], np.linspace(-400.0, 600.0, 11))  # T* = 200 K and -100 K
+    r = ScanRefiner("T", axes=_MuT())
+    located = [pt for cand in r.propose(df) for pt in r.solve(cand, phases)]
+    np.testing.assert_allclose(sorted(pt.y for pt in located), [-100.0, 200.0], rtol=0, atol=1e-5)
+    out = r.run(df, phases)
+    np.testing.assert_allclose(out["T"], 200.0, rtol=0, atol=1e-5)
+    assert sorted(out["phase"]) == ["A", "B"]
+
+
+# -- fixed conditions ------------------------------------------------------------
+
+# volumes for a pressure held off the turned plane; phi_i gains p * v_i, so the
+# A/B crossing moves to T*(mu) = 500 K - 6000 K/eV * mu - 1e4 K/eV * p * (v_A - v_B)
+_VOLUMES = {"A": 1.0, "B": 0.0, "C": 0.5}
+
+
+@dataclass(frozen=True)
+class _MuTAtP(_MuT):
+    """_MuT with a pressure held fixed off the plane."""
+
+    def potential(self, phase, x, y):
+        return super().potential(phase, x, y) + self.fixed["p"] * _VOLUMES[phase.name]
+
+
+def test_default_axes_hold_no_fixed_conditions():
+    assert Axes().fixed == {} and _RENAMED.fixed == {}
+
+
+@pytest.mark.parametrize("axes", [Axes, lambda **kw: Axes(x="temperature", y="dmu", **kw)])
+def test_default_binding_rejects_fixed_conditions(axes):
+    with pytest.raises(ValueError, match="takes no fixed conditions"):
+        axes(fixed={"p": 0.0})
+
+
+@pytest.mark.parametrize("column", ["mu", "T", "s", "phi", "phase", "locus", "refined"])
+def test_fixed_conditions_cannot_name_a_row_column(column):
+    with pytest.raises(ValueError, match=f"'{column}'"):
+        _MuTAtP(fixed={column: 1.0})
+
+
+def test_fixed_conditions_are_a_read_only_copy():
+    given = {"p": 1e-3}
+    axes = _MuTAtP(fixed=given)
+    given["p"] = 5.0
+    assert axes.fixed == {"p": 1e-3}
+    with pytest.raises(TypeError):
+        axes.fixed["p"] = 5.0
+
+
+def test_fixed_conditions_take_part_in_axes_identity():
+    """Equality and the hash both follow the conditions, so axes held at
+    different conditions never share a key, and the order they were given in
+    does not matter."""
+    a, b, other = _MuTAtP(fixed={"p": 1e-3, "q": 1.0}), _MuTAtP(fixed={"q": 1.0, "p": 1e-3}), _MuTAtP(fixed={"p": 2e-3})
+    assert a == b and hash(a) == hash(b)
+    assert a != other and hash(a) != hash(other)
+
+
+def test_axes_and_what_carries_them_pickle_with_their_conditions():
+    """Axes travel inside refiners and refined points into process pools and
+    fleche's pickle-based digests; equal conditions pickle to the same bytes
+    whatever order they were given in."""
+    import pickle
+
+    axes = _MuTAtP(fixed={"p": 1e-3, "q": 1.0})
+    for obj in (axes, RefinedPoint(x=0.01, y=440.0, phases=("A", "B"), axes=axes)):
+        assert pickle.loads(pickle.dumps(obj)) == obj
+    refiner = pickle.loads(pickle.dumps(ScanRefiner("T", axes=axes)))
+    assert refiner.axes == axes and refiner.axes.fixed == {"p": 1e-3, "q": 1.0}
+    assert pickle.dumps(axes) == pickle.dumps(_MuTAtP(fixed={"q": 1.0, "p": 1e-3}))
+
+
+def test_fixed_conditions_reach_the_binding_and_every_row():
+    """A binding reads the held pressure from ``self.fixed``: the scanned
+    crossing moves to its exact value, and every row carries the column."""
+    phases = {p.name: p for p in _MUT_PHASES}
+    df = _mut_frame([0.01], np.linspace(0.0, 1000.0, 11))
+    out = ScanRefiner("T", axes=_MuTAtP(fixed={"p": 1e-3})).run(df, phases)
+    assert sorted(out["phase"]) == ["A", "B"]
+    np.testing.assert_allclose(out["T"], _mut_line(0.01) - 10.0, rtol=0, atol=1e-5)
+    assert (out["p"] == 1e-3).all()
+
+
+def test_refined_rows_write_fixed_conditions():
+    """Every row-building path -- a plain point, a terminal point, a gap --
+    writes the fixed conditions beside the axes."""
+    phases = {p.name: p for p in _MUT_PHASES}
+    axes = _MuTAtP(fixed={"p": 1e-3})
+    rows = (RefinedPoint(x=0.01, y=440.0, phases=("A", "B"), axes=axes).to_rows(phases)
+            + RefinedPoint(x=0.01, y=440.0, phases=("A", "B"), terminal=0.0, axes=axes).to_rows(phases)
+            + RefinedMiscibilityGap(x=0.01, y=440.0, phase="A", c_left=1.0, c_right=3.0, axes=axes).to_rows(phases))
+    assert len(rows) == 6 and all(r["p"] == 1e-3 for r in rows)
+
+
+# -- T/mu aliases ----------------------------------------------------------------
+#
+# The refiners not yet written against Axes build and read points as T/mu; on a
+# point those are aliases of x/y, resolved by column name against its axes.
+
+
+def _deprecations(fn):
+    """Run ``fn`` and return its result plus the DeprecationWarnings it raised."""
+    with _warnings.catch_warnings(record=True) as rec:
+        _warnings.simplefilter("always")
+        out = fn()
+    return out, [w for w in rec if issubclass(w.category, DeprecationWarning)]
+
+
+@pytest.mark.parametrize("cls, extra", [
+    (RefinedPoint, {"phases": ("a", "b")}),
+    (RefinedMiscibilityGap, {"phase": "p", "c_left": 0.1, "c_right": 0.9}),
+])
+def test_refined_T_mu_keywords_map_onto_x_y(cls, extra):
+    old, warned = _deprecations(lambda: cls(T=300.0, mu=0.25, **extra))
+    assert old == cls(x=300.0, y=0.25, **extra) and not warned
+    for name, value in (("T", 300.0), ("mu", 0.25)):
+        got, warned = _deprecations(lambda name=name: getattr(old, name))
+        assert got == value and not warned
+
+
+@pytest.mark.parametrize("cls, extra", [
+    (RefinedPoint, {"phases": ("a", "b")}),
+    (RefinedMiscibilityGap, {"phase": "p", "c_left": 0.1, "c_right": 0.9}),
+])
+@pytest.mark.parametrize("new, old", [("x", "T"), ("y", "mu")])
+def test_refined_both_spellings_raise(cls, extra, new, old):
+    coords = {"x": 1.0, "y": 0.0, old: 1.0}
+    with pytest.raises(TypeError, match=f"both {new} and its alias {old}"):
+        cls(**coords, **extra)
+
+
+def test_refined_T_mu_attributes_resolve_by_column_name():
+    """On turned axes .T is the y coordinate; an axis that does not exist raises."""
+    pt = RefinedPoint(x=0.01, y=440.0, phases=("A", "B"), axes=_MuT())
+    assert (pt.T, pt.mu) == (440.0, 0.01)
+    pt = RefinedPoint(x=300.0, y=1.0, phases=("A", "B"), axes=Axes(y="p", extensive="v"))
+    with pytest.raises(AttributeError, match="no 'mu' axis"):
+        _ = pt.mu
+
+
+def test_refined_point_positional_and_replace():
+    """Positional (x, y, phases) is the old (T, mu, phases) order; replace keeps
+    every field, the axes included, without warning."""
+    pt, warned = _deprecations(lambda: RefinedPoint(300.0, 0.25, ("a", "b")))
+    assert not warned and (pt.x, pt.y, pt.phases, pt.axes) == (300.0, 0.25, ("a", "b"), Axes())
+    turned = RefinedPoint(x=0.01, y=440.0, phases=("A", "B"), congruent=True, axes=_MuT())
+    moved, warned = _deprecations(lambda: replace(turned, boundary_id=3))
+    assert not warned
+    assert moved == RefinedPoint(x=0.01, y=440.0, phases=("A", "B"), congruent=True, boundary_id=3, axes=_MuT())
+
+
+def test_refined_point_requires_coordinates_and_phases():
+    with pytest.raises(TypeError, match="'x' and 'y'"):
+        RefinedPoint(x=1.0, phases=("a",))
+    with pytest.raises(TypeError, match="'phases'"):
+        RefinedPoint(x=1.0, y=1.0)
+
+
+@pytest.mark.parametrize("missing", ["phase", "c_left", "c_right"])
+def test_refined_miscibility_gap_requires_phase_and_branches(missing):
+    kwargs = {"x": 1.0, "y": 0.0, "phase": "p", "c_left": 0.1, "c_right": 0.9}
+    del kwargs[missing]
+    with pytest.raises(TypeError, match=repr(missing)):
+        RefinedMiscibilityGap(**kwargs)
