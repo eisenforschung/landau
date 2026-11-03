@@ -90,8 +90,36 @@ __all__ = [
 ]
 
 
+class RefinedBase(ABC):
+    """What a :class:`Refiner` emits: a located coexistence, written out as rows.
+
+    :class:`RefinedPoint` (two or three distinct phases) and
+    :class:`RefinedMiscibilityGap` (one phase, two branches) implement it;
+    :meth:`Refiner.run` and the :class:`_CCBase` trace handle both through this
+    interface only.
+    """
+
+    @abstractmethod
+    def phase_names(self) -> set[str]:
+        """Distinct names of the phases coexisting here."""
+
+    @abstractmethod
+    def to_rows(self, phases: Mapping[str, Phase]) -> list[dict]:
+        """One ``calc_phase_diagram`` row per coexisting phase (or branch)."""
+
+    @abstractmethod
+    def emitted_concentrations(self, phases: Mapping[str, Phase]) -> tuple[float, ...]:
+        """The ``c`` each row of :meth:`to_rows` carries, in the same order, as
+        plain floats.
+
+        What the ``dc_max``/``dc_min`` density caps of :meth:`_CCBase._trace`
+        measure drift on and what :meth:`ClausiusClapeyronRefiner._tag_features`
+        reads the concentration gap from.
+        """
+
+
 @dataclass(frozen=True)
-class RefinedPoint:
+class RefinedPoint(RefinedBase):
     """A located transition point at which ``phases`` coexist.
 
     Attributes
@@ -134,6 +162,11 @@ class RefinedPoint:
     def phase_names(self) -> set[str]:
         return set(self.phases)
 
+    def emitted_concentrations(self, phases: Mapping[str, Phase]) -> tuple[float, ...]:
+        if self.concentrations is not None:
+            return tuple(float(c) for c in self.concentrations)
+        return tuple(float(phases[n].concentration(self.T, self.mu)) for n in self.phases)
+
     def to_rows(self, phases: Mapping[str, Phase]) -> list[dict]:
         rows = [_state_row(phases[name], self.T, self.mu) for name in self.phases]
         if self.concentrations is not None:
@@ -152,7 +185,7 @@ class RefinedPoint:
 
 
 @dataclass(frozen=True)
-class RefinedMiscibilityGap:
+class RefinedMiscibilityGap(RefinedBase):
     """A coexistence point inside a single phase (miscibility gap).
 
     The single ``phase`` splits into two compositions at coexistence
@@ -189,6 +222,9 @@ class RefinedMiscibilityGap:
 
     def phase_names(self) -> set[str]:
         return {self.phase}
+
+    def emitted_concentrations(self, phases: Mapping[str, Phase]) -> tuple[float, ...]:
+        return (self.c_left, self.c_right)
 
     def to_rows(self, phases: Mapping[str, Phase]) -> list[dict]:
         ph = phases[self.phase]
@@ -932,21 +968,6 @@ class _CCBase(Refiner):
         """
         return 0.0
 
-    def _emitted_concentrations(self, pt, phases) -> tuple[float, ...]:
-        """Concentrations plotted by one emitted point, for the
-        ``dc_max``/``dc_min`` density caps in :meth:`_trace`.
-
-        A :class:`RefinedMiscibilityGap` plots its two pre-computed branch
-        concentrations; a :class:`RefinedPoint` plots one branch per
-        coexisting phase at ``(T, mu)``. Generic over both so the base
-        trace loop needs no per-subclass hook.
-        """
-        if isinstance(pt, RefinedMiscibilityGap):
-            return (pt.c_left, pt.c_right)
-        if pt.concentrations is not None:
-            return tuple(float(c) for c in pt.concentrations)
-        return tuple(float(phases[n].concentration(pt.T, pt.mu)) for n in pt.phases)
-
     def _dominated_node(self, cand, phases, T_ok, mu_ok, T_dom, mu_dom, half_width):
         """Hook: the point where a phase outside the traced line takes over.
 
@@ -963,6 +984,13 @@ class _CCBase(Refiner):
         return None
 
     # -- shared trace skeleton ---------------------------------------------
+
+    def _crossed_invariant(self, cand, phases, T_ok, mu_ok, T_dom, mu_dom, half_width):
+        """Points to emit when the trace steps from the kept ``(T_ok, mu_ok)``
+        into domination at ``(T_dom, mu_dom)``: the invariant it crossed, when
+        the subclass solves it (:meth:`_dominated_node`), else nothing."""
+        node = self._dominated_node(cand, phases, T_ok, mu_ok, T_dom, mu_dom, half_width)
+        return [] if node is None else [node]
 
     def _trace(self, cand, phases, T0, mu0, seed_c, half_width, T_target, sign):
         """Walk from the seed ``(T0, mu0)`` toward ``T_target``.
@@ -1032,7 +1060,7 @@ class _CCBase(Refiner):
             step = self._refine_step(
                 cand, phases, T0 + dT, mu0 - bracket, mu0 + bracket)
             pt = self._emit(cand, T0 + dT, step)
-            c = self._emitted_concentrations(pt, phases)
+            c = pt.emitted_concentrations(phases)
             drift = max((abs(a - b) for a, b in zip(c, seed_c)), default=0.0)
             return step, pt, c, drift
 
@@ -1059,10 +1087,8 @@ class _CCBase(Refiner):
         # after solving the invariant it just crossed, if the subclass knows
         # how (_dominated_node).
         if _dominated(pt, phases):
-            node = self._dominated_node(
+            yield from self._crossed_invariant(
                 cand, phases, T0, mu0, T_b, step.mu_star, half_width)
-            if node is not None:
-                yield node
             return
         yield pt
         mu_star = step.mu_star
@@ -1124,14 +1150,12 @@ class _CCBase(Refiner):
             # Stop once the pair is no longer globally stable here, emitting
             # the invariant crossed on the way if the subclass can solve it.
             if _dominated(pt, phases):
-                node = self._dominated_node(
+                yield from self._crossed_invariant(
                     cand, phases, T, mu_star, T_next, step.mu_star, half_width)
-                if node is not None:
-                    yield node
                 return
             T, mu_star = T_next, step.mu_star
             yield pt
-            c_now = self._emitted_concentrations(pt, phases)
+            c_now = pt.emitted_concentrations(phases)
             dc_dT = max((abs(a - b) for a, b in zip(c_now, c_prev)),
                         default=0.0) / abs(dT)
             c_prev = c_now
@@ -1148,7 +1172,7 @@ class _CCBase(Refiner):
         mu_lo, mu_hi = cand.mu_bracket
         half_width = (mu_hi - mu_lo) / 2.0
         seed_pt = self._emit(cand, T0, step0)
-        seed_c = self._emitted_concentrations(seed_pt, phases)
+        seed_c = seed_pt.emitted_concentrations(phases)
         # A seed can project just past a triple point into a metastable
         # region; emit it only if it is globally stable. The traces still run
         # in both directions and recover the stable segment if the seed sits
@@ -1316,7 +1340,7 @@ class ClausiusClapeyronRefiner(_CCBase):
         where = np.array([i for i, pt in enumerate(points) if isinstance(pt, RefinedPoint)])
         if where.size == 0:
             return points
-        cs = [self._emitted_concentrations(points[i], phases) for i in where]
+        cs = [points[i].emitted_concentrations(phases) for i in where]
         gap = np.array([abs(c[0] - c[1]) if len(c) == 2 else np.inf for c in cs])
         shared = np.array([np.mean(c) if len(c) == 2 else np.nan for c in cs])
         keep = np.isfinite(shared) & np.isfinite(gap)

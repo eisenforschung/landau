@@ -312,16 +312,17 @@ def calc_phase_diagram(
 
 
 def _tie_lines(dd):
-    """Split the border rows at one ``(mu, T)`` into two-phase tie-lines.
+    """Pair the border rows at one ``(mu, T)`` into two-phase tie-lines.
 
-    Sorted by concentration, ``n`` rows are ``n - 1`` tie-lines between
-    neighbours, each a two-phase transition named ``"A-B"`` in that order; a
-    row inside the isotherm (the middle phase of a triple point, or the
-    branch of a phase that appears twice at a monotectic) belongs to both of
-    its tie-lines and is emitted for each. A single row (the ``mu = +-inf``
-    edges) is its own one-phase transition.
+    ``dd`` must hold only the ``border`` rows of a single ``(mu, T)``, sorted
+    by ``c``, with columns ``c`` and ``phase``. Neighbouring rows form a
+    tie-line named ``"A-B"`` in ascending ``c``, so ``n`` rows give ``n - 1``
+    tie-lines and a row between two others is emitted once per tie-line. A
+    single row (the ``mu = +-inf`` edges) is emitted under its own phase name.
+
+    Returns one row per tie-line end, with columns ``transition``, ``c`` and
+    ``phase``.
     """
-    dd = dd.sort_values("c")
     c, phase = dd["c"].to_numpy(), dd["phase"].to_numpy()
     if len(dd) == 1:
         return pd.DataFrame({"transition": [phase[0]], "c": c, "phase": phase})
@@ -406,10 +407,10 @@ def get_transitions(df):
     Useful for plotting below, but potentially also to augment the existing refining routines and
     acquire additional Free energies from calphy/etc. to improve the diagram.
     """
-    bdf = df.query("border")
+    bdf = df.query("border").sort_values("c")
     # the border points at one (mu, T) are the ends of tie-lines: pair them up
     # into two-phase transitions (a lone point at mu=+-inf is its own) and add
-    # the 'transition' column
+    # the 'transition' column; groupby keeps the c order within each group
     tdf = bdf.groupby(["mu", "T"])[["c", "phase"]].apply(_tie_lines, include_groups=False)
     tdf = tdf.reset_index(level=["mu", "T"]).reset_index(drop=True)
 

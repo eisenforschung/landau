@@ -680,10 +680,10 @@ def test_border_edges_preserves_T_and_phase_from_source(grid_frame):
 
 
 def test_tie_lines_pairs_neighbours_in_c():
-    # three phases at one (mu, T), rows deliberately out of c order: two
-    # tie-lines between c-neighbours, named in ascending-c order, the middle
-    # phase in both
-    dd = pd.DataFrame({"phase": ["liq", "fcc", "bcc"], "c": [0.7, 0.2, 0.5]})
+    # three phases at one (mu, T), sorted by c as get_transitions passes them:
+    # two tie-lines between c-neighbours, named in ascending-c order, the
+    # middle phase in both
+    dd = pd.DataFrame({"phase": ["fcc", "bcc", "liq"], "c": [0.2, 0.5, 0.7]})
     out = _tie_lines(dd)
     assert out["transition"].tolist() == ["fcc-bcc", "fcc-bcc", "bcc-liq", "bcc-liq"]
     assert out["phase"].tolist() == ["fcc", "bcc", "bcc", "liq"]
@@ -691,7 +691,7 @@ def test_tie_lines_pairs_neighbours_in_c():
 
 
 def test_tie_lines_two_phases_is_one_transition():
-    dd = pd.DataFrame({"phase": ["liq", "fcc"], "c": [0.7, 0.2]})
+    dd = pd.DataFrame({"phase": ["fcc", "liq"], "c": [0.2, 0.7]})
     out = _tie_lines(dd)
     assert out["transition"].tolist() == ["fcc-liq", "fcc-liq"]
     assert out["phase"].tolist() == ["fcc", "liq"]
@@ -702,7 +702,7 @@ def test_tie_lines_same_phase_twice_keeps_both_branches_apart():
     # a solid at the end. The liquid's branches are the two ends of the
     # liquid-liquid tie-line, the near one also the end of the solid-liquid
     # one; there is no liquid-only pairing across the field.
-    dd = pd.DataFrame({"phase": ["liquid", "α", "liquid"], "c": [0.81, 0.0, 0.19]})
+    dd = pd.DataFrame({"phase": ["α", "liquid", "liquid"], "c": [0.0, 0.19, 0.81]})
     out = _tie_lines(dd)
     assert out["transition"].tolist() == ["α-liquid", "α-liquid", "liquid-liquid", "liquid-liquid"]
     assert out["c"].tolist() == [0.0, 0.19, 0.19, 0.81]
