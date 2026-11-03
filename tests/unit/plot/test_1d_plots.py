@@ -1623,6 +1623,17 @@ def test_1d_transition_label_offset_left_of_its_line(plot, scan_col, label):
         plt.close(fig)
 
 
+def test_1d_mu_element_subscripts_xlabel_and_transition():
+    """``element`` names the scanned chemical potential in both texts."""
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_mu_phase_diagram(_cut_df("mu"), ax=ax, element="Mg")
+        assert ax.get_xlabel() == r"Chemical Potential Difference $\Delta\mu_\mathrm{Mg}$ [eV]"
+        _transition_label(ax, r"$\Delta\mu_\mathrm{Mg} = 2.000\,\mathrm{eV}$")
+    finally:
+        plt.close(fig)
+
+
 def _transition_lines(ax):
     """x positions of the dotted vertical transition markers on *ax*."""
     return [line.get_xdata()[0] for line in ax.lines if line.get_linestyle() == ":"]
