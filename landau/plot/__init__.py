@@ -627,7 +627,8 @@ def _plot_1d_phase_diagram(
         top_labels=True,
         side_labels=True,
         ylim=None,
-        element=None):
+        element=None,
+        top_label_rotation="horizontal"):
     """Draw the semi-grandcanonical potential of every phase along a 1d cut.
 
     Shared body of :func:`plot_1d_mu_phase_diagram` and
@@ -655,7 +656,8 @@ def _plot_1d_phase_diagram(
         ax=ax,
     )
 
-    _add_1d_phase_legend(ax, df, scan_col=scan_col, top_labels=top_labels, side_labels=side_labels, ylim=ylim)
+    _add_1d_phase_legend(ax, df, scan_col=scan_col, top_labels=top_labels, side_labels=side_labels, ylim=ylim,
+                         top_label_rotation=top_label_rotation)
 
     if mark_transitions and 'border' in df.columns:
         # The marker dot stays in data coords and is simply clipped if the crossing
@@ -689,7 +691,8 @@ def plot_1d_mu_phase_diagram(
         top_labels=True,
         side_labels=True,
         ylim=None,
-        element=None):
+        element=None,
+        top_label_rotation="horizontal"):
     """
     Plot a one dimensional isothermal phase diagram of the semi-grandcanonical
     potential as function of the chemical potential difference.
@@ -722,6 +725,10 @@ def plot_1d_mu_phase_diagram(
             Name of the element whose chemical potential difference is scanned. If
             given, it subscripts the Δμ in the x label and in the transition
             annotations.
+        top_label_rotation (str or float, optional):
+            Rotation of the top stable-phase labels: ``"horizontal"`` (default),
+            ``"vertical"`` or an angle in degrees. Vertical labels fit stable
+            windows too narrow for the horizontal name.
 
     Returns:
         matplotlib.axes.Axes:
@@ -738,6 +745,7 @@ def plot_1d_mu_phase_diagram(
         side_labels=side_labels,
         ylim=ylim,
         element=element,
+        top_label_rotation=top_label_rotation,
     )
 
 
@@ -751,6 +759,7 @@ def plot_1d_T_phase_diagram(
         top_labels=True,
         side_labels=True,
         ylim=None,
+        top_label_rotation="horizontal",
         ):
     """
     Plots a one-dimensional equipotential phase diagram as a function of temperature.
@@ -779,6 +788,10 @@ def plot_1d_T_phase_diagram(
             side-label stack: a label whose line end is above the window is moved
             to a mirrored stack on the left, and a phase whose line is pushed
             entirely out of view is not labelled.
+        top_label_rotation (str or float, optional):
+            Rotation of the top stable-phase labels: ``"horizontal"`` (default),
+            ``"vertical"`` or an angle in degrees. Vertical labels fit stable
+            windows too narrow for the horizontal name.
 
     Returns:
         matplotlib.axes.Axes:
@@ -794,6 +807,7 @@ def plot_1d_T_phase_diagram(
         top_labels=top_labels,
         side_labels=side_labels,
         ylim=ylim,
+        top_label_rotation=top_label_rotation,
     )
 
 

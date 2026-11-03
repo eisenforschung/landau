@@ -1063,10 +1063,10 @@ def test_T_top_spine_ticks_at_transitions(df_T_three_stable):
     (plot_1d_T_phase_diagram, "df_T_three_stable"),
 ])
 def test_top_labels_vertical_inside_axis(plot_func, fixture, request):
-    """Top phase labels are vertical text hanging from the top inside the axes."""
+    """``top_label_rotation="vertical"`` hangs upright labels from the top inside the axes."""
     fig, ax = plt.subplots()
     try:
-        plot_func(request.getfixturevalue(fixture), ax=ax)
+        plot_func(request.getfixturevalue(fixture), ax=ax, top_label_rotation="vertical")
         renderer = _renderer(fig)
         axbb = ax.get_window_extent(renderer)
         artists = _top_label_artists(ax)
@@ -1076,6 +1076,21 @@ def test_top_labels_vertical_inside_axis(plot_func, fixture, request):
             b = t.get_window_extent(renderer)
             assert b.height > b.width, f"{t.get_text()!r} box is not upright"
             assert axbb.y0 <= b.y0 and b.y1 <= axbb.y1, f"{t.get_text()!r} leaves the axes"
+    finally:
+        plt.close(fig)
+
+
+@pytest.mark.parametrize("plot_func, fixture", [
+    (plot_1d_mu_phase_diagram, "df_mu_three_stable"),
+    (plot_1d_T_phase_diagram, "df_T_three_stable"),
+])
+def test_top_labels_horizontal_by_default(plot_func, fixture, request):
+    fig, ax = plt.subplots()
+    try:
+        plot_func(request.getfixturevalue(fixture), ax=ax)
+        artists = _top_label_artists(ax)
+        assert artists, "no top-spine phase labels found"
+        assert all(t.get_rotation() == 0.0 for t in artists)
     finally:
         plt.close(fig)
 
