@@ -857,15 +857,16 @@ class _Simplex:
     ``df.iloc[...]`` DataFrame. Building one DataFrame per simplex
     dominated every Delaunay refiner's ``propose`` (and hence ``run``);
     a numpy-backed view of the four columns the refiners actually read —
-    ``T``, ``mu``, ``phase``, ``c`` — is much cheaper to instantiate.
+    the two axes, ``phase`` and the extensive column ``c`` — is much
+    cheaper to instantiate.
 
     ``eq=False`` keeps identity semantics (``owner is not tr`` in
     :meth:`DelaunayTripleRefiner.solve` relies on it) and sidesteps the
     ambiguous-truth-value error a field-wise array ``__eq__`` would raise.
     """
 
-    T: np.ndarray
-    mu: np.ndarray
+    x: np.ndarray
+    y: np.ndarray
     phase: np.ndarray
     c: np.ndarray
 
@@ -874,7 +875,7 @@ class _Simplex:
         return pd.unique(self.phase)
 
     def centroids(self) -> dict[str, TMuPoint]:
-        """Map each distinct phase to its vertices' ``(T, mu)`` centroid.
+        """Map each distinct phase to its vertices' ``(x, y)`` centroid.
 
         For a 2-phase simplex (3 vertices, one phase appears once and the
         other twice) the line between the two centroids is guaranteed to cross
@@ -885,54 +886,55 @@ class _Simplex:
         out: dict[str, TMuPoint] = {}
         for name in self.unique_phases():
             m = self.phase == name
-            out[str(name)] = (float(self.T[m].mean()), float(self.mu[m].mean()))
+            out[str(name)] = (float(self.x[m].mean()), float(self.y[m].mean()))
         return out
 
 
 # Last-call memo for _delaunay_simplices: the default refiners each tessellate
-# in their own propose, so on a shared frame the (mu, T) triangulation and all
+# in their own propose, so on a shared frame the (y, x) triangulation and all
 # its ~2*N _Simplex objects would be rebuilt once per refiner. Keyed by frame
 # identity via a weakref (so a stale entry can't alias a later frame, and the
-# cached frame is not kept alive); only the most recent frame is retained,
-# which is all refine_phase_diagram needs. Assumes the frame's (mu, T, phase, c)
-# columns are not mutated in place between calls (true within a refine pass).
-_simplex_cache: tuple = (None, None)  # (weakref to df | None, result list)
+# cached frame is not kept alive) plus the axes read off it; only the most
+# recent frame is retained, which is all refine_phase_diagram needs. Assumes
+# the frame's axis, phase and extensive columns are not mutated in place
+# between calls (true within a refine pass).
+_simplex_cache: tuple = (None, None, None)  # (weakref to df | None, axes, result list)
 
 
-def _delaunay_simplices(df: pd.DataFrame) -> list[tuple["_Simplex", int]]:
-    """``[(_Simplex, phase_count), ...]`` for each simplex of the (mu, T) tess.
+def _delaunay_simplices(df: pd.DataFrame, axes: Axes = _DEFAULT_AXES) -> list[tuple["_Simplex", int]]:
+    """``[(_Simplex, phase_count), ...]`` for each simplex of the ``axes`` tess.
 
     Memoised on the most recent frame (see ``_simplex_cache`` above).
     """
     global _simplex_cache
-    ref, cached = _simplex_cache
-    if ref is not None and ref() is df:
+    ref, cached_axes, cached = _simplex_cache
+    if ref is not None and ref() is df and cached_axes == axes:
         return cached
-    dela = Delaunay(df[["mu", "T"]])
-    T = df["T"].to_numpy()
-    mu = df["mu"].to_numpy()
+    dela = Delaunay(df[[axes.y, axes.x]])
+    x = df[axes.x].to_numpy()
+    y = df[axes.y].to_numpy()
     phase = df["phase"].to_numpy()
-    c = df["c"].to_numpy() if "c" in df.columns else np.zeros(len(df))
+    c = df[axes.extensive].to_numpy() if axes.extensive in df.columns else np.zeros(len(df))
     phases_arr = phase[dela.simplices]
-    counts = np.array([len(set(x)) for x in phases_arr])
-    result = [(_Simplex(T=T[s], mu=mu[s], phase=phase[s], c=c[s]), int(n))
+    counts = np.array([len(set(v)) for v in phases_arr])
+    result = [(_Simplex(x=x[s], y=y[s], phase=phase[s], c=c[s]), int(n))
               for s, n in zip(dela.simplices, counts)]
-    _simplex_cache = (weakref.ref(df), result)
+    _simplex_cache = (weakref.ref(df), axes, result)
     return result
 
 
 def _simplex_containment(point: TMuPoint, simplex: _Simplex) -> float:
-    """Smallest barycentric coordinate of ``(T, mu)`` w.r.t. the triangle.
+    """Smallest barycentric coordinate of ``(x, y)`` w.r.t. the triangle.
 
     ``>= 0`` iff the point lies inside (or on an edge of) the simplex; the
     more negative the value the further outside it is. Barycentric
     coordinates are affine-invariant, so the value does not depend on the
-    anisotropy between the T and mu axes, and it doubles as a "how nearly
+    anisotropy between the two axes, and it doubles as a "how nearly
     contained" score: the simplex with the largest value owns the point.
     Returns ``-inf`` for a degenerate (zero-area) simplex so it never wins.
     """
-    x1, x2, x3 = (float(v) for v in simplex.T)
-    y1, y2, y3 = (float(v) for v in simplex.mu)
+    x1, x2, x3 = (float(v) for v in simplex.x)
+    y1, y2, y3 = (float(v) for v in simplex.y)
     x, y = point
     det = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3)
     if det == 0:
@@ -974,12 +976,19 @@ class DelaunayLineRefiner(Refiner):
 
     label = "delaunay"
 
+    @classmethod
+    def supports(cls, axes: Axes) -> bool:
+        """Any :class:`Axes`: the tessellation and its root-finds use only the
+        two axes and the potential."""
+        return True
+
     def propose(self, df: pd.DataFrame) -> Iterator[_SimplexCandidate]:
-        for simplex, n in _delaunay_simplices(df):
+        for simplex, n in _delaunay_simplices(df, self.axes):
             if n == 2:
                 yield _SimplexCandidate(simplex=simplex)
 
     def solve(self, cand: _SimplexCandidate, phases) -> list[RefinedPoint]:
+        ax = self.axes
         cand_df = cand.simplex
         name1, name2 = cand_df.unique_phases()
         cents = cand_df.centroids()
@@ -987,13 +996,13 @@ class DelaunayLineRefiner(Refiner):
         phase1, phase2 = phases[name1], phases[name2]
 
         def project(t):
-            T, mu = p1_xy + (p2_xy - p1_xy) * t
-            return T, mu
+            x, y = p1_xy + (p2_xy - p1_xy) * t
+            return x, y
 
         try:
             t = _find_one_point(
                 phase1, phase2,
-                lambda phase, x: phase.semigrand_potential(*project(x)),
+                lambda phase, v: ax.potential(phase, *project(v)),
                 (0, 1),
             )
         except ValueError:
@@ -1003,8 +1012,8 @@ class DelaunayLineRefiner(Refiner):
                 stacklevel=2,
             )
             return []
-        T, mu = project(t)
-        return [RefinedPoint(T=T, mu=mu, phases=(name1, name2))]
+        x, y = project(t)
+        return [RefinedPoint(x=x, y=y, phases=(name1, name2), axes=ax)]
 
 
 class DelaunayTripleRefiner(Refiner):
@@ -1020,34 +1029,41 @@ class DelaunayTripleRefiner(Refiner):
     score (least far outside the minimum) is the owner. :meth:`solve` emits
     only when its own simplex is that owner, so exactly one candidate fires per
     triple point. The siblings travel in the candidate, keeping :meth:`solve` a
-    pure function of ``(cand, phases)`` --- no ``__init__`` or no dedup state.
+    pure function of ``(cand, phases)`` --- no dedup state.
     """
 
     label = "delaunay-triple"
 
+    @classmethod
+    def supports(cls, axes: Axes) -> bool:
+        """Any :class:`Axes`: the tessellation and its root-finds use only the
+        two axes and the potential."""
+        return True
+
     def propose(self, df: pd.DataFrame) -> Iterator[_TripleCandidate]:
-        siblings = tuple(simplex for simplex, n in _delaunay_simplices(df) if n == 3)
+        siblings = tuple(simplex for simplex, n in _delaunay_simplices(df, self.axes) if n == 3)
         for simplex in siblings:
             yield _TripleCandidate(simplex=simplex, siblings=siblings)
 
     def solve(self, cand: _TripleCandidate, phases) -> list[RefinedPoint]:
+        ax = self.axes
         tr = cand.simplex
-        T0, mu0 = float(tr.T.mean()), float(tr.mu.mean())
+        x0, y0 = float(tr.x.mean()), float(tr.y.mean())
         names = tuple(tr.unique_phases())
         p1, p2, p3 = (phases[n] for n in names)
 
-        def triplemin(x):
-            T, mu = x
-            phi1 = p1.semigrand_potential(T, mu)
-            phi2 = p2.semigrand_potential(T, mu)
-            phi3 = p3.semigrand_potential(T, mu)
+        def triplemin(v):
+            x, y = v
+            phi1 = ax.potential(p1, x, y)
+            phi2 = ax.potential(p2, x, y)
+            phi3 = ax.potential(p3, x, y)
             return abs(phi1 - phi2) + abs(phi2 - phi3) + abs(phi3 - phi1)
 
-        T, mu = so.fmin(triplemin, (T0, mu0), disp=False)
-        owner = max(cand.siblings, key=lambda s: _simplex_containment((T, mu), s))
+        x, y = so.fmin(triplemin, (x0, y0), disp=False)
+        owner = max(cand.siblings, key=lambda s: _simplex_containment((x, y), s))
         if owner is not tr:
             return []
-        return [RefinedPoint(T=T, mu=mu, phases=names)]
+        return [RefinedPoint(x=x, y=y, phases=names, axes=ax)]
 
 
 # -- Clausius-Clapeyron tracers ----------------------------------------------
@@ -1078,19 +1094,19 @@ class DelaunayTripleRefiner(Refiner):
 
 
 def _simplex_brackets(simplex: "_Simplex"):
-    """Bounding box and centroid T of a Delaunay simplex.
+    """Bounding box and centroid x of a Delaunay simplex.
 
-    Returns ``(mu_lo, mu_hi, T_lo, T_hi, T_seed)``; both refiners use
-    these as the seed simplex's mu/T extents and the seed temperature.
+    Returns ``(y_lo, y_hi, x_lo, x_hi, x_seed)``; both refiners use
+    these as the seed simplex's y/x extents and the seed ``x``.
     """
     if not isinstance(simplex, _Simplex):
         raise TypeError(f"_simplex_brackets expects a _Simplex, got {type(simplex).__name__}")
     return (
-        float(simplex.mu.min()),
-        float(simplex.mu.max()),
-        float(simplex.T.min()),
-        float(simplex.T.max()),
-        float(simplex.T.mean()),
+        float(simplex.y.min()),
+        float(simplex.y.max()),
+        float(simplex.x.min()),
+        float(simplex.x.max()),
+        float(simplex.x.mean()),
     )
 
 

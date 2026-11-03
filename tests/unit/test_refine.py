@@ -58,7 +58,7 @@ def _mk_simplex(*, T, mu, phase=None, c=None):
         phase = np.array(["x"] * len(T))
     if c is None:
         c = np.zeros(len(T))
-    return _Simplex(T=T, mu=mu, phase=np.asarray(phase), c=np.asarray(c, float))
+    return _Simplex(x=T, y=mu, phase=np.asarray(phase), c=np.asarray(c, float))
 
 
 def _two_phase_diagram_df(phases):
@@ -810,9 +810,9 @@ def test_delaunay_simplices_yields_numpy_backed_vertices():
     seen_counts = set()
     for simplex, n in _delaunay_simplices(df):
         assert isinstance(simplex, _Simplex)
-        assert len(simplex.T) == len(simplex.mu) == len(simplex.phase) == len(simplex.c) == 3
+        assert len(simplex.x) == len(simplex.y) == len(simplex.phase) == len(simplex.c) == 3
         # every vertex is an actual (T, mu, phase, c) row of the input frame
-        for t, m, p, c in zip(simplex.T, simplex.mu, simplex.phase, simplex.c):
+        for t, m, p, c in zip(simplex.x, simplex.y, simplex.phase, simplex.c):
             assert (t, m, p, c) in rows
         # phase count matches the distinct phase names on the vertices
         assert n == len(set(simplex.phase))
@@ -2438,11 +2438,40 @@ def test_gap_leaving_the_window_has_no_closure():
 #
 # A refiner written against Axes reads the frame and evaluates phases only
 # through it. Column names alone relabel the semigrand plane; a subclass binding
-# other variables puts a different plane under the same numerics. ScanRefiner is
-# the one written against it so far; the others support the default Axes() only.
+# other variables puts a different plane under the same numerics. ScanRefiner and
+# the Delaunay refiners are written against it; the others support Axes() only.
 
 _RENAMED = Axes(x="temperature", y="dmu", extensive="x_B")
 _RENAME = {"T": "temperature", "mu": "dmu", "c": "x_B"}
+
+
+def _refine_each(refiners, df, phases):
+    """Every refiner's run() output, keyed by label, rows sorted for comparison."""
+    out = {}
+    for r in refiners:
+        res = r.run(df, phases)
+        out[r.label] = res.sort_values(list(res.columns.drop("locus"))).reset_index(drop=True)
+    return out
+
+
+def test_renamed_columns_reproduce_default_refinement(eutectic_phases):
+    """The same frame with its T/mu/c columns renamed, refined by the Delaunay
+    refiners with an Axes naming them, gives bit-identical rows under the new
+    names: the names relabel columns and nothing else."""
+    phases = {p.name: p for p in eutectic_phases}
+    df = calc_phase_diagram(eutectic_phases, np.linspace(200.0, 1000.0, 13), mu=30, refine=False)
+    renamed = df.rename(columns=_RENAME)
+
+    def all_refiners(axes):
+        return [DelaunayTripleRefiner(axes=axes), DelaunayLineRefiner(axes=axes)]
+
+    ref = _refine_each(all_refiners(None), df, phases)
+    new = _refine_each(all_refiners(_RENAMED), renamed, phases)
+    assert set(ref) == set(new)
+    assert all(len(v) > 0 for v in ref.values())  # both fired on the eutectic
+    for label in ref:
+        pd.testing.assert_frame_equal(new[label].rename(columns={v: k for k, v in _RENAME.items()}),
+                                      ref[label], check_exact=True)
 
 
 def test_renamed_columns_reproduce_default_scan(eutectic_phases):
@@ -2551,8 +2580,44 @@ def test_refined_rows_evaluate_through_the_axes():
         (0.01, 440.0, phi, 1.0), (0.01, 440.0, phi, 3.0)]
 
 
-@pytest.mark.parametrize("cls", [DelaunayLineRefiner, DelaunayTripleRefiner, ClausiusClapeyronRefiner,
-                                 MiscibilityGapRefiner, TerminalRefiner])
+# A third line phase C whose stable wedge closes at the triple point
+# phi_A = phi_B = phi_C, (mu, T) = (0, 500 K).
+_MUT_TRIPLE = _MUT_PHASES + (LinePhase("C", fixed_concentration=0.5, line_energy=0.02, line_entropy=1.4e-4),)
+
+
+def _mut_triple_frame():
+    rows = []
+    for mu in np.linspace(-0.05, 0.1, 13):
+        for T in np.linspace(0.0, 1000.0, 21):
+            phis = {p.name: float(p.semigrand_potential(T, mu)) for p in _MUT_TRIPLE}
+            name = min(phis, key=phis.get)
+            rows.append({"mu": mu, "T": T, "phi": phis[name], "phase": name})
+    return pd.DataFrame(rows)
+
+
+def test_delaunay_triple_refiner_finds_triple_in_turned_plane():
+    phases = {p.name: p for p in _MUT_TRIPLE}
+    df = _mut_triple_frame()
+    assert set(df.phase) == {"A", "B", "C"}
+    out = DelaunayTripleRefiner(axes=_MuT()).run(df, phases)
+    assert sorted(out["phase"]) == ["A", "B", "C"]
+    np.testing.assert_allclose(out["T"], 500.0, rtol=0, atol=1e-3)
+    np.testing.assert_allclose(out["mu"], 0.0, rtol=0, atol=1e-6)
+
+
+def test_delaunay_line_refiner_lands_on_lines_in_turned_plane():
+    """Every two-phase point the line refiner emits on the turned plane lies on
+    its own pair's exact coexistence line phi_i = phi_j."""
+    phases = {p.name: p for p in _MUT_TRIPLE}
+    out = DelaunayLineRefiner(axes=_MuT()).run(_mut_triple_frame(), phases)
+    assert set(out["phase"]) == {"A", "B", "C"}
+    for _, g in out.groupby("boundary_id"):
+        i, j = (phases[n] for n in g["phase"])
+        mu, T = g["mu"].iloc[0], g["T"].iloc[0]
+        assert i.semigrand_potential(T, mu) == pytest.approx(j.semigrand_potential(T, mu), abs=1e-9)
+
+
+@pytest.mark.parametrize("cls", [ClausiusClapeyronRefiner, MiscibilityGapRefiner, TerminalRefiner])
 def test_unconverted_refiners_support_the_default_axes_only(cls):
     """A refiner not written against Axes reads T/mu/c itself, so even a mere
     renaming of the columns is outside what it supports."""
@@ -2560,8 +2625,9 @@ def test_unconverted_refiners_support_the_default_axes_only(cls):
     assert not cls.supports(_RENAMED) and not cls.supports(_MuT())
 
 
-def test_scan_refiner_supports_any_axes():
-    assert ScanRefiner.supports(_RENAMED) and ScanRefiner.supports(_MuT())
+@pytest.mark.parametrize("cls", [ScanRefiner, DelaunayLineRefiner, DelaunayTripleRefiner])
+def test_converted_refiners_support_any_axes(cls):
+    assert cls.supports(_RENAMED) and cls.supports(_MuT())
 
 
 def test_constructing_on_unsupported_axes_raises():
@@ -2585,7 +2651,7 @@ def test_default_refiners_leave_out_unsupported(eutectic_phases):
     df = calc_phase_diagram(eutectic_phases, np.linspace(200.0, 1000.0, 5), mu=5, refine=False)
     assert [r.label for r in default_refiners(df)] == [
         "delaunay-triple", "clausius-clapeyron", "miscibility-gap", "terminal"]
-    assert default_refiners(df.rename(columns=_RENAME), axes=_RENAMED) == []
+    assert [r.label for r in default_refiners(df.rename(columns=_RENAME), axes=_RENAMED)] == ["delaunay-triple"]
 
 
 def test_admissible_filters_on_the_axes_rule():
@@ -2599,6 +2665,18 @@ def test_admissible_filters_on_the_axes_rule():
     out = r.run(df, phases)
     np.testing.assert_allclose(out["T"], 200.0, rtol=0, atol=1e-5)
     assert sorted(out["phase"]) == ["A", "B"]
+
+
+def test_delaunay_simplices_cache_keyed_on_axes():
+    """Two axes over one frame must not share the memoised tessellation."""
+    df = pd.DataFrame({"T": [0.0, 1.0, 0.0, 1.0], "mu": [0.0, 0.0, 1.0, 1.0],
+                       "phase": list("aabb"), "c": [0.1, 0.2, 0.3, 0.4],
+                       "phi": [5.0, 6.0, 7.0, 8.0]})
+    first = _delaunay_simplices(df)
+    other = _delaunay_simplices(df, Axes(extensive="phi"))
+    assert other is not first
+    assert set(np.concatenate([s.c for s, _ in first])) == {0.1, 0.2, 0.3, 0.4}
+    assert set(np.concatenate([s.c for s, _ in other])) == {5.0, 6.0, 7.0, 8.0}
 
 
 # -- fixed conditions ------------------------------------------------------------
@@ -2648,6 +2726,9 @@ def test_fixed_conditions_take_part_in_axes_identity():
     a, b, other = _MuTAtP(fixed={"p": 1e-3, "q": 1.0}), _MuTAtP(fixed={"q": 1.0, "p": 1e-3}), _MuTAtP(fixed={"p": 2e-3})
     assert a == b and hash(a) == hash(b)
     assert a != other and hash(a) != hash(other)
+    df = _mut_frame(np.linspace(-0.05, 0.05, 5), np.linspace(0.0, 1000.0, 5))
+    assert _delaunay_simplices(df, a) is _delaunay_simplices(df, b)
+    assert _delaunay_simplices(df, other) is not _delaunay_simplices(df, a)
 
 
 def test_axes_and_what_carries_them_pickle_with_their_conditions():
