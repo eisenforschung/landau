@@ -47,7 +47,7 @@ def main():
         mus = np.linspace(lo, hi, 60)
         grid = calc_phase_diagram(phases, Ts, mus, refine=False, keep_unstable=True)
         old = sampled_tangent_references(grid)
-        new = _terminal_free_energies(phases, Ts, mus.min(), mus.max())
+        new = _terminal_free_energies({p.name: p for p in phases}, Ts, Ts, mus.min(), mus.max())
         d = np.array([old[T] for T in Ts]) - new
         print(f"mu {lo}..{hi}: old - f(0) in [{d[:, 0].min():+.1e}, {d[:, 0].max():+.1e}]"
               f"   old - f(1) in [{d[:, 1].min():+.1e}, {d[:, 1].max():+.1e}]"

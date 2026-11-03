@@ -3,7 +3,10 @@
 Sites tested:
   - get_transitions: calculate.py:309 ``isinstance(res, pd.DataFrame)`` branch
   - AbstractPolyMethod.apply: poly.py:99 single-group dropna semantics
-  - calc_phase_diagram f_excess: calculate.py:231 single-T groupby.apply shape
+
+Also pins that a single-temperature calc_phase_diagram populates f_excess, the
+site that went through a single-group groupby.apply before f_excess was
+referenced against the pure components.
 """
 import numpy as np
 import pandas as pd
@@ -61,13 +64,7 @@ def test_poly_apply_single_group():
 
 
 def test_calc_phase_diagram_single_T_f_excess():
-    """calc_phase_diagram with a single temperature populates f_excess correctly.
-
-    Pins the single-T groupby.apply site at calculate.py:231. On pandas 3 a
-    single-group ``groupby("T").apply(sub)`` returns a DataFrame instead of a
-    Series; the production fix drops back to a Series before the assignment.
-    Without it ``f_excess`` would be NaN or misaligned.
-    """
+    """calc_phase_diagram with a single temperature populates f_excess correctly."""
     l1 = LinePhase("A", 0, 0, 0)
     l2 = LinePhase("B", 1, 0.1, 0)
     sol = IdealSolution("sol", l1, l2)

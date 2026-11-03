@@ -1,9 +1,10 @@
 """Cost of the ``f_excess`` reference in ``calc_phase_diagram``.
 
-``_f_excess`` evaluates every phase at each distinct temperature of the frame,
-far past the sampled ``mu`` window, to find the pure-component free energies.
-The refiners add rows at off-grid temperatures, so a refined 2-D frame holds
-many more distinct temperatures than the grid.  This times ``_f_excess`` alone
+``_f_excess`` resolves the stable phase at each pure component once along the
+sampled temperatures, far past the sampled ``mu`` window, then evaluates only
+that phase (two across a transition) at each distinct temperature of the
+frame.  The refiners add rows at off-grid temperatures, so a refined 2-D frame
+holds many more distinct temperatures than the grid.  This times ``_f_excess`` alone
 against the whole ``calc_phase_diagram`` call on two systems:
 
 * ``ideal``: three ``IdealSolution`` phases (closed form, cheap per call);
@@ -56,7 +57,7 @@ def bench(name, phases, repeat=3):
     part = []
     for _ in range(repeat):
         t0 = time.perf_counter()
-        _f_excess(df, by_name)
+        _f_excess(df, by_name, Ts)
         part.append(time.perf_counter() - t0)
     n_T = df.query("-inf<mu<inf")["T"].nunique()
     print(f"{name:6s} rows={len(df):6d} distinct T={n_T:5d}  "

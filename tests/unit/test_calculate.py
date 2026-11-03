@@ -15,6 +15,7 @@ from landau.calculate import (
     _border_edges,
     _f_excess,
     _terminal_free_energies,
+    _terminal_phases,
     _join_phase_unit,
     _rescale_T,
     _split_phase_unit,
@@ -309,7 +310,7 @@ def test_split_phase_unit_rejects_non_integer_unit():
 
 # --- guess_mu_range tests ---
 
-from landau.phases import LinePhase, IdealSolution, RegularSolution, FastInterpolatingPhase, kB
+from landau.phases import LinePhase, IdealSolution, RegularSolution, FastInterpolatingPhase, Phase, kB
 
 
 _GMR_SAMPLES = 50
@@ -890,15 +891,11 @@ def test_sub_endpoint_line_phases_have_zero_f_excess():
     np.testing.assert_allclose(df.loc[df.phase == "B", "f_excess"].values, 0.0, atol=_SUB_ATOL)
 
 
-def test_sub_tangent_wins_over_f_at_near_endpoint():
-    """f_excess of line phase at c=1 is 0 even when a near-endpoint phase has lower raw f.
+def test_sub_near_endpoint_phase_is_not_the_reference():
+    """f_excess of line phase at c=1 is 0 even when a phase at c=0.99 has lower f.
 
-    sol at c=0.99 has f=0.500; bcc at c=1.0 has f=0.505.
-    With mu=1.0:
-      tangent1_sol = phi_sol + mu = (0.500 - 0.99) + 1.0 = 0.510
-      tangent1_bcc = phi_bcc + mu = (0.505 - 1.00) + 1.0 = 0.505
-    Tangent logic picks bcc (0.505 < 0.510) so f_excess_bcc = 0.
-    f-based logic would pick sol (0.500 < 0.505), giving f_excess_bcc = 0.005.
+    sol at c=0.99 has f=0.500; bcc at c=1.0 has f=0.505.  sol is not at the
+    pure component, so bcc is the c=1 reference and f_excess_bcc = 0.
     """
     a = LinePhase("A", fixed_concentration=0.0, line_energy=0.0)
     sol = LinePhase("sol", fixed_concentration=0.99, line_energy=0.500)
@@ -907,12 +904,11 @@ def test_sub_tangent_wins_over_f_at_near_endpoint():
     np.testing.assert_allclose(df.loc[df.phase == "bcc", "f_excess"].values, 0.0, atol=_SUB_ATOL)
 
 
-def test_sub_f_excess_is_deviation_from_tangent_chord():
-    """f_excess equals f minus the linear interpolation between tangent endpoint references.
+def test_sub_f_excess_is_deviation_from_pure_component_chord():
+    """f_excess equals f minus the chord between the pure-component free energies.
 
-    A(c=0, f=0), B(c=1, f=1), mid(c=0.5, f=0.3) with mu=0.5.
-    References: f0 = tangent0[A] = phi_A = 0, f1 = tangent1[B] = phi_B + mu = 0.5 + 0.5 = 1.0.
-    f_excess_mid = 0.3 - (0*(1-0.5) + 1.0*0.5) = 0.3 - 0.5 = -0.2.
+    A(c=0, f=0), B(c=1, f=1), mid(c=0.5, f=0.3): f0 = 0, f1 = 1.0, so
+    f_excess_mid = 0.3 - (0*(1-0.5) + 1.0*0.5) = -0.2.
     """
     a = LinePhase("A", fixed_concentration=0.0, line_energy=0.0)
     b = LinePhase("B", fixed_concentration=1.0, line_energy=1.0)
@@ -934,10 +930,19 @@ def _terminal_lines():
     return a, b
 
 
+def _by_name(*phases):
+    return {p.name: p for p in phases}
+
+
+def _crossing_a():
+    """A second c=0 phase whose free energy crosses A's at exactly T = 500."""
+    return LinePhase("A2", fixed_concentration=0.0, line_energy=0.1, line_entropy=2e-4 + 0.1 / 500)
+
+
 def test_terminal_free_energies_of_line_phases_are_their_line_free_energy():
     a, b = _terminal_lines()
     Ts = np.array([300.0, 700.0])
-    out = _terminal_free_energies([a, b], Ts, mu_lo=-0.1, mu_hi=0.1)
+    out = _terminal_free_energies(_by_name(a, b), Ts, Ts, mu_lo=-0.1, mu_hi=0.1)
     np.testing.assert_allclose(out[:, 0], a.line_free_energy(Ts), atol=_TERMINAL_ATOL)
     np.testing.assert_allclose(out[:, 1], b.line_free_energy(Ts), atol=_TERMINAL_ATOL)
 
@@ -946,28 +951,55 @@ def test_terminal_free_energies_of_a_solution_are_its_end_members():
     """A solution phase contributes its true pure-component free energies, not a sampled tangent."""
     sol = IdealSolution("sol", LinePhase("sA", 0, 0.01, 1e-4), LinePhase("sB", 1, 0.05, 1e-4))
     Ts = np.array([300.0, 700.0])
-    out = _terminal_free_energies([sol], Ts, mu_lo=0.0, mu_hi=0.0)
+    out = _terminal_free_energies(_by_name(sol), Ts, Ts, mu_lo=0.0, mu_hi=0.0)
     np.testing.assert_allclose(out[:, 0], sol.phase1.line_free_energy(Ts), atol=_TERMINAL_ATOL)
     np.testing.assert_allclose(out[:, 1], sol.phase2.line_free_energy(Ts), atol=_TERMINAL_ATOL)
 
 
-def test_terminal_free_energies_take_the_lowest_phase_at_each_T():
-    """Two phases at c=0 whose free energies cross at T=500: each side of the crossing takes the lower one."""
+def test_terminal_phases_locate_the_transition_between_grid_points():
     a, b = _terminal_lines()
-    a2 = LinePhase("A2", fixed_concentration=0.0, line_energy=0.1, line_entropy=2e-4 + 0.1 / 500)
-    Ts = np.array([400.0, 600.0])
-    out = _terminal_free_energies([a, a2, b], Ts, mu_lo=0.0, mu_hi=0.0)
-    np.testing.assert_allclose(out[:, 0], [a.line_free_energy(400.0), a2.line_free_energy(600.0)],
-                               atol=_TERMINAL_ATOL)
-    assert a.line_free_energy(400.0) < a2.line_free_energy(400.0)
-    assert a2.line_free_energy(600.0) < a.line_free_energy(600.0)
+    seq = _terminal_phases(_by_name(a, _crossing_a(), b), np.array([400.0, 600.0]), mu=-5.0, end=0)
+    assert list(seq["phase"]) == ["A", "A", "A2", "A2"]
+    np.testing.assert_allclose(seq["T"].iloc[1:3], 500.0, atol=1e-6)
+
+
+def test_terminal_free_energies_take_the_lowest_phase_between_grid_points():
+    """The c=0 phases cross at T=500, between the grid points 400 and 600: every
+    temperature, on either side and right next to the crossing, takes the lower one."""
+    a, b = _terminal_lines()
+    a2 = _crossing_a()
+    Ts = np.array([400.0, 450.0, 499.9, 500.1, 550.0, 600.0])
+    out = _terminal_free_energies(_by_name(a, a2, b), np.array([400.0, 600.0]), Ts, mu_lo=0.0, mu_hi=0.0)
+    expected = np.minimum(a.line_free_energy(Ts), a2.line_free_energy(Ts))
+    np.testing.assert_allclose(out[:, 0], expected, atol=_TERMINAL_ATOL)
+    assert (a.line_free_energy(Ts[:3]) < a2.line_free_energy(Ts[:3])).all()
+    assert (a2.line_free_energy(Ts[3:]) < a.line_free_energy(Ts[3:])).all()
+
+
+def test_terminal_free_energies_find_a_phase_stable_only_between_grid_points():
+    """A3 is the stable c=0 phase only on 490 < T < 510, inside the grid interval
+    (400, 600) whose ends are A and A2; it still sets f(0) there."""
+    a, b = _terminal_lines()
+    a2 = _crossing_a()
+    a3 = LinePhase("A3", fixed_concentration=0.0, line_energy=0.049, line_entropy=3e-4)
+    phases = _by_name(a, a2, a3, b)
+    seq = _terminal_phases(phases, np.array([400.0, 600.0]), mu=-5.0, end=0)
+    assert "A3" in set(seq["phase"])
+    Ts = np.array([480.0, 495.0, 500.0, 505.0, 520.0])
+    out = _terminal_free_energies(phases, np.array([400.0, 600.0]), Ts, mu_lo=0.0, mu_hi=0.0)
+    expected = np.minimum.reduce([p.line_free_energy(Ts) for p in (a, a2, a3)])
+    np.testing.assert_allclose(out[:, 0], expected, atol=_TERMINAL_ATOL)
+    assert (a3.line_free_energy(Ts[1:4]) < np.minimum(a.line_free_energy(Ts[1:4]), a2.line_free_energy(Ts[1:4]))).all()
 
 
 def test_terminal_free_energies_ignore_phases_short_of_the_pure_component():
-    """A line phase at c=0.99 is not at c=1 and must not lower f(1), even though its f is lower."""
+    """Phases away from c=0/1 neither set f(0)/f(1) nor hide the end members, even
+    one far below everything else that stays the most stable phase at the far mu."""
     a, b = _terminal_lines()
     near = LinePhase("near", fixed_concentration=0.99, line_energy=-1.0)
-    out = _terminal_free_energies([a, b, near], [300.0], mu_lo=0.0, mu_hi=0.0)
+    nearer = LinePhase("nearer", fixed_concentration=1 - 1e-4, line_energy=-1.0)
+    deep = LinePhase("deep", fixed_concentration=0.5, line_energy=-100.0)
+    out = _terminal_free_energies(_by_name(a, b, near, nearer, deep), [300.0], [300.0], mu_lo=0.0, mu_hi=0.0)
     np.testing.assert_allclose(out[0], [a.line_free_energy(300.0), b.line_free_energy(300.0)],
                                atol=_TERMINAL_ATOL)
 
@@ -975,17 +1007,34 @@ def test_terminal_free_energies_ignore_phases_short_of_the_pure_component():
 def test_terminal_free_energies_do_not_depend_on_the_mu_window():
     sol = IdealSolution("sol", LinePhase("sA", 0, 0.0, 1e-4), LinePhase("sB", 1, 0.05, 3e-4))
     Ts = np.array([200.0, 1000.0])
-    wide = _terminal_free_energies([sol], Ts, mu_lo=-1.0, mu_hi=1.0)
-    narrow = _terminal_free_energies([sol], Ts, mu_lo=0.02, mu_hi=0.03)
+    wide = _terminal_free_energies(_by_name(sol), Ts, Ts, mu_lo=-1.0, mu_hi=1.0)
+    narrow = _terminal_free_energies(_by_name(sol), Ts, Ts, mu_lo=0.02, mu_hi=0.03)
     np.testing.assert_allclose(narrow, wide, atol=_TERMINAL_ATOL)
+
+
+class _LeavesPureAAbove500(Phase):
+    """Sits at c = 0 below 500 K and at c = 0.3 above, at any mu."""
+
+    def semigrand_potential(self, T, dmu):
+        return -0.1 - dmu * self.concentration(T, dmu)
+
+    def concentration(self, T, dmu):
+        return 0.0 if T < 500 else 0.3
+
+
+def test_terminal_free_energies_none_if_the_pure_component_is_lost_at_some_grid_T():
+    _, b = _terminal_lines()
+    phases = _by_name(_LeavesPureAAbove500("leaves"), b)
+    assert _terminal_free_energies(phases, [300.0, 400.0], [300.0], mu_lo=0.0, mu_hi=0.0) is not None
+    assert _terminal_free_energies(phases, [300.0, 600.0], [300.0], mu_lo=0.0, mu_hi=0.0) is None
 
 
 @pytest.mark.parametrize("missing", [0, 1])
 def test_terminal_free_energies_none_without_both_pure_components(missing):
     a, b = _terminal_lines()
     mid = LinePhase("M", fixed_concentration=0.5, line_energy=-0.1)
-    phases = [mid, b] if missing == 0 else [a, mid]
-    assert _terminal_free_energies(phases, [300.0], mu_lo=-0.1, mu_hi=0.1) is None
+    phases = _by_name(mid, b) if missing == 0 else _by_name(a, mid)
+    assert _terminal_free_energies(phases, [300.0], [300.0], mu_lo=-0.1, mu_hi=0.1) is None
 
 
 def test_f_excess_is_f_minus_chord_between_pure_components():
@@ -996,7 +1045,7 @@ def test_f_excess_is_f_minus_chord_between_pure_components():
                        "c": [0.4, 0.0, 0.4, 0.4], "phase": ["M", "A", "M", "M"]})
     df["f"] = [mid.line_free_energy(T) for T in df["T"]]
     df.index = [10, 20, 30, 40]
-    out = _f_excess(df, phases)
+    out = _f_excess(df, phases, grid_Ts=[300.0, 450.0])
     assert list(out.index) == [10, 20, 30, 40]
     assert np.isnan(out[20])
     for i in (10, 30, 40):
@@ -1010,7 +1059,7 @@ def test_f_excess_none_without_both_pure_components():
     a, _ = _terminal_lines()
     mid = LinePhase("M", fixed_concentration=0.5, line_energy=-0.1)
     df = pd.DataFrame({"T": [300.0], "mu": [0.0], "c": [0.5], "phase": ["M"], "f": [-0.1]})
-    assert _f_excess(df, {"A": a, "M": mid}) is None
+    assert _f_excess(df, {"A": a, "M": mid}, grid_Ts=[300.0]) is None
 
 
 def test_calc_phase_diagram_omits_f_excess_without_both_pure_components():

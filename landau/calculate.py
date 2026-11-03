@@ -13,7 +13,7 @@ from sklearn.cluster import AgglomerativeClustering
 
 from .features import Locus
 from .phases import Phase, AbstractLinePhase
-from .refine import Refiner, default_refiners, _find_one_point as find_one_point  # noqa: F401
+from .refine import Refiner, ScanRefiner, default_refiners, _find_one_point as find_one_point  # noqa: F401
 
 
 kB = Boltzmann / eV
@@ -57,41 +57,84 @@ def _split_phase_unit(combined: pd.Series) -> tuple[pd.Series, pd.Series]:
     return phase, unit
 
 
-# How far past the sampled mu range, in units of kB*T, the pure-component free
-# energies are read off; a phase that reaches a pure component sits within
-# ~exp(-40) of it there.
+# How far past the sampled mu range, in units of kB*T at the highest temperature,
+# the pure-component free energies are read off; a phase that reaches a pure
+# component sits within ~exp(-40) of it there.
 _TERMINAL_KT_FAR = 40.0
 # How close to c = 0 / 1 a phase must sit at that mu to count as reaching it.
 _TERMINAL_C_TOL = 1e-6
 
 
-def _terminal_free_energies(phases, Ts, mu_lo: float, mu_hi: float) -> np.ndarray | None:
-    """Lowest pure-component free energies ``f(T, c=0)`` and ``f(T, c=1)`` over ``phases``.
+def _terminal_phases(phases, grid_Ts, mu: float, end: int) -> pd.DataFrame | None:
+    """Stable phase at the pure component ``end`` (``0`` or ``1``) along ``T`` at fixed ``mu``.
 
-    Each phase is evaluated ``_TERMINAL_KT_FAR * kB * T`` below ``mu_lo`` and
-    above ``mu_hi``; where its concentration is within ``_TERMINAL_C_TOL`` of
-    the pure component, ``phi`` (at ``c = 0``) or ``phi + mu`` (at ``c = 1``)
-    is its free energy there.  Phases that do not reach a pure component do not
-    take part at that end.
+    Samples every phase on ``grid_Ts`` at ``mu``, keeps those whose
+    concentration is within ``_TERMINAL_C_TOL`` of ``end``, takes the lowest
+    ``phi`` per temperature and locates the transitions between them with
+    :class:`~landau.refine.ScanRefiner` along ``T``.
+
+    Returns:
+        frame with columns ``T`` and ``phase`` sorted by ``T`` (a transition
+        appears once per phase meeting there), or ``None`` if at some grid
+        temperature no phase reaches ``end``.
+    """
+    rows = []
+    for T in grid_Ts:
+        for p in phases.values():
+            c = float(p.concentration(T, mu))
+            if abs(c - end) < _TERMINAL_C_TOL:
+                rows.append({"T": T, "mu": mu, "phase": p.name, "phi": float(p.semigrand_potential(T, mu)), "c": c})
+    sampled = pd.DataFrame(rows, columns=["T", "mu", "phase", "phi", "c"])
+    if sampled["T"].nunique() < len(grid_Ts):
+        return None
+    stable = sampled.loc[sampled.groupby("T").phi.idxmin()].reset_index(drop=True)
+    stable["stable"] = True
+    if len(grid_Ts) > 1:
+        reaching = {name: phases[name] for name in sampled["phase"].unique()}
+        transitions = ScanRefiner(by="T").run(stable, reaching)
+        if not transitions.empty:
+            stable = pd.concat([stable[["T", "phase"]], transitions[["T", "phase"]]], ignore_index=True)
+    return stable[["T", "phase"]].sort_values("T", kind="stable").reset_index(drop=True)
+
+
+def _terminal_free_energies(phases, grid_Ts, Ts, mu_lo: float, mu_hi: float) -> np.ndarray | None:
+    """Lowest pure-component free energies ``f(T, c=0)`` and ``f(T, c=1)`` at temperatures ``Ts``.
+
+    The stable phase at each pure component is resolved once along ``grid_Ts``
+    (:func:`_terminal_phases`), ``_TERMINAL_KT_FAR * kB * max(T)`` below
+    ``mu_lo`` and above ``mu_hi``.  At each of ``Ts`` only the phase stable
+    there in that sequence is evaluated: ``phi`` at ``c = 0``, ``phi + mu`` at
+    ``c = 1``.  Temperatures outside ``grid_Ts`` take the phase at the nearer
+    end of it.
+
+    Args:
+        phases: mapping of phase name to :class:`Phase`
+        grid_Ts: temperatures the phase diagram was sampled at
+        Ts: temperatures to evaluate the pure-component free energies at
+        mu_lo, mu_hi: sampled chemical potential window
 
     Returns:
         array of shape ``(len(Ts), 2)`` holding ``f(T, 0)`` and ``f(T, 1)``,
-        or ``None`` if at some temperature no phase reaches one of the pure
-        components.
+        or ``None`` if at some grid temperature no phase reaches one of the
+        pure components.
     """
-    out = np.full((len(Ts), 2), np.inf)
-    for i, T in enumerate(Ts):
-        far = _TERMINAL_KT_FAR * kB * max(abs(T), 1.0)
-        for end, mu in ((0, mu_lo - far), (1, mu_hi + far)):
-            for p in phases:
-                if abs(float(p.concentration(T, mu)) - end) < _TERMINAL_C_TOL:
-                    out[i, end] = min(out[i, end], float(p.semigrand_potential(T, mu)) + end * mu)
-    if not np.isfinite(out).all():
-        return None
+    grid_Ts = np.unique(np.asarray(grid_Ts, dtype=float))
+    Ts = np.asarray(Ts, dtype=float)
+    far = _TERMINAL_KT_FAR * kB * max(np.abs(grid_Ts).max(), np.abs(Ts).max())
+    out = np.empty((len(Ts), 2))
+    for end, mu in ((0, mu_lo - far), (1, mu_hi + far)):
+        sequence = _terminal_phases(phases, grid_Ts, mu, end)
+        if sequence is None:
+            return None
+        seq_T = sequence["T"].to_numpy()
+        seq_phase = sequence["phase"].to_numpy()
+        stable = seq_phase[np.minimum(np.searchsorted(seq_T, Ts), len(seq_T) - 1)]
+        for i, (T, name) in enumerate(zip(Ts, stable)):
+            out[i, end] = float(phases[name].semigrand_potential(T, mu)) + end * mu
     return out
 
 
-def _f_excess(df: pd.DataFrame, phases) -> pd.Series | None:
+def _f_excess(df: pd.DataFrame, phases, grid_Ts) -> pd.Series | None:
     """Free energy of each row relative to the pure components at its temperature.
 
     ``f_excess = f - [f0 * (1 - c) + f1 * c]``, where ``f0`` and ``f1`` are
@@ -103,17 +146,18 @@ def _f_excess(df: pd.DataFrame, phases) -> pd.Series | None:
     Args:
         df: frame with columns ``T``, ``mu``, ``c`` and ``f``
         phases: mapping of phase name to :class:`Phase`
+        grid_Ts: temperatures the phase diagram was sampled at
 
     Returns:
         series aligned to ``df.index`` with ``NaN`` on rows with
         ``mu = +-inf``, or ``None`` if the phases do not reach both pure
-        components at every temperature in ``df`` (the reference is undefined).
+        components at every grid temperature (the reference is undefined).
     """
     finite = df.query("-inf<mu<inf")
     if finite.empty:
         return None
     Ts = finite["T"].unique()
-    ref = _terminal_free_energies(phases.values(), Ts, finite["mu"].min(), finite["mu"].max())
+    ref = _terminal_free_energies(phases, grid_Ts, Ts, finite["mu"].min(), finite["mu"].max())
     if ref is None:
         return None
     f0 = finite["T"].map(dict(zip(Ts, ref[:, 0])))
@@ -333,7 +377,7 @@ def calc_phase_diagram(
         max_c = pdf.c.max()
         pdf = refine_phase_diagram(pdf, phases, min_c=min_c, max_c=max_c, refiners=refiners)
     pdf["f"] = pdf.phi + pdf.mu * pdf.c
-    f_excess = _f_excess(pdf, phases)
+    f_excess = _f_excess(pdf, phases, Ts)
     if f_excess is not None:
         pdf["f_excess"] = f_excess
     if keep_unstable:
