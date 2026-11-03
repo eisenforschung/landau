@@ -816,7 +816,7 @@ def test_calc_phase_diagram_dphi_refined(triple_point_phases):
     spread of those phases' phi: rounding on a two-phase boundary, at most the
     coexistence tolerance _dominated admits on a triple point. The synthetic
     mu=+-inf edges have no phi and stay NaN."""
-    from landau.refine import _TRIPLE_COEXIST_TOL
+    from landau.refine import _COEXIST_TOL
     df = calc_phase_diagram(triple_point_phases, Ts=np.linspace(220, 480, 12),
                             mu=np.linspace(-0.05, 0.55, 15), keep_unstable=True)
     edges = df["mu"].abs() == np.inf
@@ -826,7 +826,7 @@ def test_calc_phase_diagram_dphi_refined(triple_point_phases):
     triple = df["locus"] == Locus.TRIPLE
     assert boundary.any() and triple.any()
     assert df.loc[boundary, "dphi"].between(0, 1e-12).all()
-    assert df.loc[triple, "dphi"].between(0, _TRIPLE_COEXIST_TOL).all()
+    assert df.loc[triple, "dphi"].between(0, _COEXIST_TOL).all()
     assert (df.loc[triple, "dphi"] == 0).sum() == 1
 
 
