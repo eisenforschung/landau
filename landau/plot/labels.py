@@ -701,13 +701,15 @@ def _place_transition_labels(ax, positions, labels, *, side, **text_kw):
     return texts
 
 
-def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True, ylim=None):
+def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True, ylim=None,
+                         top_label_rotation="horizontal"):
     """Annotate a 1d phase diagram with inline phase labels.
 
     top_labels
         Ticks on the top spine mark each transition boundary (positions where
         ``border == True``) and the stable phase name is placed near the top of
-        the axis, centered between adjacent boundaries.
+        the axis, hanging down from the top spine and centered between
+        adjacent boundaries.
 
     side_labels
         The default seaborn legend is removed and, when unstable lines are
@@ -720,6 +722,9 @@ def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True, yl
             (if available) 'border' columns.
         scan_col: Scan-axis column ('mu' or 'T').
         top_labels: If True, add the top-spine ticks and stable-phase labels.
+        top_label_rotation: Rotation of the stable-phase labels, passed to
+            :meth:`matplotlib.text.Text.set_rotation` (``"horizontal"``,
+            ``"vertical"`` or an angle in degrees).
         side_labels: If True, remove the default seaborn legend and add the
             right-end side labels.
         ylim: If given, applied via ``ax.set_ylim`` before the labels are placed,
@@ -795,6 +800,7 @@ def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True, yl
             top_texts.append(_text_with_outline(
                 ax, mid, 0.97, _bold_math(phase),
                 transform=xform,
+                rotation=top_label_rotation,
                 ha="center", va="top", fontsize="small", fontweight="bold",
                 color=phase_colors.get(phase, "black"),
             ))
