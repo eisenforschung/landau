@@ -9,7 +9,7 @@ from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
 from landau.features import Locus
-from landau.calculate import calc_phase_diagram
+from landau.calculate import calc_phase_diagram, guess_mu_range
 from landau.phases import (
     IdealSolution,
     LinePhase,
@@ -1489,9 +1489,15 @@ def _gap_phases(gaps, shared):
         sign: float
 
         def concentration(self, T, mu):
-            # clipped: the congruent solve probes mu off the sampled points
-            # before giving up on these constant-potential fakes
-            i = min(max(int(round(mu)), 0), len(gaps) - 1)
+            # past the sampled points the fake sits at the pure component,
+            # like a solution phase at the far mu of _terminal_closure; the
+            # congruent solve probes there too before giving up on these
+            # constant-potential fakes
+            if mu < -0.5:
+                return 0.0
+            if mu > len(gaps) - 0.5:
+                return 1.0
+            i = int(round(mu))
             return shared[i] + self.sign * gaps[i] / 2
 
         def semigrand_potential(self, T, mu):
@@ -1980,6 +1986,40 @@ def test_tag_features_leaves_a_terminal_closure_untagged():
 _DILUTE_T = 900.0
 
 
+def test_tag_features_terminal_closure_is_where_the_gap_closes_not_where_the_trace_stopped():
+    """A line running into a pure component is cut short by the last trace
+    step, and its gap extrapolates to zero at the terminal: untagged. A fold
+    traced on one side only also ends the line, but its gap closes at the
+    fold: tagged there (both fakes reach both terminals)."""
+    grid = _GRID[_GRID >= 0.05]
+    refiner = ClausiusClapeyronRefiner()
+    into_terminal = 0.4 * grid  # gap -> 0 at c = 0, line stops at c = 0.05
+    out = refiner._tag_features(_gap_points(len(grid)), _gap_phases(into_terminal, grid))
+    assert not any(pt.congruent for pt in out)
+    grid = _GRID[_GRID >= 0.3]
+    one_sided_fold = 0.4 * (grid - 0.3) + 1e-4  # gap -> 0 at c = 0.3, the line's end
+    out = refiner._tag_features(_gap_points(len(grid)), _gap_phases(one_sided_fold, grid))
+    assert [grid[i] for i, pt in enumerate(out) if pt.congruent] == pytest.approx([0.3])
+
+
+def test_one_sided_congruent_minimum_keeps_the_traced_tag_when_the_solve_fails(isomorphous_minimum, monkeypatch):
+    """The lens's B branch is left out of the sampled mu window, so the line
+    ends at the minimum; with the exact solve failing the traced closure is
+    still an interior one -- its gap closes at the minimum's composition, not
+    at c = 1 -- and keeps its tag."""
+    _df, phases, (c_min, T_min) = isomorphous_minimum
+    monkeypatch.setattr(ClausiusClapeyronRefiner, "_solve_congruent", lambda self, pt, phases: None)
+    Ts = np.linspace(300.0, 1500.0, 60)
+    mu_full, *_ = guess_mu_range(list(phases.values()), Ts.mean(), 100)
+    mu = np.linspace(mu_full.min(), mu_full.min() + 0.55 * (mu_full.max() - mu_full.min()), 100)
+    df = calc_phase_diagram(list(phases.values()), Ts, mu=mu)
+    assert df[df["locus"] == Locus.BOUNDARY]["c"].max() < 0.75, "the branch beyond the minimum is not sampled"
+    tagged = df[(df["locus"] == Locus.CONGRUENT) & np.isfinite(df["mu"])]
+    assert len(tagged) == 2 and (tagged["refined"] == "clausius-clapeyron").all()
+    assert tagged["T"].to_numpy() == pytest.approx([T_min, T_min], abs=ClausiusClapeyronRefiner().dT_max)
+    assert tagged["c"].to_numpy() == pytest.approx([c_min, c_min], abs=0.03)
+
+
 def _dilute_congruent(c_g):
     """An ideal liquid and a line phase at ``c_g`` built to melt congruently at
     ``_DILUTE_T``: its free energy is set on the liquid's there, one kB of
@@ -2132,11 +2172,11 @@ def test_terminal_refiner_warns_when_no_phase_reaches_the_terminal():
     silently."""
     a = LinePhase("A", fixed_concentration=0.01, line_energy=-2.0, line_entropy=1.0 * kB)
     b = LinePhase("B", fixed_concentration=0.02, line_energy=-1.8, line_entropy=2.5 * kB)
-    with pytest.warns(UserWarning, match=r"No phase reaches c = 0 .* A at c = 0\.01") as record:
+    with pytest.warns(UserWarning, match=r"No phase reaches c = 0 \(closest .*: A\)") as record:
         out = TerminalRefiner().run(_terminal_frame(np.linspace(400.0, 2000.0, 9)), {"A": a, "B": b})
     assert out.empty
-    messages = [str(w.message) for w in record if "No phase reaches" in str(w.message)]
-    assert len(messages) == 2 and any("c = 1 " in m and "B at c = 0.02" in m for m in messages)
+    messages = {str(w.message) for w in record if "No phase reaches" in str(w.message)}
+    assert len(messages) == 2 and any("c = 1 (closest" in m and ": B)" in m for m in messages)
 
 
 def _terminal_rows(names, T, mu, c):

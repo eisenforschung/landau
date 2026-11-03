@@ -313,12 +313,9 @@ def _dominated(pt, phases: Mapping[str, Phase]) -> bool:
     arbitrary member of the ``own`` set, so the verdict does not depend on
     set-iteration order.
 
-    A :class:`TerminalRefiner` point (``pt.terminal`` set) lives at
-    ``mu = -+inf``, where only phases at that pure component exist; it carries
-    the finite far ``mu`` it was solved at as a proxy, so a phase that is not at
-    the terminal there -- a dilute line phase, whose potential at any finite
-    ``mu`` can undercut the pure component's -- is no competitor and is left
-    out of the outside comparison.
+    A :class:`TerminalRefiner` point (``pt.terminal`` set) is compared only
+    against phases at that pure component, the only ones present at
+    ``mu = -+inf``.
     """
     own = pt.phase_names()
     terminal = getattr(pt, "terminal", None)
@@ -414,11 +411,10 @@ def _drop_terminal_triples(df: pd.DataFrame, T_tol: float = _CONGRUENT_DEDUP_T) 
     """Drop :class:`TerminalRefiner` rows that restate a triple point.
 
     Two line phases at one pure component transform at a temperature that
-    does not depend on ``mu``, so where a third phase coexists with both --
-    the Mg-Ca diagram's bcc/fcc Ca with Mg2Ca -- the three-phase point found
-    by :class:`DelaunayTripleRefiner` and the terminal transition are the same
-    invariant: its isotherm already reaches c = 0 / 1 through the two line
-    phases' rows. A terminal row whose phases are among those of a
+    does not depend on ``mu``, so where a third phase coexists with both the
+    three-phase point and the terminal transition are the same invariant,
+    whose isotherm already reaches c = 0 / 1 through the two line phases'
+    rows. A terminal row whose phases are among those of a
     :attr:`~landau.features.Locus.TRIPLE` point within ``T_tol`` of it is
     dropped (``df`` is the concatenated refiner output).
     """
@@ -559,16 +555,15 @@ class TerminalRefiner(Refiner):
     have converged to the same order -- and root-finds the stable phase's
     change across the step with :func:`_solve_pair` (shared with
     :class:`ScanRefiner`), recursing where a third phase interposes. Only
-    phases actually at the terminal (within :data:`_TERMINAL_C_TOL` of it at
-    the far ``mu``) compete: a pure component can only be a phase that
-    reaches it, so a line phase at c = 0 is no candidate on the c = 1 side,
-    and a dilute line phase -- which undercuts the pure component's potential
-    at any finite ``mu`` -- neither hides nor takes part in a transition at
-    c = 0. Each transition is a :class:`RefinedPoint` with ``terminal`` set:
-    solved and validated at the finite far ``mu`` (:func:`_dominated` leaves
-    phases off the terminal out of it likewise), emitted at ``mu = -+inf``
-    tagged :attr:`~landau.features.Locus.CONGRUENT` with both concentrations
-    equal to the terminal's.
+    phases at the terminal (within :data:`_TERMINAL_C_TOL` of it at the far
+    ``mu``) compete, since a pure component can only be a phase that reaches
+    it: a line phase at c = 0 is no candidate on the c = 1 side, and a dilute
+    line phase, whose potential undercuts the pure component's at any finite
+    ``mu``, neither hides nor takes part in a transition at c = 0. Each
+    transition is a :class:`RefinedPoint` with ``terminal`` set: solved and
+    validated at the finite far ``mu``, emitted at ``mu = -+inf`` tagged
+    :attr:`~landau.features.Locus.CONGRUENT` with both concentrations equal
+    to the terminal's.
 
     Parameters
     ----------
@@ -579,31 +574,19 @@ class TerminalRefiner(Refiner):
     Warns
     -----
     UserWarning
-        Once per side when at some grid temperature no phase sits at that
-        terminal -- every solution phase's concentration range stops short of
-        the pure component, say. There is then nothing to refine there, and
-        nothing else marks the pure component's transitions.
+        When at a grid temperature no phase sits at the terminal -- every
+        solution phase's concentration range stops short of the pure
+        component, say. There is then nothing to refine there, and nothing
+        else marks the pure component's transitions.
     """
 
     label = "terminal"
 
     def __init__(self, *, kT_far: float = _KT_FAR):
         self.kT_far = kT_far
-        self._no_terminal: dict[float, tuple[str, float, float]] = {}
 
     def _mu_far(self, cand: _TerminalCandidate, T: float) -> float:
         return _far_mu(cand.edge, cand.side, T, self.kT_far)
-
-    def run(self, df: pd.DataFrame, phases: Mapping[str, Phase]) -> pd.DataFrame:
-        self._no_terminal = {}
-        out = super().run(df, phases)
-        for side, (name, c, T) in self._no_terminal.items():
-            warnings.warn(
-                f"No phase reaches c = {side:g} at T = {T:g} K (closest {self.kT_far:g} kT past the sampled mu "
-                f"range: {name} at c = {c:.3g}); transitions of the pure component there are not refined.",
-                stacklevel=2,
-            )
-        return out
 
     def propose(self, df: pd.DataFrame) -> Iterator[_TerminalCandidate]:
         mus = df["mu"].to_numpy(dtype=float)
@@ -628,7 +611,12 @@ class TerminalRefiner(Refiner):
             there = {n: phases[n] for n, c in cs.items() if abs(c - cand.side) < _TERMINAL_C_TOL}
             if not there:
                 closest = min(cs, key=lambda n: abs(cs[n] - cand.side))
-                self._no_terminal.setdefault(cand.side, (closest, cs[closest], T))
+                # the same text at every T it holds for, so the default filter shows it once
+                warnings.warn(
+                    f"No phase reaches c = {cand.side:g} (closest {self.kT_far:g} kT past the sampled mu range: "
+                    f"{closest}); the pure component's transitions there are not refined.",
+                    stacklevel=4,
+                )
                 return None, there
             return min(there, key=lambda n: potential(phases[n], T)), there
 
@@ -1607,25 +1595,39 @@ class ClausiusClapeyronRefiner(_CCBase):
         """Whether the traced closure ``pt`` of the line ``points`` is at a
         pure component.
 
-        It is when the line ends there -- no point of it lies closer to that
-        terminal in shared composition, the trace having run toward it until
-        ``mu`` grew too large -- and both phases reach it: both sit within
+        It is when both phases reach that terminal (both sit within
         :data:`_TERMINAL_C_TOL` of it :data:`_KT_FAR` thermal energies past
-        ``pt.mu``. The composition says nothing on its own: a dilute line
-        phase melting congruently closes its line near c = 0 but never
-        reaches it, and is an interior point however dilute; a liquidus
-        running into the pure component's melting point stops short of it by
-        whatever the last trace step left, 1.5 at% on the Mg-Ca diagram, and
-        is terminal however close it came.
+        ``pt.mu``), the line ends at ``pt`` (no point of it lies closer to the
+        terminal in shared composition) and the gap, extrapolated to zero
+        along the line from ``pt`` and its neighbour, closes within ``dc_max``
+        of the terminal. The composition of ``pt`` says nothing on its own: a
+        liquidus running into the pure component's melting point stops short
+        of it by whatever the last trace step left, while an interior fold
+        traced on one side only (the other branch dominated, or outside the
+        sampled window) also ends the line, but its gap closes at the fold's
+        own composition.
         """
-        shared = [np.mean(p.emitted_concentrations(phases)) for p in points
-                  if isinstance(p, RefinedPoint) and len(p.phases) == 2]
-        c0 = np.mean(pt.emitted_concentrations(phases))
+        pts = [p for p in points if isinstance(p, RefinedPoint) and len(p.phases) == 2]
+        cs = [p.emitted_concentrations(phases) for p in pts]
+        shared = np.array([np.mean(c) for c in cs])
+        gap = np.array([abs(c[0] - c[1]) for c in cs])
+        c0, g0 = np.mean(pt.emitted_concentrations(phases)), abs(np.subtract(*pt.emitted_concentrations(phases)))
         side = 0.0 if c0 < 0.5 else 1.0
-        if (min(shared) < c0) if side == 0 else (max(shared) > c0):
-            return False
         mu = _far_mu(pt.mu, side, pt.T)
-        return all(abs(float(phases[n].concentration(pt.T, mu)) - side) < _TERMINAL_C_TOL for n in pt.phases)
+        if any(abs(float(phases[n].concentration(pt.T, mu)) - side) >= _TERMINAL_C_TOL for n in pt.phases):
+            return False
+        toward = shared - c0 if side == 0 else c0 - shared
+        if (toward < -_TERMINAL_C_TOL).any():
+            return False  # a point of the line lies beyond pt toward the terminal
+        inward = toward > _TERMINAL_C_TOL
+        if not inward.any():
+            return True
+        i = np.argmin(np.abs(shared[inward] - c0))
+        c1, g1 = shared[inward][i], gap[inward][i]
+        if g1 <= g0:
+            return True
+        closes_at = c0 - g0 * (c1 - c0) / (g1 - g0)
+        return abs(closes_at - side) <= self.dc_max
 
     def _solve_congruent(self, pt, phases):
         """The exact congruent point near the traced closure ``pt``, or ``None``.
