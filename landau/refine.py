@@ -203,14 +203,8 @@ def _state_row(phase: Phase, T: float, mu: float) -> dict:
 
 
 # eV; largest spread in a refined point's own-phase potentials still read as
-# one coexistence. Bounded below by the refiners' own convergence — the eutectic
-# invariant of the `eutectic_diagram` fixture converges to a 2e-8 spread and
-# disappears from the diagram entirely once this constant reaches 1e-8 — and
-# above by the smallest gap that must still read as domination. The two-phase
-# root-finds stop at xtol = 1e-6 in mu or T, which leaves a converged spread of
-# order |c_1 - c_2| * 1e-6 eV at most; benchmarks/coexist_spread.py measures the
-# spread of every refined point on the testplots diagrams. Both sides are pinned
-# in tests/unit/test_refine.py.
+# one coexistence. The two-phase root-finds stop at xtol = 1e-6 in mu or T,
+# which leaves a converged spread of order |c_1 - c_2| * 1e-6 eV at most
 _COEXIST_TOL = 1e-5
 
 
@@ -228,9 +222,7 @@ def _dominated(pt, phases: Mapping[str, Phase]) -> bool:
       the boundary it claims to be (a Clausius-Clapeyron trace that oversteps an
       invariant lands here).
     * Its own phases don't share one potential (spread ``> _COEXIST_TOL``).
-      Coexisting phases are degenerate in ``phi``, whether two or three of them:
-      ``phi`` is a Legendre transform of the free energy, hence continuous, and
-      at a first-order boundary it is ``c = -dphi/dmu`` that jumps, not ``phi``.
+      Coexisting phases are degenerate in ``phi``.
 
     The reference for the outside comparison is ``max(own_phi)`` rather than an
     arbitrary member of the ``own`` set, so the verdict does not depend on

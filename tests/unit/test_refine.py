@@ -1241,18 +1241,15 @@ def test_dominated_triple_spread_just_above_tolerance_is_dropped():
 
 
 def test_dominated_two_phase_spread_just_below_tolerance_survives():
-    """Two coexisting phases share one potential just as three do: a first-order
-    boundary is a jump in ``c = -dphi/dmu``, not in ``phi``. Half the tolerance
-    apart still reads as coexistence. Nothing sits outside `own`, so the spread
-    branch is the only one that can fire."""
+    """Two phases half the tolerance apart still coexist. Nothing sits outside
+    `own`, so only the spread branch can fire."""
     phases = _dom_phases(("A", 0.0, 0.0), ("B", 1.0, 0.5 * _COEXIST_TOL))
     pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B"))
     assert _dominated(pt, phases) is False
 
 
 def test_dominated_two_phase_spread_just_above_tolerance_is_dropped():
-    """The other side of the threshold for two phases: twice the tolerance apart,
-    A and B do not coexist at (T, mu) and the point is dropped."""
+    """Two phases twice the tolerance apart are dropped."""
     phases = _dom_phases(("A", 0.0, 0.0), ("B", 1.0, 2.0 * _COEXIST_TOL))
     pt = RefinedPoint(T=300.0, mu=0.0, phases=("A", "B"))
     assert _dominated(pt, phases) is True
@@ -1282,8 +1279,7 @@ def test_refined_two_phase_points_leave_orders_of_magnitude_of_headroom(
     eutectic_phases, eutectic_diagram
 ):
     """Every refined two-phase point of the eutectic diagram sits far inside the
-    tolerance, so applying it to two-phase boundaries filters nothing a refiner
-    solved: each one root-finds ``phi_1 - phi_2 = 0``."""
+    tolerance."""
     by_name = {p.name: p for p in eutectic_phases}
     boundary = eutectic_diagram[eutectic_diagram["locus"] == Locus.BOUNDARY]
     points = list(boundary.groupby(["T", "mu"]))
