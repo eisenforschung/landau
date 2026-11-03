@@ -57,39 +57,68 @@ def _split_phase_unit(combined: pd.Series) -> tuple[pd.Series, pd.Series]:
     return phase, unit
 
 
-def _f_excess_tangent_chord(dd: pd.DataFrame) -> pd.Series:
-    """Subtract from ``dd.f`` the chord between the endpoint reference tangents.
+# How far past the sampled mu range, in units of kB*T, the pure-component free
+# energies are read off; a phase that reaches a pure component sits within
+# ~exp(-40) of it there.
+_TERMINAL_KT_FAR = 40.0
+# How close to c = 0 / 1 a phase must sit at that mu to count as reaching it.
+_TERMINAL_C_TOL = 1e-6
 
-    The reference for each endpoint (``c = 0`` and ``c = 1``) is the smallest
-    tangent value among phases whose sampled c-range reaches within 1% of the
-    span of that extreme — ``phi`` at ``c = 0``, ``phi + mu`` at ``c = 1``.
-    Comparing by the tangent value, rather than by ``f`` at the extreme sample,
-    keeps a phase sampled only up to ``c = 1 - eps`` from stealing the reference
-    from a line phase sitting exactly at ``c = 1`` (``f`` is convex with slope
-    ``mu`` in ``c``, so the partial-coverage phase sits below its own tangent
-    value at the endpoint).  For a line phase located exactly at an endpoint
-    both expressions reduce to ``f``.
 
-    Drops ``mu = +-inf`` rows before computing.  Designed to be applied per
-    temperature via :func:`_apply_series`.
+def _terminal_free_energies(phases, Ts, mu_lo: float, mu_hi: float) -> np.ndarray | None:
+    """Lowest pure-component free energies ``f(T, c=0)`` and ``f(T, c=1)`` over ``phases``.
+
+    Each phase is evaluated ``_TERMINAL_KT_FAR * kB * T`` below ``mu_lo`` and
+    above ``mu_hi``; where its concentration is within ``_TERMINAL_C_TOL`` of
+    the pure component, ``phi`` (at ``c = 0``) or ``phi + mu`` (at ``c = 1``)
+    is its free energy there.  Phases that do not reach a pure component do not
+    take part at that end.
+
+    Returns:
+        array of shape ``(len(Ts), 2)`` holding ``f(T, 0)`` and ``f(T, 1)``,
+        or ``None`` if at some temperature no phase reaches one of the pure
+        components.
     """
-    dd = dd.query("-inf<mu<inf")
-    if dd.empty:
-        return dd.f
-    c_min = dd.c.min()
-    c_max = dd.c.max()
-    c_span = c_max - c_min
-    lo_thr = c_min + 0.01 * c_span
-    hi_thr = c_max - 0.01 * c_span
-    f0, f1 = np.inf, np.inf
-    tangent0 = dd["phi"]
-    tangent1 = dd["phi"] + dd["mu"]
-    for _, g in dd.groupby("phase"):
-        if g["c"].min() <= lo_thr:
-            f0 = min(f0, tangent0[g["c"].idxmin()])
-        if g["c"].max() >= hi_thr:
-            f1 = min(f1, tangent1[g["c"].idxmax()])
-    return dd.f - (f0 * (1 - dd.c) + f1 * dd.c)
+    out = np.full((len(Ts), 2), np.inf)
+    for i, T in enumerate(Ts):
+        far = _TERMINAL_KT_FAR * kB * max(abs(T), 1.0)
+        for end, mu in ((0, mu_lo - far), (1, mu_hi + far)):
+            for p in phases:
+                if abs(float(p.concentration(T, mu)) - end) < _TERMINAL_C_TOL:
+                    out[i, end] = min(out[i, end], float(p.semigrand_potential(T, mu)) + end * mu)
+    if not np.isfinite(out).all():
+        return None
+    return out
+
+
+def _f_excess(df: pd.DataFrame, phases) -> pd.Series | None:
+    """Free energy of each row relative to the pure components at its temperature.
+
+    ``f_excess = f - [f0 * (1 - c) + f1 * c]``, where ``f0`` and ``f1`` are
+    the lowest free energies of any phase at ``c = 0`` and ``c = 1`` at the
+    row's ``T`` (:func:`_terminal_free_energies`), evaluated from ``phases``
+    rather than read off the sampled rows, so they do not depend on the
+    sampling window or on which rows share a temperature.
+
+    Args:
+        df: frame with columns ``T``, ``mu``, ``c`` and ``f``
+        phases: mapping of phase name to :class:`Phase`
+
+    Returns:
+        series aligned to ``df.index`` with ``NaN`` on rows with
+        ``mu = +-inf``, or ``None`` if the phases do not reach both pure
+        components at every temperature in ``df`` (the reference is undefined).
+    """
+    finite = df.query("-inf<mu<inf")
+    if finite.empty:
+        return None
+    Ts = finite["T"].unique()
+    ref = _terminal_free_energies(phases.values(), Ts, finite["mu"].min(), finite["mu"].max())
+    if ref is None:
+        return None
+    f0 = finite["T"].map(dict(zip(Ts, ref[:, 0])))
+    f1 = finite["T"].map(dict(zip(Ts, ref[:, 1])))
+    return (finite.f - (f0 * (1 - finite.c) + f1 * finite.c)).reindex(df.index)
 
 
 def _split_stable(df):
@@ -271,7 +300,10 @@ def calc_phase_diagram(
         lowest ``phi`` among the rows at the same ``(T, mu)``, i.e. how far
         a phase sits above the stable one (``0`` for stable rows, ``NaN`` on
         the synthetic ``mu = +-inf`` edges; refined rows are zero up to the
-        refiners' numerical tolerance).
+        refiners' numerical tolerance). The ``f_excess`` column is ``f``
+        relative to the chord between the lowest free energies of the pure
+        components at each row's ``T``; it is left out when the phases do not
+        reach both ``c = 0`` and ``c = 1``.
     """
     if not isinstance(Ts, Iterable):
         Ts = [Ts]
@@ -301,9 +333,9 @@ def calc_phase_diagram(
         max_c = pdf.c.max()
         pdf = refine_phase_diagram(pdf, phases, min_c=min_c, max_c=max_c, refiners=refiners)
     pdf["f"] = pdf.phi + pdf.mu * pdf.c
-    pdf["f_excess"] = _apply_series(
-        pdf.groupby("T", group_keys=False), _f_excess_tangent_chord, "f_excess"
-    )
+    f_excess = _f_excess(pdf, phases)
+    if f_excess is not None:
+        pdf["f_excess"] = f_excess
     if keep_unstable:
         pdf["dphi"] = pdf.phi - pdf.groupby(["T", "mu"]).phi.transform("min")
     else:

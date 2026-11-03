@@ -13,7 +13,8 @@ from landau.calculate import (
     _tie_lines,
     _apply_series,
     _border_edges,
-    _f_excess_tangent_chord,
+    _f_excess,
+    _terminal_free_energies,
     _join_phase_unit,
     _rescale_T,
     _split_phase_unit,
@@ -922,96 +923,120 @@ def test_sub_f_excess_is_deviation_from_tangent_chord():
     )
 
 
-# --- _f_excess_tangent_chord direct tests ---
+# --- _terminal_free_energies / _f_excess direct tests ---
+
+_TERMINAL_ATOL = 1e-12
 
 
-def _chord_input(rows):
-    """Helper: build a per-T slice with the columns the helper reads."""
-    df = pd.DataFrame(rows)
-    df["f"] = df["phi"] + df["mu"] * df["c"]
-    return df
+def _terminal_lines():
+    a = LinePhase("A", fixed_concentration=0.0, line_energy=0.0, line_entropy=2e-4)
+    b = LinePhase("B", fixed_concentration=1.0, line_energy=0.1, line_entropy=5e-4)
+    return a, b
 
 
-def test_f_excess_tangent_chord_empty_input_returns_empty_series():
-    """All rows drop out under the -inf<mu<inf filter: return an empty Series."""
-    dd = _chord_input([
-        {"phase": "A", "c": 0.0, "phi": 0.0, "mu": -np.inf},
-        {"phase": "B", "c": 1.0, "phi": 0.0, "mu": +np.inf},
-    ])
-    out = _f_excess_tangent_chord(dd)
-    assert isinstance(out, pd.Series)
-    assert out.empty
+def test_terminal_free_energies_of_line_phases_are_their_line_free_energy():
+    a, b = _terminal_lines()
+    Ts = np.array([300.0, 700.0])
+    out = _terminal_free_energies([a, b], Ts, mu_lo=-0.1, mu_hi=0.1)
+    np.testing.assert_allclose(out[:, 0], a.line_free_energy(Ts), atol=_TERMINAL_ATOL)
+    np.testing.assert_allclose(out[:, 1], b.line_free_energy(Ts), atol=_TERMINAL_ATOL)
 
 
-def test_f_excess_tangent_chord_drops_infinite_mu_rows_from_output():
-    """The +-inf rows are excluded from both the references and the result."""
-    dd = _chord_input([
-        {"phase": "A", "c": 0.0, "phi": 0.0, "mu": 0.0},
-        {"phase": "B", "c": 1.0, "phi": 0.0, "mu": 0.0},
-        {"phase": "A", "c": 0.0, "phi": 9.9, "mu": -np.inf},
-    ])
-    out = _f_excess_tangent_chord(dd)
-    assert len(out) == 2
-    assert -np.inf not in out.index.map(lambda i: dd.loc[i, "mu"]).tolist()
+def test_terminal_free_energies_of_a_solution_are_its_end_members():
+    """A solution phase contributes its true pure-component free energies, not a sampled tangent."""
+    sol = IdealSolution("sol", LinePhase("sA", 0, 0.01, 1e-4), LinePhase("sB", 1, 0.05, 1e-4))
+    Ts = np.array([300.0, 700.0])
+    out = _terminal_free_energies([sol], Ts, mu_lo=0.0, mu_hi=0.0)
+    np.testing.assert_allclose(out[:, 0], sol.phase1.line_free_energy(Ts), atol=_TERMINAL_ATOL)
+    np.testing.assert_allclose(out[:, 1], sol.phase2.line_free_energy(Ts), atol=_TERMINAL_ATOL)
 
 
-def test_f_excess_tangent_chord_zero_for_terminal_line_phases():
-    """Two terminals at c=0 and c=1 are their own references; f_excess is exactly 0."""
-    dd = _chord_input([
-        {"phase": "A", "c": 0.0, "phi": -0.1, "mu": 0.3},
-        {"phase": "B", "c": 1.0, "phi": +0.2, "mu": 0.3},
-    ])
-    out = _f_excess_tangent_chord(dd)
-    np.testing.assert_allclose(out.values, 0.0, atol=1e-12)
+def test_terminal_free_energies_take_the_lowest_phase_at_each_T():
+    """Two phases at c=0 whose free energies cross at T=500: each side of the crossing takes the lower one."""
+    a, b = _terminal_lines()
+    a2 = LinePhase("A2", fixed_concentration=0.0, line_energy=0.1, line_entropy=2e-4 + 0.1 / 500)
+    Ts = np.array([400.0, 600.0])
+    out = _terminal_free_energies([a, a2, b], Ts, mu_lo=0.0, mu_hi=0.0)
+    np.testing.assert_allclose(out[:, 0], [a.line_free_energy(400.0), a2.line_free_energy(600.0)],
+                               atol=_TERMINAL_ATOL)
+    assert a.line_free_energy(400.0) < a2.line_free_energy(400.0)
+    assert a2.line_free_energy(600.0) < a.line_free_energy(600.0)
 
 
-def test_f_excess_tangent_chord_picks_lowest_endpoint_tangent():
-    """When two phases reach an endpoint window, the smaller tangent value wins."""
-    # Two phases reach c≈1 (within the 1% window of c_span=1):
-    #   sol at c=0.99: tangent1 = phi + mu = -0.49 + 0.5 = 0.01
-    #   bcc at c=1.00: tangent1 = phi + mu =  0.00 + 0.5 = 0.50
-    # The minimum (sol, 0.01) wins.  An A phase at c=0 anchors f0 = phi = 0.
-    dd = _chord_input([
-        {"phase": "A",   "c": 0.0,  "phi":  0.00, "mu": 0.5},
-        {"phase": "sol", "c": 0.99, "phi": -0.49, "mu": 0.5},
-        {"phase": "bcc", "c": 1.00, "phi":  0.00, "mu": 0.5},
-    ])
-    out = _f_excess_tangent_chord(dd)
-    chord = 0.00 * (1 - dd["c"]) + 0.01 * dd["c"]
-    np.testing.assert_allclose(out.values, (dd["f"] - chord).values, atol=1e-12)
+def test_terminal_free_energies_ignore_phases_short_of_the_pure_component():
+    """A line phase at c=0.99 is not at c=1 and must not lower f(1), even though its f is lower."""
+    a, b = _terminal_lines()
+    near = LinePhase("near", fixed_concentration=0.99, line_energy=-1.0)
+    out = _terminal_free_energies([a, b, near], [300.0], mu_lo=0.0, mu_hi=0.0)
+    np.testing.assert_allclose(out[0], [a.line_free_energy(300.0), b.line_free_energy(300.0)],
+                               atol=_TERMINAL_ATOL)
 
 
-def test_f_excess_tangent_chord_endpoint_window_is_relative_to_sampled_extreme():
-    """A phase qualifies for the endpoint reference if its c reaches within
-    1% of the sampled c-span — not 1% of c=0 / c=1.
-
-    Sampled c range [0.0, 1.0] (span 1) ⇒ window for c=0 is [0, 0.01].
-    A phase whose minimum lands at c=0.02 is outside that window, so it cannot
-    set the c=0 reference even though it would have if c-span were measured
-    against the pure concentration.
-    """
-    dd = _chord_input([
-        {"phase": "A",   "c": 0.00, "phi":  0.0, "mu": 0.1},  # owns c=0 ref
-        {"phase": "sol", "c": 0.02, "phi": -0.5, "mu": 0.1},  # outside 1% window
-        {"phase": "B",   "c": 1.00, "phi":  0.0, "mu": 0.1},  # owns c=1 ref
-    ])
-    out = _f_excess_tangent_chord(dd)
-    # f0 = tangent0[A] = phi_A = 0.0 (sol does not qualify, so it does not lower f0)
-    # f1 = tangent1[B] = phi_B + mu = 0.1
-    chord = 0.0 * (1 - dd["c"]) + 0.1 * dd["c"]
-    np.testing.assert_allclose(out.values, (dd["f"] - chord).values, atol=1e-12)
+def test_terminal_free_energies_do_not_depend_on_the_mu_window():
+    sol = IdealSolution("sol", LinePhase("sA", 0, 0.0, 1e-4), LinePhase("sB", 1, 0.05, 3e-4))
+    Ts = np.array([200.0, 1000.0])
+    wide = _terminal_free_energies([sol], Ts, mu_lo=-1.0, mu_hi=1.0)
+    narrow = _terminal_free_energies([sol], Ts, mu_lo=0.02, mu_hi=0.03)
+    np.testing.assert_allclose(narrow, wide, atol=_TERMINAL_ATOL)
 
 
-def test_f_excess_tangent_chord_preserves_input_index():
-    """The returned Series aligns to the input row index, not a positional one."""
-    dd = _chord_input([
-        {"phase": "A", "c": 0.0, "phi": 0.0, "mu": 0.1},
-        {"phase": "B", "c": 1.0, "phi": 0.0, "mu": 0.1},
-        {"phase": "M", "c": 0.5, "phi": 0.0, "mu": 0.1},
-    ])
-    dd.index = [100, 200, 300]
-    out = _f_excess_tangent_chord(dd)
-    assert list(out.index) == [100, 200, 300]
+@pytest.mark.parametrize("missing", [0, 1])
+def test_terminal_free_energies_none_without_both_pure_components(missing):
+    a, b = _terminal_lines()
+    mid = LinePhase("M", fixed_concentration=0.5, line_energy=-0.1)
+    phases = [mid, b] if missing == 0 else [a, mid]
+    assert _terminal_free_energies(phases, [300.0], mu_lo=-0.1, mu_hi=0.1) is None
+
+
+def test_f_excess_is_f_minus_chord_between_pure_components():
+    a, b = _terminal_lines()
+    mid = LinePhase("M", fixed_concentration=0.4, line_energy=-0.2, line_entropy=1e-4)
+    phases = {p.name: p for p in (a, b, mid)}
+    df = pd.DataFrame({"T": [300.0, 300.0, 450.0, 450.0], "mu": [0.1, -np.inf, 0.2, 0.0],
+                       "c": [0.4, 0.0, 0.4, 0.4], "phase": ["M", "A", "M", "M"]})
+    df["f"] = [mid.line_free_energy(T) for T in df["T"]]
+    df.index = [10, 20, 30, 40]
+    out = _f_excess(df, phases)
+    assert list(out.index) == [10, 20, 30, 40]
+    assert np.isnan(out[20])
+    for i in (10, 30, 40):
+        T = df.at[i, "T"]
+        expected = mid.line_free_energy(T) - (0.6 * a.line_free_energy(T) + 0.4 * b.line_free_energy(T))
+        np.testing.assert_allclose(out[i], expected, atol=_TERMINAL_ATOL)
+    assert abs(out[10]) > 1e-2, "fixture must give the rows a non-trivial excess"
+
+
+def test_f_excess_none_without_both_pure_components():
+    a, _ = _terminal_lines()
+    mid = LinePhase("M", fixed_concentration=0.5, line_energy=-0.1)
+    df = pd.DataFrame({"T": [300.0], "mu": [0.0], "c": [0.5], "phase": ["M"], "f": [-0.1]})
+    assert _f_excess(df, {"A": a, "M": mid}) is None
+
+
+def test_calc_phase_diagram_omits_f_excess_without_both_pure_components():
+    """The reference is undefined, so the column is left out rather than filled."""
+    a, _ = _terminal_lines()
+    mid = LinePhase("M", fixed_concentration=0.5, line_energy=-0.1)
+    df = calc_phase_diagram([a, mid], Ts=[300.0, 400.0], mu=np.linspace(-0.5, 0.5, 5),
+                            refine=False, keep_unstable=True)
+    assert "f_excess" not in df.columns
+    assert "f" in df.columns
+
+
+def test_calc_phase_diagram_f_excess_matches_pure_components_on_a_narrow_window():
+    """On a mu window too narrow for any phase to come close to c=1 at high T, every row's
+    f_excess is still referenced against the lowest end-member free energies."""
+    fcc = IdealSolution("fcc", LinePhase("fccA", 0, -3.00, 1.0 * kB), LinePhase("fccB", 1, -2.00, 1.1 * kB))
+    hcp = IdealSolution("hcp", LinePhase("hcpA", 0, -2.975, 1.8 * kB), LinePhase("hcpB", 1, -1.95, 1.1 * kB))
+    liq = IdealSolution("liquid", LinePhase("liquidA", 0, -2.75, 5.0 * kB),
+                        LinePhase("liquidB", 1, -1.75, 4.4 * kB))
+    phases = [hcp, fcc, liq]
+    df = calc_phase_diagram(phases, np.linspace(200, 1000, 9), np.linspace(0.7, 1.3, 30),
+                            refine=False, keep_unstable=True)
+    assert df.query("T == 1000").c.max() < 0.98, "window must stop short of c=1 at the top T"
+    f0 = df["T"].map(lambda T: min(p.phase1.line_free_energy(T) for p in phases))
+    f1 = df["T"].map(lambda T: min(p.phase2.line_free_energy(T) for p in phases))
+    np.testing.assert_allclose(df.f_excess, df.f - (f0 * (1 - df.c) + f1 * df.c), atol=_TERMINAL_ATOL)
 
 
 # --- get_transitions direct tests ---

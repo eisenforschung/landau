@@ -841,6 +841,11 @@ def plot_excess_free_energy(
     df = df.copy()
     if df.empty:
         raise ValueError("df is empty.")
+    if "f_excess" not in df.columns:
+        raise ValueError(
+            "df has no f_excess column: calc_phase_diagram leaves it out when the phases do not "
+            "reach both pure components (c = 0 and c = 1), against which it is referenced."
+        )
     if "border" not in df.columns:
         df["border"] = False
 
