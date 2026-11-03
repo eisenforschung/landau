@@ -258,6 +258,14 @@ def _plot_triplepoints(df, ax=None, variables=None):
             ax.plot(mu, T, marker="o", color="k", zorder=3)
 
 
+_DELTA_MU = r"\Delta\mu"
+
+
+def _symbol(symbol: str, element: str | None) -> str:
+    """Mathtext (without ``$``) for ``symbol``, subscripted by ``element`` if given."""
+    return symbol if element is None else rf"{symbol}_\mathrm{{{element}}}"
+
+
 def _set_axis_for(axis_var: str, df_stable, element: str | None, ax) -> None:
     """Configure the x-axis of a phase diagram based on the axis variable.
 
@@ -274,19 +282,13 @@ def _set_axis_for(axis_var: str, df_stable, element: str | None, ax) -> None:
     """
     if axis_var == "c":
         ax.set_xlim(0, 1)
-        if element is not None:
-            ax.set_xlabel(rf"$c_\mathrm{{{element}}}$")
-        else:
-            ax.set_xlabel("$c$")
+        ax.set_xlabel(f"${_symbol('c', element)}$")
     elif axis_var == "mu":
         mus = df_stable["mu"].unique()
         mus = mus[np.isfinite(mus)]
         if len(mus) > 0:
             ax.set_xlim(mus.min(), mus.max())
-        if element is not None:
-            ax.set_xlabel(rf"$\Delta\mu_\mathrm{{{element}}}$ [eV]")
-        else:
-            ax.set_xlabel(r"$\Delta\mu$ [eV]")
+        ax.set_xlabel(f"${_symbol(_DELTA_MU, element)}$ [eV]")
     else:
         raise ValueError(
             f"Unknown coordinate system: variables[0]={axis_var!r}. Expected 'c' or 'mu'."
@@ -593,22 +595,25 @@ class _Axis1D:
 
     fixed_col: str
     fixed_error: str
-    xlabel: str
-    transition_label: Callable[[float], str]
+    xlabel: Callable[[str | None], str]
+    transition_label: Callable[[float, str | None], str]
 
 
 _AXES_1D = {
     "mu": _Axis1D(
         fixed_col="T",
         fixed_error="Data contains more than one temperature!",
-        xlabel="Chemical Potential Difference [eV]",
-        transition_label=lambda mu: rf"$\Delta\mu = {mu:.03f}\,\mathrm{{eV}}$",
+        xlabel=lambda el: (
+            "Chemical Potential Difference [eV]" if el is None
+            else f"Chemical Potential Difference ${_symbol(_DELTA_MU, el)}$ [eV]"
+        ),
+        transition_label=lambda mu, el: rf"${_symbol(_DELTA_MU, el)} = {mu:.03f}\,\mathrm{{eV}}$",
     ),
     "T": _Axis1D(
         fixed_col="mu",
         fixed_error="Data contains more than one chemical potential!",
-        xlabel="Temperature [K]",
-        transition_label=lambda T: rf"$T = {T:.0f}\,\mathrm{{K}}$",
+        xlabel=lambda el: "Temperature [K]",
+        transition_label=lambda T, el: rf"$T = {T:.0f}\,\mathrm{{K}}$",
     ),
 }
 
@@ -621,7 +626,8 @@ def _plot_1d_phase_diagram(
         reference_phase=None,
         top_labels=True,
         side_labels=True,
-        ylim=None):
+        ylim=None,
+        element=None):
     """Draw the semi-grandcanonical potential of every phase along a 1d cut.
 
     Shared body of :func:`plot_1d_mu_phase_diagram` and
@@ -661,10 +667,10 @@ def _plot_1d_phase_diagram(
             ax.axvline(xt, color='k', linestyle='dotted', alpha=.5)
             ax.scatter(xt, ft, marker='o', c='k', zorder=10)
             positions.append(xt)
-            labels.append(axis.transition_label(xt))
+            labels.append(axis.transition_label(xt, element))
         _place_transition_labels(ax, positions, labels, side="left")
 
-    ax.set_xlabel(axis.xlabel)
+    ax.set_xlabel(axis.xlabel(element))
     ylabel = f"{_YLABEL_1D} [eV/atom]"
     if reference_phase is not None:
         ylabel = f"{_YLABEL_1D}\nRelative to {reference_phase} [eV/atom]"
@@ -682,7 +688,8 @@ def plot_1d_mu_phase_diagram(
         reference_phase=None,
         top_labels=True,
         side_labels=True,
-        ylim=None):
+        ylim=None,
+        element=None):
     """
     Plot a one dimensional isothermal phase diagram of the semi-grandcanonical
     potential as function of the chemical potential difference.
@@ -711,6 +718,10 @@ def plot_1d_mu_phase_diagram(
             side-label stack: a label whose line end is above the window is moved
             to a mirrored stack on the left, and a phase whose line is pushed
             entirely out of view is not labelled.
+        element (str, optional):
+            Name of the element whose chemical potential difference is scanned. If
+            given, it subscripts the Δμ in the x label and in the transition
+            annotations.
 
     Returns:
         matplotlib.axes.Axes:
@@ -726,6 +737,7 @@ def plot_1d_mu_phase_diagram(
         top_labels=top_labels,
         side_labels=side_labels,
         ylim=ylim,
+        element=element,
     )
 
 
@@ -798,6 +810,7 @@ def plot_excess_free_energy(
     color_override=None,
     convex_hull=True,
     inline_legend=True,
+    element=None,
 ):
     """Plot excess free energy vs concentration for competing phases.
 
@@ -828,6 +841,8 @@ def plot_excess_free_energy(
             largest continuous region, line phases below their dot -- white-outlined
             and colour-matched, with overlapping labels spread apart vertically. If
             False, keep the figure legend box on the right.
+        element: Optional name of the element whose concentration is on the x
+            axis; if given, the x label reads ``Concentration $c_{<element>}$``.
 
     Returns:
         For a single temperature, the current :class:`matplotlib.axes.Axes`
@@ -1061,14 +1076,15 @@ def plot_excess_free_energy(
             borderaxespad=0,
         )
 
+    xlabel = "Concentration" if element is None else f"Concentration ${_symbol('c', element)}$"
     if g is not None:
         g.refline(y=0)
         g.set_titles("T = {col_name:.0f} K")
-        g.set(xlabel="Concentration", ylabel="Free Energy of Formation")
+        g.set(xlabel=xlabel, ylabel="Free Energy of Formation")
     else:
         ax = axes[0]
         ax.axhline(0, color=".5", linestyle="--")
-        ax.set(xlabel="Concentration", ylabel="Free Energy of Formation")
+        ax.set(xlabel=xlabel, ylabel="Free Energy of Formation")
 
     # Place inline labels last so they see the final axis limits (refline/relplot).
     for ax, entries in facet_entries:

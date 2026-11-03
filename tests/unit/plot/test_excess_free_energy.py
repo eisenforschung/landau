@@ -238,3 +238,26 @@ def test_inline_legend_false_keeps_figure_legend():
     assert ax.figure.legends
     assert not ax.texts
     plt.close(ax.figure)
+
+
+# ---------------------------------------------------------------------------
+# Axis labels
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("temperatures", [[500.0], [500.0, 800.0]])
+@pytest.mark.parametrize("element,xlabel", [
+    (None, "Concentration"),
+    ("Mg", r"Concentration $c_\mathrm{Mg}$"),
+])
+def test_xlabel_names_the_element(temperatures, element, xlabel):
+    """``element`` subscripts the concentration on every facet; unset keeps the plain label."""
+    plt.figure()
+    try:
+        out = plot_excess_free_energy(_minimal_df(temperatures), element=element)
+        axes = [out] if isinstance(out, plt.Axes) else list(out.axes.flat)
+        # FacetGrid only labels the outer axes; the bottom row carries the x label.
+        labels = {ax.get_xlabel() for ax in axes} - {""}
+        assert labels == {xlabel}
+    finally:
+        plt.close("all")
