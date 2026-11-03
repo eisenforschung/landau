@@ -168,7 +168,8 @@ def _plot_scalar_field(df, polys, column, variables, ax, cmap=None, norm=None, r
     interpolated (:func:`_region_interpolator`) from the stable rows of its own phase
     that lie on it, and drawn as a ``pcolormesh`` clipped to the polygon. Two
     regions of the same phase therefore never share data, and adjacent phases never
-    blend across their boundary.
+    blend across their boundary. The meshes are rasterised in vector output (SVG, PDF),
+    where each Gouraud triangle would otherwise become its own path.
 
     Args:
         df: Phase-diagram frame; only its stable rows are read.
@@ -209,7 +210,9 @@ def _plot_scalar_field(df, polys, column, variables, ax, cmap=None, norm=None, r
         x0, y0, x1, y1 = region.bounds
         X, Y = np.meshgrid(np.linspace(x0, x1, resolution), np.linspace(y0, y1, resolution))
         Z = interpolate(scaler.transform(np.column_stack([X.ravel(), Y.ravel()]))).reshape(X.shape)
-        mesh = ax.pcolormesh(X, Y, Z, shading="gouraud", cmap=mappable.cmap, norm=norm, zorder=0)
+        mesh = ax.pcolormesh(
+            X, Y, Z, shading="gouraud", cmap=mappable.cmap, norm=norm, zorder=0, rasterized=True
+        )
         mesh.set_clip_path(patch)
     return mappable
 

@@ -5,6 +5,8 @@ These tests colour by a column that is linear in the axis coordinates (``T`` or
 points, so every drawn node must carry either its own coordinate or, on the
 buffered rim, the value of one of its phase's data points.
 """
+import io
+
 import matplotlib
 
 matplotlib.use("Agg")
@@ -137,6 +139,26 @@ def test_field_norm_cmap_and_no_colorbar(eutectic_diagram, ax):
     )
     assert ax.figure.axes == [ax]
     assert all(m.norm is norm and m.cmap.name == "magma" for m in _meshes(ax))
+
+
+@pytest.mark.parametrize("plot", [plot_phase_diagram, plot_mu_phase_diagram])
+def test_field_is_rasterized_in_vector_output(eutectic_diagram, plot):
+    """The field goes to vector backends as embedded images, adding no vector paths."""
+
+    def svg(color_by):
+        fig, ax = plt.subplots()
+        plot(eutectic_diagram, ax=ax, color_by=color_by, colorbar=False, poly_method="concave")
+        buf = io.StringIO()
+        fig.savefig(buf, format="svg")
+        plt.close(fig)
+        return _meshes(ax), buf.getvalue()
+
+    meshes, field = svg("T")
+    _, plain = svg(None)
+    assert meshes and all(m.get_rasterized() for m in meshes)
+    assert field.count("<path") == plain.count("<path")
+    assert plain.count("<image") == 0
+    assert 1 <= field.count("<image") <= len(meshes)
 
 
 def test_no_color_by_draws_no_field(eutectic_diagram, ax):
