@@ -222,6 +222,31 @@ def test_refiner_settings_move_the_digest(left, right):
     assert digest(left(R)) == digest(left(R))
 
 
+def _held_axes(**fixed):
+    """Axes with a binding that reads a held condition, so ``fixed`` is allowed."""
+    from dataclasses import dataclass
+
+    from landau.refine import Axes
+
+    @dataclass(frozen=True)
+    class Held(Axes):
+        def potential(self, phase, x, y):
+            return phase.semigrand_potential(x, y) + self.fixed["p"]
+
+    return Held(fixed=fixed)
+
+
+def test_held_conditions_move_the_refiner_digest():
+    """Refiners on axes held at different conditions never share a digest;
+    equal conditions given in another order do."""
+    import landau.refine as R
+
+    load_entry_points()
+    at = digest(R.ScanRefiner("mu", axes=_held_axes(p=1.0, q=2.0)))
+    assert at == digest(R.ScanRefiner("mu", axes=_held_axes(q=2.0, p=1.0)))
+    assert at != digest(R.ScanRefiner("mu", axes=_held_axes(p=1.5, q=2.0)))
+
+
 # ---------------------------------------------------------------------------
 # Closure-backed fits are refused rather than silently collided
 # ---------------------------------------------------------------------------

@@ -78,6 +78,7 @@ TraceList = tuple[Trace, ...]
 
 
 __all__ = [
+    "Axes",
     "RefinedPoint",
     "RefinedMiscibilityGap",
     "Refiner",
@@ -89,6 +90,122 @@ __all__ = [
     "TerminalRefiner",
     "default_refiners",
 ]
+
+
+class _FrozenMapping(Mapping):
+    """A read-only mapping that hashes and pickles by its contents.
+
+    Items are kept sorted by key, so equal contents pickle to the same bytes
+    whatever order they were given in -- fleche digests unknown types by
+    pickle, and :class:`Axes` carries one of these into every refiner.
+    """
+
+    __slots__ = ("_items",)
+
+    def __init__(self, items=()):
+        self._items = dict(sorted(dict(items).items()))
+
+    def __getitem__(self, key):
+        return self._items[key]
+
+    def __iter__(self):
+        return iter(self._items)
+
+    def __len__(self):
+        return len(self._items)
+
+    def __hash__(self):
+        return hash(frozenset(self._items.items()))
+
+    def __repr__(self):
+        return repr(self._items)
+
+
+@dataclass(frozen=True)
+class Axes:
+    """The plane a refiner works in: two intensive columns and one extensive.
+
+    ``x`` and ``y`` name the frame columns of the two intensive variables,
+    which every phase coexisting at a point shares; ``extensive`` names the
+    column of ``-dphi/dy``, the conjugate of ``y``, which jumps across a
+    first-order boundary.
+
+    A refiner written against :class:`Axes` (see :meth:`Refiner.supports`)
+    reads the frame through these names and evaluates phases only through
+    :meth:`potential` and :meth:`conjugate`. The defaults bind ``x`` to the temperature and ``y`` to
+    the chemical potential of :meth:`~landau.phases.Phase.semigrand_potential`
+    and :meth:`~landau.phases.Phase.concentration`, so the column names alone
+    only relabel the semigrand plane. Subclass and override both (and
+    :meth:`admissible`) to put another pair of variables on the axes.
+
+    ``fixed`` holds the conditions off the plane, column name to value (a
+    chemical potential held on a pressure-temperature plane, say). Every
+    emitted row carries them as columns, and a binding reads them from
+    ``self.fixed``. The default binding takes no conditions beyond ``(T, mu)``,
+    so it accepts none: ``fixed`` must be empty unless :meth:`potential` and
+    :meth:`conjugate` are overridden. It is stored as a read-only copy that
+    takes part in equality and hashing, so axes at different conditions never
+    share a key.
+    """
+
+    x: str = "T"
+    y: str = "mu"
+    extensive: str = "c"
+    fixed: Mapping[str, float] = field(default_factory=_FrozenMapping)
+
+    def __post_init__(self):
+        object.__setattr__(self, "fixed", _FrozenMapping(self.fixed))
+        taken = {self.x, self.y, self.extensive} | _ROW_COLUMNS
+        if clash := sorted(taken.intersection(self.fixed)):
+            raise ValueError(f"fixed conditions {clash} name columns the refined rows already write")
+        if self.fixed and _semigrand(self):
+            raise ValueError(
+                f"the default binding evaluates phases at ({self.x}, {self.y}) only and takes no fixed "
+                f"conditions, got {dict(self.fixed)}; override potential and conjugate to use them"
+            )
+
+    def potential(self, phase: Phase, x, y):
+        """The potential ``phi`` of ``phase`` at ``(x, y)``."""
+        return phase.semigrand_potential(x, y)
+
+    def conjugate(self, phase: Phase, x, y):
+        """``-dphi/dy`` of ``phase`` at ``(x, y)``, written to the ``extensive`` column."""
+        return phase.concentration(x, y)
+
+    def admissible(self, x: float, y: float) -> bool:
+        """Whether a refined point at ``(x, y)`` is physical.
+
+        ``x`` is a temperature under the default binding, so ``x >= 0``.
+        """
+        return x >= 0
+
+
+def _semigrand(axes: Axes) -> bool:
+    """Whether ``axes`` evaluates phases through the semigrand binding (``x`` the
+    temperature, ``y`` the chemical potential, the extensive the concentration),
+    whatever its column names and :meth:`~Axes.admissible` rule."""
+    cls = type(axes)
+    return cls.potential is Axes.potential and cls.conjugate is Axes.conjugate
+
+
+# Columns a refined row carries besides the axes, the extensive and ``fixed``.
+_ROW_COLUMNS = frozenset({"phi", "phase", "boundary_id", "locus", "stable", "border", "refined"})
+
+_DEFAULT_AXES = Axes()
+
+
+def _coordinate_alias(name):
+    """The ``T``/``mu`` spelling of a point's coordinate, resolved by column name
+    against the point's axes."""
+
+    def get(self):
+        if self.axes.x == name:
+            return self.x
+        if self.axes.y == name:
+            return self.y
+        raise AttributeError(f"{type(self).__name__} has no {name!r} axis (axes: {self.axes})")
+
+    return property(get)
 
 
 class RefinedBase(ABC):
@@ -119,16 +236,14 @@ class RefinedBase(ABC):
         """
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class RefinedPoint(RefinedBase):
     """A located transition point at which ``phases`` coexist.
 
     Attributes
     ----------
-    T : float
-        Temperature of the transition (K).
-    mu : float
-        Coexistence chemical potential (eV).
+    x, y : float
+        Location of the transition in ``axes``.
     phases : tuple[str, ...]
         Names of the phases that coexist here. Length 2 for a regular
         two-phase boundary, length 3 for a triple point.
@@ -137,36 +252,55 @@ class RefinedPoint(RefinedBase):
         line (assigned by the refiner's ``run()``).
     congruent : bool
         Set on the point of a two-phase line where the two phases'
-        compositions meet (see
+        extensive values meet (see
         :meth:`ClausiusClapeyronRefiner._tag_features`).
     concentrations : tuple[float, ...] or None
-        Concentration emitted for each entry of ``phases``, in order, instead
-        of re-querying ``concentration(T, mu)``. Needed when one phase takes
+        Extensive value emitted for each entry of ``phases``, in order, instead
+        of re-querying ``axes.conjugate``. Needed when one phase takes
         part twice -- the two branches of a miscibility gap at a
         monotectic-type invariant (see
         :meth:`MiscibilityGapRefiner._dominated_node`) -- since the re-query
         cannot tell the branches apart.
     terminal : float or None
         ``0.0`` or ``1.0`` for a pure component's transition (see
-        :class:`TerminalRefiner`): ``mu`` then holds the finite far chemical
+        :class:`TerminalRefiner`): ``y`` then holds the finite far chemical
         potential the point was solved and validated at, while
-        :meth:`to_rows` emits it at ``mu = -inf`` / ``+inf`` with both
-        concentrations equal to the terminal's, like the synthetic edge rows
+        :meth:`to_rows` emits it at ``y = -inf`` / ``+inf`` with both
+        extensive values equal to the terminal's, like the synthetic edge rows
         of :func:`~landau.calculate.calc_phase_diagram`.
+    axes : Axes
+        The plane ``x`` and ``y`` live in, and how phases are evaluated there.
 
     :meth:`to_rows` tags each emitted row with ``locus``:
     :attr:`~landau.features.Locus.TRIPLE` for three coexisting phases,
     :attr:`~landau.features.Locus.CONGRUENT` for a two-phase point marked
     ``congruent``, :attr:`~landau.features.Locus.BOUNDARY` otherwise.
+
+    ``T``/``mu`` are accepted as constructor keywords and read as attributes:
+    aliases of ``x``/``y``, resolved by column name against ``axes``.
     """
 
-    T: float
-    mu: float
+    x: float
+    y: float
     phases: tuple[str, ...]
     boundary_id: int = 0
     congruent: bool = False
     concentrations: tuple[float, ...] | None = None
     terminal: float | None = None
+    axes: Axes = _DEFAULT_AXES
+
+    def __init__(self, x=None, y=None, phases=None, boundary_id=0, congruent=False,
+                 concentrations=None, terminal=None, axes=_DEFAULT_AXES, T=None, mu=None):
+        x, y = _legacy_xy(type(self), x, y, T, mu)
+        if phases is None:
+            raise TypeError("RefinedPoint() missing required argument: 'phases'")
+        for name, value in (("x", x), ("y", y), ("phases", phases), ("boundary_id", boundary_id),
+                            ("congruent", congruent), ("concentrations", concentrations),
+                            ("terminal", terminal), ("axes", axes)):
+            object.__setattr__(self, name, value)
+
+    T = _coordinate_alias("T")
+    mu = _coordinate_alias("mu")
 
     def phase_names(self) -> set[str]:
         return set(self.phases)
@@ -176,21 +310,23 @@ class RefinedPoint(RefinedBase):
             return (float(self.terminal),) * len(self.phases)
         if self.concentrations is not None:
             return tuple(float(c) for c in self.concentrations)
-        return tuple(float(phases[n].concentration(self.T, self.mu)) for n in self.phases)
+        return tuple(float(self.axes.conjugate(phases[n], self.x, self.y)) for n in self.phases)
 
     def to_rows(self, phases: Mapping[str, Phase]) -> list[dict]:
+        ax = self.axes
         if self.terminal is not None:
-            # A pure component's transition sits at mu = -+inf, like the
+            # A pure component's transition sits at y = -+inf, like the
             # synthetic edge rows of calc_phase_diagram: no potential to
-            # evaluate there, the concentrations are the terminal's.
-            mu = -np.inf if self.terminal == 0 else np.inf
-            rows = [{"T": self.T, "mu": mu, "phi": np.nan, "c": self.terminal, "phase": name}
+            # evaluate there, the extensive values are the terminal's.
+            y = -np.inf if self.terminal == 0 else np.inf
+            rows = [{ax.x: self.x, ax.y: y, **ax.fixed, "phi": np.nan, ax.extensive: self.terminal,
+                     "phase": name}
                     for name in self.phases]
         else:
-            rows = [_state_row(phases[name], self.T, self.mu) for name in self.phases]
+            rows = [_state_row(phases[name], self.x, self.y, ax) for name in self.phases]
             if self.concentrations is not None:
                 for row, c in zip(rows, self.concentrations):
-                    row["c"] = c
+                    row[ax.extensive] = c
         if len(self.phases) == 3:
             locus = Locus.TRIPLE
         elif self.congruent:
@@ -203,32 +339,28 @@ class RefinedPoint(RefinedBase):
         return rows
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class RefinedMiscibilityGap(RefinedBase):
     """A coexistence point inside a single phase (miscibility gap).
 
-    The single ``phase`` splits into two compositions at coexistence
-    chemical potential ``mu``. :meth:`to_rows` emits two rows that
-    share that exact ``mu`` value but carry the pre-computed
-    branch concentrations ``c_left`` and ``c_right`` directly — so
-    the two branches show up as distinct ``(c, T)`` points while
-    still sitting on the exact coexistence chemical potential. Both
-    rows are tagged ``locus = Locus.BOUNDARY``, or ``Locus.CONGRUENT`` for
-    the point where the gap closes.
+    The single ``phase`` splits into two values of the extensive variable at
+    the coexistence point ``(x, y)``. :meth:`to_rows` emits two rows that
+    share that exact location but carry the pre-computed branch values
+    ``c_left`` and ``c_right`` directly — so the two branches show up as
+    distinct points in the extensive variable while still sitting on the
+    exact coexistence ``y``. Both rows are tagged ``locus = Locus.BOUNDARY``,
+    or ``Locus.CONGRUENT`` for the point where the gap closes.
 
     Attributes
     ----------
-    T : float
-        Temperature of the coexistence (K).
-    mu : float
-        Coexistence chemical potential (eV). Both emitted rows carry
-        this exact value.
+    x, y : float
+        Location of the coexistence in ``axes``; both emitted rows carry it.
     phase : str
         Name of the splitting phase.
     c_left, c_right : float
-        Concentrations of the two coexisting branches, taken straight
+        Extensive values of the two coexisting branches, taken straight
         from the locating scan. Stored on the dataclass rather than
-        re-queried via ``ph.concentration(T, mu)`` because for some
+        re-queried via ``axes.conjugate`` because for some
         phases (e.g. brute-grid minimisers) the re-query can collapse
         to a single branch even though the scan resolved both.
     boundary_id : int
@@ -238,15 +370,35 @@ class RefinedMiscibilityGap(RefinedBase):
         Set on the point where the gap closes -- the critical (consolute)
         point, where ``c_left == c_right`` (see
         :meth:`MiscibilityGapRefiner._tag_features`).
+    axes : Axes
+        The plane ``x`` and ``y`` live in, and how phases are evaluated there.
+
+    ``T``/``mu`` are accepted as constructor keywords and read as attributes:
+    aliases of ``x``/``y``, resolved by column name against ``axes``.
     """
 
-    T: float
-    mu: float
+    x: float
+    y: float
     phase: str
     c_left: float
     c_right: float
     boundary_id: int = 0
     congruent: bool = False
+    axes: Axes = _DEFAULT_AXES
+
+    def __init__(self, x=None, y=None, phase=None, c_left=None, c_right=None, boundary_id=0,
+                 congruent=False, axes=_DEFAULT_AXES, T=None, mu=None):
+        x, y = _legacy_xy(type(self), x, y, T, mu)
+        for name, value in (("phase", phase), ("c_left", c_left), ("c_right", c_right)):
+            if value is None:
+                raise TypeError(f"RefinedMiscibilityGap() missing required argument: {name!r}")
+        for name, value in (("x", x), ("y", y), ("phase", phase), ("c_left", c_left),
+                            ("c_right", c_right), ("boundary_id", boundary_id),
+                            ("congruent", congruent), ("axes", axes)):
+            object.__setattr__(self, name, value)
+
+    T = _coordinate_alias("T")
+    mu = _coordinate_alias("mu")
 
     def phase_names(self) -> set[str]:
         return {self.phase}
@@ -256,30 +408,45 @@ class RefinedMiscibilityGap(RefinedBase):
 
     def to_rows(self, phases: Mapping[str, Phase]) -> list[dict]:
         ph = phases[self.phase]
-        phi = float(ph.semigrand_potential(self.T, self.mu))
+        ax = self.axes
+        phi = float(ax.potential(ph, self.x, self.y))
         locus = Locus.CONGRUENT if self.congruent else Locus.BOUNDARY
         return [
-            {"T": self.T, "mu": self.mu, "phi": phi,
-             "c": self.c_left,  "phase": ph.name, "boundary_id": self.boundary_id,
-             "locus": locus},
-            {"T": self.T, "mu": self.mu, "phi": phi,
-             "c": self.c_right, "phase": ph.name, "boundary_id": self.boundary_id,
-             "locus": locus},
+            {ax.x: self.x, ax.y: self.y, **ax.fixed, "phi": phi,
+             ax.extensive: c, "phase": ph.name, "boundary_id": self.boundary_id,
+             "locus": locus}
+            for c in (self.c_left, self.c_right)
         ]
 
 
-def _state_row(phase: Phase, T: float, mu: float) -> dict:
+def _legacy_xy(cls, x, y, T, mu):
+    """Resolve the ``T``/``mu`` constructor keywords onto ``x``/``y``."""
+    if T is not None:
+        if x is not None:
+            raise TypeError(f"{cls.__name__}() got both x and its alias T")
+        x = T
+    if mu is not None:
+        if y is not None:
+            raise TypeError(f"{cls.__name__}() got both y and its alias mu")
+        y = mu
+    if x is None or y is None:
+        raise TypeError(f"{cls.__name__}() missing required arguments: 'x' and 'y'")
+    return x, y
+
+
+def _state_row(phase: Phase, x: float, y: float, axes: Axes = _DEFAULT_AXES) -> dict:
     return {
-        "T": T,
-        "mu": mu,
-        "phi": phase.semigrand_potential(T, mu),
-        "c": phase.concentration(T, mu),
+        axes.x: x,
+        axes.y: y,
+        **axes.fixed,
+        "phi": axes.potential(phase, x, y),
+        axes.extensive: axes.conjugate(phase, x, y),
         "phase": phase.name,
     }
 
 
 # eV; largest spread in a refined point's own-phase potentials still read as
-# one coexistence. The two-phase root-finds stop at xtol = 1e-6 in mu or T,
+# one coexistence. The two-phase root-finds stop at xtol = 1e-6 in x or y,
 # which leaves a converged spread of order |c_1 - c_2| * 1e-6 eV at most
 _COEXIST_TOL = 1e-5
 
@@ -308,7 +475,7 @@ def _dominated(pt, phases: Mapping[str, Phase]) -> bool:
     phase boundary and should be dropped.
 
     A point is valid when its own phases are exactly the most stable set at
-    ``(pt.T, pt.mu)``. It is dropped when:
+    ``(pt.x, pt.y)``. It is dropped when:
 
     * An own phase is **absent** (``phi = +inf``): a phase that doesn't exist
       here can't be a coexisting vertex.
@@ -325,21 +492,22 @@ def _dominated(pt, phases: Mapping[str, Phase]) -> bool:
 
     A :class:`TerminalRefiner` point (``pt.terminal`` set) is compared only
     against phases at that pure component, the only ones present at
-    ``mu = -+inf``.
+    ``y = -+inf``.
     """
     own = pt.phase_names()
+    potential = pt.axes.potential
     terminal = getattr(pt, "terminal", None)
     if terminal is not None:
         phases = {n: p for n, p in phases.items()
-                  if n in own or abs(float(p.concentration(pt.T, pt.mu)) - terminal) < _TERMINAL_C_TOL}
-    own_phi = [phases[n].semigrand_potential(pt.T, pt.mu) for n in own]
+                  if n in own or abs(float(pt.axes.conjugate(p, pt.x, pt.y)) - terminal) < _TERMINAL_C_TOL}
+    own_phi = [potential(phases[n], pt.x, pt.y) for n in own]
     if not np.all(np.isfinite(own_phi)):
         return True
     hi = max(own_phi)
     if hi - min(own_phi) > _COEXIST_TOL:
         return True
     return any(
-        p.semigrand_potential(pt.T, pt.mu) < hi
+        potential(p, pt.x, pt.y) < hi
         for p in phases.values()
         if p.name not in own
     )
@@ -369,18 +537,45 @@ class Refiner(ABC):
     A subclass implements two halves of the pipeline:
 
     * ``propose(df)`` walks the coarse samples and yields *candidate*
-      objects — neutral data carriers describing a region of
-      ``(T, mu)`` space that likely contains an exact transition.
+      objects — neutral data carriers describing a region of the
+      ``axes`` plane that likely contains an exact transition.
     * ``solve(cand, phases)`` turns one candidate into zero or more
       :class:`RefinedPoint` / :class:`RefinedMiscibilityGap`.
 
-    :meth:`run` glues them together: it filters out negative-T or
-    dominated points, expands each refined transition to its rows, and
-    packages the result as a dataframe tagged with ``refined=label``.
-    Subclasses set ``label`` as a class attribute.
+    :meth:`run` glues them together: it filters out inadmissible
+    (:meth:`Axes.admissible`) or dominated points, expands each refined
+    transition to its rows, and packages the result as a dataframe tagged
+    with ``refined=label``. Subclasses set ``label`` as a class attribute.
+
+    A refiner advertises the planes it is validated on through
+    :meth:`supports`; constructing one on axes it does not support raises.
+
+    Parameters
+    ----------
+    axes : Axes, optional
+        Columns the refiner reads and writes, and how it evaluates phases;
+        defaults to the semigrand plane ``Axes()``.
     """
 
     label: ClassVar[str]
+    axes: Axes = _DEFAULT_AXES
+
+    def __init__(self, *, axes: Axes | None = None):
+        axes = _DEFAULT_AXES if axes is None else axes
+        if not self.supports(axes):
+            raise ValueError(f"{type(self).__name__} does not support {axes}")
+        self.axes = axes
+
+    @classmethod
+    def supports(cls, axes: Axes) -> bool:
+        """Whether this refiner is validated on ``axes``.
+
+        The base accepts the default semigrand plane ``Axes()`` only: a refiner
+        that reads the frame's ``T``/``mu``/``c`` columns and evaluates phases
+        itself works there and nowhere else. A refiner written against
+        :class:`Axes` overrides this.
+        """
+        return axes == _DEFAULT_AXES
 
     @abstractmethod
     def propose(self, df: pd.DataFrame):
@@ -403,7 +598,7 @@ class Refiner(ABC):
         boundary_id = 0
         for cand in self.propose(df):
             pts = [pt for pt in self.solve(cand, phases)
-                   if pt.T >= 0 and not _dominated(pt, phases)]
+                   if pt.axes.admissible(pt.x, pt.y) and not _dominated(pt, phases)]
             for pt in pts:
                 rows.extend(replace(pt, boundary_id=boundary_id).to_rows(phases))
             if pts:
@@ -449,16 +644,16 @@ def _drop_terminal_triples(df: pd.DataFrame, T_tol: float = _CONGRUENT_DEDUP_T) 
 class _ScanCandidate:
     phase1: str
     phase2: str
-    T: float
-    mu: float
+    x: float
+    y: float
     bracket: Bracket
 
 
 def _solve_pair(name1, name2, bracket, potential, point, phases) -> list[RefinedPoint]:
     """Root-find the (name1, name2) crossing inside ``bracket``.
 
-    ``potential(phase, x)`` evaluates a phase along the scanned variable and
-    ``point(x, pair)`` builds the refined point at a root; shared by
+    ``potential(phase, v)`` evaluates a phase along the scanned variable and
+    ``point(v, pair)`` builds the refined point at a root; shared by
     :class:`ScanRefiner` and :class:`TerminalRefiner`.
 
     When a third phase is more stable at the crossing, the pair does not
@@ -468,41 +663,51 @@ def _solve_pair(name1, name2, bracket, potential, point, phases) -> list[Refined
     transitions are found instead of leaving the candidate to be dropped
     by :func:`_dominated` in :meth:`Refiner.run`.
     """
-    x = _find_one_point(phases[name1], phases[name2], potential, bracket)
-    rivals = {p.name: potential(p, x) for p in phases.values() if p.name not in (name1, name2)}
+    v = _find_one_point(phases[name1], phases[name2], potential, bracket)
+    rivals = {p.name: potential(p, v) for p in phases.values() if p.name not in (name1, name2)}
     if rivals:
         dom = min(rivals, key=rivals.get)
-        if rivals[dom] < potential(phases[name1], x):
+        if rivals[dom] < potential(phases[name1], v):
             return (
-                _solve_pair(name1, dom, (bracket[0], x), potential, point, phases)
-                + _solve_pair(dom, name2, (x, bracket[1]), potential, point, phases)
+                _solve_pair(name1, dom, (bracket[0], v), potential, point, phases)
+                + _solve_pair(dom, name2, (v, bracket[1]), potential, point, phases)
             )
-    return [point(x, (name1, name2))]
+    return [point(v, (name1, name2))]
 
 
 class ScanRefiner(Refiner):
     """
-    Walk samples sorted along one axis (``mu`` or ``T``) and root-find the
-    exact transition between every pair of adjacent samples that have
-    different stable phases.
+    Walk samples sorted along one axis and root-find the exact transition
+    between every pair of adjacent samples that have different stable phases.
 
     Operates on each unique value of the orthogonal axis independently.
 
     Parameters
     ----------
-    by : {"mu", "T"}
-        Axis to walk along. The orthogonal axis is grouped, and within
-        each group adjacent samples whose stable phase changes seed a
-        bisection along ``by``.
+    by : str
+        Column to walk along, ``axes.x`` or ``axes.y``. The other axis is
+        grouped, and within each group adjacent samples whose stable phase
+        changes seed a bisection along ``by``.
+    axes : Axes, optional
+        See :class:`Refiner`.
     """
 
-    def __init__(self, by: str):
-        assert by in ("mu", "T"), "by must be 'mu' or 'T'"
+    def __init__(self, by: str, *, axes: Axes | None = None):
+        super().__init__(axes=axes)
+        if by not in (self.axes.x, self.axes.y):
+            raise ValueError(f"by must be {self.axes.x!r} or {self.axes.y!r}, got {by!r}")
         self.by = by
-        self.other = "T" if by == "mu" else "mu"
+        self.other = self.axes.x if by == self.axes.y else self.axes.y
         self.label = by
 
+    @classmethod
+    def supports(cls, axes: Axes) -> bool:
+        """Any :class:`Axes`: the scan only root-finds a potential difference
+        along one axis."""
+        return True
+
     def propose(self, df: pd.DataFrame) -> Iterator[_ScanCandidate]:
+        ax = self.axes
         for other_val, group in df.groupby(self.other):
             g = group.sort_values(self.by).reset_index(drop=True)
             change = g.index[g.phase != g.phase.shift(-1).ffill()]
@@ -511,24 +716,24 @@ class ScanRefiner(Refiner):
                 bracket = tuple(sorted([r1[self.by], r2[self.by]]))
                 yield _ScanCandidate(
                     phase1=r1.phase, phase2=r2.phase,
-                    T=r1["T"], mu=r1["mu"], bracket=bracket,
+                    x=r1[ax.x], y=r1[ax.y], bracket=bracket,
                 )
 
     def solve(self, cand: _ScanCandidate, phases) -> list[RefinedPoint]:
-        if self.by == "mu":
-            def potential(p, x):
-                return p.semigrand_potential(cand.T, x)
+        ax = self.axes
+        if self.by == ax.y:
+            def potential(p, v):
+                return ax.potential(p, cand.x, v)
 
-            def point(x, pair):
-                return RefinedPoint(T=cand.T, mu=x, phases=pair)
+            def point(v, pair):
+                return RefinedPoint(x=cand.x, y=v, phases=pair, axes=ax)
         else:
-            def potential(p, x):
-                return p.semigrand_potential(x, cand.mu)
+            def potential(p, v):
+                return ax.potential(p, v, cand.y)
 
-            def point(x, pair):
-                return RefinedPoint(T=x, mu=cand.mu, phases=pair)
+            def point(v, pair):
+                return RefinedPoint(x=v, y=cand.y, phases=pair, axes=ax)
         return _solve_pair(cand.phase1, cand.phase2, cand.bracket, potential, point, phases)
-
 
 
 @dataclass(frozen=True)
@@ -2093,29 +2298,32 @@ class MiscibilityGapRefiner(_CCBase):
 # -- Defaults -----------------------------------------------------------------
 
 
-def default_refiners(df: pd.DataFrame) -> Sequence[Refiner]:
+def default_refiners(df: pd.DataFrame, axes: Axes | None = None) -> Sequence[Refiner]:
     """Pick a sensible default refiner list for ``df``.
 
-    * Both ``mu`` and ``T`` sampled (2-D grid) → triple points
+    * Both axes sampled (2-D grid) → triple points
       (:class:`DelaunayTripleRefiner`) plus dense Clausius-Clapeyron
       traces for inter-phase boundaries and intra-phase miscibility
       gaps, and the pure components' transitions
       (:class:`TerminalRefiner`).
     * Only one axis sampled (1-D scan) → just the
       :class:`ScanRefiner` walking that axis.
+
+    ``axes`` defaults to the semigrand plane ``Axes()``; refiners that do not
+    :meth:`~Refiner.supports` it are left out.
     """
-    multiple_mus = len(df["mu"].unique()) > 1
-    multiple_ts = len(df["T"].unique()) > 1
-    if multiple_mus and multiple_ts:
+    axes = _DEFAULT_AXES if axes is None else axes
+    multiple_ys = len(df[axes.y].unique()) > 1
+    multiple_xs = len(df[axes.x].unique()) > 1
+    if multiple_ys and multiple_xs:
         return [
-            DelaunayTripleRefiner(),
-            ClausiusClapeyronRefiner(),
-            MiscibilityGapRefiner(),
-            TerminalRefiner(),
+            cls() if axes == _DEFAULT_AXES else cls(axes=axes)
+            for cls in (DelaunayTripleRefiner, ClausiusClapeyronRefiner, MiscibilityGapRefiner, TerminalRefiner)
+            if cls.supports(axes)
         ]
     refiners: list[Refiner] = []
-    if multiple_mus:
-        refiners.append(ScanRefiner(by="mu"))
-    if multiple_ts:
-        refiners.append(ScanRefiner(by="T"))
+    if multiple_ys:
+        refiners.append(ScanRefiner(by=axes.y, axes=axes))
+    if multiple_xs:
+        refiners.append(ScanRefiner(by=axes.x, axes=axes))
     return refiners
