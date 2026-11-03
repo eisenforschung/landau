@@ -1625,6 +1625,7 @@ class ClausiusClapeyronRefiner(_CCBase):
         i = np.argmin(np.abs(shared[inward] - c0))
         c1, g1 = shared[inward][i], gap[inward][i]
         if g1 <= g0:
+            # nothing to extrapolate from: left to TerminalRefiner rather than tagged here
             return True
         closes_at = c0 - g0 * (c1 - c0) / (g1 - g0)
         return abs(closes_at - side) <= self.dc_max
