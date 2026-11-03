@@ -11,6 +11,7 @@ self
 installation
 api
 notebooks
+publications
 ```
 
 ## Citation
