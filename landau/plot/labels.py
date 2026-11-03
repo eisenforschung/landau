@@ -707,7 +707,8 @@ def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True, yl
     top_labels
         Ticks on the top spine mark each transition boundary (positions where
         ``border == True``) and the stable phase name is placed near the top of
-        the axis, centered between adjacent boundaries.
+        the axis as vertical text hanging down from the top spine, centered
+        between adjacent boundaries.
 
     side_labels
         The default seaborn legend is removed and, when unstable lines are
@@ -795,6 +796,7 @@ def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True, yl
             top_texts.append(_text_with_outline(
                 ax, mid, 0.97, _bold_math(phase),
                 transform=xform,
+                rotation="vertical",
                 ha="center", va="top", fontsize="small", fontweight="bold",
                 color=phase_colors.get(phase, "black"),
             ))
