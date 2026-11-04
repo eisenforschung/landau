@@ -13,6 +13,7 @@ __all__ = [
     "AbstractPointDefectSublattice",
     "PointDefectSublattice",
     "LowTemperatureExpansionSublattice",
+    "CappedPointDefectSublattice",
     "PointDefectedPhase",
 ]
 
@@ -138,6 +139,79 @@ class LowTemperatureExpansionSublattice(AbstractPointDefectSublattice):
 
     def _site_normalization(self, zes_sum):
         return 1.0
+
+
+@dataclass(frozen=True)
+class CappedPointDefectSublattice(AbstractPointDefectSublattice):
+    r"""
+    Point defect sublattice whose total defect site fraction is capped at
+    ``max_site_fraction`` :math:`m`.
+
+    A sublattice of :math:`N` sites holds at most :math:`mN` defects of all
+    types together. A configuration with defects of types :math:`i_1, \dots,
+    i_n` on :math:`n` distinct sites has weight :math:`\prod_k z_{i_k}`, with
+    :math:`z_i = e^{-\beta[\phi_i]}`; summing over the :math:`\binom{N}{n}`
+    choices of sites and the types on each gives :math:`\binom{N}{n} s^n`
+    with :math:`s = \sum_i z_i`, so the sublattice partition function is
+
+    .. math::
+
+        Z_N(s) = \sum_{n=0}^{\lfloor mN \rfloor} \binom{N}{n} s^n .
+
+    Without the cap the sum runs to :math:`N` and gives the exact
+    :math:`(1 + s)^N`. In the thermodynamic limit the sum is dominated by its
+    largest term, so per site
+
+    .. math::
+
+        L(s) = \lim_{N \to \infty} \frac{1}{N} \ln Z_N(s)
+             = \max_{0 \le x \le m} \left[ H(x) + x \ln s \right],
+
+    with :math:`H(x) = -x \ln x - (1 - x) \ln(1 - x)`. The unconstrained
+    maximum :math:`x = s / (1 + s)` is reachable up to
+    :math:`s^* = m / (1 - m)`; beyond it the maximum sits at :math:`x = m`:
+
+    .. math::
+
+        L(s) = \begin{cases} \ln(1 + s) & s \le s^* \\
+                              H(m) + m \ln s & s > s^* \end{cases}
+        \qquad
+        D(s) = \begin{cases} 1 + s & s \le s^* \\
+                              s / m & s > s^* \end{cases}
+
+    Below :math:`s^*` this is :class:`PointDefectSublattice`; above it the
+    sublattice is a line phase at total defect site fraction :math:`m`, which is
+    split among the defects in proportion to their weights,
+    :math:`x_i = z_i m / s`. :math:`L` and :math:`L'` are continuous at
+    :math:`s^*`, :math:`L''` is not, so the concentration is continuous but
+    :math:`\partial c / \partial(\Delta\mu)` jumps there. Since :math:`L` is
+    the maximum of :math:`H(x) + x \ln s` over the restricted range
+    :math:`x \le m`, it never exceeds the exact :math:`\ln(1 + s)`: the capped
+    semi-grand potential is never below the exact one.
+    """
+
+    max_site_fraction: float
+
+    def __post_init__(self):
+        if not 0.0 < self.max_site_fraction < 1.0:
+            raise ValueError(f"max_site_fraction must lie in (0, 1), got {self.max_site_fraction}")
+
+    @property
+    def _s_star(self):
+        m = self.max_site_fraction
+        return m / (1.0 - m)
+
+    def _site_log_partition(self, zes_sum):
+        m = self.max_site_fraction
+        s = np.asarray(zes_sum, dtype=float)
+        H = -m * np.log(m) - (1.0 - m) * np.log1p(-m)
+        # both branches are evaluated; keep the upper one finite at s = 0
+        capped = H + m * np.log(np.maximum(s, np.finfo(float).tiny))
+        return _scalarize(np.where(s <= self._s_star, np.log1p(s), capped))
+
+    def _site_normalization(self, zes_sum):
+        s = np.asarray(zes_sum, dtype=float)
+        return _scalarize(np.where(s <= self._s_star, 1.0 + s, s / self.max_site_fraction))
 
 
 @dataclass(frozen=True)

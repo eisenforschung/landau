@@ -7,6 +7,15 @@
    :show-inheritance:
 ```
 
+## landau.phases.pointdefects
+
+```{eval-rst}
+.. automodule:: landau.phases.pointdefects
+   :members:
+   :undoc-members:
+   :show-inheritance:
+```
+
 ## landau.phases.quasiharmonic
 
 ```{eval-rst}
