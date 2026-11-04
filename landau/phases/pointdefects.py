@@ -147,10 +147,29 @@ class CappedPointDefectSublattice(AbstractPointDefectSublattice):
     Point defect sublattice whose total defect site fraction is capped at
     ``max_site_fraction`` :math:`m`.
 
-    The thermodynamic limit (:math:`N \to \infty`) of the binomial sublattice
-    partition function truncated at :math:`mN` defects of all types together.
-    With :math:`s^* = m / (1 - m)` and
-    :math:`H(m) = -m \ln m - (1 - m) \ln(1 - m)`,
+    A sublattice of :math:`N` sites holds at most :math:`mN` defects of all
+    types together. A configuration with defects of types :math:`i_1, \dots,
+    i_n` on :math:`n` distinct sites has weight :math:`\prod_k z_{i_k}`, with
+    :math:`z_i = e^{-\beta[\phi_i]}`; summing over the :math:`\binom{N}{n}`
+    choices of sites and the types on each gives :math:`\binom{N}{n} s^n`
+    with :math:`s = \sum_i z_i`, so the sublattice partition function is
+
+    .. math::
+
+        Z_N(s) = \sum_{n=0}^{\lfloor mN \rfloor} \binom{N}{n} s^n .
+
+    Without the cap the sum runs to :math:`N` and gives the exact
+    :math:`(1 + s)^N`. In the thermodynamic limit the sum is dominated by its
+    largest term, so per site
+
+    .. math::
+
+        L(s) = \lim_{N \to \infty} \frac{1}{N} \ln Z_N(s)
+             = \max_{0 \le x \le m} \left[ H(x) + x \ln s \right],
+
+    with :math:`H(x) = -x \ln x - (1 - x) \ln(1 - x)`. The unconstrained
+    maximum :math:`x = s / (1 + s)` is reachable up to
+    :math:`s^* = m / (1 - m)`; beyond it the maximum sits at :math:`x = m`:
 
     .. math::
 
