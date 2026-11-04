@@ -3,6 +3,33 @@
 Notable changes to **landau.py**, newest first. Per-PR detail lives in the
 [GitHub releases](https://github.com/eisenforschung/landau/releases).
 
+## [1.18.0](https://github.com/eisenforschung/landau/compare/1.17.0...1.18.0) (2026-11-04)
+
+
+### Features
+
+* **phases:** add CappedPointDefectSublattice ([#560](https://github.com/eisenforschung/landau/issues/560)) ([30e6e7f](https://github.com/eisenforschung/landau/commit/30e6e7f1496776c14e93bdc717541ee7d6a402d9))
+* **phases:** add PointDefectedPhase.site_fractions ([#561](https://github.com/eisenforschung/landau/issues/561)) ([a8cc407](https://github.com/eisenforschung/landau/commit/a8cc4074ffed13eb68a126a8d56ad7d38a6df0fa))
+* **plot:** element name on 1d mu and excess free energy plots ([#554](https://github.com/eisenforschung/landau/issues/554)) ([e28e93a](https://github.com/eisenforschung/landau/commit/e28e93a38102ebe845cc3492937f0b95873ec385))
+* **plot:** toggle for vertical top phase labels on 1d plots ([#555](https://github.com/eisenforschung/landau/issues/555)) ([d19eced](https://github.com/eisenforschung/landau/commit/d19eced4d1d6b3ebebc57105c9ff7a17bae403e2))
+* **refine:** solve congruent points exactly, pure-component transitions at mu = -+inf ([#471](https://github.com/eisenforschung/landau/issues/471)) ([0cd9124](https://github.com/eisenforschung/landau/commit/0cd91248b3356acccb25ab8f12f1c93fabf5b53b))
+* **refine:** tag monotectic-type invariants where a miscibility gap meets another phase ([#467](https://github.com/eisenforschung/landau/issues/467)) ([33fd1e9](https://github.com/eisenforschung/landau/commit/33fd1e97f3589a583f2633596e35987f6ef5281d))
+* **refine:** tag the closure of a miscibility gap as its congruent point ([#478](https://github.com/eisenforschung/landau/issues/478)) ([333d851](https://github.com/eisenforschung/landau/commit/333d85102b375d6503961e5f5117b022249ba760))
+
+
+### Bug Fixes
+
+* **calculate:** reference f_excess against the pure components ([92ac07c](https://github.com/eisenforschung/landau/commit/92ac07cdea441467d5e8ca6e6603ffc495fa3504)), closes [#499](https://github.com/eisenforschung/landau/issues/499)
+* **deps:** require pyiron_snippets&gt;=1.0.1 ([#556](https://github.com/eisenforschung/landau/issues/556)) ([e71cdbc](https://github.com/eisenforschung/landau/commit/e71cdbc86f14469d52a5b2660608768d4270e1bb))
+* **plot:** key phase colours by sorted name in every plotter ([#557](https://github.com/eisenforschung/landau/issues/557)) ([91cffb4](https://github.com/eisenforschung/landau/commit/91cffb4fc0a19697c759ab7fcf70699dac63378b))
+* **plot:** rasterise color_by fields in vector output ([#549](https://github.com/eisenforschung/landau/issues/549)) ([620a9b4](https://github.com/eisenforschung/landau/commit/620a9b4d8245cb55703d68f05b589ef5ed6d4746))
+* **refine:** drop refined two-phase points whose phases don't share a potential ([#545](https://github.com/eisenforschung/landau/issues/545)) ([65caef9](https://github.com/eisenforschung/landau/commit/65caef9d068d06c1e24daea4ce239540c5124fef))
+
+
+### Performance Improvements
+
+* **calculate:** evaluate only the stable end member for the f_excess reference ([c7807a8](https://github.com/eisenforschung/landau/commit/c7807a83eb05d2a82492ffb4a906208f0ffa2634))
+
 ## [1.17.0](https://github.com/eisenforschung/landau/compare/1.16.0...1.17.0) (2026-10-31)
 
 
