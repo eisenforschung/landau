@@ -413,3 +413,60 @@ def test_block_exclusion_never_undercuts_the_exact_sublattice():
     dmu = np.linspace(-1.0, 1.0, 401)
     gap = blocked.semigrand_potential_contribution(_T, dmu) - exact.semigrand_potential_contribution(_T, dmu)
     assert gap.min() > 0
+
+
+# --- PointDefectedPhase.site_fractions ---
+
+
+def _independent_site_fractions(sublattice, T, dmu, normalization):
+    z = {d.name: np.exp(-(d.excess_free_energy(T) - d.excess_solutes * dmu) / kB / T) for d in sublattice.defects}
+    s = sum(z.values())
+    return {name: zi / normalization(s) for name, zi in z.items()}
+
+
+@pytest.mark.parametrize(
+    ("sublattice_class", "normalization"),
+    [
+        (PointDefectSublattice, lambda s: 1 + s),
+        (LowTemperatureExpansionSublattice, lambda s: 1.0),
+        (_capped(), lambda s: np.where(s <= _S_STAR, 1 + s, s / _M)),
+    ],
+    ids=["exact", "lte", "capped"],
+)
+def test_site_fractions_are_z_over_the_model_normalization(sublattice_class, normalization):
+    """Every sublattice and defect is reported, each ``x_i = z_i / D(s)`` for its own model."""
+    phase = _b2_phase(sublattice_class)
+    dmu = np.linspace(-0.6, 0.6, 121)
+    fractions = phase.site_fractions(_T, dmu)
+    assert list(fractions) == ["alpha", "beta"]
+    for sub in phase.sublattices:
+        expected = _independent_site_fractions(sub, _T, dmu, normalization)
+        assert list(fractions[sub.name]) == list(expected)
+        for name, x in expected.items():
+            assert_allclose(fractions[sub.name][name], x, rtol=1e-12, atol=0)
+
+
+@pytest.mark.parametrize("sublattice_class", [PointDefectSublattice, _capped()], ids=["exact", "capped"])
+def test_site_fractions_reproduce_the_concentration(sublattice_class):
+    """``c = c_host + sum_l eta_l sum_i [n_i] x_i`` -- Eq. (2) -- for the bounded models,
+    whose concentration the clamp leaves alone."""
+    phase = _b2_phase(sublattice_class)
+    dmu = np.linspace(-1.0, 1.0, 201)
+    fractions = phase.site_fractions(_T, dmu)
+    c = phase.line_phase.line_concentration + sum(
+        sub.sublattice_fraction * sum(d.excess_solutes * fractions[sub.name][d.name] for d in sub.defects)
+        for sub in phase.sublattices
+    )
+    assert_allclose(c, phase.concentration(_T, dmu), rtol=0, atol=1e-12)
+
+
+def test_site_fractions_shape_contract():
+    """Scalar in, Python float out; array ``dmu`` and array ``T`` keep their broadcast shape."""
+    phase = _b2_phase(PointDefectSublattice)
+    scalar = phase.site_fractions(_T, 0.1)["alpha"]["B_a"]
+    assert isinstance(scalar, float)
+    assert phase.site_fractions(_T, np.zeros((3, 4)))["alpha"]["B_a"].shape == (3, 4)
+    Ts = np.array([600.0, 800.0, 1000.0])
+    x = phase.site_fractions(Ts, 0.1)["beta"]["A_b"]
+    assert x.shape == (3,)
+    assert_allclose(x, [phase.site_fractions(T, 0.1)["beta"]["A_b"] for T in Ts], rtol=1e-14, atol=0)
