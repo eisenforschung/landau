@@ -246,6 +246,19 @@ def test_inline_legend_false_keeps_figure_legend():
 
 
 @pytest.mark.parametrize("temperatures", [[500.0], [500.0, 800.0]])
+def test_ylabel_carries_unit(temperatures):
+    """The energy axis is labelled in eV/atom on the single axes and on every labelled facet."""
+    plt.figure()
+    try:
+        out = plot_excess_free_energy(_minimal_df(temperatures))
+        axes = [out] if isinstance(out, plt.Axes) else list(out.axes.flat)
+        labels = {ax.get_ylabel() for ax in axes} - {""}
+        assert labels == {"Free Energy of Formation [eV/atom]"}
+    finally:
+        plt.close("all")
+
+
+@pytest.mark.parametrize("temperatures", [[500.0], [500.0, 800.0]])
 @pytest.mark.parametrize("element,xlabel", [
     (None, "Concentration"),
     ("Mg", r"Concentration $c_\mathrm{Mg}$"),

@@ -266,6 +266,24 @@ def _symbol(symbol: str, element: str | None) -> str:
     return symbol if element is None else rf"{symbol}_\mathrm{{{element}}}"
 
 
+def _column_label(column: str, element: str | None = None) -> str:
+    """Axis label, with its unit, for a column of a :func:`calc_phase_diagram` frame.
+
+    Energies are per atom, the chemical potential difference in eV and the
+    temperature in K. A column not listed here is labelled by its name.
+    """
+    labels = {
+        "T": "$T$ [K]",
+        "c": f"${_symbol('c', element)}$",
+        "mu": f"${_symbol(_DELTA_MU, element)}$ [eV]",
+        "phi": f"{_YLABEL_1D} [eV/atom]",
+        "f": "Free Energy [eV/atom]",
+        "f_excess": "Free Energy of Formation [eV/atom]",
+        "dphi": r"$\phi - \min\,\phi$ [eV/atom]",
+    }
+    return labels.get(column, column)
+
+
 def _set_axis_for(axis_var: str, df_stable, element: str | None, ax) -> None:
     """Configure the x-axis of a phase diagram based on the axis variable.
 
@@ -282,13 +300,13 @@ def _set_axis_for(axis_var: str, df_stable, element: str | None, ax) -> None:
     """
     if axis_var == "c":
         ax.set_xlim(0, 1)
-        ax.set_xlabel(f"${_symbol('c', element)}$")
+        ax.set_xlabel(_column_label("c", element))
     elif axis_var == "mu":
         mus = df_stable["mu"].unique()
         mus = mus[np.isfinite(mus)]
         if len(mus) > 0:
             ax.set_xlim(mus.min(), mus.max())
-        ax.set_xlabel(f"${_symbol(_DELTA_MU, element)}$ [eV]")
+        ax.set_xlabel(_column_label("mu", element))
     else:
         raise ValueError(
             f"Unknown coordinate system: variables[0]={axis_var!r}. Expected 'c' or 'mu'."
@@ -335,7 +353,7 @@ def _plot_phase_diagram(
             p.set_facecolor("none")
         mappable = _plot_scalar_field(df, polys, color_by, variables, ax, cmap=cmap, norm=norm)
         if colorbar:
-            ax.figure.colorbar(mappable, ax=ax, label=color_by)
+            ax.figure.colorbar(mappable, ax=ax, label=_column_label(color_by, element))
 
     # triplepoints=None means the caller did not say, so the marks follow
     # whatever else is being drawn -- today, the temperature labels, which
@@ -358,7 +376,7 @@ def _plot_phase_diagram(
     # Last, so the phase labels just placed are obstacles it keeps clear of.
     if transition_temperatures:
         _annotate_transition_temperatures(df, polys, ax=ax, variables=variables)
-    ax.set_ylabel("$T$ [K]")
+    ax.set_ylabel(_column_label("T"))
 
 
 @deprecate(
@@ -1113,11 +1131,11 @@ def plot_excess_free_energy(
     if g is not None:
         g.refline(y=0)
         g.set_titles("T = {col_name:.0f} K")
-        g.set(xlabel=xlabel, ylabel="Free Energy of Formation")
+        g.set(xlabel=xlabel, ylabel=_column_label("f_excess"))
     else:
         ax = axes[0]
         ax.axhline(0, color=".5", linestyle="--")
-        ax.set(xlabel=xlabel, ylabel="Free Energy of Formation")
+        ax.set(xlabel=xlabel, ylabel=_column_label("f_excess"))
 
     # Place inline labels last so they see the final axis limits (refline/relplot).
     for ax, entries in facet_entries:
