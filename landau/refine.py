@@ -48,6 +48,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, replace
 from typing import ClassVar, Iterable, Iterator, Mapping, Sequence
 
+import heapq
 import warnings
 import weakref
 
@@ -1381,6 +1382,15 @@ class _CCBase(Refiner):
                                half_width, cand.T_min, -1))
         return out
 
+    def _lines(self, points):
+        """Hook: split the points sharing one :meth:`_pair_key` into the
+        coexistence lines they belong to, each getting its own ``boundary_id``
+        and its own :meth:`_tag_features` call. The base implementation keeps
+        them as one line; :meth:`MiscibilityGapRefiner._lines` separates the
+        domes of a phase with more than one gap.
+        """
+        return [points]
+
     def _tag_features(self, points, phases):
         """Hook: tag features spotted along a whole coexistence line.
 
@@ -1425,8 +1435,12 @@ class _CCBase(Refiner):
             by_line.setdefault(boundary_ids[key], []).extend(pts)
         for bid, pts in by_line.items():
             keep = [pt for pt in pts if pt.T >= 0 and not _dominated(pt, phases)]
-            for pt in self._tag_features(keep, phases):
-                rows.extend(replace(pt, boundary_id=bid).to_rows(phases))
+            for k, line in enumerate(self._lines(keep)):
+                # a key's extra lines (a phase's further domes) get fresh ids
+                if k > 0:
+                    bid, next_bid = next_bid, next_bid + 1
+                for pt in self._tag_features(line, phases):
+                    rows.extend(replace(pt, boundary_id=bid).to_rows(phases))
         out = pd.DataFrame(rows)
         if out.empty:
             return out
@@ -1773,38 +1787,55 @@ class ClausiusClapeyronRefiner(_CCBase):
 # -- Intra-phase miscibility gap ----------------------------------------------
 
 
-def _gap_jump(phase, T: float, mu_lo: float, mu_hi: float, *, eps: float = 1e-9):
-    """The exact jump of ``c(mu)`` at fixed ``T`` inside ``[mu_lo, mu_hi]``.
+def _gap_jump(phase, T: float, mu_lo: float, mu_hi: float, *, eps: float = 1e-9,
+              min_jump: float = 1e-3, n: int = 50):
+    """The largest jump of ``c(mu)`` at fixed ``T`` inside ``[mu_lo, mu_hi]``.
 
     Where a phase is split by a miscibility gap, ``c(mu)`` jumps between the
     two branches at the coexistence ``mu*``; above the gap's critical point it
-    is merely steep. The 50-point scan of :meth:`MiscibilityGapRefiner._scan`
-    cannot tell a jump from a steep slope at its own resolution, so this
-    bisects the scan's steepest segment on which branch ``c(mu)`` lands on
-    until ``mu*`` is pinned to ``eps``, and reads the jump as ``c(mu* + eps) -
-    c(mu* - eps)``: the true gap below the critical point, ``2 eps dc/dmu`` (as
-    good as zero) above it.
+    is merely steep. A scan at any one resolution cannot tell the two apart:
+    near the critical point the continuous flanks on either side of ``mu*``
+    can carry more ``dc`` across one segment than the jump itself, so the
+    steepest segment of a coarse scan need not be the one holding it. Since
+    ``c(mu)`` is monotone, the rise over a segment bounds every jump inside
+    it, which makes the search exact: segments are refined largest rise
+    first, each into ``n`` sub-segments, until the largest remaining rise sits
+    on a segment ``eps`` wide -- then no unrefined segment can hold a bigger
+    jump. A segment whose rise is below ``min_jump`` is never refined, which
+    is what keeps a continuous ``c(mu)`` from being chased down to ``eps``
+    everywhere; a jump below ``min_jump`` therefore reads as none.
 
-    Returns ``(mu_star, c_left, c_right)``; ``c_right - c_left`` is the jump.
-    Raises :class:`ValueError` where ``c(mu)`` does not increase in the
-    bracket.
+    Returns ``(mu_star, c_left, c_right)``, ``c_right - c_left`` the jump:
+    the true gap below the critical point, and zero (``c_left == c_right``,
+    at the steepest point of the bracket) where no segment rises by
+    ``min_jump``. Raises :class:`ValueError` where ``c(mu)`` does not increase
+    in the bracket.
     """
-    mus = np.linspace(mu_lo, mu_hi, 50)
-    cs = np.array([float(phase.concentration(T, m)) for m in mus])
-    dcs = np.diff(cs)
+    def scan(lo, hi):
+        mus = np.linspace(lo, hi, n)
+        cs = np.asarray(phase.concentration(T, mus), dtype=float)
+        return mus, cs, np.diff(cs)
+
+    mus, cs, dcs = scan(mu_lo, mu_hi)
     if dcs.max() <= 0:
         raise ValueError(f"c(mu) is not increasing in [{mu_lo}, {mu_hi}] at T={T}")
+    # (-rise, lo, hi, c_lo, c_hi): the heap pops the steepest segment first
+    heap = [(-float(dc), float(mus[i]), float(mus[i + 1]), float(cs[i]), float(cs[i + 1]))
+            for i, dc in enumerate(dcs) if dc > min_jump]
+    heapq.heapify(heap)
+    while heap:
+        rise, lo, hi, c_lo, c_hi = heapq.heappop(heap)
+        if hi - lo <= eps:
+            return (lo + hi) / 2.0, c_lo, c_hi
+        sub_mus, sub_cs, sub_dcs = scan(lo, hi)
+        for i, dc in enumerate(sub_dcs):
+            if dc > min_jump:
+                heapq.heappush(heap, (-float(dc), float(sub_mus[i]), float(sub_mus[i + 1]),
+                                      float(sub_cs[i]), float(sub_cs[i + 1])))
     i = int(np.argmax(dcs))
-    lo, hi = float(mus[i]), float(mus[i + 1])
-    c_mid = (float(cs[i]) + float(cs[i + 1])) / 2.0
-    while hi - lo > eps:
-        mid = (lo + hi) / 2.0
-        if float(phase.concentration(T, mid)) < c_mid:
-            lo = mid
-        else:
-            hi = mid
-    mu_star = (lo + hi) / 2.0
-    return mu_star, float(phase.concentration(T, mu_star - eps)), float(phase.concentration(T, mu_star + eps))
+    mu_star = (float(mus[i]) + float(mus[i + 1])) / 2.0
+    c = float(phase.concentration(T, mu_star))
+    return mu_star, c, c
 
 
 
@@ -1984,6 +2015,11 @@ class MiscibilityGapRefiner(_CCBase):
         overshoot beyond it is dropped. An upper closure (a UCST) and a lower
         one (an LCST) are handled alike.
 
+        An open end is also what a trace cut short by ``max_steps`` leaves,
+        so a gap without a closure row may just be one the walk did not reach
+        the top of; raise ``max_steps`` where the trace stops well below the
+        critical point with the gap still wide.
+
         The jump is read through the phase's own ``concentration``, so the
         closure is located to the resolution at which the phase resolves two
         shallow minima: a gap narrower than that reads as closed.
@@ -1993,19 +2029,27 @@ class MiscibilityGapRefiner(_CCBase):
         if len(gaps) < 2:
             return points
         ph = phases[points[gaps[0]].phase]
+        jumps: dict[int, tuple | None] = {}
+
+        def is_open(i):
+            if i not in jumps:
+                jumps[i] = self._jump_at(ph, points[i])
+            return jumps[i] is not None and jumps[i][2] - jumps[i][1] > self.gap_close
+
         drop: set[int] = set()
         closures: list[RefinedMiscibilityGap] = []
-        for order in (gaps, gaps[::-1]):  # walk in from the top, then from the bottom
-            jumps = []
-            for i in order:
-                pt = points[i]
-                jumps.append(self._jump_at(ph, pt))
-                if jumps[-1] is not None and jumps[-1][2] - jumps[-1][1] > self.gap_close:
-                    break
-            if len(jumps) < 2 or jumps[-1] is None or jumps[-1][2] - jumps[-1][1] <= self.gap_close:
+        for order in (gaps, gaps[::-1]):  # in from the top, then from the bottom
+            # Along the line the gap is open up to the closure and closed past
+            # it, so the last open point is found by bisection over the points
+            # rather than by reading every one of the overshoot.
+            if is_open(order[0]) or not is_open(order[-1]):
                 continue  # the end is open (or unreadable): no closure on this side
-            i_open, i_closed = order[len(jumps) - 1], order[len(jumps) - 2]
-            closure = self._bisect_closure(ph, points[i_open], points[i_closed])
+            lo, hi = 0, len(order) - 1  # order[lo] closed, order[hi] open
+            while hi - lo > 1:
+                mid = (lo + hi) // 2
+                lo, hi = (lo, mid) if is_open(order[mid]) else (mid, hi)
+            i_open, i_closed = order[hi], order[lo]
+            closure = self._bisect_closure(ph, points[i_open], points[i_closed], jumps[i_open])
             if closure is None:
                 continue
             closures.append(closure)
@@ -2014,27 +2058,60 @@ class MiscibilityGapRefiner(_CCBase):
         out = [pt for i, pt in enumerate(points) if i not in drop]
         return out + closures
 
+    def _lines(self, points):
+        """Split the points of one phase into its domes.
+
+        One phase can carry more than one miscibility gap, and every gap of a
+        phase shares the one :meth:`_pair_key`, so the points of all its domes
+        arrive together. Two gaps of a phase at one temperature span disjoint
+        composition intervals, while the points of one dome overlap their
+        neighbours' by all but a trace step, so a dome is a chain of points
+        whose ``[c_left, c_right]`` intervals overlap. A point that is not a
+        gap (the invariant of :meth:`_dominated_node`) goes with the dome of
+        the gap point nearest it in ``T``.
+        """
+        gaps = sorted((pt for pt in points if isinstance(pt, RefinedMiscibilityGap)), key=lambda pt: pt.c_left)
+        others = [pt for pt in points if not isinstance(pt, RefinedMiscibilityGap)]
+        if len(gaps) < 2:
+            return [points]
+        lines: list[list] = []
+        reach = -np.inf
+        for pt in gaps:
+            if pt.c_left > reach:
+                lines.append([])
+            lines[-1].append(pt)
+            reach = max(reach, pt.c_right)
+        for pt in others:
+            nearest = min(lines, key=lambda line: min(abs(g.T - pt.T) for g in line))
+            nearest.append(pt)
+        return lines
+
     def _jump_at(self, ph, pt):
         """:func:`_gap_jump` at a traced point, bracketing ``mu`` around it."""
         width = max(abs(pt.c_right - pt.c_left), self.gap_close) * kB * max(abs(pt.T), 1.0)
         for _ in range(6):
             try:
-                return _gap_jump(ph, pt.T, pt.mu - width, pt.mu + width)
+                return _gap_jump(ph, pt.T, pt.mu - width, pt.mu + width, min_jump=self.gap_close)
             except ValueError:
                 width *= 4.0
         return None
 
-    def _bisect_closure(self, ph, open_pt, closed_pt):
+    def _bisect_closure(self, ph, open_pt, closed_pt, open_jump):
         """Bisect in T between an open gap point and a closed one for the
-        closure, returning it as a congruent :class:`RefinedMiscibilityGap`."""
+        closure, returning it as a congruent :class:`RefinedMiscibilityGap`.
+
+        Seeded from ``open_jump``, the exact read of :func:`_gap_jump` at the
+        open point, not from the traced point's coarse scan: the bracket in
+        ``mu`` at each step is sized by the gap as last read exactly, so the
+        closure found does not depend on how finely ``mu`` was sampled.
+        """
         T_open, T_closed = open_pt.T, closed_pt.T
-        mu = open_pt.mu
-        c_l, c_r = open_pt.c_left, open_pt.c_right
+        mu, c_l, c_r = open_jump
         while abs(T_closed - T_open) > self.closure_xtol:
             T = (T_open + T_closed) / 2.0
             width = max(abs(c_r - c_l), self.gap_close) * kB * max(abs(T), 1.0)
             try:
-                mu_star, cl, cr = _gap_jump(ph, T, mu - 4 * width, mu + 4 * width)
+                mu_star, cl, cr = _gap_jump(ph, T, mu - 4 * width, mu + 4 * width, min_jump=self.gap_close)
             except ValueError:
                 return None
             if cr - cl > self.gap_close:

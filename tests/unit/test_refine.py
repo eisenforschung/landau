@@ -955,22 +955,17 @@ def test_boundary_id_cc_refiner_two_lines():
 
 
 def test_boundary_id_miscibility_gap_refiner():
-    """MiscibilityGapRefiner assigns a single boundary_id to all gap rows."""
-    from scipy.constants import Boltzmann, eV
-    from landau.phases import RegularSolution
+    """MiscibilityGapRefiner assigns a single boundary_id to all gap rows of
+    one dome."""
     from landau.calculate import calc_phase_diagram, refine_phase_diagram
 
-    kB = Boltzmann / eV
     L0 = 0.1
     T_c = L0 / (2 * kB)
-    left = LinePhase(name="left", fixed_concentration=0.0, line_energy=0.0, line_entropy=0.0)
-    mid = LinePhase(name="mid", fixed_concentration=0.5, line_energy=L0 / 4, line_entropy=0.0)
-    right = LinePhase(name="right", fixed_concentration=1.0, line_energy=0.0, line_entropy=0.0)
-    sol = RegularSolution(name="sol", phases=[left, mid, right], num_coeffs=1, add_entropy=True)
+    sol = _gap_liquid(L0, E_A=0.0, E_B=0.0, S=0.0)
     Ts = np.linspace(150.0, T_c - 20.0, 15)
     mus = np.linspace(-0.05, 0.05, 13)
     coarse = calc_phase_diagram([sol], Ts=Ts, mu=mus, refine=False, keep_unstable=True)
-    out = refine_phase_diagram(coarse, {"sol": sol}, refiners=[MiscibilityGapRefiner()])
+    out = refine_phase_diagram(coarse, {"liquid": sol}, refiners=[MiscibilityGapRefiner()])
     cc = out[out["refined"] == "miscibility-gap"]
 
     assert not cc.empty
@@ -2357,6 +2352,58 @@ def test_gap_jump_reads_the_binodal_below_tc_and_nothing_above():
     assert cr - cl < 1e-6
 
 
+def _two_dome_liquid():
+    """A liquid with two miscibility gaps, one in each half of the composition
+    range, the A-side one deeper: E_mix = A sin^2(2 pi c), A = 0.012 below
+    c = 1/2 and 0.007 above, on 25 control points and PolyFit(14)."""
+    from landau.interpolate import PolyFit
+    from landau.phases import FastInterpolatingPhase
+
+    cs = np.linspace(0, 1, 25)
+    E_mix = np.where(cs < 0.5, 0.012, 0.007) * np.sin(2 * np.pi * cs) ** 2
+    controls = [LinePhase(f"l{i}", fixed_concentration=float(c), line_energy=float((1 - c) * -2.8 + c * -2.35 + e),
+                          line_entropy=3.0 * kB)
+                for i, (c, e) in enumerate(zip(cs, E_mix))]
+    return FastInterpolatingPhase("liquid", controls, add_entropy=True, interpolator=PolyFit(14))
+
+
+def _spinodal_maximum(liquid, c_lo, c_hi):
+    """The critical point of the dome in [c_lo, c_hi]: the maximum over c of
+    the spinodal temperature T_s(c) = -c (1-c) fe''(c) / kB, fe the phase's
+    excess free energy (its free energy at T = 0, where the entropy term
+    vanishes), fe'' by central differences."""
+    import scipy.optimize as so
+
+    def fe(c):
+        return np.asarray(liquid.free_energy(0.0, c), dtype=float)
+
+    h = 1e-4
+
+    def T_s(c):
+        return -c * (1 - c) * (fe(c + h) - 2 * fe(c) + fe(c - h)) / h ** 2 / kB
+
+    r = so.minimize_scalar(lambda c: -T_s(c), bounds=(c_lo, c_hi), method="bounded", options={"xatol": 1e-8})
+    return float(r.x), float(-r.fun)
+
+
+def test_gap_jump_does_not_depend_on_the_bracket():
+    """Near the critical point the continuous flanks of c(mu) rise more across
+    one scan segment than the jump itself, so the steepest segment of a
+    single scan need not hold it. The two-dome liquid at 1800 K, 2.5 K below
+    the A-side dome's closure: the same jump and mu* from a tight bracket, a
+    lopsided one and a wide one."""
+    liquid = _two_dome_liquid()
+    mu_star, cl, cr = _gap_jump(liquid, 1800.0, 0.25, 0.41)
+    assert cr - cl > 0.01
+    for lo, hi in [(mu_star - 0.002, mu_star + 0.002), (mu_star - 0.075, mu_star + 0.085)]:
+        m, left, right = _gap_jump(liquid, 1800.0, lo, hi)
+        assert m == pytest.approx(mu_star, abs=1e-8)
+        assert right - left == pytest.approx(cr - cl, abs=1e-6)
+    # a bracket that does not contain mu* holds no jump, and says so
+    _m, left, right = _gap_jump(liquid, 1800.0, mu_star + 0.01, mu_star + 0.05)
+    assert right == left
+
+
 def test_gap_jump_needs_an_increasing_c_of_mu():
     a = LinePhase("A", fixed_concentration=0.3, line_energy=-1.0)
     with pytest.raises(ValueError):
@@ -2419,6 +2466,40 @@ def test_gap_closure_asymmetric_matches_the_spinodal_oracle():
     (closure,) = _closures(df)
     assert closure["T"].iloc[0] == pytest.approx(T_c, abs=0.05)
     assert closure["c"].iloc[0] == pytest.approx(c_c, abs=2e-3)
+
+
+@pytest.mark.parametrize("n_mu, n_T", [(12, 20), (100, 15)])
+def test_gap_closure_does_not_depend_on_the_grid(n_mu, n_T):
+    """The bisection is seeded from the exact read at the last open point, not
+    from the coarse scan, so the closure lands on T_c whatever the mu grid."""
+    L0 = 0.25
+    df = calc_phase_diagram([_gap_liquid(L0)], np.linspace(1000.0, 1600.0, n_T), mu=n_mu)
+    (closure,) = _closures(df)
+    assert closure["T"].iloc[0] == pytest.approx(L0 / (2 * kB), abs=5e-3)
+    assert closure["c"].to_numpy() == pytest.approx([0.5, 0.5], abs=1e-3)
+
+
+def test_two_gaps_of_one_phase_each_get_their_closure():
+    """Both domes of the two-dome liquid are traced under one _pair_key; each
+    is its own line, with its own boundary_id and its own closure, at the
+    spinodal maximum of its half of the composition range."""
+    from landau.refine import DelaunayTripleRefiner
+
+    liquid = _two_dome_liquid()
+    df = calc_phase_diagram([liquid], np.linspace(1000.0, 2000.0, 60), mu=120,
+                            refine=[DelaunayTripleRefiner(), ClausiusClapeyronRefiner(),
+                                    MiscibilityGapRefiner(max_steps=3000, c_jump_min=0.15)])
+    closures = sorted(_closures(df), key=lambda g: g["c"].mean())
+    assert len(closures) == 2
+    for grp, (c_lo, c_hi) in zip(closures, [(0.05, 0.45), (0.55, 0.95)]):
+        c_c, T_c = _spinodal_maximum(liquid, c_lo, c_hi)
+        assert grp["T"].iloc[0] == pytest.approx(T_c, abs=0.05)
+        assert grp["c"].to_numpy() == pytest.approx([c_c, c_c], abs=2e-3)
+    gaps = df[df["refined"] == "miscibility-gap"]
+    assert gaps["boundary_id"].nunique() == 2
+    for grp in closures:
+        own = gaps[gaps["boundary_id"] == grp["boundary_id"].iloc[0]]
+        assert (own[own["locus"] == Locus.BOUNDARY]["T"] < grp["T"].iloc[0]).all()  # no overshoot kept
 
 
 def test_gap_leaving_the_window_has_no_closure():
