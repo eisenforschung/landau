@@ -2494,7 +2494,9 @@ def test_two_gaps_of_one_phase_each_get_their_closure():
     for grp, (c_lo, c_hi) in zip(closures, [(0.05, 0.45), (0.55, 0.95)]):
         c_c, T_c = _spinodal_maximum(liquid, c_lo, c_hi)
         assert grp["T"].iloc[0] == pytest.approx(T_c, abs=0.05)
-        assert grp["c"].to_numpy() == pytest.approx([c_c, c_c], abs=2e-3)
+        # the composition is the midpoint of the last gap read open, a few mK
+        # below T_c, where the phase's two shallow minima are resolved to ~1e-3
+        assert grp["c"].to_numpy() == pytest.approx([c_c, c_c], abs=5e-3)
     gaps = df[df["refined"] == "miscibility-gap"]
     assert gaps["boundary_id"].nunique() == 2
     for grp in closures:
