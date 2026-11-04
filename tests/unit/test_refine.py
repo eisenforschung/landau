@@ -2483,6 +2483,7 @@ def test_two_gaps_of_one_phase_each_get_their_closure():
     """Both domes of the two-dome liquid are traced under one _pair_key; each
     is its own line, with its own boundary_id and its own closure, at the
     spinodal maximum of its half of the composition range."""
+    from landau.phases import FastInterpolatingPhase
     from landau.refine import DelaunayTripleRefiner
 
     liquid = _two_dome_liquid()
@@ -2495,8 +2496,9 @@ def test_two_gaps_of_one_phase_each_get_their_closure():
         c_c, T_c = _spinodal_maximum(liquid, c_lo, c_hi)
         assert grp["T"].iloc[0] == pytest.approx(T_c, abs=0.05)
         # the composition is the midpoint of the last gap read open, a few mK
-        # below T_c, where the phase's two shallow minima are resolved to ~1e-3
-        assert grp["c"].to_numpy() == pytest.approx([c_c, c_c], abs=5e-3)
+        # below T_c, where the phase reads each branch at a node of its c grid,
+        # up to half a spacing off
+        assert grp["c"].to_numpy() == pytest.approx([c_c, c_c], abs=0.5 / (FastInterpolatingPhase._n_grid - 1))
     gaps = df[df["refined"] == "miscibility-gap"]
     assert gaps["boundary_id"].nunique() == 2
     for grp in closures:
