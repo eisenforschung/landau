@@ -317,6 +317,23 @@ class PointDefectedPhase(Phase):
             fphi[at], fc[at] = self._clamp_fixed_T(float(t), fmu[at])
         return _scalarize(phi), _scalarize(c)
 
+    def site_fractions(self, T, dmu):
+        r"""Defect site fractions :math:`x_i = z_i / D(s)` on every sublattice.
+
+        Returns ``{sublattice name: {defect name: x_i}}``; each :math:`x_i` is
+        per site of its sublattice (multiply by ``sublattice_fraction`` for per
+        atom), with the shape of ``T`` and ``dmu`` broadcast together. The values
+        come from each sublattice's own model and are not affected by the
+        concentration clamp, so for :class:`LowTemperatureExpansionSublattice`
+        they can exceed 1.
+        """
+        fractions = {}
+        for s in self.sublattices:
+            zes = s._get_zes(T, dmu)
+            norm = s._site_normalization(zes.sum(axis=0))
+            fractions[s.name] = {d.name: _scalarize(np.asarray(z / norm)) for d, z in zip(s.defects, zes)}
+        return fractions
+
     def semigrand_potential(self, T, dmu):
         return self._phi_c(T, dmu)[0]
 
