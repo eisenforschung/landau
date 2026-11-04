@@ -363,36 +363,53 @@ def test_capped_rejects_a_cap_outside_the_open_unit_interval(m):
         _single_defect_sublattice(_capped(m))
 
 
-def test_smooth_saturation_from_a_rescaled_exact_sublattice():
-    """An exact sublattice on ``eta m`` of the sites, every defect entropy raised
-    by ``kB ln(1/m)``, gives ``L = m ln(1 + s/m)``, ``D = 1 + s/m`` per original site:
-    a smooth saturation at the same height ``m`` with no new class."""
-    defects = [
-        ConstantPointDefect("B_a", excess_energy=0.30, excess_entropy=0.0, excess_solutes=+1),
-        ConstantPointDefect("V_a", excess_energy=0.50, excess_entropy=0.0, excess_solutes=0),
-    ]
-    eta = 0.5
-    smooth = PointDefectSublattice(
+def _blocked_sublattice(defects, eta=0.5, m=_M):
+    """Block exclusion as an exact sublattice on ``eta m`` sites (one per block of
+    ``1/m``), every defect entropy raised by ``kB ln(1/m)`` (its ``1/m`` positions)."""
+    return PointDefectSublattice(
         name="alpha",
         sublattice=0,
-        sublattice_fraction=eta * _M,
-        defects=[replace(d, excess_entropy=d.excess_entropy + kB * np.log(1 / _M)) for d in defects],
+        sublattice_fraction=eta * m,
+        defects=[replace(d, excess_entropy=d.excess_entropy + kB * np.log(1 / m)) for d in defects],
     )
-    reference = _single_defect_sublattice(PointDefectSublattice, defects=defects, eta=eta)
+
+
+_BLOCK_DEFECTS = [
+    ConstantPointDefect("B_a", excess_energy=0.30, excess_entropy=0.0, excess_solutes=+1),
+    ConstantPointDefect("V_a", excess_energy=0.50, excess_entropy=0.0, excess_solutes=0),
+]
+
+
+def test_block_exclusion_from_a_rescaled_exact_sublattice():
+    """The rescaled exact sublattice gives ``L = m ln(1 + s/m)``, ``D = 1 + s/m`` per
+    original site."""
+    eta = 0.5
+    blocked = _blocked_sublattice(_BLOCK_DEFECTS, eta=eta)
+    reference = _single_defect_sublattice(PointDefectSublattice, defects=_BLOCK_DEFECTS, eta=eta)
     dmu = np.linspace(-0.5, 1.0, 301)
     s = _zes_sum(reference, _T, dmu)
     assert s.min() < 1e-2 * _M and s.max() > 1e3 * _M  # dilute through saturated
     assert_allclose(
-        smooth.semigrand_potential_contribution(_T, dmu),
+        blocked.semigrand_potential_contribution(_T, dmu),
         -eta * kB * _T * _M * np.log1p(s / _M),
         rtol=1e-12,
         atol=0,
     )
-    n = np.array([d.excess_solutes for d in defects])
-    z = np.array([np.exp(-(d.excess_energy - d.excess_solutes * dmu) / kB / _T) for d in defects])
+    n = np.array([d.excess_solutes for d in _BLOCK_DEFECTS])
+    z = np.array([np.exp(-(d.excess_energy - d.excess_solutes * dmu) / kB / _T) for d in _BLOCK_DEFECTS])
     assert_allclose(
-        smooth.concentration_contribution(_T, dmu),
+        blocked.concentration_contribution(_T, dmu),
         eta * (n[:, None] * z).sum(axis=0) / (1 + s / _M),
         rtol=1e-12,
         atol=0,
     )
+
+
+def test_block_exclusion_never_undercuts_the_exact_sublattice():
+    """``m ln(1 + s/m) <= ln(1 + s)``: the blocked ``phi`` contribution is never below
+    the exact one, and strictly above it once defects are present."""
+    blocked = _blocked_sublattice(_BLOCK_DEFECTS)
+    exact = _single_defect_sublattice(PointDefectSublattice, defects=_BLOCK_DEFECTS)
+    dmu = np.linspace(-1.0, 1.0, 401)
+    gap = blocked.semigrand_potential_contribution(_T, dmu) - exact.semigrand_potential_contribution(_T, dmu)
+    assert gap.min() > 0
