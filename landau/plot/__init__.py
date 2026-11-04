@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 from itertools import cycle
+import re
 from typing import Literal
 from warnings import warn
 
@@ -266,6 +267,25 @@ def _symbol(symbol: str, element: str | None) -> str:
     return symbol if element is None else rf"{symbol}_\mathrm{{{element}}}"
 
 
+def _mathrm(name: str) -> str:
+    """Mathtext (without ``$``) setting a phase name upright.
+
+    ``$...$`` segments of the name (e.g. the subscript in ``AB$_2$``) are kept as
+    math; mathtext specials in the text around them are escaped. A name with an
+    unbalanced ``$`` is all text.
+    """
+    parts = name.split("$")
+    if len(parts) % 2 == 0:
+        parts = [name]
+    out = []
+    for i, part in enumerate(parts):
+        if i % 2:
+            out.append(part)
+        elif part:
+            out.append(r"\mathrm{" + re.sub(r"([_#%&$ ])", r"\\\1", part) + "}")
+    return "".join(out)
+
+
 def _column_label(column: str, element: str | None = None) -> str:
     """Axis label, with its unit, for a column of a :func:`calc_phase_diagram` frame.
 
@@ -276,7 +296,7 @@ def _column_label(column: str, element: str | None = None) -> str:
         "T": "$T$ [K]",
         "c": f"${_symbol('c', element)}$",
         "mu": f"${_symbol(_DELTA_MU, element)}$ [eV]",
-        "phi": f"{_YLABEL_1D} [eV/atom]",
+        "phi": r"$\phi$ [eV/atom]",
         "f": "Free Energy [eV/atom]",
         "f_excess": "Free Energy of Formation [eV/atom]",
         "dphi": r"$\phi - \min\,\phi$ [eV/atom]",
@@ -608,22 +628,17 @@ def _subtract_reference_phase(df, scan_col, reference_phase):
     return df
 
 
-# Both cuts plot the same quantity on y, so only the x side is per-cut.
-_YLABEL_1D = "Semi-grandcanonical Potential"
-
-
 @dataclass(frozen=True)
 class _Axis1D:
     """Everything that differs between the two 1d phase diagrams.
 
     The body of :func:`_plot_1d_phase_diagram` is the same for both cuts; only the
-    column held fixed along the cut, the x label and the text of the transition
-    annotation depend on which variable is scanned.
+    column held fixed along the cut and the text of the transition annotation
+    depend on which variable is scanned.
     """
 
     fixed_col: str
     fixed_error: str
-    xlabel: Callable[[str | None], str]
     transition_label: Callable[[float, str | None], str]
 
 
@@ -631,16 +646,11 @@ _AXES_1D = {
     "mu": _Axis1D(
         fixed_col="T",
         fixed_error="Data contains more than one temperature!",
-        xlabel=lambda el: (
-            "Chemical Potential Difference [eV]" if el is None
-            else f"Chemical Potential Difference ${_symbol(_DELTA_MU, el)}$ [eV]"
-        ),
         transition_label=lambda mu, el: rf"${_symbol(_DELTA_MU, el)} = {mu:.03f}\,\mathrm{{eV}}$",
     ),
     "T": _Axis1D(
         fixed_col="mu",
         fixed_error="Data contains more than one chemical potential!",
-        xlabel=lambda el: "Temperature [K]",
         transition_label=lambda T, el: rf"$T = {T:.0f}\,\mathrm{{K}}$",
     ),
 }
@@ -702,10 +712,10 @@ def _plot_1d_phase_diagram(
             labels.append(axis.transition_label(xt, element))
         _place_transition_labels(ax, positions, labels, side="left")
 
-    ax.set_xlabel(axis.xlabel(element))
-    ylabel = f"{_YLABEL_1D} [eV/atom]"
+    ax.set_xlabel(_column_label(scan_col, element))
+    ylabel = _column_label("phi")
     if reference_phase is not None:
-        ylabel = f"{_YLABEL_1D}\nRelative to {reference_phase} [eV/atom]"
+        ylabel = rf"$\phi - \phi_{{{_mathrm(reference_phase)}}}$ [eV/atom]"
     ax.set_ylabel(ylabel)
 
     return ax

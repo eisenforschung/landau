@@ -1584,8 +1584,8 @@ CUTS = [(plot_1d_mu_phase_diagram, "mu"), (plot_1d_T_phase_diagram, "T")]
 
 
 @pytest.mark.parametrize("plot,scan_col,xlabel", [
-    (plot_1d_mu_phase_diagram, "mu", "Chemical Potential Difference [eV]"),
-    (plot_1d_T_phase_diagram, "T", "Temperature [K]"),
+    (plot_1d_mu_phase_diagram, "mu", r"$\Delta\mu$ [eV]"),
+    (plot_1d_T_phase_diagram, "T", "$T$ [K]"),
 ])
 def test_1d_xlabel_names_the_cut_axis(plot, scan_col, xlabel):
     fig, ax = plt.subplots()
@@ -1602,7 +1602,7 @@ def test_1d_ylabel_without_reference_phase(plot, scan_col):
     fig, ax = plt.subplots()
     try:
         plot(_cut_df(scan_col), ax=ax)
-        assert ax.get_ylabel() == "Semi-grandcanonical Potential [eV/atom]"
+        assert ax.get_ylabel() == r"$\phi$ [eV/atom]"
     finally:
         plt.close(fig)
 
@@ -1612,14 +1612,36 @@ def test_1d_ylabel_names_the_reference_phase(plot, scan_col):
     fig, ax = plt.subplots()
     try:
         plot(_cut_df(scan_col), ax=ax, reference_phase="A")
-        assert ax.get_ylabel() == "Semi-grandcanonical Potential\nRelative to A [eV/atom]"
+        assert ax.get_ylabel() == r"$\phi - \phi_{\mathrm{A}}$ [eV/atom]"
+    finally:
+        plt.close(fig)
+
+
+@pytest.mark.parametrize("name,subscript", [
+    ("fcc", r"\mathrm{fcc}"),
+    ("AB$_2$", r"\mathrm{AB}_2"),
+    ("Laves C15", r"\mathrm{Laves\ C15}"),
+    ("fcc_A1", r"\mathrm{fcc\_A1}"),
+])
+def test_1d_reference_phase_subscript_renders(name, subscript):
+    """The reference phase name becomes the subscript of the y label and survives mathtext.
+
+    Math segments of the name are kept, text around them is set upright with
+    mathtext specials escaped, so the label draws instead of raising.
+    """
+    df = _cut_df("mu").replace({"phase": {"A": name}})
+    fig, ax = plt.subplots()
+    try:
+        plot_1d_mu_phase_diagram(df, ax=ax, reference_phase=name)
+        assert ax.get_ylabel() == rf"$\phi - \phi_{{{subscript}}}$ [eV/atom]"
+        fig.canvas.draw()
     finally:
         plt.close(fig)
 
 
 @pytest.mark.parametrize("plot,scan_col,xlabel", [
-    (plot_1d_mu_phase_diagram, "mu", "Chemical Potential Difference [eV]"),
-    (plot_1d_T_phase_diagram, "T", "Temperature [K]"),
+    (plot_1d_mu_phase_diagram, "mu", r"$\Delta\mu$ [eV]"),
+    (plot_1d_T_phase_diagram, "T", "$T$ [K]"),
 ])
 def test_1d_labels_set_without_border_column(plot, scan_col, xlabel):
     """A frame with no 'border' column still gets its axis labels (issue #411).
@@ -1631,7 +1653,7 @@ def test_1d_labels_set_without_border_column(plot, scan_col, xlabel):
     try:
         plot(_cut_df(scan_col).drop(columns="border"), ax=ax)
         assert ax.get_xlabel() == xlabel
-        assert ax.get_ylabel() == "Semi-grandcanonical Potential [eV/atom]"
+        assert ax.get_ylabel() == r"$\phi$ [eV/atom]"
     finally:
         plt.close(fig)
 
@@ -1669,7 +1691,7 @@ def test_1d_mu_element_subscripts_xlabel_and_transition():
     fig, ax = plt.subplots()
     try:
         plot_1d_mu_phase_diagram(_cut_df("mu"), ax=ax, element="Mg")
-        assert ax.get_xlabel() == r"Chemical Potential Difference $\Delta\mu_\mathrm{Mg}$ [eV]"
+        assert ax.get_xlabel() == r"$\Delta\mu_\mathrm{Mg}$ [eV]"
         _transition_label(ax, r"$\Delta\mu_\mathrm{Mg} = 2.000\,\mathrm{eV}$")
     finally:
         plt.close(fig)

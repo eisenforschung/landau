@@ -137,7 +137,7 @@ def test_field_artists(eutectic_diagram, ax):
     ("mu", None, r"$\Delta\mu$ [eV]"),
     ("mu", "Mg", r"$\Delta\mu_\mathrm{Mg}$ [eV]"),
     ("c", "Mg", r"$c_\mathrm{Mg}$"),
-    ("phi", None, "Semi-grandcanonical Potential [eV/atom]"),
+    ("phi", None, r"$\phi$ [eV/atom]"),
     ("f", None, "Free Energy [eV/atom]"),
     ("f_excess", None, "Free Energy of Formation [eV/atom]"),
     ("custom", None, "custom"),
