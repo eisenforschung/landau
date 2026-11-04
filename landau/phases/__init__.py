@@ -215,12 +215,15 @@ class TemperatureDependentLinePhase(AbstractLinePhase):
         n = max(int(len(self.temperatures) // 100), 1)
         ts = self.temperatures[::n]
         fs = self.free_energies[::n]
+        plt.xlabel("$T$ [K]")
         if plot_error:
             plt.scatter(ts, self.line_free_energy(ts) - fs, label=self.name)
+            plt.ylabel("Interpolation Error [eV/atom]")
             return
         Ts = np.linspace(np.min(self.temperatures) * Tl, np.max(self.temperatures) * Tu, samples)
         (l,) = plt.plot(Ts, self.line_free_energy(Ts), label=self.name)
         plt.scatter(ts, fs, color=l.get_color())
+        plt.ylabel("Free Energy [eV/atom]")
 
 
 @deprecate("use TemperatureDependentLinePhase instead", version="2.0")
@@ -925,6 +928,7 @@ def check_concentration_interpolation(
         concentration_range (tuple of float): min/max concentration range
         plot_error (bool): if True, plot only the interpolation error at the samples instead of the free energies"""
 
+    plt.xlabel("$c$")
     if plot_error:
         cs, err = [], []
         for p in phases:
@@ -936,6 +940,7 @@ def check_concentration_interpolation(
             cs.append(cline)
             err.append(phase.free_energy(T, cline) - line_free_energy)
         plt.scatter(cs, err, label=phase.name)
+        plt.ylabel("Interpolation Error [eV/atom]")
         return
 
     cmin, cmax = concentration_range
@@ -978,6 +983,11 @@ def check_concentration_interpolation(
             line_free_energy -= (((c_hi-cline)*f_min + (cline-c_lo)*f_max)/(c_hi-c_lo))
 
         plt.scatter(cline, line_free_energy)
+
+    if plot_excess:
+        plt.ylabel("Free Energy Relative to End Members [eV/atom]")
+    else:
+        plt.ylabel("Free Energy [eV/atom]")
 
 
 # The point-defect classes now live in landau.phases.pointdefects. The pre-split

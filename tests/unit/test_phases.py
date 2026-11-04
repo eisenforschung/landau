@@ -1428,6 +1428,39 @@ def test_check_concentration_interpolation_error_respects_add_entropy():
         plt.close(fig)
 
 
+@pytest.mark.parametrize("plot_error,ylabel", [
+    (False, "Free Energy [eV/atom]"),
+    (True, "Interpolation Error [eV/atom]"),
+])
+def test_check_interpolation_axis_labels(plot_error, ylabel):
+    Ts = np.linspace(300, 1200, 20)
+    phase = TemperatureDependentLinePhase("L", 0.0, Ts, np.sqrt(Ts), interpolator=PolyFit(2))
+    fig, ax = plt.subplots()
+    try:
+        phase.check_interpolation(plot_error=plot_error)
+        assert ax.get_xlabel() == "$T$ [K]"
+        assert ax.get_ylabel() == ylabel
+    finally:
+        plt.close(fig)
+
+
+@pytest.mark.parametrize("plot_excess,plot_error,ylabel", [
+    (False, False, "Free Energy [eV/atom]"),
+    (True, False, "Free Energy Relative to End Members [eV/atom]"),
+    (False, True, "Interpolation Error [eV/atom]"),
+    (True, True, "Interpolation Error [eV/atom]"),
+])
+def test_check_concentration_interpolation_axis_labels(plot_excess, plot_error, ylabel):
+    phase, _ = _under_parametrised_interpolating_phase()
+    fig, ax = plt.subplots()
+    try:
+        phase.check_concentration_interpolation(T=1000, plot_excess=plot_excess, plot_error=plot_error)
+        assert ax.get_xlabel() == "$c$"
+        assert ax.get_ylabel() == ylabel
+    finally:
+        plt.close(fig)
+
+
 @pytest.mark.parametrize("concentration_range", [(0.3, 0.7), (0.0, 1.0)])
 @pytest.mark.parametrize("add_entropy", [False, True])
 def test_check_concentration_interpolation_plot_excess_anchors_to_line_phases(

@@ -125,11 +125,29 @@ def test_field_artists(eutectic_diagram, ax):
     assert {id(m.get_clip_path()._patch) for m in meshes} == {id(p) for p in patches}
     assert all(p.get_facecolor()[3] == 0 for p in patches)
     (cbar_ax,) = [a for a in ax.figure.axes if a is not ax]
-    assert cbar_ax.get_ylabel() == "c"
+    assert cbar_ax.get_ylabel() == "$c$"
     c = eutectic_diagram.query("stable")["c"]
     c = c[np.isfinite(c) & np.isfinite(eutectic_diagram.query("stable")["mu"])]
     assert meshes[0].norm.vmin == c.min()
     assert meshes[0].norm.vmax == c.max()
+
+
+@pytest.mark.parametrize("column,element,label", [
+    ("T", None, "$T$ [K]"),
+    ("mu", None, r"$\Delta\mu$ [eV]"),
+    ("mu", "Mg", r"$\Delta\mu_\mathrm{Mg}$ [eV]"),
+    ("c", "Mg", r"$c_\mathrm{Mg}$"),
+    ("phi", None, "Semi-grandcanonical Potential [eV/atom]"),
+    ("f", None, "Free Energy [eV/atom]"),
+    ("f_excess", None, "Free Energy of Formation [eV/atom]"),
+    ("custom", None, "custom"),
+])
+def test_colorbar_label_carries_unit(eutectic_diagram, ax, column, element, label):
+    """The colorbar names the column's quantity and unit; an unknown column keeps its name."""
+    df = eutectic_diagram.assign(custom=eutectic_diagram["T"])
+    plot_mu_phase_diagram(df, ax=ax, color_by=column, element=element, poly_method="concave")
+    (cbar_ax,) = [a for a in ax.figure.axes if a is not ax]
+    assert cbar_ax.get_ylabel() == label
 
 
 def test_field_norm_cmap_and_no_colorbar(eutectic_diagram, ax):
