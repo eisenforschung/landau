@@ -1,191 +1,208 @@
 # AGENTS.md
 
-Cross-tool entry point for AI coding agents (Codex, Cursor, Aider, Claude, ...). The dense, decisions-and-rationale project memory lives in [`CLAUDE.md`](CLAUDE.md); read it before non-trivial work.
+Reference for AI coding agents working on landau (Claude loads it through `CLAUDE.md`).
+It describes the code as it is now.
+History — which PR did what, when, and what it replaced — lives in git and on the issue tracker, not here.
 
-## TL;DR
+**landau.py** calculates thermodynamic equilibria and plots phase diagrams in the (semi-)grand ensemble, mostly for binary alloys.
+Dataclass-heavy, with plug-in strategies: `Phase`, `Interpolator`, `Refiner`, `AbstractPolyMethod`.
 
-`landau.py` — thermodynamic equilibria and phase diagrams in the (semi-)grand ensemble. Dataclass-heavy, plug-in strategies (`Phase`, `Interpolator`, `Refiner`, `AbstractPolyMethod`).
+## Working style (read this first)
+
+Distilled from maintainer feedback; several of these have been violated often enough to repeat.
+
+### Tone in PRs, commits, and comments
+
+- Terse, imperative. No "Happy to...", no apologies, no enthusiasm filler.
+- PR bodies are plain technical reports: no **bold** headline numbers, no "Conclusion" sections, no `[Fix this →]` action links, no marketing claims ("dramatic speedup").
+- Do not invoke the maintainer's name or authority in PR bodies or comments.
+- Keep the PR description in sync with the diff; when review or later commits invalidate a claim in the body, edit the body.
+- When naming another PR's issue in a commit message or PR body, avoid closing keywords ("closes #N") unless closure is intended — GitHub applies them on push to `main`.
+
+### Comments and docstrings
+
+- Reflect only the current state of the code.
+  Historical motivation is fine (why a threshold exists); intermediate steps, rejected alternatives and "old vs new" comparisons belong in the PR description.
+- Never reference thresholds, approaches or behaviour that no longer exist.
+
+### Evidence over claims
+
+- Cite the commit hash, file path, test count or command output behind any claim.
+  A number in a PR body comes with the script that produced it, committed under `benchmarks/` in the same PR.
+- For physics/numerics, rather say nothing than something unverified.
+- If asked to verify, actually verify — read the docs, run the code. Do not re-assert.
+
+### Scope and abstraction
+
+- Minimal change: "rather merge less features now and extend later than break API".
+- Before writing a helper, check the codebase and existing deps (numpy, scipy, shapely, matplotlib.testing, pyiron_snippets) for one that already does the job.
+- One purpose per PR. Notebooks, benchmarks, refactors and unrelated fixes go in separate PRs; when a PR grows a second concept, propose splitting before pushing more.
+- Speculative or "might be useful" work gets parked, not landed.
+
+### Tests
+
+- Assert tight conditions a degenerate/constant solution would fail. Loose `atol=0.05` "it ran" tests get rejected.
+- Hypothesis for round-trip recovery (random coeffs in → `fit()` → coeffs out) where applicable.
+- Share one `atol` constant across related tests instead of scattering magic numbers.
+
+### Debugging numerics
+
+- When diagnosing a fit/solver/physics issue, plot the relevant landscape (loss vs parameter, etc.), attach it inline to the PR comment, and add a walkthrough section to a notebook so the maintainer can step through it.
+
+### Git
+
+- Merge commits are disabled on GitHub. Never `git merge` to update a branch: `git reset` off any stray merge, `git rebase origin/main`, force-push.
+- Conventional Commits drive `release-please` (`feat:`/`fix:`/`docs:`/`test:`/`chore:`/`refactor:`, `!` or `BREAKING CHANGE:` for breaks); non-conforming messages are ignored by the release tooling.
+- Do not commit `.hypothesis/`, `_version.py`, stray top-level scripts, or duplicates of files you are adding.
+- Notebooks are committed with executed outputs only.
+
+## Hard constraints
+
+- **Pandas 2 and 3 both supported.** Every `groupby().apply()` passes `include_groups=False`; do not drop pandas 2.
+  The single-group `apply` workaround lives in `calculate._apply_series(grouped, fn, name)` — reuse it.
+  Pinned by `tests/regression/test_single_group_apply.py` and `test_cluster_phase_pandas3.py`.
+- **`shapely>=2.1`**: `AbstractPolyMethod.make` repairs self-intersecting rings with `make_valid(method="structure", keep_collapsed=False)`, which returns the enclosed polygon instead of a `GeometryCollection`.
+- **Lower bounds are tested.** `test-minimum-deps.yml` installs every direct dep at its floor (`uv pip install --resolution lowest-direct`) in a Python 3.11 venv; raising a feature's requirement means raising the floor in `pyproject.toml`.
+- **Module names have no underscores**: `asewrapper`, not `ase_wrapper`. Promote a module to a subpackage once it grows.
+- **Optional deps** gate behind `pyiron_snippets.import_alarm.ImportAlarm` (import works, instantiation raises).
+  In tests: a module-level `pytestmark = pytest.mark.skipif(ImportAlarm(...).message is not None, ...)` when a whole file needs one extra (`tests/unit/phases/test_ase.py`), per-test `skipif` on `try/except`-set flags when a file mixes extras (`tests/unit/test_poly.py`). A bare `try/except ImportError` is not a gate.
+- **Deprecations** use `pyiron_snippets` `@deprecate(..., version="2.0")` for functions/kwargs.
+  Classes can't be wrapped without breaking `isinstance`, so deprecated classes warn from `__post_init__` (`_warn_deprecated_phase`, `stacklevel=4`).
 
 ## Commands
 
 ```bash
-pip install -e .[test,constraints,fast-tsp,python-tsp]   # install with all extras used in CI
-pytest                                                   # full suite
-pytest tests/unit/test_calculate.py                      # one file
-pytest tests/unit/test_calculate.py::test_foo            # one test
-pytest -k pattern                                        # by name
-ruff check .                                             # lint (line length 120, configured in pyproject.toml)
-sphinx-build -b html docs docs/_build/html               # docs (needs .[docs])
-python tests/integration/testplots.py --only 2d_basics   # render visual-review plots to tests/integration/_plots/
+pip install -e .[test,constraints,fast-tsp,python-tsp]   # CI extras; also: ase, phonopy, docs, test-fleche
+pytest                                                   # full suite (pytest -k pattern, file::test as usual)
+pytest -m fleche                                         # fleche digest-hook tests, need .[test-fleche]; own CI job
+ruff check .                                             # line length 120
+sphinx-build -b html docs docs/_build/html               # docs, needs .[docs]
+python tests/integration/testplots.py --only 2d_basics 2d_toy --poly-method fasttsp   # PNGs → tests/integration/_plots/
 ```
 
-Python `>=3.11,<3.14`. Extras: `test`, `constraints`, `fast-tsp`, `python-tsp`, `ase`, `phonopy`, `docs`, `test-fleche` (fleche digest-hook tests, own CI job: `pytest -m fleche`).
-
-## Repo layout
-
-| Path | What's there |
-|------|--------------|
-| `landau/calculate.py` | `calc_phase_diagram` (its `refine=` accepts `True` / `False` / `Sequence[Refiner]`; every output row carries a `locus` column populated from `landau.features.Locus`; with `keep_unstable=True` the frame also carries `dphi = phi - min(phi)` over the rows sharing `(T, mu)` — PR #496; `f_excess` is referenced against the lowest pure-component free energy at each row's own `T`, evaluated 40 kT past the sampled μ window — the column is left out when the phases don't reach both c=0 and c=1, and `plot_excess_free_energy` raises naming it; closed #499), `refine_phase_diagram`, `guess_mu_range`, `get_transitions` (pairs border rows at one `(mu, T)` into two-phase tie-lines since PR #467 — no more three-phase `A-B-C` labels; select invariants by `locus == "triple"`), clustering helpers |
-| `landau/phases/` | `Phase` ABC, `AbstractLinePhase`, `LinePhase`, `TemperatureDependentLinePhase` (typo alias `TemperatureDepandantLinePhase` kept behind `@deprecate`, removal at 2.0), `IdealSolution`, `RegularSolution` and `InterpolatingPhase` (both deprecated since PR #503, removal at 2.0 — use `FastInterpolatingPhase` instead, `interpolator=RedlichKister(num_coeffs)` for a regular solution), `SlowInterpolatingPhase` (per-scalar `scipy.optimize.brute` reference oracle; not deprecated), `FastInterpolatingPhase` (vectorised subclass — the default user-facing solution phase), `Surface2DInterpolatingPhase` (fits one `f(T, c)` surface globally, slices per-T). Sibling modules: `pointdefects.py` (`AbstractPointDefect`, `AbstractPointDefectSublattice`, `ConstantPointDefect`, `PointDefectSublattice`, `LowTemperatureExpansionSublattice`, `CappedPointDefectSublattice` — a line phase at total defect site fraction `max_site_fraction` above saturation, PR #560 — `PointDefectedPhase`, whose `site_fractions(T, dmu)` returns per-sublattice defect site fractions `x_i = z_i / D` — PR #561), `asewrapper.py` (`AsePhase`) and `quasiharmonic.py` (`PhonopyQuasiHarmonicPhase` — evaluates `min_V [E(V) + F_vib(V, T)]` from phonopy `ThermalProperties` at any `T` instead of fitting a sampled `F(T)`; `phonopy` extra, PR #440). `phases/__init__.py` re-exports the pre-split point-defect names — `AbstractPointDefect` as a plain alias, `ConstantPointDefect`/`PointDefectSublattice`/`PointDefectedPhase` behind `@deprecate` shims. Post-split names (`AbstractPointDefectSublattice`, `LowTemperatureExpansionSublattice`, `CappedPointDefectSublattice`) are **not** re-exported — import from `landau.phases.pointdefects` directly. User-facing classes are also re-exported from `landau/__init__.py` |
-| `landau/interpolate/` | 1-D `Interpolator` strategies (`Interpolator.fit(x, y) → Interpolation`; `Interpolation.deriv() → Interpolation`, analytic for `PolyFit`/`SGTE`/`RedlichKister`, `NumericalDerivative` central difference otherwise — `FastInterpolatingPhase` uses the first derivative): `PolyFit`, `SplineFit`, `SGTE`, `RedlichKister` (fits by `numpy.linalg.lstsq` since PR #497 — exact least squares; under-determined fits are minimum-norm, terminals-only fits return the chord), `StitchedFit` (sorts `(t, f)` by `t` inside `fit` and clamps `edge` to `max(1, len(t) // 2)` since PR #507 — unsorted input used to fit the edge models through arbitrary subsets), `SoftplusFit`, `WhitneyTemperatureInterpolator` (the sklearn-style `WhitneyRBFInterpolator` it wraps is not re-exported). 2-D surface strategies (`SurfaceInterpolator.fit(T, c, H) → FittedSurface`; `FittedSurface.slice_at(T) → Interpolation`; consumed by `Surface2DInterpolatingPhase(surface_interpolator=...)`, required kwarg): `CalphadSurface2DInterpolator` (SGTE terminals + poly-in-T Redlich-Kister — needs c=0/c=1 terminal phases), `SoftplusSurface2DInterpolator` (softplus-link amplitudes, provably convex fixed-T slices — no terminal requirement, good for intermetallics; `knee_bounds=(lo, hi)` confines the knee positions to a concentration window when the multimodal coupled fit would park a knee on the data edge — requires `c_order=0` and the trust-region solver, PR #521), `WhitneySurface2DInterpolator` (Whitney-extended RBF — no terminal requirement; deprecation proposed in #531, see Design themes); paired `CalphadFittedSurface`/`SoftplusFittedSurface`/`WhitneyFittedSurface` helpers. `CalphadSurface2DInterpolator`'s terminal T-model is swappable via `terminal_interpolator=` (default `SGTE(4)`; `terminal_sgte_order` deprecated, removal at 2.0 — PR #446; pass `WhitneyTemperatureInterpolator()` when the surface must extrapolate below its fitted T-window, since SGTE's unbounded low-T entropy fabricates spurious low-T liquid fields). The `_scalarize(x)` 0-d → Python scalar helper also lives here (in `basic.py`) so `landau.phases` and `SplineFit` can share it without a cycle. Scalar-in/scalar-out and shape preservation are enforced suite-wide: one Hypothesis property in `tests/unit/interpolate/test_shape_contract.py` runs every 1-D interpolator plus its `deriv()` — add new interpolators to its `CASES` dict (PR #432) — and `tests/regression/test_issue_428.py` fails when a `TemperatureInterpolator` is exported without `calc_phase_diagram` coverage (PR #430) |
-| `landau/refine.py` | `Refiner` ABC + `ScanRefiner`, `DelaunayLineRefiner`, `DelaunayTripleRefiner`, `ClausiusClapeyronRefiner`, `MiscibilityGapRefiner`, `TerminalRefiner` (PR #471: T-scan at c = 0/1 solving pure-component transitions at effectively infinite μ, emitted as `CONGRUENT` rows at `mu = ±inf` via `RefinedPoint.terminal`); the two tracers share `_CCBase` (keyword-only ctors: `dT_max=5.0, dT_min=1.0, dc_max=0.01, dc_min=0.0, max_steps=500`). Delaunay refiners' `propose()` yields candidate objects (`_SimplexCandidate` / `_TripleCandidate`) wrapping a numpy-backed `_Simplex` view (`.unique_phases()`, `.centroids()`); `_delaunay_simplices(df) → list[tuple[_Simplex, int]]` memoises tessellation on the most recent frame via weakref-identity keying (module-level `_simplex_cache`), so the default 2-D refiners share one Delaunay per refine pass. `_CCBase._trace` aborts as soon as an emitted point is `_dominated` (pair crossed a triple point into the metastable tail); at the abort `MiscibilityGapRefiner._dominated_node` solves the monotectic/monotectoid/syntectic invariant the Delaunay refiner can never propose (one phase twice per simplex — PR #467; per-entry `RefinedPoint.concentrations` keeps the gap's two branches distinct). `_dominated` (PR #345, PR #545): drops a transition when an own phase is absent (`phi = +inf`), when an outside phase undercuts `max(own_phi)` (deterministic — no set-iteration order), or when the own potentials spread wider than `_COEXIST_TOL = 1e-5` eV — every refined point, two-phase included, since `phi` is continuous across a first-order boundary (it is `c` that jumps) and every two-phase refiner root-finds `phi_1 - phi_2 = 0`. `default_refiners(df)`: 2-D grid → `DelaunayTripleRefiner` + `ClausiusClapeyronRefiner` + `MiscibilityGapRefiner` + `TerminalRefiner`; 1-D scan → matching `ScanRefiner`(s). `DelaunayLineRefiner` is opt-in. `RefinedPoint` / `RefinedMiscibilityGap` carry `boundary_id: int` — refined rows are tagged by coexistence line. `ClausiusClapeyronRefiner(congruent_tol=0.1)` tags points where the two phases' compositions meet (`RefinedPoint.congruent` → `Locus.CONGRUENT`) via the per-line `_tag_features` hook on `_CCBase.run()` (PR #452); detected closures are solved exactly in `(T, μ)` since PR #471, and `MiscibilityGapRefiner._tag_features` bisects a gap's consolute point and tags it congruent since PR #478 (`closure_xtol=1e-3` K, exact `_gap_jump` read; the `_lines` hook splits a phase's gaps into separate domes) |
-| `landau/plot/` | Plotting subpackage (split from `plot.py` in PR #468): `plot/__init__.py` keeps the drawing functions and public API — `plot_phase_diagram`, `plot_mu_phase_diagram`, 1d variants (`element=` on the μ cut and `top_label_rotation=` on both since PRs #554/#555), `plot_excess_free_energy` (also takes `element=`), `get_polygons`, `get_phase_colors` (cycles the 10-colour pastel palette so an 11th stable phase no longer `KeyError`s — PR #475; sorts names before assigning and takes `palette=` since PR #557, and every plotter keys colours by sorted phase name through it, so one phase gets one hue across plots of a system); axis and colorbar text comes from the `_column_label(column, element)` unit table (PR #565; PR #567 moved the 1d axis labels onto the same table as bare symbols, dropping `_YLABEL_1D`/`_Axis1D.xlabel`, with reference-phase names rendered upright via `_mathrm`); `plot/labels.py` holds every label-placement helper (`_text_with_outline`, `_spread_labels`, `_annotate_transition_temperatures`, `_add_inline_polygon_labels`, `_add_1d_phase_legend`, `_add_inline_curve_labels`, ...) — imports go one way, `labels` never imports from `plot`. Both 2d plotters take `transition_temperatures=False` (labels every `TRIPLE`/`CONGRUENT` invariant with its temperature; needs a refined frame) and `triplepoints=None` (sentinel: marks follow `transition_temperatures` unless set explicitly — PR #452), plus `color_by=<column>` with `cmap`/`norm`/`colorbar=True` (PR #532) — fills each phase polygon with a `pcolormesh` of that scalar column interpolated from the polygon's own phase's stable rows only (disconnected regions and neighbouring phases never share data), clipped to the polygon and rasterised in vector output (PR #549 — a 500 MB SVG otherwise); `color_by` + `inline_legend=False` + `legend=True` raises `ValueError` |
-| `landau/poly.py` | Point-cloud → polygon: `Concave`, `Segments`, optional `PythonTsp` / `FastTsp` / segment variants. `min_c_width=0.01` thickens only regions narrower than it everywhere (`AbstractPolyMethod._thicken`) — every other region draws on its exact outline, so eutectic apexes stay sharp and boundaries aren't shifted by `min_c_width/2` (PR #573, merged 2026-11-08: `make` returns the exact outline, a `LineString` for a line phase; `apply` thickens and trims against neighbours' exact outlines via `_trim_overlaps(shapes, outlines)`). The fast-tsp cap is `<=0.2.2` (PR #538, merged 2026-10-28): fast-tsp 0.2 rejects distance-matrix entries above 65535, so `FastTsp`/`SegmentFastTsp` route through `_integer_distances` (scales the largest distance to the bound, floors positive entries at 1) instead of smallest-gap normalisation, and gained `stop_when_converged` (forwarded to `fast_tsp.find_tour` only when set, so 0.1.x keeps working) |
-| `landau/resample.py` | `resample_borders`, `RandomlyShiftedPhase` — bootstrap-style border resampling |
-| `landau/features.py` | `Locus` `StrEnum` (`INTERIOR`/`BOUNDARY`/`TRIPLE`/`CONGRUENT`) backing the `locus` column of `calc_phase_diagram` output; imported as `from landau.features import Locus` (not re-exported from package root) |
-| `landau/fleche.py` | fleche digest hooks (`digest_hooks`), loaded only by fleche's entry-point machinery — landau never imports fleche (PRs #441 + #450, refs #438). Hooks cover only types fleche rejects outright: `Refiner`, `FittedSurface`, the plain `Interpolation` classes, `AsePhase`, `PhonopyQuasiHarmonicPhase`, `WhitneyRBFInterpolator`, and raw scipy `UnivariateSpline` (a stopgap, #449). Closure-backed fits (`SplineFit`/`StitchedFit`/`SoftplusFit`/Whitney interpolations) still raise `Indigestible`. Needs `fleche>=0.22.1` (PR #448) |
-| `benchmarks/` | Scripts backing any number cited in a PR body (see Working style); committed alongside the PR that introduces the number |
-| `scripts/` | `cc_demo.py` (+ rendered PNG) — standalone Clausius-Clapeyron tracing demo on an analytic sub-regular solution, compared against brute-force isothermal refinement; `readme_mgca.py` — regenerates the README's `docs/images/mgca_phase_diagram.png` from `notebooks/MgCa/MgCaPhases.pckl` (PR #525). Neither is part of the test suite |
-| `tests/unit/` | Filenames mirror what's under test; `interpolate/`, `phases/`, `plot/` are subdirectories, the rest are flat (`test_calculate.py`, `test_refine.py`, `test_poly.py`, `test_resample.py`, `test_softplus.py`, `test_whitney.py`, `test_phases.py`, `test_fleche.py` — the `fleche`-marked digest-hook tests, with the `flecheprobe.py` helper module beside them) |
-| `tests/regression/` | Bug pins — names contain issue numbers or descriptive labels |
-| `tests/integration/test_border_coverage.py` | Polygon-coverage smoke test across every `poly_method` × axis pair |
-| `tests/integration/test_qha_vs_phonopy.py` | Reproduces the QHA fit-error mechanism from #427 on fcc-Cu/EMT (needs `ase` + `phonopy`) |
-| `tests/integration/test_color_by.py` | `color_by` field rendering on the `eutectic_diagram` fixture — 14 cases, PR #532 |
-| `tests/integration/testplots.py` | Render script (NOT a pytest test); produces PNGs for visual review |
-| `notebooks/` | Sphinx-included examples; commit with executed outputs |
-
-## Conventions (hard constraints)
-
-- **Pandas 2/3 compat**. Every `groupby().apply()` must pass `include_groups=False`. Do not drop pandas 2 support.
-
-- **`shapely>=2.1`** required — `AbstractPolyMethod.make` uses `make_valid(method="structure")`. The cap is `<=2.2.0` (dependabot PR #527, merged 2026-10-21): shapely 2.2's GEOS 3.14 wheels fix the GEOS 3.13 `concave_hull` hang that used to stall `test-minimum-deps`.
-
-- **Module names: no underscores.** `asewrapper`, not `ase_wrapper`.
-
-- **Frozen dataclass + ABC** for `Phase` and `Interpolator` subclasses (immutable, structurally hashable). `Refiner` subclasses are plain mutable; `AbstractPolyMethod` is non-frozen.
-
-- **Optional-dep gating** uses `pyiron_snippets.import_alarm.ImportAlarm`. In tests use module-wide `pytestmark = pytest.mark.skipif(ImportAlarm(...).message is not None, ...)` (whole-file dep) or per-test `@pytest.mark.skipif` against a `try/except`-set flag (mixed deps). Bare `try/except ImportError` is not enough.
-
-- **`distance_threshold`** is a required kwarg on `cluster_T_c` / `cluster_T_c_mu` / `cluster`; user-facing `cluster_phase` and `get_polygons` default it to `0.2` (lowered from 0.5 in PR #461, issue #456).
-
-## Working style (project house rules)
-
-- Match a terse, imperative tone in commits, PRs, and comments. No marketing language, no apologies, no `**bold**` headline numbers in PR bodies, no `[Fix this →]` action links. Plain technical reports.
-
-- **Evidence over claims.** Cite a commit hash, file path, test count, or command output for any claim. Numbers in a PR body come with a script in `benchmarks/` in the same PR. For physics/numerics, prefer saying nothing over saying something unverified.
-
-- **Comments and docstrings reflect only the current state.** No "old vs new", no rejected alternatives, no narration of the PR's evolution.
-
-- **One purpose per PR.** Split notebooks, benchmarks, refactors, and unrelated fixes into their own PRs. If a PR grows a second concept, propose splitting before pushing more.
-
-- **Minimal change.** Reuse existing helpers (numpy, scipy, shapely, matplotlib.testing, pyiron_snippets) before writing a new one. Don't introduce abstractions for hypothetical future requirements.
-
-- **Tests assert tight conditions** that a degenerate or constant solution would fail. Loose `atol=0.05` "it ran" tests get rejected. Use Hypothesis for round-trip recovery on fits.
-
-- **Git: rebase, never merge.** Merge commits are disabled on GitHub. Rebase onto `origin/main` and force-push to keep history linear.
-
-- **Conventional Commits drive releases.** `release-please` (`.github/workflows/release-please.yml`, PR #225) reads conventional-commit messages on `main` to open release PRs; non-conforming messages are ignored by the release tooling. Use `feat:`/`fix:`/`docs:`/`test:`/`chore:`/`refactor:`, `!` or `BREAKING CHANGE:` for breaks. Latest release: 1.18.1 (release PR #566, merged 2026-11-08; carries #565, #567 and #573). Before it, 1.18.0 (release PR #547, merged 2026-11-04) carries the #545/#467/#471/#478 refiner train, the #499 `f_excess` fix, and the plot/phase additions #549–#561.
-
-- **Do not commit** `.hypothesis/`, `_version.py`, stray top-level scripts, duplicate exploratory files.
-
-- **Keep PR body in sync with the diff.** When review feedback invalidates a claim in the body, edit the body — never leave a stale claim standing.
-
-- **Notebooks** are committed with executed outputs only.
-
-## Design themes
-
-Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [`CLAUDE.md`](CLAUDE.md). Fetch the issue before re-litigating.
-
-**Active**
-
-- **#116 refactor umbrella** — long-running sweep splitting big functions and pinning private helpers with direct unit tests. Sub-issues open at the time of writing (check before duplicating):
-
-  - #425 (`_label_fits`, now in `plot/labels.py`)
-
-  - #435 (`Surface2DInterpolatingPhase._gather_training_data` in `phases/__init__.py`)
-
-  - #436 (`FastInterpolatingPhase._find_phi_c_cached` in `phases/__init__.py`)
-
-  - #437 (`SoftplusSurface2DInterpolator._solver_kwargs` / `_vandermonde` in `interpolate/softplus.py`)
-
-  - #458 (`_stationary_points` in `phases/quasiharmonic.py`)
-
-  - #483 (extract the inline-label anchor block of `plot_excess_free_energy` to a module-level helper in `plot/labels.py`)
-
-  - #484 (extract the point-cleaning prologue of `AbstractPolyMethod.make` in `poly.py` as a testable `_clean_points`)
-
-  - #493 (direct value tests for `AsePhase.line_free_energy`'s Helmholtz/Gibbs/`TypeError` dispatch, `atoms_per_formula`, and the 1 atm default — the two existing tests only assert shape)
-
-  - #508 (`RedlichKister.fit` anchors its `f0`/`df` reference line on whichever duplicate-terminal sample came first in the input — stable `argsort` — so the whole fitted curve is row-order dependent; cashes in the `# FIXME: assumes terminals are unique`; decide averaging vs raising vs a deterministic `(c, f)` sort; `interpolate/basic.py`)
-
-  - #509 (`PolynomialInterpolation.coefficients` can come back shorter than `nparam` — `np.poly1d` trims leading zero coefficients — which crashes `test_PolyFit_hypothesis` with a shape mismatch on near-constant data; files the counterexample left unfiled during PR #441; two separable decisions: pad-or-document the length contract, and floor the Hypothesis strategy's coefficient magnitudes)
-
-  - #510 (`test_PolyFit_curvature` gates on the `polyfit` extra by branching inside the test body instead of `skipif` — against the PR #111 convention — and its already-concave data cannot distinguish `enforce_curvature=True` from a plain fit; split into two one-claim tests on convex data, or monkeypatch the fallback so it runs everywhere)
-
-  - #516 (`RandomlyShiftedPhase` draws its shift from numpy's legacy *global* RNG, so `resample_borders`'s forked workers inherit one RNG state and repeat shifts — roughly `n / cores` distinct noise realisations out of `n`, understating the bootstrap spread; also not seedable, so the tests hardcode draws of a module-global seed; suggested: a `seed` field through `np.random.default_rng` with `resample_borders` passing a distinct seed per `run` — `landau/resample.py`)
-
-  - #517 (`PointDefectedPhase.__post_init__` is an empty `pass` behind a TODO; resolve it one way — duplicate `sublattice` indices are silently summed and `sublattice_fraction`s not summing to 1 silently rescale every defect concentration; validate at construction or pin the summing as intended — `landau/phases/pointdefects.py`)
-
-  PR #422 (direct tests for `_fit_softplus` / `_fit_slice`) merged 2026-08-30 without a numbered sub-issue; #423 closed 2026-09-01 by PR #434; #390 closed 2026-09-02 by PR #394 and #413 by PR #414; #388 closed 2026-09-07 by PR #391 and #424 by PR #457; #459 (`landau/fleche.py` helpers) was filed and closed not-planned the same day — fleche is expected to take that responsibility over; #481 closed 2026-09-15 by PR #482 (six `TestSurfaceModelAndJac` cases with column-by-column finite differences); #460 closed 2026-09-26 by PR #490 (22 direct cases in new `tests/unit/phases/test_pointdefects.py` plus a `c`-clip fix the tests surfaced; earlier accidentally keyword-closed by the #494 audit commit and reopened — in commit messages and PR bodies, name another PR's issue without closing keywords unless closure is intended); #491 closed 2026-10-08 by PR #507 (released in 1.16.0 — `StitchedFit.fit` sorts `(t, f)` by `t` before slicing its edge windows and clamps `edge` to `max(1, len(t) // 2)`, four tests in `tests/unit/interpolate/test_stitched_fit.py` sharing one `_ATOL = 1e-4`); #492 closed 2026-10-21 by PR #515 (`_select_stable_volumes` extracted out of `PhonopyQuasiHarmonicPhase.__post_init__` as a pure module-level function — `__post_init__` keeps the one `_lowest_frequency` call that needs phonopy — with 10 phonopy-free direct tests in new `tests/unit/phases/test_quasiharmonic_helpers.py`, each mutation-checked); #518 closed 2026-11-03 by PR #550 (the `cluster_T_c`/`keep_unstable` docstring fixes plus `TypeError` pins for the no-default contract). Closed sub-issues are recorded one cohort per line in [`CLAUDE.md`](CLAUDE.md)'s #116 section — check there before re-picking one.
-
-- **#137 `phases/__init__.py` split** — `pointdefects.py` and `asewrapper.py` already split out; further splits (line vs solution vs interpolating) are the open direction. `phases/__init__.py` is still ~1010 lines.
-
-- **#332 phase free-energy parametrization is indirect** — both `InterpolatingPhase` and `Surface2DInterpolatingPhase` reach `f(c[, T])` through a sample-and-refit round-trip. Open direction: an optional "just give me a callable" builder path so a `.tdb` importer (#138) or bespoke model can skip it. Parked with #137.
-
-- **#138 TDB file import** — scoping; feeds #332. The *export* half is in flight as PR #462 (`landau.tdb` with `to_tdb` / `write_tdb`; exact closed-form export of SGTE/PolyFit/RedlichKister-backed phases, pycalphad round-trip tests behind a `test-pycalphad` extra).
-
-- **#34, #60 plot/calc API 2.0 refactor** — axes-as-arg for `plot_{mu,}_phase_diagram` + broader rearrangement for 2.0.
-
-- **#39 entropy/enthalpy methods on phases** — blocks the diagnostic + EEC transfer in #339 and item 5 of the mapping notes in #337.
-
-- **#337, #339 CALPHAD-side design notes** — mapping/ZPF-line ideas (Sundman/Dupin/Hallstedt Calphad 75 2021) and equal-entropy criterion (Sundman et al. Calphad 68 2020). Design conversations, no code planned.
-
-- **#344 collapse CEF Au-Cu into one partitioning fcc phase with `MiscibilityGapRefiner`** — blocked on `MiscibilityGapRefiner`'s per-step scan cost. The prototype PR stack (#324 / #326 / #346, parked #334) was closed unmerged 2026-11-02; the issue stays open.
-
-- **#427 SGTE is the wrong default for QHA/phonon `F(T)`** — the `T·ln(T)` term makes `S = -dG/dT` diverge as `T → 0`, so quantum-harmonic data (which includes `T = 0`) fits badly enough to shift a melting point ~+10 K with the default `SGTE(3)`; `PolyFit(8)` is the workaround. Still open for the upstream half: a solid-state QHA `ThermoChem` consumed via `AsePhase` (validated `QuasiHarmonicCrystalThermo` prototype in the issue, headed for ASE) and a docs note / `T = 0` warning. The phonopy-direct route **landed as PR #440** (merged 2026-09-02, released in 1.12.0): `PhonopyQuasiHarmonicPhase` (`landau/phases/quasiharmonic.py`, new `phonopy` extra) — an `AbstractLinePhase` evaluating `min_V [E(V) + F_vib(V, T)]` from phonopy `ThermalProperties` at any `T` instead of fitting a sampled `F(T)`. `eos` defaults to `PolyFit(8)` (capped at one fewer parameter than stable volumes; the strings `"vinet"`/`"birch_murnaghan"`/`"murnaghan"` select phonopy closed forms); volumes with modes below `min_frequency = -0.05` THz are dropped with `DynamicalInstabilityWarning`; past the sampled volumes the minimisation is *constrained* to the sampled range (clamped, with `EosExtrapolationWarning`) — `extrapolate=True` follows the fit out but needs a closed-form eos. `check_equation_of_state(T, plot_error=...)` is the diagnostic. Also raised the `ase` floor to 3.21.0.
-
-- **#534 `AnchoredSGTE`: pin classical F(T) to the relaxed 0 K energy** (filed 2026-10-21; the classical counterpart of #427) — for classical free energies (calphy / MD thermodynamic integration) the relaxed 0 K energy `E0` is an exact data point, but every `TemperatureInterpolator` extrapolates below its first sampled T and the errors don't cancel between phases with different data windows: on an AlCaMg ACE diagram, compounds sampled from 500 K carry ~13 meV/atom of excess at 300 K under Whitney's constant-entropy extension, spuriously destabilising Al4Ca (on the 0 K hull) below 391 K. Proposed: SGTE with `F(0) = E0` held as a hard constraint (classically exactly the `G_calphad` form; the free `T ln T` coefficient recovering `−pl/3kB ≈ 1` doubles as an energy-zero check), continued at constant entropy above the data; prototype + tests in the issue. Alternatives (Whitney or SGTE with an extra `(0, E0)` sample, free SGTE extrapolated to 0) measured and rejected there. Classical only — QHA/phonon data (`F(0) = E0 + ZPE`, `S → 0`) is #427's regime. Maintainer direction (2026-11-04): preferably internal `SGTE` behaviour when a `T = 0` sample is detected, not a separate class.
-
-- **#438 `AbstractLinePhase.__hash__` is process-local** — closed 2026-09-02 by **PR #441** (released in 1.12.0): fleche digest hooks ship under fleche's entry-point group (`landau/fleche.py`, `test-fleche` extra with its own CI job; landau never imports fleche), and the `_hash` dataclass *field* was dropped (now a plain attribute derived in `__post_init__`, so a dataclass-walking digest no longer folds the per-interpreter-salted `hash(bytes)` value in — `__hash__`/`__eq__` unchanged). **PR #450** (released in 1.13.0) swept every remaining refused object and added three hooks: raw scipy `UnivariateSpline` (`_eval_args` + `ext`; a stopgap under **#449** — drop it once fleche digests scipy splines itself), `PhonopyQuasiHarmonicPhase` (its own `_key`; its `_hash` field also became a plain attribute), `WhitneyRBFInterpolator` (training data + hyperparameters — makes `WhitneyFittedSurface` digestible too). Closure-backed fits still raise `Indigestible` since two fits of one interpolator share a code object — the proper fix (fit provenance on `Interpolation`) remains a possible follow-up. Upstream caveat: fleche's destructuring *storage* bypasses digest hooks (fleche#918), so a hooked `AsePhase` passed as a `@fleche` argument digests fine but can fail on save. `test-fleche` floor is `fleche>=0.22.1` (PR #448 — 0.22.1's captured-state function digest turned the old closure-collision test into an `Indigestible` raise).
-
-- **#443 nuclear quantum correction to classical-MD solid free energies via the QHA** (idea, filed 2026-09-02) — `F = F_calphy − F_QHA,cl + F_QHA,qu`: anharmonicity from MD, quantum statistics from the harmonic model, the classical harmonic term cancels the double-counting; phonopy returns both statistics from one mesh. Which correction dominates flips by element (Al: quantum ~5× anharmonic; Ca/Si: reversed), 1 meV/atom ≈ 10 K of melting point. Solid-only (the liquid has no harmonic reference); reference data for Al/Ca/Si on a GRACE MLIP attached to the issue. No code planned yet — a possible helper where `PhonopyQuasiHarmonicPhase` and calphy-style free energies meet.
-
-- **#456 disjoint stable fields of one phase drawn as a single bridged polygon** — closed 2026-09-08 by PR #461: the old default `distance_threshold=0.5` merged same-phase stable fields far apart in c at the same T, after which every `poly_method` bridged the gap (`concave` silently — worse). Default lowered to `0.2` (safe band on the fixtures ~0.01–0.3; over-splitting starts between 0.05 and 0.1); the Y-Zn liquid frame is a gzip fixture in `tests/regression/test_issue_456.py`.
-
-- **#463, #464 transition-temperature annotation follow-ups** (filed 2026-09-07 against 1.14.0). #464: one congruent maximum tagged `CONGRUENT` twice (adjacent narrow trace points both pass the relative-gap criterion) plus terminal melting/boiling points tagged congruent — duplicate labels. #463: obstacle avoidance can drift labels too far to attribute. PR #468 (merged 2026-09-08) landed the groundwork: `plot.py` → `landau/plot/` subpackage, label placement in `plot/labels.py`, behaviour-preserving. The tagging half landed: PR #471 (merged 2026-11-03, released in 1.18.0 — solves congruent points exactly at the fold and adds a `TerminalRefiner` for pure-component transitions at `mu = ±inf`) and PR #478 (merged 2026-11-03, released in 1.18.0 — tags the closure of a miscibility gap, i.e. the consolute point, as congruent: `MiscibilityGapRefiner._tag_features` bisects the closure in T via an exact `_gap_jump` read through the phase's own `concentration`, emits a `RefinedMiscibilityGap` with both branches at the critical composition and a new `congruent` field, and drops the trace's overshoot past it). #471's merge re-rendered the README Mg-Ca diagram (`scripts/readme_mgca.py`, added by PR #525) with six invariants, each labelled once. Both halves of #464 are landed, but it and #463 are still open; still in flight on top: PR #474 (the placement half, refs #463 — scores every candidate offset by cost instead of taking the first clear one; duplicate invariants within one label share a single label).
-
-- **#499 `f_excess` of refined rows referenced against their own coexisting phases only** — closed 2026-11-03 (`92ac07c` fix + `c7807a8` perf, released in 1.18.0): the reference is now the lowest pure-component free energy at each row's own `T`, evaluated from the `phases` objects 40 kT past the sampled μ window (`_terminal_phases` resolves the stable end member once per component with `ScanRefiner` locating its transitions; `_terminal_free_energies` evaluates only it per distinct `T`). Independent of the μ window and of which rows share a `T`; when the phases don't reach both c = 0 and c = 1 the `f_excess` column is left out and `plot_excess_free_energy` raises naming it. Pinned by `tests/regression/test_issue_499.py`.
-
-- **#531 deprecate `WhitneySurface2DInterpolator`** (proposal, filed 2026-10-20) — measured on GRACE-MLIP binary liquids against a Redlich–Kister slice whose T-dependence is a 1-D Whitney fit: full diagrams 8–19× slower, an arbitrary T-scale knob that moves invariants 4–10 K, spurious d²F/dc² < 0 inside the data, and a non-interpolating default `smoothing=1e-3`. Proposed `DeprecationWarning` now, removal at 2.0 (the replacement lives downstream in graceland; upstreaming is a separate discussion). The 1-D `WhitneyTemperatureInterpolator` is untouched.
-
-- **#563 `FastInterpolatingPhase.concentration` returns a grid node near a coexistence μ** (filed 2026-11-04) — within a few 1e-9 eV of a miscibility gap's `mu*` the returned `c` can be a node of the 201-point basin grid that is neither branch's minimum (`phi` off by only ~3e-9 eV, `c` by up to the branch distance); found by #478's `_gap_jump` probing `c(mu* ± eps)` at `eps = 1e-9`. Away from `mu*` the match to the exact argmin is < 1e-6.
-
-- **#81 analytic SRO models** — prototype `QuasiChemicalPhase` (PR #123) was closed without merging; still open.
-
-- **#33 fast Legendre transforms**, **#59 autodiff for `concentration`** — stretch goals; no owner.
-
-- **#62 flat → `src/` layout** — long-standing. #70 (weak Hypothesis strategies for polygon tests) closed 2026-09-02 by PR #395: `poly_dataframe` now correlates `c`/`T`/`mu` per row instead of drawing them independently.
-
-- **Open PRs in flight** (check before duplicating):
-
-  - #574 (cuts `AGENTS.md` and `CLAUDE.md` to a current-state reference — drops per-PR history, in-flight lists and release notes; opened 2026-11-07) and #572 (adds a `skills/landau/` user skill for agents *using* landau; its own AGENTS.md/CLAUDE.md rewrite is being removed in favour of #574 — maintainer comment, 2026-11-07). Until one lands, keep additions to these two files minimal and factual
-
-  - #578 (adds `IdealSolution.free_energy(T, c) = (1 − c)·f1(T) + c·f2(T) − T·S(c)` — the one solution phase without `free_energy`, which forced a type check downstream in grace-phasediagrams; broadcasts, scalar-in/scalar-out via `_scalarize`; opened 2026-11-11)
-
-  - #577 (dependabot: phonopy cap `<4.9` → `<4.11`; opened 2026-11-09)
-
-  - the #553 → #558 → #559 `Axes` stack (opened 2026-11-03 — groundwork for pressure as a diagram axis: a frozen `Axes` dataclass describing the plane a refiner works in — `x`/`y` columns, the extensive conjugate of `y`, `fixed` off-plane conditions, and a `potential`/`conjugate`/`admissible` binding, with `Axes()` the semigrand `(T, mu, c)` plane — plus a per-refiner `supports(axes)` gate and `default_refiners(df, axes=None)`; #553 converts `ScanRefiner`, #558 the Delaunay refiners, #559 the tracers and `TerminalRefiner` and deprecates the `T`/`mu` point spellings and `dT_max`/`dT_min` → `dx_max`/`dx_min` for 2.0; `benchmarks/refine_axes_equivalence.py` pins byte-identical refined frames on eight systems)
-
-  - #462 (TDB export — `landau.tdb` with `to_tdb` / `write_tdb`)
-
-  - #474 (cost-based transition-temperature label placement, refs #463)
-
-  - #570 (`notebooks/Logo.ipynb` — draws both logo variants from computed phase diagrams: an ideal-solution lens, and a congruently melting line compound AB over an ideal liquid giving two eutectics; `draw_mark` restyles the artists `plot_phase_diagram` returns and clips them to a rounded square, wordmark in IBM Plex Mono SemiBold with a DejaVu fallback; docs-only, no library code changes; opened 2026-11-07)
-
-  - #543 (`save_layered_svg` in new `landau/plot/svg.py` — layered, addressable SVG export of the diagrams: every element in its own `<g>` with `data-phase`-style attributes, Inkscape-layer groups, invisible two-phase / per-pair boundary hit targets computed from the phase-field outlines at save time, `id_prefix` namespacing for inlining several files into one page, and a `landau.plot.svg.tag` hook for caller overlays; opened 2026-10-30)
-
-  - #504 (a `Contour` poly method contouring a `dphi`-based stability field in (μ, T) — needs `keep_unstable=True` frames with PR #496's `dphi` column; opened 2026-09-26, parked 2026-10-22 pending the #467 refiner stack — the gap-top bridge below the untraced three-phase point is the confirmed blocker)
-
-  - #249 (`BufferedSegments`) — the one design prototype still open; the CEF stack #324/#326/#346 (+ parked #334, behind #344) and the prototypes #306 (`IntermetallicPhase`) and #250 (`PhaseDiagram` object interface) were all closed unmerged in a 2026-11-02 sweep
-
-**Out of scope**
-
-- Dropping pandas 2 support (PR #93, #113).
-
-- Speculative "might be useful" work — parked, not landed (PR #129).
-
-- Underscored module names — use `asewrapper`, not `ase_wrapper` (PR #68).
-
-## Deeper context
-
-[`CLAUDE.md`](CLAUDE.md) carries: architecture rationale, module-level design notes, the full open-scope / closed-decisions cheat sheet keyed by issue and PR number, and the testplot label/comment workflow. Read it before changing public API, refiner/poly-method behaviour, or pandas-touching code.
+Python `>=3.11,<3.14`.
+
+## Architecture
+
+The semi-grand potential `phi(T, dmu)` is the central quantity; equilibrium is `argmin` over phases, and `c = -∂phi/∂dmu`.
+`Phase` and `Interpolator` subclasses are frozen dataclasses (immutable, structurally hashable); `Refiner` subclasses are plain mutable classes; `AbstractPolyMethod` is a non-frozen dataclass.
+Every phase obeys a scalar-in/scalar-out, shape-preserving contract; 0-d numpy results collapse to Python scalars through the single helper `_scalarize` (`interpolate/basic.py`).
+
+### `landau/phases/`
+
+- `__init__.py`: `Phase` (ABC), `AbstractLinePhase`, `LinePhase`, `TemperatureDependentLinePhase`, `IdealSolution`, `SlowInterpolatingPhase`, `FastInterpolatingPhase`, `Surface2DInterpolatingPhase`, the ideal-mixing entropy `S(c)`, `check_concentration_interpolation`.
+  User-facing classes are re-exported from `landau/__init__.py`; `Phase`/`AbstractLinePhase` stay under `landau.phases`.
+- Deprecated, removal at 2.0: `RegularSolution` and `InterpolatingPhase` (use `FastInterpolatingPhase`, with `interpolator=RedlichKister(n)` for a regular solution), the typo alias `TemperatureDepandantLinePhase`, and the solution phases' `check_interpolation` methods (forward to `check_concentration_interpolation`; `TemperatureDependentLinePhase.check_interpolation` is not deprecated).
+  The suite, testplots and notebooks still construct the deprecated classes — new code should not.
+- `FastInterpolatingPhase` is the default solution phase; `SlowInterpolatingPhase` (per-scalar `scipy.optimize.brute`) is the reference oracle it is tested against.
+  Fast: per `T`, evaluate `f(c) = fe(c) - T·S(c)` on a 201-point grid (`_n_grid`), one vectorized `argmin` over `dmu` picks the global basin (handles miscibility gaps), then 6 Newton steps (`_n_newton`) in the logit `u = log(c/(1-c))`, where the entropy term is linear so the polish is well-conditioned from dilute to saturated.
+  First derivative from `fe.deriv()`, second by finite difference at `_fd2 = 1e-3`; `c = -∂phi/∂dmu` holds to ~1e-6.
+  `_find_phi_c_cached` (`lru_cache` keyed on `(shape, tobytes())`) lets `semigrand_potential` and `concentration` share one solve.
+  Known limitation (#563): within ~1e-9 eV of a gap's coexistence `mu*`, `concentration` can return a grid node that is neither branch's minimum.
+  `concentration_range` and `maximum_extrapolation` are mutually exclusive (`ValueError` if both set).
+- `Surface2DInterpolatingPhase(surface_interpolator=...)` (required kwarg) fits one `f(T, c)` surface globally from line phases sampled over `temperature_range`, then reuses the Fast solver on `FittedSurface.slice_at(T)`.
+- `pointdefects.py`: `AbstractPointDefect`, `ConstantPointDefect`, `AbstractPointDefectSublattice` (ABC with hooks `_site_log_partition(s)` → `L` and `_site_normalization(s)` → `D`, coupled by `D = 1/L'`), three sibling models — `PointDefectSublattice` (exact, `L = ln(1+s)`), `LowTemperatureExpansionSublattice` (dilute, `L = s`, unnormalised site fractions), `CappedPointDefectSublattice` (`max_site_fraction = m`; exact below `s* = m/(1-m)`, line phase at total site fraction `m` above; `phi_capped ≥ phi_exact`) — and `PointDefectedPhase` (host line phase + sublattices; `site_fractions(T, dmu)`).
+  `PointDefectedPhase` clamps `c` to `[0, 1]` and continues `phi` as the tangent line past each saturation point (`_clamp_fixed_T`, window from `_saturation_window`), so the unbounded LTE model can't drive `phi → -∞` and spuriously win `argmin`; a no-op for the bounded models.
+  Block exclusion needs no class: a `PointDefectSublattice` on `sublattice_fraction = η·m` with each defect's `excess_entropy` raised by `kB·ln(1/m)`.
+  Only the pre-split names are re-exported from `landau.phases` (`AbstractPointDefect` as alias; `ConstantPointDefect`/`PointDefectSublattice`/`PointDefectedPhase` behind deprecation shims); import everything else from `landau.phases.pointdefects`.
+- `asewrapper.py`: `AsePhase(AbstractLinePhase)` wrapping `ase.thermochemistry.ThermoChem`; Helmholtz, falling back to Gibbs at 1 atm; `atoms_per_formula` normalises per atom; equality/hash by `pickle.dumps(thermochem)`.
+- `quasiharmonic.py`: `PhonopyQuasiHarmonicPhase(AbstractLinePhase)` evaluates `min_V [E(V) + F_vib(V, T)]` from phonopy `ThermalProperties` at any `T` instead of fitting a sampled `F(T)`.
+  Mutates the `temperatures` of the phonopy objects it is given.
+  `eos` is an `Interpolator` (default `PolyFit(8)`, fitted in a centred scaled volume coordinate, fixed parameter count — per-T selection would invent steps in `F(T)`) or one of `"vinet"`/`"birch_murnaghan"`/`"murnaghan"`.
+  Volumes with a mode below `min_frequency = -0.05` THz are dropped (`DynamicalInstabilityWarning`); beyond the sampled volumes the minimisation clamps (`EosExtrapolationWarning`) unless `extrapolate=True` with a closed-form eos.
+  Volume selection is the pure helper `_select_stable_volumes`, testable without phonopy.
+
+### `landau/interpolate/`
+
+- `basic.py`: `Interpolator` (factory, `fit(x, y) → Interpolation`) and `Interpolation` (callable fitted curve with `deriv() → Interpolation`); type-only subclasses `TemperatureInterpolator` / `ConcentrationInterpolator`.
+  `deriv()` is analytic for `PolyFit` (`PolynomialInterpolation`, `coefficients` in ascending order), `SGTE` (`SGTEInterpolation`) and `RedlichKister` (`RedlichKisterInterpolation`); everything else is closure-backed (`_CallableInterpolation`) and falls back to `NumericalDerivative`.
+  Also `SplineFit` (wraps `UnivariateSpline`; `smoothing=0` interpolates; `degree` clamped to `len(x)-1`), `StitchedFit` (sorts its input; `edge` clamped), `G_calphad`, `_scalarize`.
+  `RedlichKister.fit` is one `numpy.linalg.lstsq` on the mixing basis (under-determined → minimum norm; terminals only → the chord).
+- 2-D: `SurfaceInterpolator.fit(T, c, H) → FittedSurface`, `FittedSurface.slice_at(T) → Interpolation`.
+  `CalphadSurface2DInterpolator` (in `basic.py`; poly-in-T Redlich–Kister in c; needs c=0 and c=1 terminal phases; terminal T-model `terminal_interpolator=`, default `SGTE(4)` — pass `WhitneyTemperatureInterpolator()` when evaluating below the fitted T-window, since SGTE's entropy is unbounded as `T → 0` and fabricates spurious low-T liquid fields; `terminal_sgte_order` is deprecated).
+- `softplus.py`: `SoftplusFit` (1-D) and `SoftplusSurface2DInterpolator`, fitting `H(T,c) = off(T) + Σ softplus(α_i(T))·softplus(b_i(T)·(cn + c_i(T)))` — non-negative amplitudes make every fixed-T slice convex (no spurious miscibility gaps); the slope `b_i` is a polynomial in 1/T because wells sharpen on cooling.
+  The coupled fit is multimodal: two per-slice seeds (coldest and central T, knee placed at the curvature peak after removing a best-fit line) race through a short polish and only the faster-converging one is finished.
+  Solver: `lm` on scipy ≥ 1.16, trust-region with `x_scale='jac'` otherwise (older `lm` disabled MINPACK's variable scaling); robust `loss` or `knee_bounds` force trust-region, `method='lm'` with either raises.
+  `knee_bounds` requires `c_order=0`.
+- `whitney.py`: `WhitneyTemperatureInterpolator` (exported; constant-entropy continuation outside the data, an upper bound on a concave `F(T)`), the internal `WhitneyRBFInterpolator`, and `WhitneySurface2DInterpolator` (proposed for deprecation, #531 — slow, scale-dependent in T, invents negative curvature in c).
+- Every new 1-D interpolator gets a `CASES` entry in `tests/unit/interpolate/test_shape_contract.py`; a new `TemperatureInterpolator` must also be covered in `tests/regression/test_issue_428.py`, whose guard test fails otherwise.
+
+### `landau/calculate.py`
+
+- `calc_phase_diagram(phases, Ts, mu=..., refine=True, keep_unstable=False, ...)` builds the frame `(T, mu, phase, c, phi, stable, border, refined, locus, boundary_id, …)`.
+  `refine` is `True` (defaults), `False`, or a `Sequence[Refiner]` (an empty list refines nothing).
+  `locus` (`landau.features.Locus`: `interior`/`boundary`/`triple`/`congruent`) says what part of the diagram a row lies on; grid samples and the synthetic `±inf` frame-edge rows stay `interior`.
+  With `keep_unstable=True` the frame also has `dphi = phi - min(phi)` over rows sharing `(T, mu)`.
+  `f_excess` is `f` minus the chord between the stable pure-component free energies at the row's own `T`, evaluated `_TERMINAL_KT_FAR = 40` kT past the sampled μ window; the column is omitted when the phases don't reach both c=0 and c=1 (then `plot_excess_free_energy` raises).
+- `refine_phase_diagram(df, phases, refiners=None)` runs the refiners; `_drop_terminal_triples` drops a terminal transition that coincides with a triple point of the same phases (one invariant, not two).
+- `guess_mu_range(phases, T, samples, tolerance=1e-2)`: scans `c(mu)` on `(-10, 10)` with `scipy.optimize.brute(..., finish=None)` and inverts it onto an even `c` grid.
+  `finish=None` matters: the default `fmin` polish is unconstrained and walks far outside the bracket because `c(mu)` saturates only asymptotically.
+- `get_transitions(df)` pairs border rows at one `(mu, T)` into two-phase tie-lines (`_tie_lines`); select invariants by `locus == "triple"`, not by phase-label shape.
+- `cluster_T_c` / `cluster_T_c_mu` / `cluster`: agglomerative clustering; `distance_threshold` is required here. The user-facing `cluster_phase` / `get_polygons` default it to `0.2` (0.5 merged distinct same-phase fields, #456).
+
+### `landau/refine.py`
+
+- `Refiner` ABC: `propose(df)` → candidates, `solve(cand, phases)` → `RefinedPoint` / `RefinedMiscibilityGap` (both `RefinedBase`: `phase_names`, `to_rows`, `emitted_concentrations`). `run()` drops `_dominated` and negative-T results and assigns `boundary_id` (one per coexistence line).
+- `_dominated(pt, phases)` drops a point when an own phase is absent (`phi = +inf`), an outside phase undercuts `max(own_phi)`, or the own potentials spread more than `_COEXIST_TOL = 1e-5` eV.
+  Applies to two-phase points too: `phi` is continuous across a first-order boundary (`c` jumps), and every two-phase refiner root-finds `phi_1 - phi_2 = 0`.
+- Refiners:
+  - `ScanRefiner(by=...)` — 1-D bisection; recurses into both sub-brackets when a third phase dominates the crossing, so a stable window narrower than the grid still yields its two transitions.
+  - `DelaunayLineRefiner` (opt-in) and `DelaunayTripleRefiner` work on `_Simplex` numpy views from `_delaunay_simplices(df)`, which memoises the tessellation on the most recent frame (weakref identity; assumes the frame isn't mutated in place). A triple point is emitted only by its owning simplex (`_simplex_containment` over the candidate's siblings), so `solve` stays pure.
+  - `ClausiusClapeyronRefiner` / `MiscibilityGapRefiner` share `_CCBase`, a predictor-corrector trace of a coexistence line in both T directions (keyword-only `dT_max=5.0, dT_min=1.0, dc_max=0.01, dc_min=0.0, max_steps=500`; `dc_max` is applied last and wins). The bootstrap bracket widens by the Clausius–Clapeyron seed slope (`_seed_slope`) for steep lines.
+    The trace aborts the moment a point is `_dominated`; at that abort `_dominated_node` (overridden by `MiscibilityGapRefiner`) solves the monotectic/monotectoid/syntectic invariant, which names the gap phase twice and which `DelaunayTripleRefiner` (counting distinct phases per simplex) can never propose. `RefinedPoint.concentrations` keeps the two branches of one phase distinct.
+    Per line, `_tag_features` tags closures: `ClausiusClapeyronRefiner(congruent_tol=0.1)` finds where `|c1 - c2| ≤ tol · max(gap)` (relative — closures have no absolute scale) and solves the congruent point exactly in `(T, mu)`; a closure that belongs to a pure component (`_terminal_closure`, decided by reach, not composition) is left to `TerminalRefiner`. `MiscibilityGapRefiner` bisects the consolute point to `closure_xtol=1e-3` K using `_gap_jump` and emits it as a congruent `RefinedMiscibilityGap`; `_lines` splits one phase's separate domes.
+  - `TerminalRefiner` — T-scan at c = 0 and c = 1 at effectively infinite μ (`_KT_FAR = 40` kT past the window, only phases within `_TERMINAL_C_TOL = 1e-6` of the terminal compete); emits `congruent` rows at `mu = ±inf` with `phi = NaN`.
+- `default_refiners(df)`: 2-D grid → `DelaunayTripleRefiner`, `ClausiusClapeyronRefiner`, `MiscibilityGapRefiner`, `TerminalRefiner`; 1-D scan → the matching `ScanRefiner`.
+
+### `landau/plot/`
+
+- `__init__.py`: `plot_phase_diagram` (c–T) and `plot_mu_phase_diagram` (μ–T) share `_plot_phase_diagram`; `plot_1d_mu_phase_diagram` / `plot_1d_T_phase_diagram` share `_plot_1d_phase_diagram(df, scan_col, ...)`; `plot_excess_free_energy` (needs a `keep_unstable=True` frame; one axes for a single T, a FacetGrid otherwise); `get_polygons`, `plot_polygons`, `get_phase_colors`, `cluster_phase`.
+- `labels.py`: every text-placement helper. Imports go one way — `labels` never imports from `plot`.
+- 2d options: `legend`/`inline_legend` (inline labels at the polygon's pole of inaccessibility, with rotate/offset fallbacks), `triplepoints=None` (follows `transition_temperatures` unless set; `tielines=` is a deprecated alias), `transition_temperatures=False` (labels `triple`/`congruent` rows — reads the `locus` tags, so unrefined frames draw nothing), `color_by=<column>` with `cmap`/`norm`/`colorbar` (each polygon filled from its own phase's stable rows only, rasterized in vector output; with `inline_legend=False, legend=True` it raises).
+- 1d: segments split at each `stable` flip (`_assign_segment_ids`), dashed branches bridged to the exact transition rows; `reference_phase=` subtracts a phase's `phi` and raises unless that phase is sampled at every grid point (needs `keep_unstable=True`).
+- Colours are keyed by **sorted** phase name via `get_phase_colors` (cycles the palette past 10 phases), so a phase keeps its hue across plots; row order is not a usable key.
+- Axis and colorbar text comes from the `_column_label(column, element)` table.
+
+### Other modules
+
+- `poly.py`: point cloud → polygon per phase region. `Concave`, `Segments`, and with the TSP extras `PythonTsp`/`SegmentPythonTsp`/`FastTsp`/`SegmentFastTsp`; `handle_poly_method` falls back `segment-fasttsp → segment-tsp → fasttsp → tsp → concave` by what's installed.
+  `_trim_overlaps` does plain symmetric buffer trimming. `_segment_tsp_polygon` rotates the tour off an intra-segment edge before walking it (else a valid tour yields a self-intersecting ring). fast-tsp ≥ 0.2 rejects distances above 65535, hence `_integer_distances`.
+- `resample.py`: `resample_borders`, `RandomlyShiftedPhase` (bootstrap border resampling; draws from numpy's global RNG, #516).
+- `features.py`: `Locus` `StrEnum`. Deliberately not re-exported from `landau`.
+- `fleche.py`: fleche digest hooks, registered as the `fleche` entry point in `pyproject.toml`; landau never imports fleche.
+  Hooks only cover types fleche would otherwise reject; hooking a type fleche already digests would make digests depend on entry-point load order. Closure-backed fits raise `Indigestible` (two fits share one code object).
+  Per-instance `_hash` values are plain attributes, not dataclass fields, so dataclass-walking digests don't fold in Python's per-process hash salt.
+
+## Tests
+
+- `tests/unit/` mirrors the package (`interpolate/`, `phases/`, `plot/` subdirectories); `tests/regression/` pins bugs by issue number; `tests/conftest.py` holds the shared fixtures (`two_phase_ideal`, `three_phase_regular_solution`, `eutectic_phases`, `eutectic_diagram`).
+- `tests/integration/test_border_coverage.py` is the smoke test for "a polygon amputated a phase region" (every `poly_method` × c-T/μ-T).
+- `tests/integration/testplots.py` is **not** a pytest test: it renders PNGs for visual review. The `testplot` PR label or an `@testplot ...` comment renders them in CI (`.github/scripts/testplot_args.py` maps free text to flags with Haiku) and posts them on the PR. Inline-attach a render when a PR changes plotting.
+- `.hypothesis/` is local state; never commit it.
+
+## Docs
+
+Sphinx in `docs/` (myst-nb, furo), built by ReadTheDocs on Python 3.12; notebooks under `notebooks/` are included and must carry executed outputs.
+
+## Open design directions
+
+Fetch the issue before re-litigating; check open PRs before starting anything adjacent.
+
+- #116 — umbrella for small refactors and direct tests of private helpers; check its open sub-issues before filing new ones.
+- #137 — split `phases/__init__.py` (line vs solution vs interpolating phases).
+- #332, #138 — let a phase take its free energy as a callable instead of a sample-and-refit round-trip; TDB import builds on it.
+- #34, #60 — 2.0 plotting/calculate API rearrangement (axes as arguments, general 1d cuts).
+- #39 — entropy/enthalpy methods on phases; blocks the CALPHAD-side ideas in #337/#339 (lever-rule plots, equal-entropy criterion).
+- #344 — Au–Cu CEF as one partitioning phase; blocked on `MiscibilityGapRefiner` scan cost.
+- #427 — SGTE is wrong for QHA/phonon `F(T)` (`S` diverges as `T → 0`); use `PolyFit(8)` or `PhonopyQuasiHarmonicPhase`.
+- #534 — anchor classical `F(T)` at the relaxed 0 K energy; maintainer prefers it as `SGTE` behaviour when a `T = 0` sample is present, not a new class.
+- #443 — nuclear quantum correction for classical-MD solids via the QHA (idea only).
+- #531 — deprecate `WhitneySurface2DInterpolator`.
+- #463 — transition-temperature labels can drift too far from their invariant to attribute.
+- #81 (analytic SRO models), #33 (fast Legendre transforms), #59 (autodiff `concentration`), #62 (`src/` layout).
+
+## Non-goals and settled decisions
+
+- Dropping pandas 2.
+- Underscored module names.
+- Boundary-Voronoi polygons and apex-sliver cleanup were rejected in favour of plain symmetric trimming; the eutectic-apex sliver is a known cosmetic issue.
