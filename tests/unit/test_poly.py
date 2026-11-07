@@ -401,6 +401,70 @@ def test_make_repairs_ring_self_intersection():
     assert shape.area == pytest.approx(16.0)
 
 
+# --- min_c_width thickening tests ---
+
+# make() round-trips the outline through a StandardScaler, so exact shapes
+# come back only up to floating-point round-off.
+_GEOM_ATOL = 1e-9
+
+
+class _Hull(AbstractPolyMethod):
+    """Outline = convex hull of the points, so a test fixes the exact shape."""
+
+    def _make(self, pp, border, segment_label):
+        return shapely.convex_hull(shapely.MultiPoint(pp))
+
+
+def _region(points, phase="A"):
+    return pd.DataFrame({
+        "c": [p[0] for p in points],
+        "T": [p[1] for p in points],
+        "phase": phase,
+        "phase_unit": 0,
+        "border": True,
+    })
+
+
+def _c_extent(shape):
+    return shape.bounds[2] - shape.bounds[0]
+
+
+def test_make_draws_wide_region_exactly():
+    # a eutectic liquid: the apex at (0.4, 600) must stay a sharp vertex
+    v = [(0.0, 1000.0), (0.4, 600.0), (1.0, 900.0)]
+    shape = _Hull(min_c_width=0.01).make(_region(v))
+    assert shape.symmetric_difference(shapely.Polygon(v)).area < _GEOM_ATOL
+
+
+@pytest.mark.parametrize("width, expected", [(0.008, 0.018), (0.012, 0.012)])
+def test_make_thickens_only_regions_narrower_than_min_c_width(width, expected):
+    box = [(0.5, 200.0), (0.5 + width, 200.0), (0.5 + width, 800.0), (0.5, 800.0)]
+    shape = _Hull(min_c_width=0.01).make(_region(box))
+    assert _c_extent(shape) == pytest.approx(expected, abs=_GEOM_ATOL)
+
+
+def test_make_thickens_line_phase_to_min_c_width():
+    line = [(0.4, T) for T in np.linspace(200.0, 800.0, 7)]
+    shape = _Hull(min_c_width=0.01).make(_region(line))
+    assert isinstance(shape, shapely.Polygon)
+    assert _c_extent(shape) == pytest.approx(0.01, abs=_GEOM_ATOL)
+
+
+def test_apply_trims_thickened_region_back_to_neighbour_outline():
+    wide = [(0.0, 200.0), (0.4, 200.0), (0.4, 800.0), (0.0, 800.0)]
+    line = [(0.4, T) for T in np.linspace(200.0, 800.0, 7)]
+    df = pd.concat([_region(wide, "A"), _region(line, "B")], ignore_index=True)
+    res = _Hull(min_c_width=0.01).apply(df)
+    a = shapely.Polygon(res[("A", 0)].get_xy())
+    b = shapely.Polygon(res[("B", 0)].get_xy())
+    assert a.symmetric_difference(shapely.Polygon(wide)).area < _GEOM_ATOL
+    assert a.intersection(b).area < _GEOM_ATOL
+    # the line phase keeps only the half of its widening outside the wide region
+    chord = b.intersection(shapely.LineString([(-1.0, 500.0), (2.0, 500.0)]))
+    assert chord.bounds[0] == pytest.approx(0.4, abs=_GEOM_ATOL)
+    assert chord.bounds[2] == pytest.approx(0.405, abs=_GEOM_ATOL)
+
+
 # --- _greedy_stitch tests ---
 
 

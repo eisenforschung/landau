@@ -20,7 +20,9 @@ from .calculate import get_transitions, _split_phase_unit
 @dataclass
 class AbstractPolyMethod(abc.ABC):
     min_c_width: float = 0.01
-    '''If line phases are detected, make them at least this thick in c space.'''
+    '''Phase regions narrower than this everywhere (line phases, thin solubility
+    ranges) are widened by this amount so they stay visible; every other region
+    is drawn exactly.'''
 
     def prepare(self, df: pd.DataFrame) -> pd.DataFrame:
         """Massage data set into format so that :method:`.make` can by applied
@@ -29,8 +31,14 @@ class AbstractPolyMethod(abc.ABC):
 
     def make(self, dd: pd.DataFrame, variables: list[str] = ["c", "T"]) -> shapely.Polygon | None:
         """Turn the subset of the full data belonging to one phase region into
-        a buffered shapely polygon.  Conversion to matplotlib happens in
-        :meth:`apply`."""
+        a shapely polygon, widened by :meth:`_thicken` if it is thin.
+        Conversion to matplotlib happens in :meth:`apply`."""
+        shape = self._outline(dd, variables)
+        return None if shape is None else self._thicken(shape)
+
+    def _outline(self, dd: pd.DataFrame, variables: list[str]) -> shapely.Polygon | shapely.LineString | None:
+        """Exact outline of one phase region; a ``LineString`` for a region
+        with no extent in the first variable."""
         border = dd["border"].to_numpy() if "border" in dd.columns else np.zeros(len(dd), dtype=bool)
         segment_label = dd["border_segment"].to_numpy() if "border_segment" in dd.columns else np.ones(len(dd), dtype=int)
 
@@ -86,8 +94,16 @@ class AbstractPolyMethod(abc.ABC):
             shape = shapely.LineString(scaler.inverse_transform(np.asarray(shape.coords)))
         else:
             return None
+        return shape
 
-        shape = shape.buffer(self.min_c_width/2)
+    def _thicken(self, shape: shapely.Polygon | shapely.LineString) -> shapely.Polygon:
+        """Widen ``shape`` by ``min_c_width`` if it is narrower than that
+        everywhere, i.e. if eroding it by half the width leaves nothing; return
+        any other shape unchanged."""
+        r = self.min_c_width / 2
+        if not shape.buffer(-r).is_empty:
+            return shape
+        shape = shape.buffer(r)
         if isinstance(shape, shapely.MultiPolygon):
             shape = max(shape.geoms, key=shapely.area)
             warn("polymethod returned disjoined polygons, returning largest.")
@@ -100,26 +116,25 @@ class AbstractPolyMethod(abc.ABC):
         pass
 
     def apply(self, df: pd.DataFrame, variables: list[str] = ["c", "T"]) -> pd.Series:
-        shapes = self.prepare(df).groupby(['phase', 'phase_unit']).apply(
-                self.make, variables=variables, include_groups=False
+        outlines = self.prepare(df).groupby(['phase', 'phase_unit']).apply(
+                self._outline, variables=variables, include_groups=False
 
         ).dropna()
-        shapes = shapes[~shapes.map(lambda s: s.is_empty)]
-        trimmed = self._trim_overlaps(shapes)
+        outlines = outlines[~outlines.map(lambda s: s.is_empty)]
+        shapes = outlines.map(self._thicken)
+        keep = ~shapes.map(lambda s: s.is_empty)
+        trimmed = self._trim_overlaps(shapes[keep], outlines[keep])
         return trimmed.map(self._to_mpl_polygon).dropna()
 
-    def _trim_overlaps(self, shapes: pd.Series) -> pd.Series:
-        """Symmetrically subtract pairwise overlap between buffered polygons.
+    def _trim_overlaps(self, shapes: pd.Series, outlines: pd.Series) -> pd.Series:
+        """Subtract from every polygon its neighbours' exact outlines.
 
-        Each polygon was inflated by ``min_c_width/2`` so small-solubility
-        phases stay visible.  Where adjacent buffered phases touch this
-        creates an overlap strip; here we subtract from every polygon its
-        neighbours' un-buffered shapes so the seam lands on the original
-        shared boundary.
+        A region widened by :meth:`_thicken` can spill into an adjacent one;
+        subtracting the neighbour's outline puts the seam back on the shared
+        boundary.  ``outlines`` is indexed like ``shapes``.
         """
         if len(shapes) < 2:
             return shapes
-        r = self.min_c_width / 2
         out: dict = {}
         for k, a in shapes.items():
             trimmed = a
@@ -128,8 +143,8 @@ class AbstractPolyMethod(abc.ABC):
                     continue
                 if not trimmed.intersects(b):
                     continue
-                b_orig = b.buffer(-r)
-                if b_orig.is_empty:
+                b_orig = outlines[k2]
+                if b_orig.area == 0:
                     continue
                 try:
                     new = trimmed.difference(b_orig)
