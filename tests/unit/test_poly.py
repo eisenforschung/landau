@@ -425,38 +425,54 @@ def _region(points, phase="A"):
     })
 
 
+def _drawn(method, df, phase="A"):
+    """The shapely polygon apply() draws for one phase region."""
+    return shapely.Polygon(method.apply(df)[(phase, 0)].get_xy())
+
+
 def _c_extent(shape):
     return shape.bounds[2] - shape.bounds[0]
 
 
-def test_make_draws_wide_region_exactly():
+_LINE = [(0.4, T) for T in np.linspace(200.0, 800.0, 7)]
+
+
+def test_make_returns_exact_outline():
+    box = [(0.5, 200.0), (0.508, 200.0), (0.508, 800.0), (0.5, 800.0)]
+    shape = _Hull(min_c_width=0.01).make(_region(box))
+    assert shape.symmetric_difference(shapely.Polygon(box)).area < _GEOM_ATOL
+
+
+def test_make_returns_line_phase_as_linestring():
+    shape = _Hull(min_c_width=0.01).make(_region(_LINE))
+    assert isinstance(shape, shapely.LineString)
+    assert _c_extent(shape) == pytest.approx(0.0, abs=_GEOM_ATOL)
+
+
+def test_apply_draws_wide_region_exactly():
     # a eutectic liquid: the apex at (0.4, 600) must stay a sharp vertex
     v = [(0.0, 1000.0), (0.4, 600.0), (1.0, 900.0)]
-    shape = _Hull(min_c_width=0.01).make(_region(v))
+    shape = _drawn(_Hull(min_c_width=0.01), _region(v))
     assert shape.symmetric_difference(shapely.Polygon(v)).area < _GEOM_ATOL
 
 
 @pytest.mark.parametrize("width, expected", [(0.008, 0.018), (0.012, 0.012)])
-def test_make_thickens_only_regions_narrower_than_min_c_width(width, expected):
+def test_apply_thickens_only_regions_narrower_than_min_c_width(width, expected):
     box = [(0.5, 200.0), (0.5 + width, 200.0), (0.5 + width, 800.0), (0.5, 800.0)]
-    shape = _Hull(min_c_width=0.01).make(_region(box))
+    shape = _drawn(_Hull(min_c_width=0.01), _region(box))
     assert _c_extent(shape) == pytest.approx(expected, abs=_GEOM_ATOL)
 
 
-def test_make_thickens_line_phase_to_min_c_width():
-    line = [(0.4, T) for T in np.linspace(200.0, 800.0, 7)]
-    shape = _Hull(min_c_width=0.01).make(_region(line))
-    assert isinstance(shape, shapely.Polygon)
+def test_apply_thickens_line_phase_to_min_c_width():
+    shape = _drawn(_Hull(min_c_width=0.01), _region(_LINE))
     assert _c_extent(shape) == pytest.approx(0.01, abs=_GEOM_ATOL)
 
 
 def test_apply_trims_thickened_region_back_to_neighbour_outline():
     wide = [(0.0, 200.0), (0.4, 200.0), (0.4, 800.0), (0.0, 800.0)]
-    line = [(0.4, T) for T in np.linspace(200.0, 800.0, 7)]
-    df = pd.concat([_region(wide, "A"), _region(line, "B")], ignore_index=True)
-    res = _Hull(min_c_width=0.01).apply(df)
-    a = shapely.Polygon(res[("A", 0)].get_xy())
-    b = shapely.Polygon(res[("B", 0)].get_xy())
+    df = pd.concat([_region(wide, "A"), _region(_LINE, "B")], ignore_index=True)
+    method = _Hull(min_c_width=0.01)
+    a, b = _drawn(method, df, "A"), _drawn(method, df, "B")
     assert a.symmetric_difference(shapely.Polygon(wide)).area < _GEOM_ATOL
     assert a.intersection(b).area < _GEOM_ATOL
     # the line phase keeps only the half of its widening outside the wide region

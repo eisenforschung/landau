@@ -29,16 +29,13 @@ class AbstractPolyMethod(abc.ABC):
         over groups of columns `phase` and `phase_unit`."""
         return df
 
-    def make(self, dd: pd.DataFrame, variables: list[str] = ["c", "T"]) -> shapely.Polygon | None:
+    def make(
+        self, dd: pd.DataFrame, variables: list[str] = ["c", "T"]
+    ) -> shapely.Polygon | shapely.LineString | None:
         """Turn the subset of the full data belonging to one phase region into
-        a shapely polygon, widened by :meth:`_thicken` if it is thin.
-        Conversion to matplotlib happens in :meth:`apply`."""
-        shape = self._outline(dd, variables)
-        return None if shape is None else self._thicken(shape)
-
-    def _outline(self, dd: pd.DataFrame, variables: list[str]) -> shapely.Polygon | shapely.LineString | None:
-        """Exact outline of one phase region; a ``LineString`` for a region
-        with no extent in the first variable."""
+        its exact shapely outline; a ``LineString`` for a region with no extent
+        in the first variable.  Widening thin regions and conversion to
+        matplotlib happen in :meth:`apply`."""
         border = dd["border"].to_numpy() if "border" in dd.columns else np.zeros(len(dd), dtype=bool)
         segment_label = dd["border_segment"].to_numpy() if "border_segment" in dd.columns else np.ones(len(dd), dtype=int)
 
@@ -117,7 +114,7 @@ class AbstractPolyMethod(abc.ABC):
 
     def apply(self, df: pd.DataFrame, variables: list[str] = ["c", "T"]) -> pd.Series:
         outlines = self.prepare(df).groupby(['phase', 'phase_unit']).apply(
-                self._outline, variables=variables, include_groups=False
+                self.make, variables=variables, include_groups=False
 
         ).dropna()
         outlines = outlines[~outlines.map(lambda s: s.is_empty)]
