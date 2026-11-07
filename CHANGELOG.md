@@ -3,6 +3,14 @@
 Notable changes to **landau.py**, newest first. Per-PR detail lives in the
 [GitHub releases](https://github.com/eisenforschung/landau/releases).
 
+## [1.18.1](https://github.com/eisenforschung/landau/compare/1.18.0...1.18.1) (2026-11-07)
+
+
+### Bug Fixes
+
+* **plot:** label 1d phase diagrams with symbols and units ([#567](https://github.com/eisenforschung/landau/issues/567)) ([6861ebc](https://github.com/eisenforschung/landau/commit/6861ebcfd446019a5d19505294304dfc9532a780))
+* **plot:** label every plotted quantity with its unit ([#565](https://github.com/eisenforschung/landau/issues/565)) ([e078634](https://github.com/eisenforschung/landau/commit/e07863496097412704b1a938d0a8c3bdf4496f8a))
+
 ## [1.18.0](https://github.com/eisenforschung/landau/compare/1.17.0...1.18.0) (2026-11-04)
 
 
