@@ -39,8 +39,8 @@ METHODS = [
     pytest.param("segment-fasttsp", marks=pytest.mark.skipif(not HAS_FAST_TSP, reason="fast-tsp not installed")),
 ]
 
-# The outline runs through every border point, but is inflated by
-# min_c_width/2 and trimmed back by up to the same amount where phases touch,
+# The outline runs through every border point, but a thin region is inflated
+# by min_c_width/2 and trimmed back by up to the same amount where phases touch,
 # so allow a small fraction of the axis range.
 EPS = 0.02
 
