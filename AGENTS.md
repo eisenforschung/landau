@@ -74,7 +74,7 @@ Python `>=3.11,<3.14`. Extras: `test`, `constraints`, `fast-tsp`, `python-tsp`, 
 
 - **Git: rebase, never merge.** Merge commits are disabled on GitHub. Rebase onto `origin/main` and force-push to keep history linear.
 
-- **Conventional Commits drive releases.** `release-please` (`.github/workflows/release-please.yml`, PR #225) reads conventional-commit messages on `main` to open release PRs; non-conforming messages are ignored by the release tooling. Use `feat:`/`fix:`/`docs:`/`test:`/`chore:`/`refactor:`, `!` or `BREAKING CHANGE:` for breaks. Latest release: 1.18.0 (release PR #547, merged 2026-11-04; carries the #545/#467/#471/#478 refiner train, the #499 `f_excess` fix, and the plot/phase additions #549–#561). Release PR #566 (1.18.1) is open for #565, #567 and #573.
+- **Conventional Commits drive releases.** `release-please` (`.github/workflows/release-please.yml`, PR #225) reads conventional-commit messages on `main` to open release PRs; non-conforming messages are ignored by the release tooling. Use `feat:`/`fix:`/`docs:`/`test:`/`chore:`/`refactor:`, `!` or `BREAKING CHANGE:` for breaks. Latest release: 1.18.1 (release PR #566, merged 2026-11-08; carries #565, #567 and #573). Before it, 1.18.0 (release PR #547, merged 2026-11-04) carries the #545/#467/#471/#478 refiner train, the #499 `f_excess` fix, and the plot/phase additions #549–#561.
 
 - **Do not commit** `.hypothesis/`, `_version.py`, stray top-level scripts, duplicate exploratory files.
 
