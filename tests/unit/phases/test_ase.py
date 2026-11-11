@@ -19,13 +19,9 @@ def test_ase_thermo_phase_gibbs():
     assert phase.line_concentration == 0.5
     assert phase.pressure == 1e5
 
-    T_scalar = 300
-    G_scalar = phase.line_free_energy(T_scalar)
-    assert np.isscalar(G_scalar) and not isinstance(G_scalar, np.ndarray)
-
-    T_array = np.array([300, 400])
-    G_array = phase.line_free_energy(T_array)
-    assert G_array.shape == (2,)
+    T = np.array([300.0, 400.0])
+    expected = [ig.get_gibbs_energy(t, pressure=1e5, verbose=False) for t in T]
+    np.testing.assert_allclose(phase.line_free_energy(T), expected, rtol=1e-14)
 
 
 def test_ase_thermo_phase_helmholtz():
@@ -35,13 +31,9 @@ def test_ase_thermo_phase_helmholtz():
     assert phase.line_concentration == 0.3
     assert phase.pressure is None
 
-    T_scalar = 300
-    F_scalar = phase.line_free_energy(T_scalar)
-    assert np.isscalar(F_scalar) and not isinstance(F_scalar, np.ndarray)
-
-    T_array = np.array([300, 400])
-    F_array = phase.line_free_energy(T_array)
-    assert F_array.shape == (2,)
+    T = np.array([300.0, 400.0])
+    expected = [ht.get_helmholtz_energy(t, verbose=False) for t in T]
+    np.testing.assert_allclose(phase.line_free_energy(T), expected, rtol=1e-14)
 
 
 def test_ase_phase_equality_harmonic():

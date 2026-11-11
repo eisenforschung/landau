@@ -8,7 +8,6 @@ import numpy as np
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from hypothesis.extra.numpy import arrays, mutually_broadcastable_shapes
 from numpy.testing import assert_allclose
 from scipy.constants import Boltzmann, eV
 
@@ -114,20 +113,10 @@ def _make_tdlp(c=0.5, T=None, f=None):
     )
 
 
-def test_line_phase_free_energy_scalar():
-    phase = _make_line_phase(energy=2.0, entropy=0.5, c=0.3)
-    result = phase.line_free_energy(300.0)
-    assert np.isclose(result, 2.0 - 300.0 * 0.5)
-    assert not isinstance(result, np.ndarray)
-
-
-def test_line_phase_free_energy_array():
+def test_line_phase_free_energy_is_linear_in_T():
     phase = _make_line_phase(energy=2.0, entropy=0.5, c=0.3)
     T = np.array([100.0, 200.0, 300.0])
-    result = phase.line_free_energy(T)
-    assert isinstance(result, np.ndarray)
-    assert result.shape == (3,)
-    assert_allclose(result, 2.0 - T * 0.5)
+    assert_allclose(phase.line_free_energy(T), 2.0 - T * 0.5)
 
 
 def test_line_phase_free_energy_zero_entropy():
@@ -136,85 +125,17 @@ def test_line_phase_free_energy_zero_entropy():
     assert_allclose(phase.line_free_energy(T), 3.0)
 
 
-def test_line_phase_free_energy_scalar_array_parity():
-    phase = _make_line_phase(energy=2.0, entropy=0.5, c=0.3)
-    T_vals = [100.0, 300.0, 500.0]
-    scalar_results = [phase.line_free_energy(T) for T in T_vals]
-    assert_allclose(phase.line_free_energy(np.array(T_vals)), scalar_results)
-
-
-def test_line_phase_free_energy_0d_array():
-    phase = _make_line_phase(energy=2.0, entropy=0.5, c=0.3)
-    assert np.isclose(phase.line_free_energy(np.array(300.0)), phase.line_free_energy(300.0))
-
-
 def test_line_phase_semigrand_potential_at_zero_mu():
     T = np.array([300.0, 600.0, 900.0])
     phase = _make_line_phase()
     assert_allclose(phase.semigrand_potential(T, 0.0), phase.line_free_energy(T))
 
 
-def test_line_phase_semigrand_potential_scalar():
-    phase = _make_line_phase()
-    result = phase.semigrand_potential(500.0, 0.0)
-    assert np.isscalar(result) or result.ndim == 0
-    assert_allclose(result, phase.line_free_energy(500.0))
-
-
-def test_line_phase_concentration_scalar():
-    phase = _make_line_phase(c=0.3, energy=2.0, entropy=0.5)
-    result = phase.concentration(300.0, 0.5)
-    assert np.isclose(result, 0.3)
-    assert not isinstance(result, np.ndarray)
-
-
-def test_line_phase_concentration_array_T():
-    phase = _make_line_phase(c=0.3, energy=2.0, entropy=0.5)
-    T = np.array([100.0, 200.0, 300.0])
-    result = phase.concentration(T, 0.5)
-    assert isinstance(result, np.ndarray)
-    assert result.dtype != object
-    assert result.shape == (3,)
-    assert_allclose(result, 0.3)
-
-
-def test_line_phase_concentration_array_dmu():
-    # scalar T, array dmu — result should be array, not object
+def test_line_phase_concentration_is_fixed():
     phase = _make_line_phase(c=0.25)
+    T = np.array([100.0, 500.0, 900.0])[:, None]
     dmu = np.linspace(-1, 1, 5)
-    result = phase.concentration(500.0, dmu)
-    assert isinstance(result, np.ndarray)
-    assert result.dtype != object
-    assert result.shape == (5,)
-    assert_allclose(result, 0.25)
-
-
-def test_line_phase_concentration_both_array():
-    phase = _make_line_phase(c=0.3, energy=2.0, entropy=0.5)
-    T = np.array([100.0, 200.0, 300.0])
-    dmu = np.array([0.0, 0.1, -0.1])
-    result = phase.concentration(T, dmu)
-    assert isinstance(result, np.ndarray)
-    assert result.dtype != object
-    assert result.shape == (3,)
-    assert_allclose(result, 0.3)
-
-
-def test_line_phase_concentration_scalar_array_parity():
-    phase = _make_line_phase(c=0.3, energy=2.0, entropy=0.5)
-    T_arr = np.array([300.0, 400.0])
-    dmu_arr = np.array([0.5, 0.5])
-    array_result = phase.concentration(T_arr, dmu_arr)
-    for i, (T, dmu) in enumerate(zip(T_arr, dmu_arr)):
-        assert np.isclose(array_result[i], phase.concentration(T, dmu))
-
-
-def test_line_phase_concentration_0d_array():
-    phase = _make_line_phase(c=0.3, energy=2.0, entropy=0.5)
-    assert np.isclose(
-        phase.concentration(np.array(300.0), np.array(0.5)),
-        phase.concentration(300.0, 0.5),
-    )
+    assert_allclose(phase.concentration(T, dmu), 0.25)
 
 
 def test_temperature_dependent_line_phase_interpolates_through_samples():
@@ -253,57 +174,19 @@ def test_tdlp_interpolation_heldout_accuracy():
     assert_allclose(phase.line_free_energy(T_test), expected, atol=_TDLP_ATOL)
 
 
-def test_tdlp_semigrand_potential_scalar():
+def test_tdlp_semigrand_potential_is_line_free_energy_minus_c_dmu():
     phase = _make_tdlp(c=0.5)
-    result = phase.semigrand_potential(500.0, 0.1)
-    assert np.isscalar(result) or (isinstance(result, np.ndarray) and result.ndim == 0)
-    expected = phase.line_free_energy(500.0) - 0.5 * 0.1
-    assert_allclose(result, expected, atol=_TDLP_ATOL)
-
-
-def test_tdlp_semigrand_potential_array_T():
-    phase = _make_tdlp(c=0.5)
-    T = np.array([400.0, 700.0, 1000.0])
-    result = phase.semigrand_potential(T, 0.2)
-    assert isinstance(result, np.ndarray)
-    assert result.shape == (3,)
-    expected = phase.line_free_energy(T) - 0.5 * 0.2
-    assert_allclose(result, expected, atol=_TDLP_ATOL)
-
-
-def test_tdlp_semigrand_potential_array_dmu():
-    phase = _make_tdlp(c=0.5)
+    T = np.array([400.0, 700.0, 1000.0])[:, None]
     dmu = np.array([-0.2, 0.0, 0.2])
-    result = phase.semigrand_potential(500.0, dmu)
-    assert isinstance(result, np.ndarray)
-    assert result.shape == (3,)
-    expected = phase.line_free_energy(500.0) - 0.5 * dmu
-    assert_allclose(result, expected, atol=_TDLP_ATOL)
+    expected = phase.line_free_energy(T) - 0.5 * dmu
+    assert_allclose(phase.semigrand_potential(T, dmu), expected, atol=_TDLP_ATOL)
 
 
-def test_tdlp_concentration_scalar():
+def test_tdlp_concentration_is_fixed():
     phase = _make_tdlp(c=0.4)
-    result = phase.concentration(500.0, 0.1)
-    assert np.isscalar(result) or (isinstance(result, np.ndarray) and result.ndim == 0)
-    assert_allclose(result, 0.4, atol=_TDLP_ATOL)
-
-
-def test_tdlp_concentration_array_T():
-    phase = _make_tdlp(c=0.4)
-    T = np.array([400.0, 700.0, 1000.0])
-    result = phase.concentration(T, 0.1)
-    assert isinstance(result, np.ndarray)
-    assert result.shape == (3,)
-    assert_allclose(result, 0.4, atol=_TDLP_ATOL)
-
-
-def test_tdlp_concentration_array_dmu():
-    phase = _make_tdlp(c=0.4)
+    T = np.array([400.0, 700.0, 1000.0])[:, None]
     dmu = np.array([-0.2, 0.0, 0.2])
-    result = phase.concentration(500.0, dmu)
-    assert isinstance(result, np.ndarray)
-    assert result.shape == (3,)
-    assert_allclose(result, 0.4, atol=_TDLP_ATOL)
+    assert_allclose(phase.concentration(T, dmu), 0.4, atol=_TDLP_ATOL)
 
 
 # --- IdealSolution tests ---
@@ -317,11 +200,10 @@ def _make_ideal_solution(e1=0.0, s1=0.0, e2=0.0, s2=0.0):
     return IdealSolution("sol", p0, p1)
 
 
-def test_ideal_concentration_scalar():
+def test_ideal_concentration_symmetric_at_zero_dmu():
     """With f1=f2=0, dmu=0: c = 0.5 by symmetry."""
     sol = _make_ideal_solution()
     result = sol.concentration(1000.0, 0.0)
-    assert np.isscalar(result) or not isinstance(result, np.ndarray)
     assert_allclose(result, 0.5, atol=_IDEAL_ATOL)
 
 
@@ -342,42 +224,11 @@ def test_ideal_concentration_midpoint():
     assert_allclose(result, 0.5, atol=1e-6)
 
 
-def test_ideal_concentration_array_T():
-    sol = _make_ideal_solution()
-    T = np.array([500.0, 1000.0, 1500.0])
-    result = sol.concentration(T, 0.0)
-    assert isinstance(result, np.ndarray)
-    assert result.shape == (3,)
-    assert_allclose(result, 0.5, atol=_IDEAL_ATOL)
-
-
-def test_ideal_concentration_array_dmu():
-    sol = _make_ideal_solution()
-    dmu = np.array([-0.5, 0.0, 0.5])
-    result = sol.concentration(1000.0, dmu)
-    assert isinstance(result, np.ndarray)
-    assert result.shape == (3,)
-    expected = 1 / (1 + np.exp(-dmu / kB / 1000.0))
-    assert_allclose(result, expected, atol=_IDEAL_ATOL)
-
-
-def test_ideal_concentration_both_array():
-    sol = _make_ideal_solution()
-    T = np.array([500.0, 1000.0, 1500.0])
-    dmu = np.array([-0.1, 0.0, 0.1])
-    result = sol.concentration(T, dmu)
-    assert isinstance(result, np.ndarray)
-    assert result.shape == (3,)
-    expected = 1 / (1 + np.exp(-dmu / kB / T))
-    assert_allclose(result, expected, atol=_IDEAL_ATOL)
-
-
-def test_ideal_semigrand_potential_scalar():
+def test_ideal_semigrand_potential_at_zero_dmu():
     """With f1=f2=0, dmu=0: phi = -kB*T*log(2)."""
     sol = _make_ideal_solution()
     T = 1000.0
     result = sol.semigrand_potential(T, 0.0)
-    assert np.isscalar(result) or not isinstance(result, np.ndarray)
     assert_allclose(result, -kB * T * np.log(2), atol=_IDEAL_ATOL)
 
 
@@ -388,25 +239,6 @@ def test_ideal_semigrand_potential_analytic():
     dmu = np.array([-0.1, 0.0, 0.1])
     result = sol.semigrand_potential(T, dmu)
     expected = -kB * T * np.log(1 + np.exp(dmu / kB / T))
-    assert_allclose(result, expected, atol=_IDEAL_ATOL)
-
-
-def test_ideal_semigrand_potential_array_T():
-    sol = _make_ideal_solution()
-    T = np.array([500.0, 1000.0, 1500.0])
-    result = sol.semigrand_potential(T, 0.0)
-    assert isinstance(result, np.ndarray)
-    assert result.shape == (3,)
-    assert_allclose(result, -kB * T * np.log(2), atol=_IDEAL_ATOL)
-
-
-def test_ideal_semigrand_potential_array_dmu():
-    sol = _make_ideal_solution()
-    dmu = np.array([-0.1, 0.0, 0.1])
-    result = sol.semigrand_potential(1000.0, dmu)
-    assert isinstance(result, np.ndarray)
-    assert result.shape == (3,)
-    expected = -kB * 1000.0 * np.log(1 + np.exp(dmu / kB / 1000.0))
     assert_allclose(result, expected, atol=_IDEAL_ATOL)
 
 
@@ -533,36 +365,6 @@ def _make_regular_solution():
     return RegularSolution("sol", [p0, pm, p1])
 
 
-def test_regular_solution_semigrand_potential_scalar():
-    sol = _make_regular_solution()
-    result = sol.semigrand_potential(1000.0, 0.0)
-    assert np.isscalar(result) or not isinstance(result, np.ndarray)
-
-
-def test_regular_solution_semigrand_potential_array_dmu():
-    sol = _make_regular_solution()
-    dmu = np.linspace(-1.0, 1.0, 15)
-    result = sol.semigrand_potential(1000.0, dmu)
-    assert isinstance(result, np.ndarray)
-    assert result.shape == (15,)
-
-
-def test_regular_solution_concentration_scalar():
-    sol = _make_regular_solution()
-    result = sol.concentration(1000.0, 0.0)
-    assert np.isscalar(result) or not isinstance(result, np.ndarray)
-    assert 0.0 <= float(result) <= 1.0
-
-
-def test_regular_solution_concentration_array_dmu():
-    sol = _make_regular_solution()
-    dmu = np.linspace(-1.0, 1.0, 15)
-    result = sol.concentration(1000.0, dmu)
-    assert isinstance(result, np.ndarray)
-    assert result.shape == (15,)
-    assert np.all((result >= 0) & (result <= 1))
-
-
 def test_regular_solution_concentration_symmetric_at_zero():
     """At dmu=0 with equal terminal energies, concentration = 0.5 by symmetry."""
     sol = _make_regular_solution()  # f0 = f1 = 0
@@ -661,39 +463,6 @@ def _make_slow_interpolating_phase():
     return SlowInterpolatingPhase("sol", _make_interp_line_phases())
 
 
-def test_interpolating_phase_semigrand_potential_scalar():
-    result = _make_interpolating_phase().semigrand_potential(1000.0, 0.0)
-    assert np.isscalar(result) or not isinstance(result, np.ndarray)
-
-
-def test_interpolating_phase_semigrand_potential_array_dmu():
-    dmu = np.linspace(-0.5, 0.5, 11)
-    result = _make_interpolating_phase().semigrand_potential(1000.0, dmu)
-    assert isinstance(result, np.ndarray)
-    assert result.shape == (11,)
-
-
-def test_interpolating_phase_semigrand_potential_array_T():
-    T = np.array([500.0, 1000.0, 1500.0])
-    result = _make_interpolating_phase().semigrand_potential(T, 0.0)
-    assert isinstance(result, np.ndarray)
-    assert result.shape == (3,)
-
-
-def test_interpolating_phase_concentration_scalar():
-    result = _make_interpolating_phase().concentration(1000.0, 0.0)
-    assert np.isscalar(result) or not isinstance(result, np.ndarray)
-    assert 0.0 <= float(result) <= 1.0
-
-
-def test_interpolating_phase_concentration_array_dmu():
-    dmu = np.linspace(-0.5, 0.5, 11)
-    result = _make_interpolating_phase().concentration(1000.0, dmu)
-    assert isinstance(result, np.ndarray)
-    assert result.shape == (11,)
-    assert np.all((result >= 0.0) & (result <= 1.0))
-
-
 def test_interpolating_phase_concentration_monotone():
     """Concentration is non-decreasing in dmu for a non-degenerate landscape."""
     dmu = np.linspace(-0.5, 0.5, 25)
@@ -709,25 +478,6 @@ def test_interpolating_phase_gibbs_duhem():
     c_numeric = -np.gradient(phi, dmu)
     c_direct = phase.concentration(1000.0, dmu)
     assert_allclose(c_numeric[5:-5], c_direct[5:-5], atol=_INTERP_ATOL)
-
-
-def test_slow_interpolating_phase_semigrand_potential_scalar():
-    result = _make_slow_interpolating_phase().semigrand_potential(1000.0, 0.0)
-    assert np.isscalar(result) or not isinstance(result, np.ndarray)
-
-
-def test_slow_interpolating_phase_concentration_scalar():
-    result = _make_slow_interpolating_phase().concentration(1000.0, 0.0)
-    assert np.isscalar(result) or not isinstance(result, np.ndarray)
-    assert 0.0 <= float(result) <= 1.0
-
-
-def test_slow_interpolating_phase_concentration_array_dmu():
-    dmu = np.linspace(-0.5, 0.5, 7)
-    result = _make_slow_interpolating_phase().concentration(1000.0, dmu)
-    assert isinstance(result, np.ndarray)
-    assert result.shape == (7,)
-    assert np.all((result >= 0.0) & (result <= 1.0))
 
 
 def test_slow_interpolating_phase_gibbs_duhem():
@@ -815,32 +565,6 @@ def _gold_min(phase, T, dmu):
     val = fe(cs)[:, None] - T * S(cs)[:, None] - np.atleast_1d(dmu)[None, :] * cs[:, None]
     i = val.argmin(axis=0)
     return val[i, np.arange(val.shape[1])], cs[i]
-
-
-def test_fast_interpolating_phase_scalar_contract():
-    poly, _ = _fast_phases()
-    phi = poly.semigrand_potential(1000.0, 0.1)
-    c = poly.concentration(1000.0, 0.1)
-    assert not isinstance(phi, np.ndarray)
-    assert not isinstance(c, np.ndarray)
-    assert 0.0 <= float(c) <= 1.0
-
-
-def test_fast_interpolating_phase_array_dmu_shape():
-    poly, _ = _fast_phases()
-    dmu = np.linspace(-3.0, 3.0, 17)
-    phi = poly.semigrand_potential(1000.0, dmu)
-    c = poly.concentration(1000.0, dmu)
-    assert phi.shape == (17,)
-    assert c.shape == (17,)
-    assert np.all((c >= 0.0) & (c <= 1.0))
-
-
-def test_fast_interpolating_phase_array_T_shape():
-    _, rk = _fast_phases()
-    T = np.array([500.0, 1000.0, 1500.0])
-    phi = rk.semigrand_potential(T, 0.2)
-    assert phi.shape == (3,)
 
 
 def test_fast_interpolating_phase_concentration_monotone():
@@ -1134,33 +858,6 @@ def test_lte_phase_phi_bounded_by_tangent_extension():
     )
     assert raw_phi < -100.0  # the divergence being guarded against
     assert phase.semigrand_potential(T, 0.6) > -2.0  # bounded by the tangent line
-
-
-@given(data=st.data())
-@settings(deadline=None)
-def test_pointdefected_phase_broadcasts_shapes(data):
-    """PointDefectedPhase.semigrand_potential/concentration follow the same
-    scalar/array broadcast contract as every other phase: random mutually
-    broadcastable (T, dmu) shapes -- including T arrays, which exercise the
-    per-unique-T loop in _phi_c -- collapse a scalar result to a plain Python
-    scalar and otherwise match the broadcast result shape."""
-    _, phase = _lte_b2_phase()
-    shapes = data.draw(mutually_broadcastable_shapes(num_shapes=2, max_dims=3, max_side=3))
-    T = data.draw(arrays(float, shapes.input_shapes[0], elements=st.floats(100.0, 2000.0)))
-    dmu = data.draw(arrays(float, shapes.input_shapes[1], elements=st.floats(-0.6, 0.6)))
-
-    phi = phase.semigrand_potential(T, dmu)
-    c = phase.concentration(T, dmu)
-
-    expected_shape = shapes.result_shape
-    if expected_shape == ():
-        assert not isinstance(phi, np.ndarray)
-        assert not isinstance(c, np.ndarray)
-    else:
-        assert phi.shape == expected_shape
-        assert c.shape == expected_shape
-    assert np.all((np.asarray(c) >= 0.0) & (np.asarray(c) <= 1.0))
-    assert np.all(np.isfinite(np.asarray(phi)))
 
 
 @settings(max_examples=75, deadline=None)

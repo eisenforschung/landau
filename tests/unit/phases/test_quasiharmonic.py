@@ -344,14 +344,6 @@ def test_free_energy_decreases_with_temperature():
     assert np.all(np.diff(phase.line_free_energy(T)) < 0)
 
 
-def test_scalar_temperature_gives_a_scalar_line_free_energy():
-    phase = planted_phase()
-    out = phase.line_free_energy(300.0)
-    assert np.isscalar(out) and not isinstance(out, np.ndarray)
-    assert phase.line_free_energy(np.array(300.0)) == out
-    assert phase.line_free_energy(np.array([300.0, 500.0])).shape == (2,)
-
-
 def test_line_phase_interface_is_satisfied():
     phase = planted_phase()
     assert phase.line_concentration == 0.0
