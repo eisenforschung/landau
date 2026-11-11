@@ -229,6 +229,10 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
   `get_polygons`, `plot_polygons`, `get_phase_colors`, `cluster_phase`.
 - `labels.py`: every text-placement helper.
   Imports go one way — `labels` never imports from `plot`.
+- `style.py` + `landau.mplstyle`: one dict per drawn element (`METASTABLE`, `TIE_LINE`, `TRANSITION_GUIDE`, `INVARIANT_MARKER`, `REGION_LABEL`, `CURVE_LABEL`, `VALUE_LABEL`) carrying colour, style and weight only;
+  sizes come from `lines.linewidth`/`lines.markersize`/`font.size`.
+  `@styled` (on `_plot_phase_diagram`, `_plot_1d_phase_diagram`, `plot_excess_free_energy`) applies the sheet per call to every rcParam still equal to `rcParamsDefault`, so caller-set values win key by key.
+  On style conflicts the excess-free-energy plot follows the 1d/2d look.
 - 2d options: `legend`/`inline_legend` (inline labels at the polygon's pole of inaccessibility, with rotate/offset fallbacks),
   `triplepoints=None` (follows `transition_temperatures` unless set, `tielines=` is a deprecated alias),
   `transition_temperatures=False` (labels `triple`/`congruent` rows — reads the `locus` tags, so unrefined frames draw nothing),

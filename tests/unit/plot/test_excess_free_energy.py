@@ -13,6 +13,7 @@ from landau import IdealSolution, LinePhase
 from landau.calculate import calc_phase_diagram
 from landau.phases import kB
 from landau.plot import plot_excess_free_energy
+from landau.plot.style import TIE_LINE
 
 
 def _make_phases():
@@ -89,17 +90,26 @@ def test_scalar_temperature_accepted():
 # ---------------------------------------------------------------------------
 
 
+def _tie_lines(ax):
+    """Common-tangent segments, drawn in the shared ``TIE_LINE`` role."""
+    return [
+        l for l in ax.lines
+        if l.get_color() == TIE_LINE["color"] and l.get_alpha() == TIE_LINE["alpha"]
+        and l.get_linestyle() == TIE_LINE["linestyle"]
+    ]
+
+
 def test_convex_hull_true_adds_hull_line():
     ax = plot_excess_free_energy(_minimal_df([1000]), convex_hull=True)
-    black_dotted = [l for l in ax.lines if l.get_color() == "k" and l.get_linestyle() == ":"]
-    assert len(black_dotted) >= 1
+    tie_lines = _tie_lines(ax)
+    assert len(tie_lines) >= 1
     plt.close(ax.figure)
 
 
 def test_convex_hull_false_has_no_hull_line():
     ax = plot_excess_free_energy(_minimal_df([1000]), convex_hull=False)
-    black_dotted = [l for l in ax.lines if l.get_color() == "k" and l.get_linestyle() == ":"]
-    assert len(black_dotted) == 0
+    tie_lines = _tie_lines(ax)
+    assert len(tie_lines) == 0
     plt.close(ax.figure)
 
 
@@ -137,8 +147,8 @@ def test_line_phase_renders_as_scatter():
 def test_single_temperature_convex_hull_true():
     """Single-T DataFrame: hull line and vertex scatter must be present."""
     ax = plot_excess_free_energy(_minimal_df([1000]), convex_hull=True)
-    black_dotted = [l for l in ax.lines if l.get_color() == "k" and l.get_linestyle() == ":"]
-    assert len(black_dotted) >= 1, "hull tangent line missing for single temperature"
+    tie_lines = _tie_lines(ax)
+    assert len(tie_lines) >= 1, "hull tangent line missing for single temperature"
     assert len(ax.collections) >= 1, "hull vertex scatter missing for single temperature"
     plt.close(ax.figure)
 
@@ -260,11 +270,11 @@ def test_ylabel_carries_unit(temperatures):
 
 @pytest.mark.parametrize("temperatures", [[500.0], [500.0, 800.0]])
 @pytest.mark.parametrize("element,xlabel", [
-    (None, "Concentration"),
-    ("Mg", r"Concentration $c_\mathrm{Mg}$"),
+    (None, "$c$"),
+    ("Mg", r"$c_\mathrm{Mg}$"),
 ])
 def test_xlabel_names_the_element(temperatures, element, xlabel):
-    """``element`` subscripts the concentration on every facet; unset keeps the plain label."""
+    """``element`` subscripts the concentration on every facet, as on the 2d c-T axis."""
     plt.figure()
     try:
         out = plot_excess_free_energy(_minimal_df(temperatures), element=element)
