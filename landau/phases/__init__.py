@@ -106,7 +106,9 @@ class AbstractLinePhase(Phase):
         pass
 
     def free_energy(self, T, c):
-        return self.line_free_energy(T)
+        """The line free energy at every ``c``: broadcast against ``c``, which it does not depend on."""
+        f = self.line_free_energy(T)
+        return _scalarize(np.broadcast_to(f, np.broadcast(T, c).shape).copy())
 
     def concentration(self, T, dmu):
         return _scalarize(np.full(np.broadcast(T, dmu).shape, self.line_concentration))
@@ -485,10 +487,10 @@ class InterpolatingPhase(Phase):
             return PolyFit(self.num_coeffs).fit(cc, ff)
 
     def free_energy(self, T, c):
-        return np.vectorize(
+        return _scalarize(np.vectorize(
             lambda T, c: self._get_interpolation(T)(c) - T * S(c),
             otypes=[float]
-        )(T, c)
+        )(T, c))
         # return self._get_interpolation(T)(c) - T * S(c)
 
     def _find_phi_c(self, T, dmu):
@@ -632,10 +634,10 @@ class SlowInterpolatingPhase(Phase):
         return self.interpolator.fit(cc, ff)
 
     def free_energy(self, T, c):
-        return np.vectorize(
+        return _scalarize(np.vectorize(
             lambda T, c: self._get_interpolation(T)(c) - T * S(c),
             otypes=[float]
-        )(T, c)
+        )(T, c))
 
     @lru_cache(maxsize=5000)
     def _find_phi_c_scalar(self, T, dmu):
