@@ -263,6 +263,8 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
 - `tests/unit/` mirrors the package (`interpolate/`, `phases/`, `plot/` subdirectories);
   `tests/regression/` pins bugs by issue number;
   `tests/conftest.py` holds the shared fixtures (`two_phase_ideal`, `three_phase_regular_solution`, `eutectic_phases`, `eutectic_diagram`).
+- `tests/unit/phases/test_broadcast_contract.py` pins the broadcast contract of every `Phase` (`semigrand_potential`, `concentration`, `line_free_energy`);
+  a new phase gets a `CASES` entry there, and per-class tests check values, not shapes.
 - `tests/integration/test_border_coverage.py` is the smoke test for "a polygon amputated a phase region" (every `poly_method` × c-T/μ-T).
 - `tests/integration/testplots.py` is **not** a pytest test: it renders PNGs for visual review.
   The `testplot` PR label or an `@testplot ...` comment renders them in CI (`.github/scripts/testplot_args.py` maps free text to flags with Haiku) and posts them on the PR.
