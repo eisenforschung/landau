@@ -646,7 +646,7 @@ class SlowInterpolatingPhase(Phase):
         return phimin, cmin
 
     def _find_phi_c(self, T, dmu):
-        phi, c = np.squeeze(np.vectorize(self._find_phi_c_scalar)(T, dmu))
+        phi, c = np.vectorize(self._find_phi_c_scalar)(T, dmu)
         return _scalarize(phi), _scalarize(c)
 
     def semigrand_potential(self, T, dmu):
