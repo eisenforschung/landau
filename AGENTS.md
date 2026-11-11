@@ -244,7 +244,8 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
 - `poly.py`: point cloud → polygon per phase region.
   `Concave`, `Segments`, and with the TSP extras `PythonTsp`/`SegmentPythonTsp`/`FastTsp`/`SegmentFastTsp`;
   `handle_poly_method` falls back `segment-fasttsp → segment-tsp → fasttsp → tsp → concave` by what's installed.
-  `_trim_overlaps` does plain symmetric buffer trimming.
+  `make` returns a region's exact outline (a `LineString` for a line phase);
+  `apply` widens only regions narrower than `min_c_width` everywhere (`_thicken`) and then subtracts neighbours' exact outlines (`_trim_overlaps`), so boundaries sit on the data and eutectic apexes stay sharp.
   `_segment_tsp_polygon` rotates the tour off an intra-segment edge before walking it (else a valid tour yields a self-intersecting ring).
   fast-tsp ≥ 0.2 rejects distances above 65535, hence `_integer_distances`.
 - `resample.py`: `resample_borders`, `RandomlyShiftedPhase` (bootstrap border resampling, draws from numpy's global RNG, #516).
@@ -302,5 +303,4 @@ check open PRs before starting anything adjacent.
 
 - Dropping pandas 2.
 - Underscored module names.
-- Boundary-Voronoi polygons and apex-sliver cleanup were rejected in favour of plain symmetric trimming;
-  the eutectic-apex sliver is a known cosmetic issue.
+- Boundary-Voronoi polygons were rejected in favour of trimming against neighbours' outlines.
