@@ -1,10 +1,11 @@
 """The broadcast contract every :class:`~landau.phases.Phase` owes.
 
-``semigrand_potential(T, dmu)`` and ``concentration(T, dmu)`` broadcast ``T``
-against ``dmu`` like a numpy ufunc: the result has the broadcast shape, a 0-d
-result is a scalar rather than an array, and values are laid out by position, so
-each element equals the call on that element's own scalar ``(T, dmu)``.  Line
-phases owe the same for ``line_free_energy(T)``.
+``semigrand_potential(T, dmu)``, ``concentration(T, dmu)`` and, where a phase
+has one, ``free_energy(T, c)`` broadcast their two arguments like a numpy ufunc:
+the result has the broadcast shape, a 0-d result is a scalar rather than an
+array, and values are laid out by position, so each element equals the call on
+that element's own scalar arguments.  Line phases owe the same for
+``line_free_energy(T)``.
 
 ``calc_phase_diagram`` stacks the outputs of all phases in one frame, so a single
 phase that breaks this (a shape-``(1,)`` array where the others return a float, a
@@ -94,8 +95,11 @@ class Case:
     make: callable
     T: tuple
     dmu: tuple
+    c: tuple = (0.05, 0.95)
+    free_energy: bool = True
+    """False for a phase without ``free_energy(T, c)``."""
     restrict: callable = None
-    """Maps a drawn (T shape, dmu shape) onto the shapes a phase supports, for the deprecated ones."""
+    """Maps a drawn pair of argument shapes onto the shapes a phase supports, for the deprecated ones."""
     parity_atol: float | None = _PARITY_ATOL
     """None skips the elementwise check, for a phase whose elements depend on each other."""
     marks: tuple = ()
@@ -136,10 +140,15 @@ CASES = {
         (400.0, 1100.0), (-0.5, 0.5),
     ),
     # dmu reaches past both saturation points of the unbounded LTE model
-    "PointDefectedPhase[lte]": Case(partial(_b2, LowTemperatureExpansionSublattice), (100.0, 2000.0), (-0.6, 0.6)),
-    "PointDefectedPhase[exact]": Case(partial(_b2, PointDefectSublattice), (100.0, 2000.0), (-0.6, 0.6)),
+    "PointDefectedPhase[lte]": Case(
+        partial(_b2, LowTemperatureExpansionSublattice), (100.0, 2000.0), (-0.6, 0.6), free_energy=False
+    ),
+    "PointDefectedPhase[exact]": Case(
+        partial(_b2, PointDefectSublattice), (100.0, 2000.0), (-0.6, 0.6), free_energy=False
+    ),
     "PointDefectedPhase[capped]": Case(
-        partial(_b2, partial(CappedPointDefectSublattice, max_site_fraction=0.2)), (100.0, 2000.0), (-0.6, 0.6)
+        partial(_b2, partial(CappedPointDefectSublattice, max_site_fraction=0.2)), (100.0, 2000.0), (-0.6, 0.6),
+        free_energy=False,
     ),
     "AsePhase": Case(
         lambda: AsePhase("ase", 0.5, thermochem=HarmonicThermo(vib_energies=[0.1]), pressure=None),
@@ -155,8 +164,21 @@ CASES = {
 LINE_PHASES = ("LinePhase", "TemperatureDependentLinePhase", "AsePhase", "PhonopyQuasiHarmonicPhase")
 
 
+# method -> the CASES attribute bounding its second argument
+METHODS = {"semigrand_potential": "dmu", "concentration": "dmu", "free_energy": "c"}
+
+
 def _params(names):
     return [pytest.param(name, marks=CASES[name].marks, id=name) for name in names]
+
+
+def _method_params():
+    return [
+        pytest.param(name, method, marks=case.marks, id=f"{name}-{method}")
+        for name, case in CASES.items()
+        for method in METHODS
+        if method != "free_energy" or case.free_energy
+    ]
 
 
 @cache
@@ -200,30 +222,29 @@ def _with_edge_shapes(test):
     return test
 
 
-@pytest.mark.parametrize("method", ["semigrand_potential", "concentration"])
-@pytest.mark.parametrize("name", _params(CASES))
+@pytest.mark.parametrize("name, method", _method_params())
 @settings(deadline=None, max_examples=50)
 @_with_edge_shapes
 @given(shapes=mutually_broadcastable_shapes(num_shapes=2, max_dims=3, max_side=3), seed=st.integers(0, 2**32 - 1))
-def test_T_dmu_broadcast(name, method, shapes, seed):
-    """Any pair of broadcastable (T, dmu) shapes in, the broadcast shape out."""
+def test_two_argument_broadcast(name, method, shapes, seed):
+    """Any pair of broadcastable (T, dmu) or (T, c) shapes in, the broadcast shape out."""
     case = CASES[name]
     f = getattr(_phase(name), method)
-    T_shape, dmu_shape = shapes.input_shapes
+    T_shape, x_shape = shapes.input_shapes
     if case.restrict is not None:
-        T_shape, dmu_shape = case.restrict(T_shape, dmu_shape)
+        T_shape, x_shape = case.restrict(T_shape, x_shape)
     rng = np.random.default_rng(seed)
     T = _draw(T_shape, case.T, rng)
-    dmu = _draw(dmu_shape, case.dmu, rng)
+    x = _draw(x_shape, getattr(case, METHODS[method]), rng)
 
-    out = f(T, dmu)
+    out = f(T, x)
 
-    _assert_contract(out, np.broadcast_shapes(T_shape, dmu_shape))
+    _assert_contract(out, np.broadcast_shapes(T_shape, x_shape))
     if case.parity_atol is None:
         return
-    # values sit at the position of their own (T, dmu), checked against Python-float calls
-    Tb, dmub = np.broadcast_arrays(T, dmu)
-    expected = [f(float(t), float(d)) for t, d in zip(Tb.ravel(), dmub.ravel())]
+    # values sit at the position of their own arguments, checked against Python-float calls
+    Tb, xb = np.broadcast_arrays(T, x)
+    expected = [f(float(t), float(v)) for t, v in zip(Tb.ravel(), xb.ravel())]
     np.testing.assert_allclose(np.ravel(out), expected, rtol=0, atol=case.parity_atol)
 
 
