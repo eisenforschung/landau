@@ -271,6 +271,14 @@ class IdealSolution(Phase):
         with np.errstate(divide='ignore', over='ignore'):
             return 1 / (1 + np.exp(+(df - dmu) / kB / T))
 
+    def free_energy(self, T, c):
+        """Linear interpolation of the terminal free energies minus the ideal mixing term, ``T * S(c)``."""
+        T = np.asarray(T)
+        c = np.asarray(c)
+        f1 = self.phase1.line_free_energy(T)
+        f2 = self.phase2.line_free_energy(T)
+        return _scalarize((1 - c) * f1 + c * f2 - T * S(c))
+
 
 @dataclass(frozen=True, eq=True)
 class RegularSolution(Phase):

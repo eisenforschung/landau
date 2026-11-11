@@ -410,6 +410,46 @@ def test_ideal_semigrand_potential_array_dmu():
     assert_allclose(result, expected, atol=_IDEAL_ATOL)
 
 
+def test_ideal_free_energy_terminals():
+    sol = _make_ideal_solution(e1=0.05, s1=0.0005, e2=-0.2, s2=0.0002)
+    T = np.array([300.0, 900.0, 1500.0])
+    assert_allclose(sol.free_energy(T, 0.0), sol.phase1.line_free_energy(T), atol=_IDEAL_ATOL)
+    assert_allclose(sol.free_energy(T, 1.0), sol.phase2.line_free_energy(T), atol=_IDEAL_ATOL)
+
+
+def test_ideal_free_energy_midpoint_analytic():
+    """f(T, 1/2) = (f1 + f2) / 2 - kB T ln 2."""
+    sol = _make_ideal_solution(e1=0.05, s1=0.0005, e2=-0.2, s2=0.0002)
+    T = 800.0
+    expected = 0.5 * (sol.phase1.line_free_energy(T) + sol.phase2.line_free_energy(T)) - kB * T * np.log(2)
+    assert_allclose(sol.free_energy(T, 0.5), expected, atol=_IDEAL_ATOL)
+
+
+def test_ideal_free_energy_scalar_and_broadcast():
+    sol = _make_ideal_solution(e1=0.05, e2=-0.2)
+    assert np.isscalar(sol.free_energy(1000.0, 0.3))
+    result = sol.free_energy(np.array([500.0, 1000.0])[:, None], np.array([0.1, 0.5, 0.9])[None, :])
+    assert result.shape == (2, 3)
+
+
+@settings(max_examples=200, deadline=None)
+@given(
+    e1=st.floats(-1.0, 1.0),
+    e2=st.floats(-1.0, 1.0),
+    s1=st.floats(0.0, 1e-3),
+    s2=st.floats(0.0, 1e-3),
+    T=st.floats(100.0, 3000.0),
+    dmu=st.floats(-0.5, 0.5),
+)
+def test_ideal_free_energy_is_legendre_dual_of_semigrand_potential(e1, e2, s1, s2, T, dmu):
+    """phi(T, dmu) = f(T, c) - dmu * c at the equilibrium c(T, dmu)."""
+    sol = _make_ideal_solution(e1=e1, s1=s1, e2=e2, s2=s2)
+    c = sol.concentration(T, dmu)
+    if not 1e-12 < c < 1 - 1e-12:  # saturated: semigrand_potential takes its overflow branch
+        return
+    assert_allclose(sol.free_energy(T, c) - dmu * c, sol.semigrand_potential(T, dmu), atol=1e-10, rtol=0)
+
+
 def test_ideal_concentration_from_semigrand_potential():
     """Verify Gibbs-Duhem: c = -d(phi)/d(dmu)."""
     sol = _make_ideal_solution()
