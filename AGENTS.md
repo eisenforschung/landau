@@ -160,6 +160,10 @@ Brief map of open scope; the exhaustive cheat sheet keyed by issue+PR lives in [
 
   - #574 (cuts `AGENTS.md` and `CLAUDE.md` to a current-state reference — drops per-PR history, in-flight lists and release notes; opened 2026-11-07) and #572 (adds a `skills/landau/` user skill for agents *using* landau; its own AGENTS.md/CLAUDE.md rewrite is being removed in favour of #574 — maintainer comment, 2026-11-07). Until one lands, keep additions to these two files minimal and factual
 
+  - #578 (adds `IdealSolution.free_energy(T, c) = (1 − c)·f1(T) + c·f2(T) − T·S(c)` — the one solution phase without `free_energy`, which forced a type check downstream in grace-phasediagrams; broadcasts, scalar-in/scalar-out via `_scalarize`; opened 2026-11-11)
+
+  - #577 (dependabot: phonopy cap `<4.9` → `<4.11`; opened 2026-11-09)
+
   - the #553 → #558 → #559 `Axes` stack (opened 2026-11-03 — groundwork for pressure as a diagram axis: a frozen `Axes` dataclass describing the plane a refiner works in — `x`/`y` columns, the extensive conjugate of `y`, `fixed` off-plane conditions, and a `potential`/`conjugate`/`admissible` binding, with `Axes()` the semigrand `(T, mu, c)` plane — plus a per-refiner `supports(axes)` gate and `default_refiners(df, axes=None)`; #553 converts `ScanRefiner`, #558 the Delaunay refiners, #559 the tracers and `TerminalRefiner` and deprecates the `T`/`mu` point spellings and `dT_max`/`dT_min` → `dx_max`/`dx_min` for 2.0; `benchmarks/refine_axes_equivalence.py` pins byte-identical refined frames on eight systems)
 
   - #462 (TDB export — `landau.tdb` with `to_tdb` / `write_tdb`)
