@@ -35,6 +35,7 @@ from .style import (
     line_phase_markersize,
     reference_line,
     stability_dashes,
+    styled,
 )
 import landau.poly as poly
 
@@ -342,6 +343,7 @@ def _set_axis_for(axis_var: str, df_stable, element: str | None, ax) -> None:
         )
 
 
+@styled
 def _plot_phase_diagram(
     df,
     alpha=0.1,
@@ -665,6 +667,7 @@ _AXES_1D = {
 }
 
 
+@styled
 def _plot_1d_phase_diagram(
         df,
         scan_col,
@@ -875,6 +878,7 @@ def plot_1d_T_phase_diagram(
 # ---------------------------------------------------------------------------
 
 
+@styled
 def plot_excess_free_energy(
     df,
     col_wrap=3,

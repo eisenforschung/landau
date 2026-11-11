@@ -2,11 +2,17 @@
 
 Two layers:
 
-* ``landau.mplstyle`` next to this module holds figure-level rcParams (line
-  width, marker size, font sizes, figure size). Opt in with
-  ``plt.style.use("landau.plot.landau")`` or
-  ``with plt.style.context("landau.plot.landau"):``. The plot functions never
-  apply it themselves, so a caller's own style is left alone.
+* ``landau.mplstyle`` next to this module holds rcParams (line width, marker
+  size, font sizes, figure size). Every plot function applies it for the
+  duration of its call through :func:`styled`, but only to keys still at
+  matplotlib's built-in default: a value set by the caller -- through
+  ``plt.style.use``, a ``matplotlibrc`` or ``rcParams[...] = ...`` -- wins. A
+  value set back to exactly matplotlib's default can't be told apart from an
+  untouched one and is overridden. The sheet reaches only what the call
+  creates (lines, markers, text, and the figure when no ``ax`` is passed);
+  axes passed in keep their tick and label fonts, and ``savefig.*`` applies
+  only when the sheet is loaded globally with
+  ``plt.style.use("landau.plot.landau")``.
 * The dictionaries below name each kind of element the plots draw and carry
   only what the element *means* -- colour, line style, weight. Sizes are left
   out so that ``lines.linewidth`` / ``lines.markersize`` / ``font.size`` govern
@@ -20,6 +26,9 @@ transition of a 1d cut is marked by a faded dotted guide, and coexisting
 states are black dots of one size. A phase name set in bold labels the region
 where that phase is stable; in regular weight it names a curve.
 """
+
+import functools
+from importlib.resources import files
 
 import matplotlib as mpl
 
@@ -35,10 +44,25 @@ __all__ = [
     "line_phase_markersize",
     "reference_line",
     "stability_dashes",
+    "styled",
 ]
 
 #: Name to pass to :func:`matplotlib.pyplot.style.use`.
 STYLE = "landau.plot.landau"
+
+_SHEET = dict(mpl.rc_params_from_file(
+    str(files(__package__) / "landau.mplstyle"), use_default_template=False,
+))
+
+
+def styled(func):
+    """Run ``func`` under the landau sheet, for every key the caller left at matplotlib's default."""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        unset = {k: v for k, v in _SHEET.items() if mpl.rcParams[k] == mpl.rcParamsDefault[k]}
+        with mpl.rc_context(unset):
+            return func(*args, **kwargs)
+    return wrapper
 
 #: A phase's curve where another phase is more stable.
 METASTABLE = {"linestyle": "--"}

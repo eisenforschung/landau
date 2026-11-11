@@ -1,10 +1,14 @@
-# Figure-level defaults for landau phase diagrams.
+# Defaults for landau phase diagrams.
+#
+# Every plot function in landau.plot applies these for the duration of its call
+# to each key still at matplotlib's built-in default (landau.plot.style.styled);
+# whatever the caller has set wins. Load the sheet globally to also cover axes
+# and figures created outside the plot calls, and savefig:
 #
 #     import matplotlib.pyplot as plt
 #     plt.style.use("landau.plot.landau")
-#
-# Every plot function in landau.plot sizes its lines and markers from
-# lines.linewidth / lines.markersize and its text relative to font.size, so
+
+lines.linewidth / lines.markersize and its text relative to font.size, so
 # the values here (or the user's own rcParams) govern all of them alike.
 
 lines.linewidth: 2.0

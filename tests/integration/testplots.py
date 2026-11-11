@@ -41,9 +41,6 @@ import landau.calculate as ldc
 import landau.interpolate as ldi
 import landau.phases as ldp
 import landau.plot as lpl
-from landau.plot.style import STYLE
-
-plt.style.use(STYLE)
 
 POLY_METHODS = ["concave", "segments", "fasttsp", "tsp", "segment-fasttsp", "segment-tsp"]
 TIELINE_VALUES = ["on", "off"]

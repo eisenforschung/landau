@@ -18,7 +18,16 @@ from landau.plot import (
     plot_mu_phase_diagram,
     plot_phase_diagram,
 )
-from landau.plot.style import CURVE_LABEL, METASTABLE, REGION_LABEL, STYLE, TIE_LINE, TRANSITION_GUIDE
+from landau.plot.style import (
+    _SHEET,
+    CURVE_LABEL,
+    METASTABLE,
+    REGION_LABEL,
+    STYLE,
+    TIE_LINE,
+    TRANSITION_GUIDE,
+    styled,
+)
 
 BLACK = to_rgba("k")
 
@@ -73,7 +82,7 @@ def test_style_sheet_loads_by_package_name():
 def test_metastable_branches_dashed_alike_in_1d_and_excess(figures):
     axes = figures()
     _, ref_ax = plt.subplots()
-    reference, = ref_ax.plot([0, 1], [0, 1], **METASTABLE)
+    reference, = styled(ref_ax.plot)([0, 1], [0, 1], **METASTABLE)
     patterns = {}
     for kind in ("1d", "excess"):
         dashed = [_dash(line) for line in _phase_curves(axes[kind]) if line.get_linestyle() == "--"]
@@ -93,7 +102,7 @@ def test_tie_lines_drawn_alike_in_cT_and_excess(figures):
     assert iso.get_linestyle() == [(0, None)]
     assert {line.get_linestyle() for line in tangents} == {"-"}
     widths = {line.get_linewidth() for line in tangents} | set(iso.get_linewidths())
-    assert widths == {plt.rcParams["lines.linewidth"]}
+    assert widths == {_SHEET["lines.linewidth"]}
 
 
 def test_transition_guides_dotted_and_faded(figures):
@@ -192,3 +201,38 @@ def test_excess_zero_line_reads_as_axis_not_curve(eutectic_phases, temperatures)
             assert zero.get_linewidth() == 0.7
     finally:
         plt.close("all")
+
+
+@pytest.fixture
+def matplotlib_defaults():
+    """matplotlib's built-in rcParams, as for a caller who set nothing."""
+    with plt.rc_context():
+        matplotlib.rcdefaults()
+        yield
+    plt.close("all")
+
+
+def test_sheet_applies_where_caller_left_the_default(cut, matplotlib_defaults):
+    """Unset keys take the landau sheet inside the call: curve width, and the figure the call creates."""
+    assert plt.rcParams["lines.linewidth"] != _SHEET["lines.linewidth"]
+    ax1d = plot_1d_mu_phase_diagram(cut)
+    axex = plot_excess_free_energy(cut)
+    for ax in (ax1d, axex):
+        assert {line.get_linewidth() for line in _phase_curves(ax)} == {_SHEET["lines.linewidth"]}
+    assert list(ax1d.figure.get_size_inches()) == _SHEET["figure.figsize"]
+
+
+def test_caller_setting_wins_key_by_key(cut, matplotlib_defaults):
+    """A key the caller set is kept; the keys it left alone still come from the sheet."""
+    plt.rcParams["lines.linewidth"] = 0.9
+    ax = plot_1d_mu_phase_diagram(cut)
+    assert {line.get_linewidth() for line in _phase_curves(ax)} == {0.9}
+    assert list(ax.figure.get_size_inches()) == _SHEET["figure.figsize"]
+
+
+def test_plot_calls_leave_rcparams_untouched(cut, eutectic_diagram, matplotlib_defaults):
+    before = dict(plt.rcParams)
+    plot_1d_mu_phase_diagram(cut)
+    plot_excess_free_energy(cut)
+    plot_phase_diagram(eutectic_diagram, poly_method="concave")
+    assert dict(plt.rcParams) == before
