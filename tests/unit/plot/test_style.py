@@ -1,8 +1,11 @@
 """The plots in ``landau.plot`` draw each kind of element alike (``landau.plot.style``).
 
 Each test draws the same element in every plot that has one and asserts the
-artists agree, and that sizes come from rcParams rather than per-plot constants.
+artists agree, and that sizes come from the theme or rcParams rather than
+per-plot constants.
 """
+from importlib.resources import files
+
 import matplotlib
 
 matplotlib.use("Agg")
@@ -27,9 +30,16 @@ from landau.plot.style import (
     TIE_LINE,
     TRANSITION_GUIDE,
     styled,
+    theme,
 )
 
 BLACK = to_rgba("k")
+
+
+@pytest.fixture(autouse=True)
+def _restore_theme():
+    yield
+    theme.reset()
 
 
 @pytest.fixture(scope="module")
@@ -73,10 +83,29 @@ def _dash(line):
     return offset, None if seq is None else tuple(np.round(seq, 9))
 
 
-def test_style_sheet_loads_by_package_name():
+def test_style_sheet_loads_by_package_name_and_matches_the_theme(caplog):
+    # matplotlib logs (does not raise or warn) on a malformed sheet line and skips it.
+    sheet = files("landau.plot") / "landau.mplstyle"
+    with caplog.at_level("WARNING", logger="matplotlib"):
+        matplotlib.rc_params_from_file(str(sheet), use_default_template=False)
+    assert caplog.records == []
     with plt.style.context(STYLE):
-        assert plt.rcParams["lines.linewidth"] == 2.0
-        assert plt.rcParams["lines.markersize"] == 6.0
+        assert {k: plt.rcParams[k] for k in theme} == dict(theme)
+    assert dict(theme) == _SHEET and theme["lines.linewidth"] == 2.0
+
+
+def test_theme_keys_differ_from_matplotlib_defaults():
+    """A theme key equal to matplotlib's default would only override the caller's setting."""
+    assert all(theme[k] != matplotlib.rcParamsDefault[k] for k in theme)
+
+
+def test_theme_validates_like_rcparams():
+    with pytest.raises(KeyError):
+        theme.update({"lines.linewdith": 3.0})
+    with pytest.raises(ValueError):
+        theme["lines.linewidth"] = "fat"
+    theme["lines.linewidth"] = "3"
+    assert theme["lines.linewidth"] == 3.0
 
 
 def test_metastable_branches_dashed_alike_in_1d_and_excess(figures):
@@ -102,7 +131,7 @@ def test_tie_lines_drawn_alike_in_cT_and_excess(figures):
     assert iso.get_linestyle() == [(0, None)]
     assert {line.get_linestyle() for line in tangents} == {"-"}
     widths = {line.get_linewidth() for line in tangents} | set(iso.get_linewidths())
-    assert widths == {_SHEET["lines.linewidth"]}
+    assert widths == {theme["lines.linewidth"]}
 
 
 def test_transition_guides_dotted_and_faded(figures):
@@ -115,6 +144,7 @@ def test_transition_guides_dotted_and_faded(figures):
 
 
 def test_invariant_markers_one_size_from_rc(figures):
+    """lines.markersize is not themed, so the caller's value sizes every invariant marker."""
     with plt.rc_context({"lines.markersize": 4.0}):
         axes = figures()
         sizes = []
@@ -127,8 +157,9 @@ def test_invariant_markers_one_size_from_rc(figures):
     assert triple.get_markersize() == 4.0
 
 
-def test_phase_curves_follow_rc_linewidth(figures):
-    with plt.rc_context({"lines.linewidth": 3.3}):
+def test_phase_curves_follow_the_theme_over_rcparams(figures):
+    theme["lines.linewidth"] = 3.3
+    with plt.rc_context({"lines.linewidth": 0.9}):
         axes = figures()
     for kind in ("1d", "excess"):
         curves = _phase_curves(axes[kind])
@@ -212,22 +243,33 @@ def matplotlib_defaults():
     plt.close("all")
 
 
-def test_sheet_applies_where_caller_left_the_default(cut, matplotlib_defaults):
-    """Unset keys take the landau sheet inside the call: curve width, and the figure the call creates."""
-    assert plt.rcParams["lines.linewidth"] != _SHEET["lines.linewidth"]
+@pytest.mark.parametrize("caller_rc", [{}, {"lines.linewidth": 0.9, "figure.figsize": [3.0, 2.0]}])
+def test_theme_applies_whatever_rcparams_hold(cut, matplotlib_defaults, caller_rc):
+    """Themed keys come from the theme inside the call, set by the caller or not."""
+    plt.rcParams.update(caller_rc)
     ax1d = plot_1d_mu_phase_diagram(cut)
     axex = plot_excess_free_energy(cut)
     for ax in (ax1d, axex):
-        assert {line.get_linewidth() for line in _phase_curves(ax)} == {_SHEET["lines.linewidth"]}
-    assert list(ax1d.figure.get_size_inches()) == _SHEET["figure.figsize"]
+        assert {line.get_linewidth() for line in _phase_curves(ax)} == {theme["lines.linewidth"]}
+    assert list(ax1d.figure.get_size_inches()) == theme["figure.figsize"]
 
 
-def test_caller_setting_wins_key_by_key(cut, matplotlib_defaults):
-    """A key the caller set is kept; the keys it left alone still come from the sheet."""
+def test_deleted_theme_key_hands_control_back_to_rcparams(cut, matplotlib_defaults):
     plt.rcParams["lines.linewidth"] = 0.9
+    del theme["lines.linewidth"]
     ax = plot_1d_mu_phase_diagram(cut)
     assert {line.get_linewidth() for line in _phase_curves(ax)} == {0.9}
-    assert list(ax.figure.get_size_inches()) == _SHEET["figure.figsize"]
+    assert list(ax.figure.get_size_inches()) == theme["figure.figsize"]
+
+
+def test_cleared_theme_leaves_the_plot_to_rcparams(cut, matplotlib_defaults):
+    plt.rcParams["lines.linewidth"] = 0.9
+    theme.clear()
+    ax = plot_1d_mu_phase_diagram(cut)
+    assert {line.get_linewidth() for line in _phase_curves(ax)} == {0.9}
+    assert list(ax.figure.get_size_inches()) == matplotlib.rcParamsDefault["figure.figsize"]
+    theme.reset()
+    assert dict(theme) == _SHEET
 
 
 def test_plot_calls_leave_rcparams_untouched(cut, eutectic_diagram, matplotlib_defaults):

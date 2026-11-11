@@ -2,16 +2,16 @@
 
 Two layers:
 
-* ``landau.mplstyle`` next to this module holds rcParams (line width, marker
-  size, font sizes, figure size). Every plot function applies it for the
-  duration of its call through :func:`styled`, but only to keys still at
-  matplotlib's built-in default: a value set by the caller -- through
-  ``plt.style.use``, a ``matplotlibrc`` or ``rcParams[...] = ...`` -- wins. A
-  value set back to exactly matplotlib's default can't be told apart from an
-  untouched one and is overridden. The sheet reaches only what the call
-  creates (lines, markers, text, and the figure when no ``ax`` is passed);
-  axes passed in keep their tick and label fonts, and ``savefig.*`` applies
-  only when the sheet is loaded globally with
+* :data:`theme` holds the rcParams of ``landau.mplstyle`` next to this module
+  (line width, tick and legend font sizes, legend frame, figure size). Every
+  plot function applies all of it for the duration of its call through
+  :func:`styled`, whatever the caller's rcParams hold for those keys; every
+  other rcParam is the caller's. Change the theme with ``theme.update(...)``,
+  hand a key back to ``rcParams`` with ``del theme[key]`` (``theme.clear()``
+  for all of them) and restore it with ``theme.reset()``. Inside a call the
+  theme reaches only what the call creates (lines, markers, text, and the
+  figure when no ``ax`` is passed); axes passed in keep their tick fonts, and
+  ``savefig.*`` applies only when the sheet is loaded globally with
   ``plt.style.use("landau.plot.landau")``.
 * The dictionaries below name each kind of element the plots draw and carry
   only what the element *means* -- colour, line style, weight. Sizes are left
@@ -41,10 +41,12 @@ __all__ = [
     "TIE_LINE",
     "TRANSITION_GUIDE",
     "VALUE_LABEL",
+    "Theme",
     "line_phase_markersize",
     "reference_line",
     "stability_dashes",
     "styled",
+    "theme",
 ]
 
 #: Name to pass to :func:`matplotlib.pyplot.style.use`.
@@ -55,14 +57,34 @@ _SHEET = dict(mpl.rc_params_from_file(
 ))
 
 
+class Theme(mpl.RcParams):
+    """rcParams applied inside every landau plot call; values are validated like ``rcParams``."""
+
+    def __init__(self):
+        super().__init__()
+        self.reset()
+
+    def __delitem__(self, key):
+        dict.__delitem__(self, key)
+
+    def reset(self):
+        """Restore the keys and values of ``landau.mplstyle``."""
+        self.clear()
+        self.update(_SHEET)
+
+
+#: The rcParams every plot function applies; see the module docstring.
+theme = Theme()
+
+
 def styled(func):
-    """Run ``func`` under the landau sheet, for every key the caller left at matplotlib's default."""
+    """Run ``func`` with :data:`theme` applied on top of the caller's rcParams."""
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        unset = {k: v for k, v in _SHEET.items() if mpl.rcParams[k] == mpl.rcParamsDefault[k]}
-        with mpl.rc_context(unset):
+        with mpl.rc_context(dict(theme)):
             return func(*args, **kwargs)
     return wrapper
+
 
 #: A phase's curve where another phase is more stable.
 METASTABLE = {"linestyle": "--"}

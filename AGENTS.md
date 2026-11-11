@@ -231,7 +231,9 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
   Imports go one way — `labels` never imports from `plot`.
 - `style.py` + `landau.mplstyle`: one dict per drawn element (`METASTABLE`, `TIE_LINE`, `TRANSITION_GUIDE`, `INVARIANT_MARKER`, `REGION_LABEL`, `CURVE_LABEL`, `VALUE_LABEL`) carrying colour, style and weight only;
   sizes come from `lines.linewidth`/`lines.markersize`/`font.size`.
-  `@styled` (on `_plot_phase_diagram`, `_plot_1d_phase_diagram`, `plot_excess_free_energy`) applies the sheet per call to every rcParam still equal to `rcParamsDefault`, so caller-set values win key by key.
+  `@styled` (on `_plot_phase_diagram`, `_plot_1d_phase_diagram`, `plot_excess_free_energy`) applies all of `style.theme` (the sheet's keys, a validating `mpl.RcParams` subclass) per call, whatever the caller's rcParams hold for those keys;
+  users change it through `theme.update`/`del theme[key]`/`theme.clear()`/`theme.reset()`, not `rcParams`.
+  The sheet carries only keys that differ from matplotlib's defaults, since a default-valued key would only override the caller.
   On style conflicts the excess-free-energy plot follows the 1d/2d look.
 - 2d options: `legend`/`inline_legend` (inline labels at the polygon's pole of inaccessibility, with rotate/offset fallbacks),
   `triplepoints=None` (follows `transition_temperatures` unless set, `tielines=` is a deprecated alias),
