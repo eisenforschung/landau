@@ -31,6 +31,7 @@ weight it names a curve.
 
 import contextlib
 from dataclasses import dataclass, field, fields
+from typing import ClassVar
 
 import matplotlib as mpl
 
@@ -94,11 +95,33 @@ class Theme:
     #: The tick on the top spine of a 1d cut that marks a transition; keyword arguments of ``tick_params``.
     transition_tick: dict = field(default_factory=lambda: {"direction": "in", "length": 6})
 
+    _DASH_PATTERNS: ClassVar[dict[str, str]] = {"--": "dashed", "dashed": "dashed", ":": "dotted", "dotted": "dotted", "-.": "dashdot",
+                      "dashdot": "dashdot"}
+
     def reset(self):
         """Restore every field to its default."""
         default = Theme()
         for f in fields(self):
             setattr(self, f.name, getattr(default, f.name))
+
+    def stability_dashes(self) -> dict:
+        """Seaborn ``dashes=`` mapping for a ``style="stable"`` lineplot: solid when stable, else ``metastable``."""
+        linestyle = self.metastable.get("linestyle", "-")
+        if isinstance(linestyle, tuple):
+            dashes = tuple(linestyle[1])
+        elif linestyle in ("-", "solid"):
+            dashes = ""
+        else:
+            dashes = tuple(mpl.rcParams[f"lines.{self._DASH_PATTERNS[linestyle]}_pattern"])
+        return {True: "", False: dashes}
+
+    def reference_line_kwargs(self) -> dict:
+        """Line kwargs of a zero line: ``reference_line``, ``axes.linewidth`` wide unless it sets a width."""
+        return {"linewidth": mpl.rcParams["axes.linewidth"], **self.reference_line}
+
+    def line_phase_markersize(self) -> float:
+        """Marker size, in points, of a line phase drawn as one dot."""
+        return self.line_phase_marker_scale * mpl.rcParams["lines.markersize"]
 
 
 #: The theme every plot function uses.
@@ -110,28 +133,3 @@ def styled():
     """Apply ``theme.rc`` on top of your rcParams; use as ``with styled():`` or as the decorator ``@styled()``."""
     with mpl.rc_context(dict(theme.rc)):
         yield
-
-
-_DASH_PATTERNS = {"--": "dashed", "dashed": "dashed", ":": "dotted", "dotted": "dotted", "-.": "dashdot",
-                  "dashdot": "dashdot"}
-
-
-def _stability_dashes() -> dict:
-    """Seaborn ``dashes=`` mapping for a ``style="stable"`` lineplot, drawn like ``theme.metastable``."""
-    linestyle = theme.metastable.get("linestyle", "-")
-    if isinstance(linestyle, tuple):
-        dashes = tuple(linestyle[1])
-    elif linestyle in ("-", "solid"):
-        dashes = ""
-    else:
-        dashes = tuple(mpl.rcParams[f"lines.{_DASH_PATTERNS[linestyle]}_pattern"])
-    return {True: "", False: dashes}
-
-
-def _reference_line() -> dict:
-    """Line kwargs of a zero line, ``axes.linewidth`` wide unless ``theme.reference_line`` sets a width."""
-    return {"linewidth": mpl.rcParams["axes.linewidth"], **theme.reference_line}
-
-
-def _line_phase_markersize() -> float:
-    return theme.line_phase_marker_scale * mpl.rcParams["lines.markersize"]

@@ -27,7 +27,7 @@ from .labels import (
     _annotate_transition_temperatures,
     _place_transition_labels,
 )
-from .style import _line_phase_markersize, _reference_line, _stability_dashes, styled, theme
+from .style import styled, theme
 import landau.poly as poly
 
 
@@ -694,7 +694,7 @@ def _plot_1d_phase_diagram(
         data=_bridge_unstable_segments(df, scan_col=scan_col),
         x=scan_col, y='phi',
         hue='phase', hue_order=list(palette), palette=palette,
-        style='stable', style_order=[True, False], dashes=_stability_dashes(),
+        style='stable', style_order=[True, False], dashes=theme.stability_dashes(),
         units='_seg_id', estimator=None, errorbar=None,
         ax=ax,
     )
@@ -1040,7 +1040,7 @@ def plot_excess_free_energy(
             ax.scatter(
                 [row["c"]], [row["f_excess"]],
                 color=palette.get(row["phase"], "k"),
-                zorder=5, s=_line_phase_markersize() ** 2,
+                zorder=5, s=theme.line_phase_markersize() ** 2,
             )
 
         if convex_hull:
@@ -1121,7 +1121,7 @@ def plot_excess_free_energy(
         lp_handles = [
             mlines.Line2D(
                 [0], [0], marker="o", color="w",
-                markerfacecolor=palette.get(n, "k"), markersize=_line_phase_markersize(), label=n,
+                markerfacecolor=palette.get(n, "k"), markersize=theme.line_phase_markersize(), label=n,
             )
             for n in sorted(line_phase_names)
         ]
@@ -1143,12 +1143,12 @@ def plot_excess_free_energy(
 
     xlabel = _column_label("c", element)
     if g is not None:
-        g.refline(y=0, zorder=0, **_reference_line())
+        g.refline(y=0, zorder=0, **theme.reference_line_kwargs())
         g.set_titles("T = {col_name:.0f} K")
         g.set(xlabel=xlabel, ylabel=_column_label("f_excess"))
     else:
         ax = axes[0]
-        ax.axhline(0, zorder=0, **_reference_line())
+        ax.axhline(0, zorder=0, **theme.reference_line_kwargs())
         ax.set(xlabel=xlabel, ylabel=_column_label("f_excess"))
 
     # Place inline labels last so they see the final axis limits (refline/relplot).

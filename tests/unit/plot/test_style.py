@@ -363,3 +363,19 @@ def test_transition_ticks_follow_theme(figures):
     ticks = spine.xaxis.get_major_ticks()
     assert ticks
     assert {tick.tick1line.get_markersize() for tick in ticks} == {11.0}
+
+
+def test_docs_table_lists_every_element_field_with_its_default():
+    """docs/api/plot.md explains each element field; its default there must match the code."""
+    import ast
+    import dataclasses
+    import re
+    from pathlib import Path
+
+    text = (Path(__file__).parents[3] / "docs" / "api" / "plot.md").read_text()
+    rows = dict(re.findall(r"^\| `(\w+)` \| `(.+?)` \| .+ \|$", text, flags=re.MULTILINE))
+    default = Theme()
+    fields = {f.name for f in dataclasses.fields(Theme)} - {"rc"}
+    assert set(rows) == fields
+    for name, literal in rows.items():
+        assert ast.literal_eval(literal) == getattr(default, name), name
