@@ -3,6 +3,20 @@
 Notable changes to **landau.py**, newest first. Per-PR detail lives in the
 [GitHub releases](https://github.com/eisenforschung/landau/releases).
 
+## [1.19.0](https://github.com/eisenforschung/landau/compare/1.18.1...1.19.0) (2026-11-12)
+
+
+### Features
+
+* **phases:** add IdealSolution.free_energy ([#578](https://github.com/eisenforschung/landau/issues/578)) ([626b23e](https://github.com/eisenforschung/landau/commit/626b23e8a6cf9bedd4664ada0a29770d60499cd6))
+* **plot:** one theme for the look of every plot ([#581](https://github.com/eisenforschung/landau/issues/581)) ([46d65a4](https://github.com/eisenforschung/landau/commit/46d65a4cbedd180b5a31a1175b0a7fcf895b08fb))
+
+
+### Bug Fixes
+
+* **phases:** broadcast free_energy(T, c) and return scalars for scalar input ([ff05c5e](https://github.com/eisenforschung/landau/commit/ff05c5e87e69dbbf1b6701a899d7eb540512a828))
+* **phases:** keep size-1 axes in SlowInterpolatingPhase output ([ee6edfb](https://github.com/eisenforschung/landau/commit/ee6edfb83d5ba4e8f46e518b7203be59dc1f99ac))
+
 ## [1.18.1](https://github.com/eisenforschung/landau/compare/1.18.0...1.18.1) (2026-11-08)
 
 
