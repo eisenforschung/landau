@@ -138,7 +138,7 @@ def _call_claude(prompt: str, system: str) -> str:
         result = subprocess.run(
             [
                 "claude",
-                "--model", "claude-haiku-4-5-20251001",
+                "--model", "haiku",
                 "--system-prompt", system,
                 "--tools", "",
                 "--output-format", "text",
