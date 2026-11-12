@@ -37,19 +37,6 @@ import matplotlib as mpl
 __all__ = ["Theme", "styled", "theme"]
 
 
-_RC = {
-    "lines.linewidth": 2.0,
-    "axes.titlesize": "medium",
-    "xtick.labelsize": "small",
-    "ytick.labelsize": "small",
-    "legend.fontsize": "small",
-    "legend.frameon": False,
-    "figure.figsize": [6.0, 4.5],
-    "savefig.dpi": 150,
-    "savefig.bbox": "tight",
-}
-
-
 class _Rc(mpl.RcParams):
     """rcParams of a :class:`Theme`; keys and values are validated like ``rcParams``."""
 
@@ -62,7 +49,17 @@ class _Rc(mpl.RcParams):
 
 
 def _default_rc():
-    return _Rc(_RC)
+    return _Rc({
+        "lines.linewidth": 2.0,
+        "axes.titlesize": "medium",
+        "xtick.labelsize": "small",
+        "ytick.labelsize": "small",
+        "legend.fontsize": "small",
+        "legend.frameon": False,
+        "figure.figsize": [6.0, 4.5],
+        "savefig.dpi": 150,
+        "savefig.bbox": "tight",
+    })
 
 
 @dataclass
@@ -72,6 +69,8 @@ class Theme:
     #: rcParams applied inside :func:`styled`. Every key differs from matplotlib's default, because a key at its
     #: default would only override your rcParams.
     rc: _Rc = field(default_factory=_default_rc)
+    #: The outline of a phase field in a 2d diagram.
+    phase_boundary: dict = field(default_factory=lambda: {"edgecolor": "k"})
     #: A phase's curve where another phase is more stable.
     metastable: dict = field(default_factory=lambda: {"linestyle": "--"})
     #: A tie line: the three-phase isotherm of a c-T diagram, a common tangent of an excess-free-energy plot.
@@ -90,6 +89,10 @@ class Theme:
     curve_label: dict = field(default_factory=lambda: {"fontsize": "small"})
     #: A number read off the plot: a transition temperature or chemical potential.
     value_label: dict = field(default_factory=lambda: {"fontsize": "small"})
+    #: The stroke behind every label, which keeps it legible over fills and lines.
+    label_outline: dict = field(default_factory=lambda: {"linewidth": 3, "foreground": "white"})
+    #: The tick on the top spine of a 1d cut that marks a transition; keyword arguments of ``tick_params``.
+    transition_tick: dict = field(default_factory=lambda: {"direction": "in", "length": 6})
 
     def reset(self):
         """Restore every field to its default."""

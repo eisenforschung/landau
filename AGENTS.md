@@ -229,7 +229,7 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
   `get_polygons`, `plot_polygons`, `get_phase_colors`, `cluster_phase`.
 - `labels.py`: every text-placement helper.
   Imports go one way — `labels` never imports from `plot`.
-- `style.py`: `theme`, a `Theme` dataclass with `rc` (a validating `mpl.RcParams` subclass) and one dict per drawn element (`metastable`, `tie_line`, `transition_guide`, `invariant_marker`, `reference_line`, `region_label`, `curve_label`, `value_label`) carrying colour, style and weight only;
+- `style.py`: `theme`, a `Theme` dataclass with `rc` (a validating `mpl.RcParams` subclass) and one dict per drawn element (`phase_boundary`, `metastable`, `tie_line`, `transition_guide`, `transition_tick`, `invariant_marker`, `reference_line`, `region_label`, `curve_label`, `value_label`, `label_outline`) carrying colour, style and weight only;
   sizes come from `lines.linewidth`/`lines.markersize`/`font.size`.
   `styled()` is a context manager and decorator applying `theme.rc`;
   `_plot_phase_diagram`, `_plot_1d_phase_diagram` and `plot_excess_free_energy` carry `@styled()`, so `theme.rc` wins over the caller's rcParams for its keys.

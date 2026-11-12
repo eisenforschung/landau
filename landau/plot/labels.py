@@ -20,21 +20,22 @@ from ..features import Locus
 from .style import theme
 
 
-def _text_with_outline(ax, x, y, s, *, outline_width=3, **kwargs):
-    """Draw text with a solid white outline so it stays legible over any fill.
+def _text_with_outline(ax, x, y, s, *, outline_width=None, **kwargs):
+    """Draw text with an outline so it stays legible over any fill.
 
     A small reusable wrapper around :meth:`matplotlib.axes.Axes.text` that
-    strokes the glyphs with a white outline (via matplotlib path effects)
-    instead of drawing an opaque box behind them, keeping a label readable on
-    top of coloured regions or tielines.  Extra keyword arguments are forwarded
-    to ``ax.text``.
+    strokes the glyphs as ``theme.label_outline`` says (via matplotlib path
+    effects) instead of drawing an opaque box behind them, keeping a label
+    readable on top of coloured regions or tielines.  ``outline_width``
+    overrides the stroke width.  Extra keyword arguments are forwarded to
+    ``ax.text``.
 
     Returns the created :class:`matplotlib.text.Text`.
     """
-    kwargs.setdefault(
-        "path_effects",
-        [patheffects.withStroke(linewidth=outline_width, foreground="white")],
-    )
+    stroke = dict(theme.label_outline)
+    if outline_width is not None:
+        stroke["linewidth"] = outline_width
+    kwargs.setdefault("path_effects", [patheffects.withStroke(**stroke)])
     return ax.text(x, y, s, **kwargs)
 
 
@@ -783,7 +784,7 @@ def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True, yl
         ax2 = ax.secondary_xaxis("top")
         ax2.set_ticks(transitions)
         ax2.set_xticklabels([])
-        ax2.tick_params(direction="in", length=6)
+        ax2.tick_params(**theme.transition_tick)
 
         # Phase-name labels near the top of the axis, centered between boundaries.
         # get_xaxis_transform(): x in data coords, y in axes [0,1] fraction.

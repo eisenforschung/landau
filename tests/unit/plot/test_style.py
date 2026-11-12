@@ -332,3 +332,34 @@ def test_excess_zero_line_reads_as_axis_not_curve(eutectic_phases, temperatures)
             assert zero.get_linewidth() == 0.7
     finally:
         plt.close("all")
+
+
+def test_phase_field_outline_follows_theme(figures):
+    theme.phase_boundary["edgecolor"] = "tab:red"
+    axes = figures()
+    for kind in ("cT", "muT"):
+        patches = axes[kind].patches
+        assert patches
+        assert {to_rgba(p.get_edgecolor())[:3] for p in patches} == {to_rgba("tab:red")[:3]}, kind
+
+
+def test_label_outline_follows_theme(figures, eutectic_phases):
+    theme.label_outline.update({"linewidth": 1.5, "foreground": "tab:green"})
+    axes = figures()
+    names = {p.name for p in eutectic_phases}
+    for kind in ("1d", "excess", "cT"):
+        labels = _phase_labels(axes[kind], names)
+        assert labels
+        for t in labels:
+            stroke, = t.get_path_effects()
+            assert stroke._gc["linewidth"] == 1.5, kind
+            assert to_rgba(stroke._gc["foreground"]) == to_rgba("tab:green"), kind
+
+
+def test_transition_ticks_follow_theme(figures):
+    theme.transition_tick["length"] = 11.0
+    axes = figures()
+    spine, = axes["1d"].child_axes
+    ticks = spine.xaxis.get_major_ticks()
+    assert ticks
+    assert {tick.tick1line.get_markersize() for tick in ticks} == {11.0}

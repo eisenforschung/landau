@@ -126,7 +126,7 @@ def plot_polygons(polys, color_map, ax=None):
         else:
             rep = 0
         p.set_color(color_map[phase])
-        p.set_edgecolor("k")
+        p.set(**theme.phase_boundary)
         p.set_label(phase + "'" * rep)
         ax.add_patch(p)
 

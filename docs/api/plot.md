@@ -12,8 +12,9 @@
 `landau.plot.style.theme` sets the look of every landau plot.
 Its `rc` field holds a few rcParams: line width, tick and legend font sizes, the
 legend frame, figure size and resolution.
-Its other fields each style one kind of element: metastable branches, tie lines,
-transition guides, invariant markers and labels.
+Its other fields each style one kind of element: phase-field outlines, metastable
+branches, tie lines, transition guides and ticks, invariant markers, labels and
+their outline.
 
 Every plot function applies `theme.rc` while it runs.
 Your rcParams set everything else, fonts included.
