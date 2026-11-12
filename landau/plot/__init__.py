@@ -27,6 +27,7 @@ from .labels import (
     _annotate_transition_temperatures,
     _place_transition_labels,
 )
+from .style import styled, theme
 import landau.poly as poly
 
 
@@ -125,7 +126,7 @@ def plot_polygons(polys, color_map, ax=None):
         else:
             rep = 0
         p.set_color(color_map[phase])
-        p.set_edgecolor("k")
+        p.set(**theme.phase_boundary)
         p.set_label(phase + "'" * rep)
         ax.add_patch(p)
 
@@ -253,10 +254,10 @@ def _plot_triplepoints(df, ax=None, variables=None):
     triple = df[df["locus"] == Locus.TRIPLE]
     if variables[0] == "c":
         for (_mu, T), grp in triple.groupby(["mu", "T"], sort=False)[["c"]]:
-            ax.hlines(T, grp["c"].min(), grp["c"].max(), color="k", zorder=-2, alpha=0.5, lw=2)
+            ax.hlines(T, grp["c"].min(), grp["c"].max(), **{"zorder": -2, **theme.tie_line})
     elif variables[0] == "mu":
         for (mu, T), _grp in triple.groupby(["mu", "T"], sort=False):
-            ax.plot(mu, T, marker="o", color="k", zorder=3)
+            ax.plot(mu, T, **{"zorder": 3, **theme.invariant_marker})
 
 
 _DELTA_MU = r"\Delta\mu"
@@ -333,6 +334,7 @@ def _set_axis_for(axis_var: str, df_stable, element: str | None, ax) -> None:
         )
 
 
+@styled()
 def _plot_phase_diagram(
     df,
     alpha=0.1,
@@ -656,6 +658,7 @@ _AXES_1D = {
 }
 
 
+@styled()
 def _plot_1d_phase_diagram(
         df,
         scan_col,
@@ -691,7 +694,7 @@ def _plot_1d_phase_diagram(
         data=_bridge_unstable_segments(df, scan_col=scan_col),
         x=scan_col, y='phi',
         hue='phase', hue_order=list(palette), palette=palette,
-        style='stable', style_order=[True, False],
+        style='stable', style_order=[True, False], dashes=theme.stability_dashes(),
         units='_seg_id', estimator=None, errorbar=None,
         ax=ax,
     )
@@ -706,8 +709,8 @@ def _plot_1d_phase_diagram(
         positions, labels = [], []
         for xt, dd in df.query(f"{scan_col}.min()<{scan_col}<{scan_col}.max() and border").groupby(scan_col):
             ft = dd['phi'].iloc[0]
-            ax.axvline(xt, color='k', linestyle='dotted', alpha=.5)
-            ax.scatter(xt, ft, marker='o', c='k', zorder=10)
+            ax.axvline(xt, **theme.transition_guide)
+            ax.scatter(xt, ft, **{"zorder": 10, **theme.invariant_marker})
             positions.append(xt)
             labels.append(axis.transition_label(xt, element))
         _place_transition_labels(ax, positions, labels, side="left")
@@ -866,6 +869,7 @@ def plot_1d_T_phase_diagram(
 # ---------------------------------------------------------------------------
 
 
+@styled()
 def plot_excess_free_energy(
     df,
     col_wrap=3,
@@ -882,8 +886,8 @@ def plot_excess_free_energy(
     and delegates to seaborn ``relplot``.
 
     When ``convex_hull=True``, stable solution phases render as solid curves,
-    metastable/unstable regions as faded lines (same colour, alpha=0.4), and
-    the common-tangent construction as black dotted segments — one segment per
+    metastable/unstable regions as dashed lines in the same colour, and
+    the common-tangent construction as faded black tie lines — one segment per
     coexistence region (grouped by ``mu``) — with black vertex markers.
     Line phases always render as a single coloured scatter dot.
     When ``convex_hull=False``, all solution phases render as plain solid curves
@@ -898,7 +902,7 @@ def plot_excess_free_energy(
         aspect: Width-to-height ratio of each facet (multiple temperatures only).
         color_override: Optional ``dict[name -> color]`` overriding phase colours.
         convex_hull: If True, distinguish stable (solid curves) from metastable
-            (faded lines) and overlay the common-tangent segments in black.
+            (dashed lines) and overlay the common-tangent segments as tie lines.
             If False, all solution phases render as plain solid curves.
         inline_legend: If True (default), drop the figure legend and label each
             phase just off its line -- solution curves above the centre of their
@@ -906,7 +910,7 @@ def plot_excess_free_energy(
             and colour-matched, with overlapping labels spread apart vertically. If
             False, keep the figure legend box on the right.
         element: Optional name of the element whose concentration is on the x
-            axis; if given, the x label reads ``Concentration $c_{<element>}$``.
+            axis; if given, it subscripts the ``c`` of the x label.
 
     Returns:
         For a single temperature, the current :class:`matplotlib.axes.Axes`
@@ -972,7 +976,6 @@ def plot_excess_free_energy(
                 palette=sol_palette,
                 estimator=None,
                 errorbar=None,
-                linewidth=2.5,
                 ax=single_ax,
             )
         g = None
@@ -988,6 +991,7 @@ def plot_excess_free_energy(
             col_wrap=col_wrap,
             height=height,
             aspect=aspect,
+            despine=False,
         )
         axes = list(g.axes.flat)
     else:
@@ -1006,7 +1010,7 @@ def plot_excess_free_energy(
             kind="line",
             estimator=None,
             errorbar=None,
-            linewidth=2.5,
+            facet_kws={"despine": False},
         )
         axes = list(g.axes.flat)
 
@@ -1017,7 +1021,7 @@ def plot_excess_free_energy(
         sub_lp = df_lp[df_lp["T"] == T_val]
 
         if convex_hull:
-            # Metastable solution phases: faded lines, same colour as stable.
+            # Metastable solution phases: dashed, same colour as stable.
             # T is constant within this facet, so cluster_T_c reduces to c-only
             # clustering, correctly splitting disjoint metastable c-ranges.
             unstable = sub_sol[~sub_sol["stable"]]
@@ -1028,7 +1032,7 @@ def plot_excess_free_energy(
                     seg = grp.loc[seg_ids == seg_id].sort_values("c")
                     ax.plot(
                         seg["c"].values, seg["f_excess"].values,
-                        color=color, alpha=0.4, lw=2.5, zorder=2,
+                        **{"color": color, "zorder": 2, **theme.metastable},
                     )
 
         # Line phases: single colored dot at fixed concentration.
@@ -1036,7 +1040,7 @@ def plot_excess_free_energy(
             ax.scatter(
                 [row["c"]], [row["f_excess"]],
                 color=palette.get(row["phase"], "k"),
-                zorder=5, s=80,
+                zorder=5, s=theme.line_phase_markersize() ** 2,
             )
 
         if convex_hull:
@@ -1049,14 +1053,14 @@ def plot_excess_free_energy(
                 if len(grp_sorted) >= 2:
                     ax.plot(
                         grp_sorted["c"].values, grp_sorted["f_excess"].values,
-                        ls="dotted", color="k", zorder=3, lw=1.5,
+                        **{"zorder": 3, **theme.tie_line},
                     )
             # Hull vertex markers: deduplicated across all mu values.
             bd_unique = bd_all.drop_duplicates(subset=["c", "f_excess"]).sort_values("c")
             if not bd_unique.empty:
                 ax.scatter(
                     bd_unique["c"].values, bd_unique["f_excess"].values,
-                    color="k", s=25, zorder=7,
+                    **{"zorder": 7, **theme.invariant_marker},
                 )
 
         if inline_legend:
@@ -1117,7 +1121,7 @@ def plot_excess_free_energy(
         lp_handles = [
             mlines.Line2D(
                 [0], [0], marker="o", color="w",
-                markerfacecolor=palette.get(n, "k"), markersize=8, label=n,
+                markerfacecolor=palette.get(n, "k"), markersize=theme.line_phase_markersize(), label=n,
             )
             for n in sorted(line_phase_names)
         ]
@@ -1137,14 +1141,14 @@ def plot_excess_free_energy(
             borderaxespad=0,
         )
 
-    xlabel = "Concentration" if element is None else f"Concentration ${_symbol('c', element)}$"
+    xlabel = _column_label("c", element)
     if g is not None:
-        g.refline(y=0)
+        g.refline(y=0, zorder=0, **theme.reference_line_kwargs())
         g.set_titles("T = {col_name:.0f} K")
         g.set(xlabel=xlabel, ylabel=_column_label("f_excess"))
     else:
         ax = axes[0]
-        ax.axhline(0, color=".5", linestyle="--")
+        ax.axhline(0, zorder=0, **theme.reference_line_kwargs())
         ax.set(xlabel=xlabel, ylabel=_column_label("f_excess"))
 
     # Place inline labels last so they see the final axis limits (refline/relplot).

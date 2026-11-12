@@ -27,6 +27,7 @@ from landau.plot import (
     plot_phase_diagram,
     plot_polygons,
 )
+from landau.plot.style import styled
 from landau.plot.labels import (
     _add_inline_polygon_labels,
     _get_renderer,
@@ -666,7 +667,8 @@ def test_plot_phase_diagram_matches_explicit_pipeline(fig_test, fig_ref):
     explicit decomposition `get_polygons -> plot_polygons -> axis setup`.
 
     This guards against future refactors of either side drifting apart and
-    documents what the public helper does in terms of the smaller helpers.
+    documents what the public helper does in terms of the smaller helpers,
+    run under the landau theme (:func:`landau.plot.style.styled`).
     """
     df = _stable_df()
     method = Concave(drop_interior=False)
@@ -679,12 +681,17 @@ def test_plot_phase_diagram_matches_explicit_pipeline(fig_test, fig_ref):
     polys = get_polygons(df, poly_method=method)
 
     ax_ref = fig_ref.subplots()
-    plot_polygons(polys, color_map, ax=ax_ref)
-    ax_ref.set_xlim(0, 1)
-    ax_ref.set_xlabel("$c$")
-    ax_ref.set_ylim(df_stable["T"].min(), df_stable["T"].max())
-    ax_ref.legend(ncols=2)
-    ax_ref.set_ylabel("$T$ [K]")
+
+    @styled()
+    def reference():
+        plot_polygons(polys, color_map, ax=ax_ref)
+        ax_ref.set_xlim(0, 1)
+        ax_ref.set_xlabel("$c$")
+        ax_ref.set_ylim(df_stable["T"].min(), df_stable["T"].max())
+        ax_ref.legend(ncols=2)
+        ax_ref.set_ylabel("$T$ [K]")
+
+    reference()
 
 
 @check_figures_equal(extensions=["png"])

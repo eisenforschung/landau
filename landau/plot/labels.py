@@ -17,23 +17,25 @@ from matplotlib.colors import to_rgba
 from shapely.ops import polylabel
 
 from ..features import Locus
+from .style import theme
 
 
-def _text_with_outline(ax, x, y, s, *, outline_width=3, **kwargs):
-    """Draw text with a solid white outline so it stays legible over any fill.
+def _text_with_outline(ax, x, y, s, *, outline_width=None, **kwargs):
+    """Draw text with an outline so it stays legible over any fill.
 
     A small reusable wrapper around :meth:`matplotlib.axes.Axes.text` that
-    strokes the glyphs with a white outline (via matplotlib path effects)
-    instead of drawing an opaque box behind them, keeping a label readable on
-    top of coloured regions or tielines.  Extra keyword arguments are forwarded
-    to ``ax.text``.
+    strokes the glyphs as ``theme.label_outline`` says (via matplotlib path
+    effects) instead of drawing an opaque box behind them, keeping a label
+    readable on top of coloured regions or tielines.  ``outline_width``
+    overrides the stroke width.  Extra keyword arguments are forwarded to
+    ``ax.text``.
 
     Returns the created :class:`matplotlib.text.Text`.
     """
-    kwargs.setdefault(
-        "path_effects",
-        [patheffects.withStroke(linewidth=outline_width, foreground="white")],
-    )
+    stroke = dict(theme.label_outline)
+    if outline_width is not None:
+        stroke["linewidth"] = outline_width
+    kwargs.setdefault("path_effects", [patheffects.withStroke(**stroke)])
     return ax.text(x, y, s, **kwargs)
 
 
@@ -302,9 +304,8 @@ def _add_inline_polygon_labels(ax, polys):
         if center is None:
             continue
         text = _text_with_outline(
-            ax, center[0], center[1], phase + "'" * rep,
-            ha="center", va="center", fontsize="small", fontweight="bold",
-            color="black",
+            ax, center[0], center[1], _bold_math(phase + "'" * rep),
+            ha="center", va="center", **{"color": "black", **theme.region_label},
         )
         poly_px = _shapely_polygon(ax.transData.transform(p.get_xy()))
         if poly_px is None or _label_fits(poly_px, text, renderer):
@@ -485,7 +486,7 @@ def _annotate_transition_temperatures(df, polys=(), ax=None, variables=None):
 
     def _label(x, y, modes, x_weight):
         text = _text_with_outline(
-            ax, x, y, f"{y:.0f} K", ha="center", va="center", fontsize="small", zorder=11,
+            ax, x, y, f"{y:.0f} K", ha="center", va="center", **{"zorder": 11, **theme.value_label},
         )
         bbox = text.get_window_extent(renderer)
         size = (bbox.width, bbox.height)
@@ -589,10 +590,10 @@ def _place_side_labels(ax, df, scan_col, phase_colors, top_texts=()):
 
     def make_texts(entries, ha):
         return [
-            ax.text(
-                x_min, y, phase, transform=ax.transData,
-                ha=ha, va="center", fontsize="small",
-                color=phase_colors.get(phase, "black"), clip_on=True,
+            _text_with_outline(
+                ax, x_min, y, phase, transform=ax.transData,
+                ha=ha, va="center", clip_on=True,
+                **{"color": phase_colors.get(phase, "black"), **theme.curve_label},
             )
             for phase, y in entries
         ]
@@ -670,7 +671,7 @@ def _place_transition_labels(ax, positions, labels, *, side, **text_kw):
     texts = [
         _text_with_outline(
             ax, x, 0.02, s, transform=xform,
-            rotation="vertical", ha="center", va="bottom", fontsize="small", zorder=100, **text_kw,
+            rotation="vertical", ha="center", va="bottom", **{"zorder": 100, **theme.value_label, **text_kw},
         )
         for x, s in zip(positions, labels)
     ]
@@ -783,7 +784,7 @@ def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True, yl
         ax2 = ax.secondary_xaxis("top")
         ax2.set_ticks(transitions)
         ax2.set_xticklabels([])
-        ax2.tick_params(direction="in", length=6)
+        ax2.tick_params(**theme.transition_tick)
 
         # Phase-name labels near the top of the axis, centered between boundaries.
         # get_xaxis_transform(): x in data coords, y in axes [0,1] fraction.
@@ -812,8 +813,8 @@ def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True, yl
                 ax, mid, 0.97, _bold_math(phase),
                 transform=xform,
                 rotation=top_label_rotation,
-                ha="center", va="top", fontsize="small", fontweight="bold",
-                color=phase_colors.get(phase, "black"),
+                ha="center", va="top",
+                **{"color": phase_colors.get(phase, "black"), **theme.region_label},
             ))
 
     if side_labels and not df["stable"].all():
@@ -827,9 +828,8 @@ def _add_inline_curve_labels(ax, entries):
     curve (or dot) and drawn one label-height clear of it rather than on top of it:
     ``side="above"`` lifts the label into the open (convex) side of a free-energy
     curve, ``side="below"`` drops it under a lower-hull line-phase dot.  Labels are
-    white-outlined in the phase colour with mathtext subscripts bolded by
-    :func:`_bold_math`, then nudged apart along ``y`` in display pixels by
-    :func:`_spread_labels` so they never overlap, while ``x`` stays anchored to the
+    white-outlined in the phase colour, then nudged apart along ``y`` in display
+    pixels by :func:`_spread_labels` so they never overlap, while ``x`` stays anchored to the
     curve.  A final pass tests each label's pixel box (via shapely) against the
     drawn curves, scatter markers (:func:`_curve_obstacles`) and the
     already-placed labels, pushing it further in its ``side`` direction until it no
@@ -851,9 +851,8 @@ def _add_inline_curve_labels(ax, entries):
     axbb = ax.get_window_extent(renderer)
     texts = [
         _text_with_outline(
-            ax, x, y, _bold_math(label),
-            ha="center", va="center", fontsize="small", fontweight="bold",
-            color=color, zorder=10,
+            ax, x, y, label,
+            ha="center", va="center", **{"color": color, "zorder": 10, **theme.curve_label},
         )
         for label, x, y, color, _side in entries
     ]
