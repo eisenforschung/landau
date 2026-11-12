@@ -13,7 +13,7 @@ from landau import IdealSolution, LinePhase
 from landau.calculate import calc_phase_diagram
 from landau.phases import kB
 from landau.plot import plot_excess_free_energy
-from landau.plot.style import TIE_LINE
+from landau.plot.style import theme
 
 
 def _make_phases():
@@ -91,11 +91,11 @@ def test_scalar_temperature_accepted():
 
 
 def _tie_lines(ax):
-    """Common-tangent segments, drawn in the shared ``TIE_LINE`` role."""
+    """Common-tangent segments, drawn as ``theme.tie_line``."""
     return [
         l for l in ax.lines
-        if l.get_color() == TIE_LINE["color"] and l.get_alpha() == TIE_LINE["alpha"]
-        and l.get_linestyle() == TIE_LINE["linestyle"]
+        if l.get_color() == theme.tie_line["color"] and l.get_alpha() == theme.tie_line["alpha"]
+        and l.get_linestyle() == theme.tie_line["linestyle"]
     ]
 
 

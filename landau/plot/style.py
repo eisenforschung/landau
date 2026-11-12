@@ -1,141 +1,134 @@
-"""Shared drawing conventions for every plot in :mod:`landau.plot`.
+"""The look of every plot in :mod:`landau.plot`.
 
-Two layers:
+:data:`theme` holds it. Its ``rc`` field holds rcParams: line width, tick and
+legend font sizes, the legend frame, figure size and resolution. Its other
+fields style one kind of plot element each, and set colour, line style and
+font weight only. Line widths, marker sizes and font sizes come from the
+rcParams ``lines.linewidth``, ``lines.markersize`` and ``font.size``.
 
-* :data:`theme` holds the rcParams of ``landau.mplstyle`` next to this module
-  (line width, tick and legend font sizes, legend frame, figure size). Every
-  plot function applies all of it for the duration of its call through
-  :func:`styled`, whatever the caller's rcParams hold for those keys; every
-  other rcParam is the caller's. Change the theme with ``theme.update(...)``,
-  hand a key back to ``rcParams`` with ``del theme[key]`` (``theme.clear()``
-  for all of them) and restore it with ``theme.reset()``. Inside a call the
-  theme reaches only what the call creates (lines, markers, text, and the
-  figure when no ``ax`` is passed); axes passed in keep their tick fonts, and
-  ``savefig.*`` applies only when the sheet is loaded globally with
-  ``plt.style.use("landau.plot.landau")``.
-* The dictionaries below name each kind of element the plots draw and carry
-  only what the element *means* -- colour, line style, weight. Sizes are left
-  out so that ``lines.linewidth`` / ``lines.markersize`` / ``font.size`` govern
-  every plot alike; :func:`line_phase_markersize` is the one size derived from
-  them.
+Every plot function runs inside :func:`styled`, so it uses ``theme.rc``
+instead of your rcParams for the keys in ``theme.rc``. Your rcParams set
+everything else. Use ``styled`` on your own plots too::
 
-The same element looks the same in every plot: a metastable branch is dashed
-in the 1d cuts and in the excess-free-energy plot, a tie line (the three-phase
-isotherm of a c-T diagram, a common tangent) is a faded black line, a
-transition of a 1d cut is marked by a faded dotted guide, and coexisting
-states are black dots of one size. A phase name set in bold labels the region
-where that phase is stable; in regular weight it names a curve.
+    with styled():
+        plt.plot(x, y)
+
+Change the theme on the object itself, not in ``rcParams``::
+
+    theme.rc["lines.linewidth"] = 1.5    # validated like rcParams
+    del theme.rc["figure.figsize"]       # rcParams set the figure size again
+    theme.rc.clear()                     # rcParams set everything again
+    theme.tie_line["color"] = "tab:red"
+    theme.reset()                        # back to the defaults
+
+The same element looks the same in every plot. A metastable branch is dashed.
+A tie line (the three-phase isotherm of a c-T diagram, the common tangent of an
+excess-free-energy plot) is a faded black line. A faded dotted line marks a
+transition along a 1d cut. Coexisting states are black dots of one size. A
+phase name in bold labels the region where that phase is stable; in regular
+weight it names a curve.
 """
 
-import functools
-from importlib.resources import files
+import contextlib
+from dataclasses import dataclass, field, fields
 
 import matplotlib as mpl
 
-__all__ = [
-    "CURVE_LABEL",
-    "INVARIANT_MARKER",
-    "METASTABLE",
-    "REGION_LABEL",
-    "STYLE",
-    "TIE_LINE",
-    "TRANSITION_GUIDE",
-    "VALUE_LABEL",
-    "Theme",
-    "line_phase_markersize",
-    "reference_line",
-    "stability_dashes",
-    "styled",
-    "theme",
-]
-
-#: Name to pass to :func:`matplotlib.pyplot.style.use`.
-STYLE = "landau.plot.landau"
-
-_SHEET = dict(mpl.rc_params_from_file(
-    str(files(__package__) / "landau.mplstyle"), use_default_template=False,
-))
+__all__ = ["Theme", "styled", "theme"]
 
 
-class Theme(mpl.RcParams):
-    """rcParams applied inside every landau plot call; values are validated like ``rcParams``."""
+_RC = {
+    "lines.linewidth": 2.0,
+    "axes.titlesize": "medium",
+    "xtick.labelsize": "small",
+    "ytick.labelsize": "small",
+    "legend.fontsize": "small",
+    "legend.frameon": False,
+    "figure.figsize": [6.0, 4.5],
+    "savefig.dpi": 150,
+    "savefig.bbox": "tight",
+}
 
-    def __init__(self):
+
+class _Rc(mpl.RcParams):
+    """rcParams of a :class:`Theme`; keys and values are validated like ``rcParams``."""
+
+    def __init__(self, params=()):
         super().__init__()
-        self.reset()
+        self.update(params)
 
     def __delitem__(self, key):
         dict.__delitem__(self, key)
 
+
+def _default_rc():
+    return _Rc(_RC)
+
+
+@dataclass
+class Theme:
+    """The look of the landau plots; see the module docstring."""
+
+    #: rcParams applied inside :func:`styled`. Every key differs from matplotlib's default, because a key at its
+    #: default would only override your rcParams.
+    rc: _Rc = field(default_factory=_default_rc)
+    #: A phase's curve where another phase is more stable.
+    metastable: dict = field(default_factory=lambda: {"linestyle": "--"})
+    #: A tie line: the three-phase isotherm of a c-T diagram, a common tangent of an excess-free-energy plot.
+    tie_line: dict = field(default_factory=lambda: {"color": "k", "alpha": 0.5, "linestyle": "-"})
+    #: The full-height line that marks a transition along a 1d cut.
+    transition_guide: dict = field(default_factory=lambda: {"color": "k", "alpha": 0.5, "linestyle": ":"})
+    #: A coexisting state: a transition point of a 1d cut, a triple point of a mu-T diagram, a tangent vertex.
+    invariant_marker: dict = field(default_factory=lambda: {"color": "k", "marker": "o"})
+    #: A line phase drawn as one dot in an excess-free-energy plot, this many times ``lines.markersize`` wide.
+    line_phase_marker_scale: float = 1.5
+    #: The zero line of an excess-free-energy plot; ``axes.linewidth`` wide unless it sets ``linewidth``.
+    reference_line: dict = field(default_factory=lambda: {"color": ".5", "linestyle": "-"})
+    #: A phase name on the region where the phase is stable: a 2d field, a stable window atop a 1d cut.
+    region_label: dict = field(default_factory=lambda: {"fontsize": "small", "fontweight": "bold"})
+    #: A phase name on its curve: the side labels of a 1d cut, the labels of an excess-free-energy plot.
+    curve_label: dict = field(default_factory=lambda: {"fontsize": "small"})
+    #: A number read off the plot: a transition temperature or chemical potential.
+    value_label: dict = field(default_factory=lambda: {"fontsize": "small"})
+
     def reset(self):
-        """Restore the keys and values of ``landau.mplstyle``."""
-        self.clear()
-        self.update(_SHEET)
+        """Restore every field to its default."""
+        default = Theme()
+        for f in fields(self):
+            setattr(self, f.name, getattr(default, f.name))
 
 
-#: The rcParams every plot function applies; see the module docstring.
+#: The theme every plot function uses.
 theme = Theme()
 
 
-def styled(func):
-    """Run ``func`` with :data:`theme` applied on top of the caller's rcParams."""
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        with mpl.rc_context(dict(theme)):
-            return func(*args, **kwargs)
-    return wrapper
+@contextlib.contextmanager
+def styled():
+    """Apply ``theme.rc`` on top of your rcParams; use as ``with styled():`` or as the decorator ``@styled()``."""
+    with mpl.rc_context(dict(theme.rc)):
+        yield
 
 
-#: A phase's curve where another phase is more stable.
-METASTABLE = {"linestyle": "--"}
-
-#: A tie line between coexisting states: the three-phase isotherm of a c-T
-#: diagram, a common tangent of an excess-free-energy plot.
-TIE_LINE = {"color": "k", "alpha": 0.5, "linestyle": "-"}
-
-#: The full-height guide marking a transition along a 1d cut.
-TRANSITION_GUIDE = {"color": "k", "alpha": 0.5, "linestyle": ":"}
-
-#: The coexisting states on an invariant: transition points of a 1d cut, triple
-#: points of a mu-T diagram, tangent vertices of an excess-free-energy plot.
-INVARIANT_MARKER = {"color": "k", "marker": "o"}
-
-#: A phase's name labelling the region where it is stable: a field of a 2d
-#: diagram, a stable window along the top of a 1d cut.
-REGION_LABEL = {"fontsize": "small", "fontweight": "bold"}
-
-#: A phase's name labelling its curve: the side labels of a 1d cut, the curve
-#: labels of an excess-free-energy plot.
-CURVE_LABEL = {"fontsize": "small"}
-
-#: A number read off the diagram (a transition temperature or chemical potential).
-VALUE_LABEL = {"fontsize": "small"}
+_DASH_PATTERNS = {"--": "dashed", "dashed": "dashed", ":": "dotted", "dotted": "dotted", "-.": "dashdot",
+                  "dashdot": "dashdot"}
 
 
-def stability_dashes() -> dict[bool, str | tuple[float, ...]]:
-    """Seaborn ``dashes=`` mapping for a ``style="stable"`` lineplot.
-
-    Stable rows are solid; metastable rows use matplotlib's own ``"--"``
-    pattern (``lines.dashed_pattern``), so a seaborn-drawn metastable branch is
-    dashed exactly like one drawn with :data:`METASTABLE`.
-    """
-    return {True: "", False: tuple(mpl.rcParams["lines.dashed_pattern"])}
-
-
-def reference_line() -> dict:
-    """Style of a zero line the data is measured against.
-
-    Solid grey at the weight of the axes frame (``axes.linewidth``), so it reads
-    as part of the axes and never as a dashed metastable curve.
-    """
-    return {"color": ".5", "linestyle": "-", "linewidth": mpl.rcParams["axes.linewidth"]}
+def _stability_dashes() -> dict:
+    """Seaborn ``dashes=`` mapping for a ``style="stable"`` lineplot, drawn like ``theme.metastable``."""
+    linestyle = theme.metastable.get("linestyle", "-")
+    if isinstance(linestyle, tuple):
+        dashes = tuple(linestyle[1])
+    elif linestyle in ("-", "solid"):
+        dashes = ""
+    else:
+        dashes = tuple(mpl.rcParams[f"lines.{_DASH_PATTERNS[linestyle]}_pattern"])
+    return {True: "", False: dashes}
 
 
-def line_phase_markersize() -> float:
-    """Marker size (points) of a line phase drawn as a single dot.
+def _reference_line() -> dict:
+    """Line kwargs of a zero line, ``axes.linewidth`` wide unless ``theme.reference_line`` sets a width."""
+    return {"linewidth": mpl.rcParams["axes.linewidth"], **theme.reference_line}
 
-    A line phase in the excess-free-energy plot is a whole phase shown as one
-    point, so it is drawn larger than the invariant markers that sit on it:
-    1.5 times ``lines.markersize``.
-    """
-    return 1.5 * mpl.rcParams["lines.markersize"]
+
+def _line_phase_markersize() -> float:
+    return theme.line_phase_marker_scale * mpl.rcParams["lines.markersize"]

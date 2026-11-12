@@ -9,32 +9,33 @@
 
 ## Style
 
-Every plot sizes its lines, markers and text from `lines.linewidth`,
-`lines.markersize` and `font.size`, and draws each kind of element (metastable
-branch, tie line, transition guide, phase label) the same way.
+`landau.plot.style.theme` sets the look of every landau plot.
+Its `rc` field holds a few rcParams: line width, tick and legend font sizes, the
+legend frame, figure size and resolution.
+Its other fields each style one kind of element: metastable branches, tie lines,
+transition guides, invariant markers and labels.
 
-`landau.plot.style.theme` holds a few rcParams (line width, tick and legend font
-sizes, legend frame, figure size) that every plot function applies for the
-duration of its call, whatever your rcParams hold for those keys. Every other
-rcParam, fonts included, is yours. Change the theme instead of `rcParams`:
+Every plot function applies `theme.rc` while it runs.
+Your rcParams set everything else, fonts included.
+To change the look, change the theme:
 
 ```python
 from landau.plot.style import theme
 
-theme.update({"lines.linewidth": 1.5})   # validated like rcParams
-del theme["figure.figsize"]              # this key follows rcParams again
-theme.clear()                            # all of them do
-theme.reset()                            # back to landau's values
+theme.rc["lines.linewidth"] = 1.5      # validated like rcParams
+del theme.rc["figure.figsize"]         # your rcParams set the figure size again
+theme.tie_line["color"] = "tab:red"
+theme.reset()                          # back to the defaults
 ```
 
-Inside the call the theme reaches what the call creates: lines, markers, text,
-and the figure when no `ax` is passed. The same values ship as the style sheet
-`landau.plot.landau`; load it globally to also cover axes and figures you create
-yourself, and `savefig`:
+`styled()` applies `theme.rc` to your own plots too:
 
 ```python
-import matplotlib.pyplot as plt
-plt.style.use("landau.plot.landau")
+from landau.plot.style import styled
+
+with styled():
+    plt.plot(x, y)
+    plt.savefig("plot.png")            # the theme's resolution and tight bounding box
 ```
 
 ```{eval-rst}

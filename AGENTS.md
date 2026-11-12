@@ -229,11 +229,12 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
   `get_polygons`, `plot_polygons`, `get_phase_colors`, `cluster_phase`.
 - `labels.py`: every text-placement helper.
   Imports go one way — `labels` never imports from `plot`.
-- `style.py` + `landau.mplstyle`: one dict per drawn element (`METASTABLE`, `TIE_LINE`, `TRANSITION_GUIDE`, `INVARIANT_MARKER`, `REGION_LABEL`, `CURVE_LABEL`, `VALUE_LABEL`) carrying colour, style and weight only;
+- `style.py`: `theme`, a `Theme` dataclass with `rc` (a validating `mpl.RcParams` subclass) and one dict per drawn element (`metastable`, `tie_line`, `transition_guide`, `invariant_marker`, `reference_line`, `region_label`, `curve_label`, `value_label`) carrying colour, style and weight only;
   sizes come from `lines.linewidth`/`lines.markersize`/`font.size`.
-  `@styled` (on `_plot_phase_diagram`, `_plot_1d_phase_diagram`, `plot_excess_free_energy`) applies all of `style.theme` (the sheet's keys, a validating `mpl.RcParams` subclass) per call, whatever the caller's rcParams hold for those keys;
-  users change it through `theme.update`/`del theme[key]`/`theme.clear()`/`theme.reset()`, not `rcParams`.
-  The sheet carries only keys that differ from matplotlib's defaults, since a default-valued key would only override the caller.
+  `styled()` is a context manager and decorator applying `theme.rc`;
+  `_plot_phase_diagram`, `_plot_1d_phase_diagram` and `plot_excess_free_energy` carry `@styled()`, so `theme.rc` wins over the caller's rcParams for its keys.
+  Call sites read element styles at draw time and merge them last over appearance kwargs (`color`, `zorder`), never over placement kwargs.
+  `theme.rc` carries only keys that differ from matplotlib's defaults, since a default-valued key would only override the caller.
   On style conflicts the excess-free-energy plot follows the 1d/2d look.
 - 2d options: `legend`/`inline_legend` (inline labels at the polygon's pole of inaccessibility, with rotate/offset fallbacks),
   `triplepoints=None` (follows `transition_temperatures` unless set, `tielines=` is a deprecated alias),

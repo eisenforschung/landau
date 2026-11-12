@@ -668,7 +668,7 @@ def test_plot_phase_diagram_matches_explicit_pipeline(fig_test, fig_ref):
 
     This guards against future refactors of either side drifting apart and
     documents what the public helper does in terms of the smaller helpers,
-    run under the landau style defaults (:func:`landau.plot.style.styled`).
+    run under the landau theme (:func:`landau.plot.style.styled`).
     """
     df = _stable_df()
     method = Concave(drop_interior=False)
@@ -682,7 +682,7 @@ def test_plot_phase_diagram_matches_explicit_pipeline(fig_test, fig_ref):
 
     ax_ref = fig_ref.subplots()
 
-    @styled
+    @styled()
     def reference():
         plot_polygons(polys, color_map, ax=ax_ref)
         ax_ref.set_xlim(0, 1)

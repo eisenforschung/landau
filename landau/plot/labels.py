@@ -17,7 +17,7 @@ from matplotlib.colors import to_rgba
 from shapely.ops import polylabel
 
 from ..features import Locus
-from .style import CURVE_LABEL, REGION_LABEL, VALUE_LABEL
+from .style import theme
 
 
 def _text_with_outline(ax, x, y, s, *, outline_width=3, **kwargs):
@@ -304,7 +304,7 @@ def _add_inline_polygon_labels(ax, polys):
             continue
         text = _text_with_outline(
             ax, center[0], center[1], _bold_math(phase + "'" * rep),
-            ha="center", va="center", color="black", **REGION_LABEL,
+            ha="center", va="center", **{"color": "black", **theme.region_label},
         )
         poly_px = _shapely_polygon(ax.transData.transform(p.get_xy()))
         if poly_px is None or _label_fits(poly_px, text, renderer):
@@ -485,7 +485,7 @@ def _annotate_transition_temperatures(df, polys=(), ax=None, variables=None):
 
     def _label(x, y, modes, x_weight):
         text = _text_with_outline(
-            ax, x, y, f"{y:.0f} K", ha="center", va="center", zorder=11, **VALUE_LABEL,
+            ax, x, y, f"{y:.0f} K", ha="center", va="center", **{"zorder": 11, **theme.value_label},
         )
         bbox = text.get_window_extent(renderer)
         size = (bbox.width, bbox.height)
@@ -591,8 +591,8 @@ def _place_side_labels(ax, df, scan_col, phase_colors, top_texts=()):
         return [
             _text_with_outline(
                 ax, x_min, y, phase, transform=ax.transData,
-                ha=ha, va="center", color=phase_colors.get(phase, "black"), clip_on=True,
-                **CURVE_LABEL,
+                ha=ha, va="center", clip_on=True,
+                **{"color": phase_colors.get(phase, "black"), **theme.curve_label},
             )
             for phase, y in entries
         ]
@@ -670,7 +670,7 @@ def _place_transition_labels(ax, positions, labels, *, side, **text_kw):
     texts = [
         _text_with_outline(
             ax, x, 0.02, s, transform=xform,
-            rotation="vertical", ha="center", va="bottom", zorder=100, **(VALUE_LABEL | text_kw),
+            rotation="vertical", ha="center", va="bottom", **{"zorder": 100, **theme.value_label, **text_kw},
         )
         for x, s in zip(positions, labels)
     ]
@@ -812,8 +812,8 @@ def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True, yl
                 ax, mid, 0.97, _bold_math(phase),
                 transform=xform,
                 rotation=top_label_rotation,
-                ha="center", va="top", color=phase_colors.get(phase, "black"),
-                **REGION_LABEL,
+                ha="center", va="top",
+                **{"color": phase_colors.get(phase, "black"), **theme.region_label},
             ))
 
     if side_labels and not df["stable"].all():
@@ -851,7 +851,7 @@ def _add_inline_curve_labels(ax, entries):
     texts = [
         _text_with_outline(
             ax, x, y, label,
-            ha="center", va="center", color=color, zorder=10, **CURVE_LABEL,
+            ha="center", va="center", **{"color": color, "zorder": 10, **theme.curve_label},
         )
         for label, x, y, color, _side in entries
     ]
