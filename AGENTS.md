@@ -174,7 +174,8 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
   `knee_bounds` requires `c_order=0`.
 - `whitney.py`: `WhitneyTemperatureInterpolator` (exported, constant-entropy continuation outside the data, an upper bound on a concave `F(T)`), the internal `WhitneyRBFInterpolator`, and `WhitneySurface2DInterpolator` (proposed for deprecation, #531 — slow, scale-dependent in T, invents negative curvature in c).
 - Every new 1-D interpolator gets a `CASES` entry in `tests/unit/interpolate/test_shape_contract.py`;
-  a new `TemperatureInterpolator` must also be covered in `tests/regression/test_issue_428.py`, whose guard test fails otherwise.
+  a new `TemperatureInterpolator` must also be covered in `tests/regression/test_issue_428.py` (scalar in → Python scalar out, array shape preserved);
+  that file currently covers only `WhitneyTemperatureInterpolator` and no guard test enforces the coverage.
 
 ### `landau/calculate.py`
 
@@ -228,9 +229,9 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
   `plot_excess_free_energy` (needs a `keep_unstable=True` frame, one axes for a single T, a FacetGrid otherwise);
   `get_polygons`, `plot_polygons`, `get_phase_colors`, `cluster_phase`.
 - `labels.py`: every text-placement helper.
-  Imports go one way — `labels` never imports from `plot`.
-- `style.py`: `theme`, a `Theme` dataclass with `rc` (a validating `mpl.RcParams` subclass) and one dict per drawn element (`phase_boundary`, `metastable`, `tie_line`, `transition_guide`, `transition_tick`, `invariant_marker`, `reference_line`, `region_label`, `curve_label`, `value_label`, `label_outline`) carrying colour, style and weight only;
-  sizes come from `lines.linewidth`/`lines.markersize`/`font.size`.
+  Imports go one way — `labels` imports from `style` but never from `plot/__init__.py`.
+- `style.py`: `theme`, a `Theme` dataclass with `rc` (a validating `mpl.RcParams` subclass) and one dict per drawn element (`phase_boundary`, `metastable`, `tie_line`, `transition_guide`, `transition_tick`, `invariant_marker`, `reference_line`, `region_label`, `curve_label`, `value_label`, `label_outline`) carrying that element's appearance keys (colour, line style, weight, alpha, occasionally a size such as the labels' relative `fontsize`);
+  line widths, marker sizes and font sizes otherwise come from `lines.linewidth`/`lines.markersize`/`font.size`, scaled for line-phase markers by the plain field `line_phase_marker_scale`.
   Values derived from fields and rcParams come from `Theme` methods (`stability_dashes`, `reference_line_kwargs`, `line_phase_markersize`);
   `docs/api/plot.md` tables every element field with its default;
   update the table when a field or default changes.
@@ -254,6 +255,7 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
 - `poly.py`: point cloud → polygon per phase region.
   `Concave`, `Segments`, and with the TSP extras `PythonTsp`/`SegmentPythonTsp`/`FastTsp`/`SegmentFastTsp`;
   `handle_poly_method` falls back `segment-fasttsp → segment-tsp → fasttsp → tsp → concave` by what's installed.
+  The TSP classes are defined inside their `ImportAlarm` blocks, so with the extra missing the class does not exist at all — the usual import-works/instantiation-raises gate does not apply here.
   `make` returns a region's exact outline (a `LineString` for a line phase);
   `apply` widens only regions narrower than `min_c_width` everywhere (`_thicken`) and then subtracts neighbours' exact outlines (`_trim_overlaps`), so boundaries sit on the data and eutectic apexes stay sharp.
   `_segment_tsp_polygon` rotates the tour off an intra-segment edge before walking it (else a valid tour yields a self-intersecting ring).
@@ -275,7 +277,8 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
   `tests/conftest.py` holds the shared fixtures (`two_phase_ideal`, `three_phase_regular_solution`, `eutectic_phases`, `eutectic_diagram`).
 - `tests/unit/phases/test_broadcast_contract.py` pins the broadcast contract of every `Phase` (`semigrand_potential`, `concentration`, `free_energy`, `line_free_energy`);
   a new phase gets a `CASES` entry there, and per-class tests check values, not shapes.
-- `tests/integration/test_border_coverage.py` is the smoke test for "a polygon amputated a phase region" (every `poly_method` × c-T/μ-T).
+- `tests/integration/test_border_coverage.py` is the smoke test for "a polygon amputated a phase region" (the exact-outline poly methods × c-T/μ-T;
+  `concave` is excluded because its hull may legitimately cut corners, and `segments` on μ-T is an xfail).
 - `tests/integration/testplots.py` is **not** a pytest test: it renders PNGs for visual review.
   The `testplot` PR label or an `@testplot ...` comment renders them in CI (`.github/scripts/testplot_args.py` maps free text to flags with Haiku) and posts them on the PR.
   Inline-attach a render when a PR changes plotting.
