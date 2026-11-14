@@ -311,6 +311,9 @@ check open PRs before starting anything adjacent.
   maintainer prefers it as `SGTE` behaviour when a `T = 0` sample is present, not a new class.
 - #443 — nuclear quantum correction for classical-MD solids via the QHA (idea only).
 - #531 — deprecate `WhitneySurface2DInterpolator`.
+- #587 — optional bounded constant-Cp continuation below the data for `WhitneyTemperatureInterpolator`;
+  the constant-S continuation of a supercooled terminal liquid sits tens of meV/atom too high and can bend a liquidus near a eutectic;
+  above the data constant S stays the default (#339 covers high-T extrapolation).
 - #463 — transition-temperature labels can drift too far from their invariant to attribute.
 - #81 (analytic SRO models), #33 (fast Legendre transforms), #59 (autodiff `concentration`), #62 (`src/` layout).
 
