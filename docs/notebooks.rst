@@ -12,3 +12,4 @@ Examples
    notebooks/ClausiusClapeyron.ipynb
    notebooks/Toy.ipynb
    notebooks/MgCa/MgCa.ipynb
+   notebooks/Logo.ipynb
