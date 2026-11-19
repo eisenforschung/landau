@@ -260,11 +260,11 @@ def _plot_triplepoints(df, ax=None, variables=None):
     if variables[0] == "c":
         for (mu, T), grp in triple.groupby(["mu", "T"], sort=False)[["c", "phase"]]:
             line = ax.hlines(T, grp["c"].min(), grp["c"].max(), **{"zorder": -2, **theme.tie_line})
-            tag(line, "transitions", kind="triple", t=T, mu=mu, phases=sorted(set(grp["phase"])))
+            tag(line, "transitions", kind="triple", t=T, mu=mu, phases=sorted(grp["phase"]))
     elif variables[0] == "mu":
         for (mu, T), grp in triple.groupby(["mu", "T"], sort=False):
             line = ax.plot(mu, T, **{"zorder": 3, **theme.invariant_marker})
-            tag(line, "transitions", kind="triple", t=T, mu=mu, phases=sorted(set(grp["phase"])))
+            tag(line, "transitions", kind="triple", t=T, mu=mu, phases=sorted(grp["phase"]))
 
 
 def _triple_isotherms(df):

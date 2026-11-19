@@ -104,6 +104,7 @@ With ``inkscape=True`` every layer group is also an Inkscape layer
 import copy
 import io
 import json
+import math
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -111,6 +112,7 @@ from pathlib import Path
 import matplotlib as mpl
 import numpy as np
 import shapely
+from matplotlib import cbook
 from matplotlib.artist import Artist
 from matplotlib.axes import Axes
 from matplotlib.colors import to_hex, to_rgba
@@ -151,6 +153,7 @@ _PLACEHOLDER = "landau-placeholder-"
 _POINTER_EVENTS = {"phase": "visible", "field": "none"}
 _OUTLINE_ATTR = "_landau_outline"
 _LAYER_RE = re.compile(r"[A-Za-z0-9_-]+")
+_KEY_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
 _PREFIX_RE = re.compile(r"(?:[A-Za-z_][A-Za-z0-9_.-]*)?")
 
 # The axis children, in the order their sublayers are stacked.
@@ -177,7 +180,9 @@ def tag(artists, layer: str, *, kind: str | None = None, name=None, **data):
 
     Args:
         artists: One :class:`~matplotlib.artist.Artist` or an iterable of
-            them (e.g. the list :meth:`~matplotlib.axes.Axes.plot` returns).
+            them, nested or not (the list :meth:`~matplotlib.axes.Axes.plot`
+            returns, the container of
+            :meth:`~matplotlib.axes.Axes.errorbar`).
         layer: Layer name, ``[A-Za-z0-9_-]+``.  Artists sharing a layer are
             grouped together.
         kind: Element kind, used in the element id and its class
@@ -187,8 +192,11 @@ def tag(artists, layer: str, *, kind: str | None = None, name=None, **data):
             ``_`` and ``-`` replaced by ``_``); a tuple is joined with ``-``
             after the same replacement, ``-`` included, in each part.
             Defaults to a running number per kind.
-        **data: Written as ``data-*`` attributes, underscores in the keys
-            turned into hyphens.  Lists and tuples are written as JSON.
+        **data: Written as ``data-*`` attributes, the keys lower-cased and
+            their underscores turned into hyphens.  Numbers are written
+            with 10 significant digits, non-finite ones as ``Infinity``,
+            ``-Infinity`` and ``NaN``; lists and tuples as JSON, with
+            non-finite numbers as those strings.
 
     Returns:
         ``artists``, unchanged, so the call can wrap the drawing call.
@@ -197,7 +205,16 @@ def tag(artists, layer: str, *, kind: str | None = None, name=None, **data):
         raise ValueError(f"layer must match [A-Za-z0-9_-]+, got {layer!r}")
     if kind is not None and not _LAYER_RE.fullmatch(kind):
         raise ValueError(f"kind must match [A-Za-z0-9_-]+, got {kind!r}")
-    for artist in [artists] if isinstance(artists, Artist) else artists:
+    attributes = [_data_attribute(key) for key in data]
+    for key, attribute in zip(data, attributes):
+        if not _KEY_RE.fullmatch(key) or attribute == "data-layer" or attributes.count(attribute) > 1:
+            raise ValueError(f"data key {key!r} does not give an attribute of its own: keys are letters, digits "
+                             "and '_', start with a letter, differ in more than case, and 'layer' is taken")
+    found = [a for a in ([artists] if isinstance(artists, Artist) else cbook.flatten(artists)) if a is not None]
+    for artist in found:
+        if not isinstance(artist, Artist):
+            raise TypeError(f"tag() takes artists, got {type(artist).__name__}")
+    for artist in found:
         setattr(artist, _TAG_ATTR, {"layer": layer, "kind": kind or layer, "name": name, "data": data})
     return artists
 
@@ -320,22 +337,39 @@ def _name(name) -> str:
     return re.sub(r"[^\w-]+", "_", _plain(name)).strip("_-") or "_"
 
 
+def _data_attribute(key) -> str:
+    return f"data-{key.replace('_', '-').lower()}"
+
+
+def _number(value) -> str:
+    """A float in 10 significant digits, non-finite ones spelled as JavaScript's ``Number()`` reads them."""
+    value = float(value)
+    if math.isnan(value):
+        return "NaN"
+    if math.isinf(value):
+        return "Infinity" if value > 0 else "-Infinity"
+    return f"{value:.10g}"
+
+
 def _data_value(value) -> str:
     if isinstance(value, (bool, np.bool_)):
         return "true" if value else "false"
     if isinstance(value, (list, tuple, np.ndarray)):
         return json.dumps([_json_item(v) for v in value], ensure_ascii=False)
     if isinstance(value, (float, np.floating)):
-        return f"{float(value):.10g}"
+        return _number(value)
     return str(value)
 
 
 def _json_item(value):
-    if isinstance(value, (np.integer,)):
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, np.integer)):
         return int(value)
-    if isinstance(value, (np.floating,)):
-        return float(value)
-    return value if isinstance(value, (int, float, str, bool)) else str(value)
+    if isinstance(value, (float, np.floating)):
+        # JSON has no non-finite numbers: those are written as the strings a scalar gives
+        return float(_number(value)) if math.isfinite(value) else _number(value)
+    return str(value)
 
 
 class _Session:
@@ -646,7 +680,7 @@ class _Layout:
         layer = entry["layer"] if entry.get("sub") is None else f"{entry['layer']}-{entry['sub']}"
         attrs = {"class": f"landau-{kind}", "data-layer": layer}
         for key, value in entry["data"].items():
-            attrs[f"data-{key.replace('_', '-').lower()}"] = _data_value(value)
+            attrs[_data_attribute(key)] = _data_value(value)
         for key, value in attrs.items():
             el.set(key, value)
         self.elements[eid] = attrs

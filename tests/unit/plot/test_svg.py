@@ -34,7 +34,7 @@ from landau.plot import (
     save_layered_svg,
 )
 from landau.plot.style import theme
-from landau.plot.svg import _add_coexistence, _name, tag
+from landau.plot.svg import _add_coexistence, _data_value, _name, tag
 
 SVG = "{http://www.w3.org/2000/svg}"
 XLINK_HREF = "{http://www.w3.org/1999/xlink}href"
@@ -599,6 +599,70 @@ def test_user_overlay_layer(ct_figure):
     assert _by_id(root)["ax0-layer-calphy-liquid"] is not None
     with pytest.raises(ValueError):
         tag(ax.plot([0, 1], [500, 500]), "not a layer")
+
+
+def test_tag_takes_nested_containers(ct_figure):
+    ax = ct_figure.axes[0]
+    container = ax.errorbar([0.2, 0.4], [500, 600], yerr=20, capsize=2)
+    assert tag(container, "measured", source="dsc") is container
+    drawn = [a for a in mpl.cbook.flatten(container) if a is not None]
+    assert len(drawn) == 4  # the data line, two cap lines, the bars
+    root, _, _ = _save(ct_figure)
+    assert len(_groups(root, "landau-measured")) == len(drawn)
+    assert {g.get("data-source") for g in _groups(root, "landau-measured")} == {"dsc"}
+
+
+def test_tag_rejects_what_it_cannot_write(ct_figure):
+    ax = ct_figure.axes[0]
+    (line,) = ax.plot([0, 1], [500, 500])
+    with pytest.raises(TypeError):
+        tag([line, "not an artist"], "overlay")
+    for data in ({"my key": 1}, {"T": 900, "t": 300}, {"Layer": "mine"}, {"9": 1}):
+        with pytest.raises(ValueError):
+            tag(line, "overlay", **data)
+    # a rejected call tags nothing
+    assert not hasattr(line, "_landau_svg")
+
+
+@pytest.mark.parametrize("value, written", [
+    (0.1 + 0.2, "0.3"),
+    (np.float64(748.5423089585613), "748.542309"),
+    (float("inf"), "Infinity"),
+    (-np.inf, "-Infinity"),
+    (float("nan"), "NaN"),
+    (True, "true"),
+    (np.int64(3), "3"),
+    ("liquid", "liquid"),
+    (["fcc", "\u03b1"], '["fcc", "\u03b1"]'),
+    ((0, np.int64(1)), "[0, 1]"),
+    ([748.5423089585613, np.inf, -np.inf, np.nan], '[748.542309, "Infinity", "-Infinity", "NaN"]'),
+])
+def test_data_values(value, written):
+    assert _data_value(value) == written
+
+
+def test_list_values_are_json(ct_figure, unary_figure):
+    """Every list is JSON and a number in it is the number a scalar attribute gives."""
+    for fig in (ct_figure, unary_figure):
+        _, elements, _ = _save(fig)
+        lists = [v for attrs in elements.values() for v in attrs.values() if v.startswith("[")]
+        assert len(lists) >= 4
+        for v in lists:
+            json.loads(v, parse_constant=pytest.fail)
+    (ticks,) = [a for a in elements.values() if a["class"] == "landau-transition-ticks"]
+    values = [a["data-value"] for a in elements.values() if a["class"] == "landau-transition"]
+    assert sorted(json.loads(ticks["data-values"])) == sorted(float(v) for v in values)
+    assert len(values) == 2
+
+
+def test_pure_component_transition_labels_name_their_side(ct_figure, eutectic_diagram):
+    """The melting points of the pure components sit at mu = -+inf."""
+    root, _, _ = _save(ct_figure)
+    congruent = eutectic_diagram[eutectic_diagram["locus"] == Locus.CONGRUENT]
+    expected = sorted(float(mu) for mu in congruent["mu"].unique())
+    assert set(expected) == {-np.inf, np.inf}
+    written = [g.get("data-mu") for g in _groups(root, "landau-transition-label") if g.get("data-locus") == "congruent"]
+    assert set(written) == {"-Infinity", "Infinity"}
 
 
 def test_hand_set_gid_kept(ct_figure):
