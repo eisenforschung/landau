@@ -24,7 +24,7 @@ from landau.features import Locus
 from landau.phases import LinePhase, kB
 from landau.plot import plot_1d_T_phase_diagram, plot_mu_phase_diagram, plot_phase_diagram, save_layered_svg
 from landau.plot.style import theme
-from landau.plot.svg import _add_coexistence, tag
+from landau.plot.svg import _add_coexistence, _name, tag
 
 SVG = "{http://www.w3.org/2000/svg}"
 XLINK_HREF = "{http://www.w3.org/1999/xlink}href"
@@ -285,7 +285,7 @@ def test_mu_t_boundaries(eutectic_diagram):
 
 
 def test_phase_names_sanitised(eutectic_diagram):
-    names = {"fcc": "(\u03b1Ca)", "hcp": r"$\mathrm{Mg_{2}Si}$'", "liquid": "liquid"}
+    names = {"fcc": "(\u03b1Ca)", "hcp": r"$\mathrm{Mg_{2}Si}$'", "liquid": r"$\gamma$"}
     df = eutectic_diagram.copy()
     df["phase"] = df["phase"].map(names)
     fig, ax = plt.subplots()
@@ -296,11 +296,30 @@ def test_phase_names_sanitised(eutectic_diagram):
     assert fields == {
         "(\u03b1Ca)": "ax0-phase-\u03b1Ca-0",
         r"$\mathrm{Mg_{2}Si}$'": "ax0-phase-Mg2Si-0",
-        "liquid": "ax0-phase-liquid-0",
+        r"$\gamma$": "ax0-phase-gamma-0",
     }
     assert all(ID_RE.fullmatch(i) for i in elements)
     pairs = {frozenset(json.loads(g.get("data-phases"))) for g in _groups(root, "landau-two-phase")}
     assert {"(\u03b1Ca)", r"$\mathrm{Mg_{2}Si}$'"} in pairs
+
+
+@pytest.mark.parametrize("name, expected", [
+    (r"$\mathrm{Cs}$", "Cs"),
+    (r"$\mathrm{GaAs}$", "GaAs"),
+    (r"$\mathrm{Cs_2O}$", "Cs2O"),
+    (r"$\mathrm{bcc_{disordered}}$", "bccdisordered"),
+    (r"$\alpha$", "alpha"),
+    (r"$\gamma'$", "gamma"),
+    (r"$\beta$-Sn", "beta-Sn"),
+    (r"$\hat{\sigma}$", "sigma"),
+    (r"A$\,$B$\ $C", "ABC"),
+    ("Ni$_3$Al", "Ni3Al"),
+    ("5 $ and 3", "5_and_3"),
+    ("\u03b1-Fe", "\u03b1-Fe"),
+    ("", "_"),
+])
+def test_names_keep_the_characters_of_mathtext(name, expected):
+    assert _name(name) == expected
 
 
 def test_legend_entries(eutectic_diagram):

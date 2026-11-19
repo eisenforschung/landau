@@ -53,8 +53,9 @@ pass over the XML.
   shows -- ``{phase}-{field}`` for a phase field or its label, the pair of
   phases plus a running number for two-phase regions and boundaries, a
   running number otherwise -- with mathtext reduced to its characters
-  (``$\\mathrm{Mg_{2}Si}$`` becomes ``Mg2Si``) and every other character
-  that is not a letter, digit or underscore replaced by ``_``.  The ids are therefore stable across
+  (``$\\mathrm{Mg_{2}Si}$`` becomes ``Mg2Si``, ``$\\alpha$`` becomes
+  ``alpha``) and every other character that is not a letter, digit or
+  underscore replaced by ``_``.  The ids are therefore stable across
   re-renders of the same diagram but lossy; the original phase name is kept
   in ``data-phase`` (``data-phases`` holds a JSON list where several phases
   meet).  An id that would repeat gets a ``_2``, ``_3``, ... suffix.
@@ -272,12 +273,17 @@ def save_layered_svg(
 
 
 def _plain(text) -> str:
-    """``text`` with mathtext reduced to its characters: ``$\\mathrm{Mg_{2}Si}$`` -> ``Mg2Si``."""
+    """``text`` with mathtext reduced to its characters.
+
+    ``$\\mathrm{Mg_{2}Si}$`` -> ``Mg2Si``, ``$\\alpha$`` -> ``alpha``.
+    """
     parts = str(text).split("$")
     if len(parts) % 2 == 0:  # unbalanced '$': not mathtext
         return str(text)
     for i in range(1, len(parts), 2):
-        parts[i] = re.sub(r"[{}^_\\s]", "", re.sub(r"\\[A-Za-z]+", "", parts[i]))
+        math = re.sub(r"\\[A-Za-z]+(?=\s*\{)", "", parts[i])  # a command applied to a group: a font, an accent
+        math = re.sub(r"\\([A-Za-z]+)", r"\1", math)  # any other command is a symbol and keeps its name
+        parts[i] = re.sub(r"\\.|[{}^_\s]", "", math)  # escaped spacing, grouping, scripts
     return "".join(parts)
 
 
