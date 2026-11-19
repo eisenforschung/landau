@@ -386,27 +386,36 @@ def calc_phase_diagram(
     return pdf
 
 
-def _tie_lines(dd):
-    """Pair the border rows at one ``(mu, T)`` into two-phase tie-lines.
+def _tie_lines(bdf):
+    """Pair the border rows sharing one ``(mu, T)`` into two-phase tie-lines.
 
-    ``dd`` must hold only the ``border`` rows of a single ``(mu, T)``, sorted
-    by ``c``, with columns ``c`` and ``phase``. Neighbouring rows form a
+    ``bdf`` holds ``border`` rows sorted by ``c``, with columns ``mu``, ``T``,
+    ``c`` and ``phase``. Among the rows at one ``(mu, T)``, neighbours form a
     tie-line named ``"A-B"`` in ascending ``c``, so ``n`` rows give ``n - 1``
     tie-lines and a row between two others is emitted once per tie-line. A
-    single row (the ``mu = +-inf`` edges) is emitted under its own phase name.
+    row alone at its ``(mu, T)`` (the ``mu = +-inf`` edges) is emitted under
+    its own phase name.
 
-    Returns one row per tie-line end, with columns ``transition``, ``c`` and
-    ``phase``.
+    Returns one row per tie-line end, with columns ``mu``, ``T``,
+    ``transition``, ``c`` and ``phase``, ordered by ``(mu, T)`` and along ``c``
+    within each.
     """
-    c, phase = dd["c"].to_numpy(), dd["phase"].to_numpy()
-    if len(dd) == 1:
-        return pd.DataFrame({"transition": [phase[0]], "c": c, "phase": phase})
-    rows = []
-    for i in range(len(dd) - 1):
-        name = f"{phase[i]}-{phase[i + 1]}"
-        rows.append((name, c[i], phase[i]))
-        rows.append((name, c[i + 1], phase[i + 1]))
-    return pd.DataFrame(rows, columns=["transition", "c", "phase"])
+    # a stable sort gathers each (mu, T) and keeps the c order within it
+    bdf = bdf.dropna(subset=["mu", "T"]).sort_values(["mu", "T"], kind="stable")
+    mu, T, c, phase = (bdf[k].to_numpy() for k in ("mu", "T", "c", "phase"))
+    first = np.ones(len(bdf), dtype=bool)
+    first[1:] = (mu[1:] != mu[:-1]) | (T[1:] != T[:-1])
+    last = np.roll(first, -1)
+    lone = np.flatnonzero(first & last)
+    left = np.flatnonzero(~last)  # every row but the last of its (mu, T) starts a tie-line to the next
+    names = np.array([f"{a}-{b}" for a, b in zip(phase[left], phase[left + 1])], dtype=object)
+    rows = np.concatenate([np.column_stack([left, left + 1]).ravel(), lone])
+    transition = np.concatenate([np.repeat(names, 2), phase[lone]])
+    # back into the order of the rows they come from
+    order = np.argsort(np.concatenate([np.repeat(left, 2), lone]), kind="stable")
+    rows = rows[order]
+    return pd.DataFrame({"mu": mu[rows], "T": T[rows], "transition": transition[order],
+                         "c": c[rows], "phase": phase[rows]})
 
 
 def _rescale_T(t):
@@ -485,12 +494,10 @@ def get_transitions(df):
     Useful for plotting below, but potentially also to augment the existing refining routines and
     acquire additional Free energies from calphy/etc. to improve the diagram.
     """
-    bdf = df.query("border").sort_values("c")
     # the border points at one (mu, T) are the ends of tie-lines: pair them up
     # into two-phase transitions (a lone point at mu=+-inf is its own) and add
-    # the 'transition' column; groupby keeps the c order within each group
-    tdf = bdf.groupby(["mu", "T"])[["c", "phase"]].apply(_tie_lines, include_groups=False)
-    tdf = tdf.reset_index(level=["mu", "T"]).reset_index(drop=True)
+    # the 'transition' column
+    tdf = _tie_lines(df.query("border").sort_values("c"))
 
     # cluster points that are assigned as one transition, because the same transition can appear multiple times in "disconnected" manner in a phase
     # diagram, e.g. a solid solution in contact with the melt interrupted by a higher melting intermetallic

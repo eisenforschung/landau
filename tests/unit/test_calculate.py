@@ -693,20 +693,23 @@ def test_border_edges_preserves_T_and_phase_from_source(grid_frame):
 # --- _tie_lines tests ---
 
 
+def _border_rows(phases, c, mu=0.1, T=500.0):
+    """Border rows at one ``(mu, T)``, sorted by c as get_transitions passes them."""
+    return pd.DataFrame({"mu": mu, "T": T, "c": c, "phase": phases})
+
+
 def test_tie_lines_pairs_neighbours_in_c():
-    # three phases at one (mu, T), sorted by c as get_transitions passes them:
-    # two tie-lines between c-neighbours, named in ascending-c order, the
-    # middle phase in both
-    dd = pd.DataFrame({"phase": ["fcc", "bcc", "liq"], "c": [0.2, 0.5, 0.7]})
-    out = _tie_lines(dd)
+    # three phases at one (mu, T): two tie-lines between c-neighbours, named
+    # in ascending-c order, the middle phase in both
+    out = _tie_lines(_border_rows(["fcc", "bcc", "liq"], [0.2, 0.5, 0.7]))
     assert out["transition"].tolist() == ["fcc-bcc", "fcc-bcc", "bcc-liq", "bcc-liq"]
     assert out["phase"].tolist() == ["fcc", "bcc", "bcc", "liq"]
     assert out["c"].tolist() == [0.2, 0.5, 0.5, 0.7]
+    assert out["mu"].tolist() == [0.1] * 4 and out["T"].tolist() == [500.0] * 4
 
 
 def test_tie_lines_two_phases_is_one_transition():
-    dd = pd.DataFrame({"phase": ["fcc", "liq"], "c": [0.2, 0.7]})
-    out = _tie_lines(dd)
+    out = _tie_lines(_border_rows(["fcc", "liq"], [0.2, 0.7]))
     assert out["transition"].tolist() == ["fcc-liq", "fcc-liq"]
     assert out["phase"].tolist() == ["fcc", "liq"]
 
@@ -716,17 +719,60 @@ def test_tie_lines_same_phase_twice_keeps_both_branches_apart():
     # a solid at the end. The liquid's branches are the two ends of the
     # liquid-liquid tie-line, the near one also the end of the solid-liquid
     # one; there is no liquid-only pairing across the field.
-    dd = pd.DataFrame({"phase": ["α", "liquid", "liquid"], "c": [0.0, 0.19, 0.81]})
-    out = _tie_lines(dd)
+    out = _tie_lines(_border_rows(["α", "liquid", "liquid"], [0.0, 0.19, 0.81]))
     assert out["transition"].tolist() == ["α-liquid", "α-liquid", "liquid-liquid", "liquid-liquid"]
     assert out["c"].tolist() == [0.0, 0.19, 0.19, 0.81]
 
 
 def test_tie_lines_single_phase_no_dash():
-    dd = pd.DataFrame({"phase": ["fcc"], "c": [0.3]})
-    out = _tie_lines(dd)
+    out = _tie_lines(_border_rows(["fcc"], [0.3]))
     assert out["transition"].tolist() == ["fcc"]
     assert out["c"].tolist() == [0.3]
+
+
+def test_tie_lines_pairs_only_within_one_mu_T():
+    # rows of three (mu, T) interleaved in c: a pair at one, a lone row at
+    # mu = -inf and a pair that shares its T with the first but not its mu
+    bdf = pd.DataFrame({
+        "mu": [0.2, -np.inf, 0.1, 0.2, 0.1],
+        "T": [500.0, 500.0, 500.0, 500.0, 500.0],
+        "c": [0.1, 0.15, 0.3, 0.6, 0.9],
+        "phase": ["fcc", "hcp", "bcc", "liq", "liq"],
+    })
+    out = _tie_lines(bdf)
+    assert out["mu"].tolist() == [-np.inf, 0.1, 0.1, 0.2, 0.2]
+    assert out["transition"].tolist() == ["hcp", "bcc-liq", "bcc-liq", "fcc-liq", "fcc-liq"]
+    assert out["c"].tolist() == [0.15, 0.3, 0.9, 0.1, 0.6]
+    assert out.index.tolist() == [0, 1, 2, 3, 4]
+
+
+def _tie_lines_one_group_at_a_time(bdf):
+    """What ``_tie_lines`` is to return, spelled out per ``(mu, T)``."""
+    rows = []
+    for (mu, T), dd in bdf.groupby(["mu", "T"]):
+        c, phase = dd["c"].tolist(), dd["phase"].tolist()
+        if len(dd) == 1:
+            rows.append((mu, T, phase[0], c[0], phase[0]))
+        for i in range(len(dd) - 1):
+            name = f"{phase[i]}-{phase[i + 1]}"
+            rows.append((mu, T, name, c[i], phase[i]))
+            rows.append((mu, T, name, c[i + 1], phase[i + 1]))
+    return pd.DataFrame(rows, columns=["mu", "T", "transition", "c", "phase"])
+
+
+@given(st.lists(
+    st.tuples(
+        st.sampled_from([-np.inf, -0.3, 0.0, 0.25, np.inf]),
+        st.sampled_from([300.0, 450.0, 1000.0]),
+        st.sampled_from([0.0, 0.2, 0.5, 0.5000001, 1.0]),
+        st.sampled_from(["fcc", "liquid", "A-B", "α"]),
+    ),
+    min_size=1, max_size=30,
+))
+def test_tie_lines_equal_the_pairing_of_each_mu_T(rows):
+    """Any mix of lone rows, pairs, longer groups and equal concentrations."""
+    bdf = pd.DataFrame(rows, columns=["mu", "T", "c", "phase"]).sort_values("c", kind="stable")
+    pd.testing.assert_frame_equal(_tie_lines(bdf), _tie_lines_one_group_at_a_time(bdf), check_exact=True)
 
 
 # --- cluster dispatcher tests ---

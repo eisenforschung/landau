@@ -58,3 +58,14 @@ the class removes. Reports the fit residual, the leave-one-out error (shape
 rather than freedom), and the spread of the reported free energy across
 `vinet` / `birch_murnaghan` / `murnaghan`, on two volume sets of equal size but
 different span so the span is separated from the degrees of freedom.
+
+## `bench_get_transitions.py`
+
+```bash
+python benchmarks/bench_get_transitions.py
+```
+
+Times the tie-line pairing inside `get_transitions` (`_tie_lines`) against
+the same pairing done with one `groupby.apply` call per `(mu, T)`, and puts
+both next to the whole `get_transitions` call and a `plot_phase_diagram`
+with the default poly method, which calls it once.
