@@ -123,17 +123,17 @@ CASES = {
     ),
     "AsePhase": (_ase_phase, "phase"),
     "PhonopyQuasiHarmonicPhase": (_quasiharmonic_phase, "phase"),
-    "WhitneyInterpolation": (lambda: _fit_in_T(WhitneyTemperatureInterpolator()), "T"),
-    "StitchedInterpolation": (lambda: _fit_in_T(StitchedFit()), "T"),
-    "SoftplusInterpolation": (lambda: _fit_in_T(SoftplusFit()), "T"),
-    "SGTEDerivative": (lambda: _fit_in_T(SGTE(3)).deriv(), "T"),
-    "SplineInterpolation": (lambda: SplineFit().fit(np.linspace(0, 1, 9), np.linspace(0, 1, 9) ** 3), "c"),
-    "RedlichKisterDerivative": (
+    "Whitney-fit": (lambda: _fit_in_T(WhitneyTemperatureInterpolator()), "T"),
+    "Stitched-fit": (lambda: _fit_in_T(StitchedFit()), "T"),
+    "Softplus-fit": (lambda: _fit_in_T(SoftplusFit()), "T"),
+    "SGTE-deriv": (lambda: _fit_in_T(SGTE(3)).deriv(), "T"),
+    "Spline-fit": (lambda: SplineFit().fit(np.linspace(0, 1, 9), np.linspace(0, 1, 9) ** 3), "c"),
+    "RK-deriv": (
         lambda: RedlichKister(3).fit(np.linspace(0, 1, 6), 0.1 * np.sin(3 * np.linspace(0, 1, 6))).deriv(),
         "c",
     ),
-    "WhitneySlice": (lambda: WhitneySurface2DInterpolator().fit(*_surface_samples()).slice_at(1000.0), "c"),
-    "SoftplusSliceDerivative": (
+    "Whitney2D-slice": (lambda: WhitneySurface2DInterpolator().fit(*_surface_samples()).slice_at(1000.0), "c"),
+    "Softplus2D-slice-deriv": (
         lambda: SoftplusSurface2DInterpolator().fit(*_surface_samples()).slice_at(1000.0).deriv(),
         "c",
     ),

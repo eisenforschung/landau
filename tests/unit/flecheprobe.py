@@ -74,7 +74,7 @@ def build():
         "MiscibilityGapRefiner": refine.MiscibilityGapRefiner(),
         "Concave": poly.Concave(),
         "Segments": poly.Segments(),
-        "UnivariateSpline": SplineFit().fit(C, C**2).spline,
+        "UnivariateSpline": SplineFit().fit(C, C**2).func.__closure__[0].cell_contents,
         "WhitneyRBFInterpolator": WhitneyRBFInterpolator().fit(
             np.column_stack([GRID_T, GRID_C]), GRID_H
         ),
@@ -86,7 +86,7 @@ def build():
 
 
 def fitted_interpolations():
-    """What the fits and derivatives return, one of each class."""
+    """What the fits and derivatives return: closures, each in a ``_CallableInterpolation``."""
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import pickleprobe
 

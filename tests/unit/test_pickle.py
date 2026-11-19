@@ -31,6 +31,8 @@ import pickleprobe
 SERIALIZERS = {"pickle": pickle, "dill": dill, "cloudpickle": cloudpickle}
 CASES = pickleprobe.available()
 PHASES = [n for n in CASES if pickleprobe.CASES[n][1] == "phase"]
+#: Bare fits are closures, which plain pickle refuses; a phase pickles without its cached fits.
+ROUND_TRIPS = [(n, s) for n in CASES for s in SERIALIZERS if n in PHASES or s != "pickle"]
 
 #: A refit Whitney RBF and a re-solved phase reproduce the original to round-off.
 ATOL = 1e-12
@@ -54,8 +56,7 @@ def _clear_landau_caches():
 
 
 @pytest.mark.parametrize("evaluated", [False, True], ids=["fresh", "evaluated"])
-@pytest.mark.parametrize("serializer", list(SERIALIZERS))
-@pytest.mark.parametrize("name", CASES)
+@pytest.mark.parametrize(("name", "serializer"), ROUND_TRIPS)
 def test_round_trip_reproduces_the_values(name, serializer, evaluated):
     obj = pickleprobe.build(name)
     expected = pickleprobe.values(name, pickleprobe.build(name))
@@ -247,6 +248,7 @@ def test_unfitted_whitney_estimator_round_trips():
 
 _WRITER = r"""
 import json, pickle, sys
+import dill
 sys.path.insert(0, sys.argv[1])
 import pickleprobe
 out = {}
@@ -254,7 +256,7 @@ for name in pickleprobe.available():
     obj = pickleprobe.build(name)
     out[name] = {"values": pickleprobe.values(name, obj).tolist(), "hash": hash(obj)}
     with open(f"{sys.argv[2]}/{name}.pkl", "wb") as f:
-        pickle.dump(obj, f)
+        (pickle if pickleprobe.CASES[name][1] == "phase" else dill).dump(obj, f)
 print(json.dumps({"salt": hash("x"), "cases": out}))
 """
 
@@ -279,7 +281,7 @@ def written_elsewhere(tmp_path_factory):
 def test_pickle_from_another_interpreter(written_elsewhere, name):
     root, written = written_elsewhere
     with open(root / f"{name}.pkl", "rb") as f:
-        loaded = pickle.load(f)
+        loaded = (pickle if name in PHASES else dill).load(f)
     _clear_landau_caches()
     np.testing.assert_allclose(pickleprobe.values(name, loaded), written["cases"][name]["values"], rtol=0, atol=ATOL)
     if name in PHASES:

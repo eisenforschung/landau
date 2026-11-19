@@ -17,8 +17,9 @@ def diagram(phases, Ts, mu):
 ```
 
 Calling `diagram` again with phases rebuilt from the same data hits the cache,
-in this interpreter and in the next one. Phases and fitted interpolations can
-also be cached as results.
+in this interpreter and in the next one. Phases can also be cached as results;
+a bare fitted interpolation is a closure, which needs a dill or cloudpickle
+value store.
 
 `AsePhase` needs [fleche-ase](https://pypi.org/project/fleche-ase/) as well
 (`pip install fleche-ase`); without it, a call taking an `AsePhase` runs

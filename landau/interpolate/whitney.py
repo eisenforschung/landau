@@ -22,6 +22,7 @@ from sklearn.utils.validation import check_is_fitted
 from .basic import (
     TemperatureInterpolator,
     Interpolation,
+    _CallableInterpolation,
     _scalarize,
     SurfaceInterpolator,
     FittedSurface,
@@ -368,7 +369,7 @@ class WhitneyTemperatureInterpolator(TemperatureInterpolator):
 
         Returns
         -------
-        WhitneyInterpolation
+        Interpolation
             ``f(T)``, shape-preserving: scalar in, Python scalar out;
             ``(M,)`` in, ``(M,)`` ndarray out.
         """
@@ -381,54 +382,37 @@ class WhitneyTemperatureInterpolator(TemperatureInterpolator):
             epsilon=self.epsilon,
             grad_eps=self.grad_eps,
         ).fit(T, y)
-        return WhitneyInterpolation(interp)
 
+        def predict(t):
+            t_arr = np.asarray(t, dtype=float)
+            return _scalarize(interp.predict(t_arr.reshape(-1, 1)).reshape(t_arr.shape))
 
-class WhitneyInterpolation(Interpolation):
-    """``f(T)`` from a 1-D :class:`WhitneyRBFInterpolator`; returned by :meth:`WhitneyTemperatureInterpolator.fit`.
-
-    Shape-preserving: scalar in, Python scalar out; ``(M,)`` in, ``(M,)`` ndarray out.
-    The derivative is the numerical one inherited from :class:`~.Interpolation`.
-    """
-
-    def __init__(self, rbf: WhitneyRBFInterpolator):
-        self.rbf = rbf
-
-    def __call__(self, t):
-        t_arr = np.asarray(t, dtype=float)
-        return _scalarize(self.rbf.predict(t_arr.reshape(-1, 1)).reshape(t_arr.shape))
-
-
-class WhitneySlice(Interpolation):
-    """``f(c)`` at fixed ``T`` from a 2-D (T, c) :class:`WhitneyRBFInterpolator`; see :class:`WhitneyFittedSurface`.
-
-    The c-derivative is the numerical one inherited from :class:`~.Interpolation`.
-    """
-
-    def __init__(self, rbf: WhitneyRBFInterpolator, T: float):
-        self.rbf = rbf
-        self.T = float(T)
-
-    def __call__(self, c):
-        c_arr = np.asarray(c, float)
-        flat = c_arr.ravel()
-        X = np.column_stack([np.full(flat.shape, self.T), flat])
-        return _scalarize(self.rbf.predict(X).reshape(c_arr.shape))
+        return _CallableInterpolation(predict)
 
 
 class WhitneyFittedSurface(FittedSurface):
     """Fitted surface for :class:`WhitneySurface2DInterpolator`.
 
     Wraps a :class:`WhitneyRBFInterpolator` trained over the 2-D (T, c) space.
-    :meth:`slice_at` returns a :class:`WhitneySlice` at fixed T, whose
-    c-derivative is a numerical central difference.
+    :meth:`slice_at` returns a closure at fixed T wrapped in
+    :class:`~landau.interpolate.basic._CallableInterpolation`; the c-derivative
+    is a numerical central difference (inherited from :class:`~.Interpolation`).
     """
 
     def __init__(self, rbf: WhitneyRBFInterpolator):
         self._rbf = rbf
 
-    def slice_at(self, T: float) -> WhitneySlice:
-        return WhitneySlice(self._rbf, T)
+    def slice_at(self, T: float) -> _CallableInterpolation:
+        Tf = float(T)
+        rbf = self._rbf
+
+        def predict_at_T(c):
+            c_arr = np.asarray(c, float)
+            flat = c_arr.ravel()
+            X = np.column_stack([np.full(flat.shape, Tf), flat])
+            return _scalarize(rbf.predict(X).reshape(c_arr.shape))
+
+        return _CallableInterpolation(predict_at_T)
 
 
 @dataclass(frozen=True, eq=True)
@@ -436,7 +420,7 @@ class WhitneySurface2DInterpolator(SurfaceInterpolator):
     """2-D free-energy surface backed by a Whitney-extended RBF.
 
     Trains a single :class:`WhitneyRBFInterpolator` over all scattered (T, c, H)
-    samples at once; slicing at a fixed T returns a :class:`WhitneySlice` with numerical
+    samples at once; slicing at a fixed T returns a closure with numerical
     c-derivatives (via the inherited :meth:`~.Interpolation.deriv`).
 
     Unlike :class:`CalphadSurface2DInterpolator`, there is no terminal-phase

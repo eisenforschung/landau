@@ -230,19 +230,15 @@ def test_refiner_settings_move_the_digest(left, right):
 
 
 # ---------------------------------------------------------------------------
-# Fitted interpolations digest by their state; bare closures are refused
+# Fitted interpolations are closures, digested by what they captured
 # ---------------------------------------------------------------------------
 
 
-def test_fleche_cannot_key_on_a_closure():
-    """Why a closure is refused, stated as an executable fact.
-
-    Two closures out of one factory share a code object, and since 0.22.1 fleche
-    falls back to digesting that alone whenever what a closure captured is itself
-    indigestible -- so a raw closure is not a usable key.
-    """
+def test_fleche_keys_a_closure_on_its_captures():
+    """Two closures out of one factory share a code object; fleche tells them apart by their cells."""
     from scipy.interpolate import InterpolatedUnivariateSpline
 
+    load_entry_points()
     x = np.linspace(0, 1, 10)
 
     def closure(power):
@@ -250,19 +246,27 @@ def test_fleche_cannot_key_on_a_closure():
         return lambda c: spline(c)
 
     quadratic, cubic = closure(2), closure(3)
-    assert quadratic(0.5) != cubic(0.5)
     assert digest(quadratic.__code__) == digest(cubic.__code__)
+    assert digest(quadratic) != digest(cubic)
+    assert digest(quadratic) == digest(closure(2))
 
 
-def test_wrapped_closures_are_refused():
+def test_a_closure_over_an_indigestible_capture_is_refused():
+    """No fallback to the code object alone, which would collide every closure of one factory."""
     from landau.interpolate.basic import _CallableInterpolation
 
+    class Opaque:
+        pass
+
+    def closure(captured):
+        return lambda x: x if captured else -x
+
     load_entry_points()
-    with pytest.raises(Indigestible, match="code object"):
-        digest(_CallableInterpolation(lambda x: x**2))
+    with pytest.raises(Indigestible):
+        digest(_CallableInterpolation(closure(Opaque())))
 
 
-#: Each fitted interpolation class, fitted twice to the same data and once to different data.
+#: Each kind of fit, fitted twice to the same data and once to different data.
 _T = np.linspace(100.0, 1000.0, 30)
 _C = np.linspace(0.0, 1.0, 9)
 _SURFACE_T, _SURFACE_C = np.repeat(_T[::5], 9), np.tile(_C, 6)
@@ -282,14 +286,14 @@ def _fits(scale):
     f_C = 0.1 * scale * np.sin(3 * _C)
     H = -1e-3 * _SURFACE_T + 0.2 * scale * _SURFACE_C * (1 - _SURFACE_C)
     return {
-        "SplineInterpolation": SplineFit().fit(_C, f_C),
-        "StitchedInterpolation": StitchedFit().fit(_T, f_T),
-        "WhitneyInterpolation": WhitneyTemperatureInterpolator().fit(_T, f_T),
-        "SoftplusInterpolation": SoftplusFit().fit(_T, f_T),
-        "SGTEDerivative": SGTE(3).fit(_T, f_T).deriv(),
-        "RedlichKisterDerivative": RedlichKister(3).fit(_C, f_C).deriv(),
-        "WhitneySlice": WhitneySurface2DInterpolator().fit(_SURFACE_T, _SURFACE_C, H).slice_at(500.0),
-        "SoftplusSliceDerivative": SoftplusSurface2DInterpolator()
+        "Spline-fit": SplineFit().fit(_C, f_C),
+        "Stitched-fit": StitchedFit().fit(_T, f_T),
+        "Whitney-fit": WhitneyTemperatureInterpolator().fit(_T, f_T),
+        "Softplus-fit": SoftplusFit().fit(_T, f_T),
+        "SGTE-deriv": SGTE(3).fit(_T, f_T).deriv(),
+        "RK-deriv": RedlichKister(3).fit(_C, f_C).deriv(),
+        "Whitney2D-slice": WhitneySurface2DInterpolator().fit(_SURFACE_T, _SURFACE_C, H).slice_at(500.0),
+        "Softplus2D-slice-deriv": SoftplusSurface2DInterpolator()
         .fit(_SURFACE_T, _SURFACE_C, H)
         .slice_at(500.0)
         .deriv(),
@@ -302,10 +306,12 @@ def fits():
 
 
 @pytest.mark.parametrize("name", list(_fits(1.0)))
-def test_fitted_interpolations_digest_by_their_state(fits, name):
+def test_fitted_interpolations_digest_by_their_captures(fits, name):
+    from landau.interpolate.basic import _CallableInterpolation
+
     load_entry_points()
     one, same, other = (f[name] for f in fits)
-    assert type(one).__name__ == name
+    assert type(one) is _CallableInterpolation
     assert digest(one) == digest(same)
     assert digest(one) != digest(other)
 
@@ -333,8 +339,7 @@ def test_fitted_splines_digest_by_knots_and_coefficients():
     assert digest(quadratic) != digest(InterpolatedUnivariateSpline(x, x**2, ext=1))
 
 
-def test_digestible_interpolations_are_not_refused():
-    """The refusal must be aimed at closures only, not at fitted curves generally."""
+def test_interpolations_with_state_digest_by_it():
     T = np.linspace(100, 1000, 20)
     load_entry_points()
     assert digest(PolyFit(3).fit(T, T * 2.0)) != digest(PolyFit(3).fit(T, T * 3.0))

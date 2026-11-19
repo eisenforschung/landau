@@ -11,6 +11,7 @@ from .basic import (
     Interpolation,
     SurfaceInterpolator,
     FittedSurface,
+    _CallableInterpolation,
     _scalarize,
 )
 
@@ -165,23 +166,9 @@ class SoftplusFit(ConcentrationInterpolator, TemperatureInterpolator):
         p0, lo, hi = self._seed(xn, y)
         popt = _fit_softplus(xn, y, p0, (lo, hi),
                              loss=self.loss, f_scale=self.f_scale, max_nfev=self.max_nfev).x
-        return SoftplusInterpolation(popt, n, shift, scale)
-
-
-class SoftplusInterpolation(Interpolation):
-    """A fitted softplus sum in ``xn = (x - shift)/scale``; returned by :meth:`SoftplusFit.fit`.
-
-    ``parameters`` is the flat ``[a_0, b_0, c_0, ..., offset]`` vector of ``n`` terms (see :func:`_flat`).
-    """
-
-    def __init__(self, parameters: np.ndarray, n: int, shift: float, scale: float):
-        self.parameters = parameters
-        self.n = n
-        self.shift = shift
-        self.scale = scale
-
-    def __call__(self, x):
-        return _terms((np.asarray(x, float) - self.shift) / self.scale, *_split(self.parameters, self.n))
+        return _CallableInterpolation(
+            lambda x_new: _terms((np.asarray(x_new, float) - shift) / scale, *_split(popt, n))
+        )
 
 
 def _standardize(x):
@@ -219,25 +206,15 @@ class _SoftplusSlice(Interpolation):
         return _scalarize(_terms(cn, self.a, self.b, self.c, self.offset))
 
     def deriv(self) -> Interpolation:
-        return SoftplusSliceDerivative(self.a, self.b, self.c, self.cm, self.cs)
+        # d/dc [ a*softplus(b*(cn + c)) ] = a*sigmoid(b*(cn+c))*b * d(cn)/dc,
+        # with d(cn)/dc = 1/cs
+        a, b, c, cm, cs = self.a, self.b, self.c, self.cm, self.cs
 
+        def dfdc(cc):
+            cn = (np.asarray(cc, float) - cm) / cs
+            return _scalarize(_terms_dc(cn, a, b, c) / cs)
 
-class SoftplusSliceDerivative(Interpolation):
-    """``d/dc`` of a :class:`_SoftplusSlice` with the same parameters.
-
-    ``d/dc [a*softplus(b*(cn + c))] = a*sigmoid(b*(cn + c))*b / cs``, since ``d(cn)/dc = 1/cs``.
-    """
-
-    def __init__(self, a: np.ndarray, b: np.ndarray, c: np.ndarray, cm: float, cs: float):
-        self.a = a
-        self.b = b
-        self.c = c
-        self.cm = cm
-        self.cs = cs
-
-    def __call__(self, cc):
-        cn = (np.asarray(cc, float) - self.cm) / self.cs
-        return _scalarize(_terms_dc(cn, self.a, self.b, self.c) / self.cs)
+        return _CallableInterpolation(dfdc)
 
 
 def _scipy_at_least(major: int, minor: int) -> bool:

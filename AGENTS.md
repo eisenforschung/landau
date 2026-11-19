@@ -165,10 +165,9 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
 - `basic.py`: `Interpolator` (factory, `fit(x, y) → Interpolation`) and `Interpolation` (callable fitted curve with `deriv() → Interpolation`);
   type-only subclasses `TemperatureInterpolator` / `ConcentrationInterpolator`.
   `deriv()` is analytic for `PolyFit` (`PolynomialInterpolation`, `coefficients` in ascending order), `SGTE` (`SGTEInterpolation`) and `RedlichKister` (`RedlichKisterInterpolation`);
-  every other fit returns a module-level `Interpolation` class holding its fitted state, never a closure, so fits pickle and digest;
-  their derivatives fall back to `NumericalDerivative`.
-  `_CallableInterpolation` remains for wrapping a caller's own callable;
-  no fit in landau returns one.
+  everything else is closure-backed (`_CallableInterpolation`) and falls back to `NumericalDerivative`.
+  Closure fits pickle with dill and cloudpickle, not plain `pickle`;
+  phases pickle plainly because their cached fits are not part of their state.
   Also `SplineFit` (wraps `UnivariateSpline`, `smoothing=0` interpolates, `degree` clamped to `len(x)-1`), `StitchedFit` (sorts its input, `edge` clamped), `G_calphad`, `_scalarize`.
   `RedlichKister.fit` is one `numpy.linalg.lstsq` on the mixing basis (under-determined → minimum norm, terminals only → the chord).
 - 2-D: `SurfaceInterpolator.fit(T, c, H) → FittedSurface`, `FittedSurface.slice_at(T) → Interpolation`.
@@ -282,8 +281,9 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
   landau hooks no ASE type.
   `PhonopyQuasiHarmonicPhase` is digested by its fields, its phonopy `ThermalProperties` through `thermal_properties_digest` (registered only when phonopy imports): their `__dict__` less run results, temperatures, backend and `__init__`-derived attributes (`quasiharmonic._thermal_properties_state`), never the pickled bytes.
   The phase's `__eq__`/`hash` key (`_key`, a `cached_property`) is built from that same state.
-  Fitted interpolation classes are hooked and digest by their state;
-  a `_CallableInterpolation` around a closure raises `Indigestible` (two closures share one code object).
+  `_CallableInterpolation` is hooked and digests through its closure, which fleche keys on the code object plus the captured values (an indigestible capture raises `Indigestible`, no code-only fallback);
+  so a key built on a bare fit moves with the Python version and with edits to the closure body.
+  The `UnivariateSpline` and `WhitneyRBFInterpolator` hooks exist for what those closures capture.
   `_hash` is a `cached_property`, not a dataclass field, so dataclass-walking digests don't fold in Python's per-process hash salt.
 
 ## Tests

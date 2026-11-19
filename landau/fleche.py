@@ -19,7 +19,7 @@ loader.  :func:`landau_digest` is exported for reuse on a custom type, via
 Only types fleche cannot digest itself are hooked: :class:`~landau.refine.Refiner`
 and :class:`~landau.interpolate.FittedSurface` (plain classes, and no subclass of
 either is a dataclass), the plain :class:`~landau.interpolate.Interpolation`
-classes the fits return, and
+classes, and
 :class:`~landau.interpolate.whitney.WhitneyRBFInterpolator` (an sklearn-style
 estimator whose fitted state is a scipy ``RBFInterpolator`` and a ``ConvexHull``).
 Everything fleche already handles -- every
@@ -37,13 +37,13 @@ That covers phases only because
 (and the latter its comparison key) out of the dataclass fields, as a
 ``cached_property`` computed on first use.
 
-Every fitted interpolation is an instance of a module-level class holding its
-fitted state (``WhitneyInterpolation``, ``SplineInterpolation``,
-``StitchedInterpolation``, ...), digested here by that state.
-:class:`~landau.interpolate.basic._CallableInterpolation` around a user's own
-closure is still refused -- two closures over one code object can be told apart
-only by what they captured, and fleche falls back to digesting the code object
-alone whenever that is itself indigestible (#449).
+Most fits return a :class:`~landau.interpolate.basic._CallableInterpolation`
+around a closure.  fleche digests a closure by its code object and the values it
+captured, so two fits of one interpolator differ by their captures, and a capture
+fleche cannot digest makes the whole closure ``Indigestible``.  The fitted scipy
+spline and the Whitney estimator such closures capture are covered by the hooks
+below.  A closure's code object is part of its digest, so a key built on a fit
+moves with the Python version and with any edit to the closure.
 
 :func:`spline_digest` and :func:`thermal_properties_digest` are the hooks here for
 types landau does not own: fleche refuses a fitted scipy spline and a phonopy
@@ -57,25 +57,13 @@ fleche refuses it.
 """
 
 import dataclasses
-import types
-from collections.abc import Mapping
 
 from fleche.digest import Digest, Hook, Indigestible, digest
 from pyiron_snippets.deprecate import deprecate
 from scipy.interpolate import UnivariateSpline
 
-from .interpolate.basic import (
-    FittedSurface,
-    NumericalDerivative,
-    PolynomialInterpolation,
-    RedlichKisterDerivative,
-    SGTEDerivative,
-    SplineInterpolation,
-    StitchedInterpolation,
-    _CallableInterpolation,
-)
-from .interpolate.softplus import SoftplusInterpolation, SoftplusSliceDerivative
-from .interpolate.whitney import WhitneyInterpolation, WhitneyRBFInterpolator, WhitneySlice
+from .interpolate.basic import FittedSurface, NumericalDerivative, PolynomialInterpolation, _CallableInterpolation
+from .interpolate.whitney import WhitneyRBFInterpolator
 from .phases import AsePhase
 from .phases.quasiharmonic import PhonopyQuasiHarmonicPhase, _thermal_properties_state  # importable without phonopy
 from .refine import Refiner
@@ -110,40 +98,9 @@ def _declared_state(obj) -> dict:
     return dict(state)
 
 
-def _opaque_callables(value, path: str = "") -> list[str]:
-    """Paths of plain functions reachable from *value* through containers.
-
-    fleche digests a :class:`types.FunctionType` from what it captured where it
-    can, and from its code object alone where it cannot -- and fits of one
-    interpolator share that code object.  Only containers cheap to walk are
-    descended into; numpy arrays hold no functions and are skipped.
-    """
-    if isinstance(value, types.FunctionType):
-        return [path or "the value itself"]
-    if isinstance(value, Mapping):
-        return [p for k, v in value.items() for p in _opaque_callables(v, f"{path}[{k!r}]")]
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [p for i, v in enumerate(value) for p in _opaque_callables(v, f"{path}[{i}]")]
-    return []
-
-
 def landau_digest(obj) -> Digest:
-    """Digest a landau object from its declared state.
-
-    Raises:
-        Indigestible: if that state holds a plain function, whose digest would
-            not tell it apart from any other closure over the same code.
-    """
-    state = _declared_state(obj)
-    opaque = _opaque_callables(state)
-    if opaque:
-        raise Indigestible(
-            f"{type(obj).__name__} holds a plain function at {', '.join(sorted(opaque))}; "
-            "fleche digests a function by its code object alone once what it captured "
-            "is indigestible, so two fits would collide. "
-            "Pass the Interpolator and its samples instead."
-        )
-    return digest((type(obj).__name__, state))
+    """Digest a landau object from its declared state."""
+    return digest((type(obj).__name__, _declared_state(obj)))
 
 
 @deprecate("fleche digests an AsePhase by its fields; call fleche.digest.digest instead", version="2.0")
@@ -240,14 +197,6 @@ digest_hooks = [
     Hook(FittedSurface, landau_digest),
     Hook(NumericalDerivative, landau_digest),
     Hook(PolynomialInterpolation, landau_digest),
-    Hook(SGTEDerivative, landau_digest),
-    Hook(RedlichKisterDerivative, landau_digest),
-    Hook(SplineInterpolation, landau_digest),
-    Hook(StitchedInterpolation, landau_digest),
-    Hook(SoftplusInterpolation, landau_digest),
-    Hook(SoftplusSliceDerivative, landau_digest),
-    Hook(WhitneyInterpolation, landau_digest),
-    Hook(WhitneySlice, landau_digest),
     Hook(_CallableInterpolation, landau_digest),
     Hook(UnivariateSpline, spline_digest),
     Hook(WhitneyRBFInterpolator, whitney_rbf_digest),
