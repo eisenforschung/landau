@@ -276,8 +276,8 @@ def test_ids_unique_and_selectable(ct_figure):
     root, elements, _ = _save(ct_figure)
     all_ids = [el.get("id") for el in root.iter() if el.get("id") is not None]
     assert len(all_ids) == len(set(all_ids))
+    assert len(elements) > 30
     assert all(ID_RE.fullmatch(i) for i in elements)
-    assert set(elements) <= set(all_ids)
 
 
 def test_phase_fields_and_labels(ct_figure, eutectic_diagram):
@@ -368,7 +368,8 @@ def test_invariants(ct_figure, eutectic_diagram):
     (T,) = triple["T"].unique()
     (line,) = _groups(root, "landau-triple")
     assert json.loads(line.get("data-phases")) == sorted(triple.phase.unique())
-    assert float(line.get("data-t")) == pytest.approx(T, rel=1e-5)
+    assert float(line.get("data-t")) == pytest.approx(T, rel=1e-9)
+    assert float(line.get("data-mu")) == pytest.approx(triple["mu"].unique().item(), rel=1e-9)
 
     congruent = eutectic_diagram[eutectic_diagram["locus"] == Locus.CONGRUENT]
     expected = {("triple", f"{T:.0f} K")} | {("congruent", f"{t:.0f} K")
@@ -377,6 +378,11 @@ def test_invariants(ct_figure, eutectic_diagram):
     got = {(g.get("data-locus"), g.find(f".//{SVG}text").text) for g in labels}
     assert got == expected
     assert len(labels) == len(expected)
+    for g in labels:
+        # the label reads the temperature it carries
+        assert g.find(f".//{SVG}text").text == f"{float(g.get('data-t')):.0f} K"
+    (at_triple,) = [g for g in labels if g.get("data-locus") == "triple"]
+    assert at_triple.get("data-mu") == line.get("data-mu")
 
 
 def test_two_phase_regions(ct_figure):
@@ -574,24 +580,66 @@ def test_ticks_and_ticklabels_separate(ct_figure):
         assert g.find(f".//{SVG}text").text == g.get("data-text")
     (label,) = list(ids["ax0-layer-yaxis-label"])
     assert label.get("data-text") == "$T$ [K]"
+    ax = ct_figure.axes[0]
+    assert [float(g.get("data-value")) for g in ticks] == pytest.approx(list(ax.get_xticks()), rel=1e-9)
+    assert {g.get("data-which") for g in ticks} == {"major"}
+    assert [g.get("id") for g in labels] == [f"ax0-xticklabel-{k}" for k in range(len(ax.get_xticks()))]
+
+
+def test_minor_ticks_grid_and_titles(ct_figure):
+    ax = ct_figure.axes[0]
+    ax.minorticks_on()
+    ax.grid(True)
+    ax.set_title("Ca-Mg")
+    ax.set_title("draft", loc="right")
+    ct_figure.suptitle("fig. 1")
+    root, elements, _ = _save(ct_figure)
+    ids = _by_id(root)
+    minor = [g for g in ids["ax0-layer-xaxis-ticks"] if g.get("data-which") == "minor"]
+    assert len(minor) > 0 and all(g.get("id").startswith("ax0-xtick-minor-") for g in minor)
+    assert {g.get("class") for g in ids["ax0-layer-xaxis-grid"]} == {"landau-xgrid"}
+    assert [g.get("id") for g in ids["ax0-layer-title"]] == ["ax0-title-center", "ax0-title-right"]
+    assert [g.get("id") for g in ids["figure-layer-title"]] == ["figure-title-suptitle"]
+    assert elements["figure-title-suptitle"] == {"class": "landau-title", "data-layer": "title"}
 
 
 def test_text_as_paths(ct_figure):
+    """Labels are then glyph outlines and keep matplotlib's own outline: two copies, the first stroked."""
     root, _, _ = _save(ct_figure, text_as_text=False)
     assert next(root.iter(f"{SVG}text"), None) is None
-    assert len(_groups(root, "landau-label")) == 3
+    labels = _groups(root, "landau-label")
+    assert len(labels) == 3
+    for g in labels:
+        first, second = list(g)
+        assert _style(first)["stroke"] == "#ffffff" and float(_style(first)["stroke-width"]) == 3
+        assert "stroke" not in _style(second)
 
 
-def test_figure_left_unchanged(ct_figure):
-    ax = ct_figure.axes[0]
-    before = _render(ct_figure)
+@pytest.mark.parametrize("figure", ["ct_figure", "unary_figure"])
+@pytest.mark.parametrize("fails", [False, True])
+def test_figure_left_unchanged(figure, fails, request, monkeypatch):
+    """Also when drawing fails after the save has put its ids, strokes and hit targets on the figure."""
+    fig = request.getfixturevalue(figure)
+    ax = fig.axes[0]
+    (by_hand,) = ax.plot([], [])
+    by_hand.set_gid("by-hand")
+    before = _render(fig)
     children = list(ax.get_children())
     effects = [t.get_path_effects() for t in ax.texts]
-    _save(ct_figure)
+    assert any(effects)
+    if fails:
+        def broken(self, renderer):
+            raise RuntimeError("no ink")
+        monkeypatch.setattr(type(ax.spines["top"]), "draw", broken)
+        with pytest.raises(RuntimeError, match="no ink"):
+            _save(fig)
+        monkeypatch.undo()
+    else:
+        _save(fig)
     assert list(ax.get_children()) == children
     assert [t.get_path_effects() for t in ax.texts] == effects
-    assert all(a.get_gid() is None for a in ct_figure.findobj())
-    np.testing.assert_array_equal(_render(ct_figure), before)
+    assert [a.get_gid() for a in fig.findobj() if a.get_gid() is not None] == ["by-hand"]
+    np.testing.assert_array_equal(_render(fig), before)
 
 
 def test_plotting_sets_no_gids(ct_figure):
@@ -616,21 +664,23 @@ def test_namespace_prefixes_do_not_depend_on_other_users_of_elementtree(ct_figur
 
 
 def test_id_prefix(ct_figure):
+    _, unprefixed, _ = _save(ct_figure)
     root, elements, _ = _save(ct_figure, id_prefix="m1_")
     ids = _by_id(root)
-    assert all(i.startswith("m1_") for i in ids)
-    assert all(i.startswith("m1_") for i in elements)
-    assert "m1_ax0-phase-fcc-0" in ids
+    assert all(i.startswith("m1_") and not i.startswith("m1_m1_") for i in ids)
+    assert elements == {f"m1_{i}": attrs for i, attrs in unprefixed.items()}
+    assert {"m1_figure", "m1_ax0", "m1_ax0-layer-phases", "m1_ax0-phase-fcc-0"} <= set(ids)
     refs = []
     for el in root.iter():
         for key, value in el.attrib.items():
             if key in (XLINK_HREF, "href") and value.startswith("#"):
                 refs.append(value[1:])
             refs.extend(re.findall(r"url\(#([^)]+)\)", value))
-    assert refs
+    assert len(refs) > 20  # clip paths and glyphs
     assert all(r in ids for r in refs)
-    with pytest.raises(ValueError):
-        _save(ct_figure, id_prefix="1x")
+    for bad in ("1x", "a b"):
+        with pytest.raises(ValueError):
+            _save(ct_figure, id_prefix=bad)
 
 
 @pytest.mark.parametrize("diagram, pairs", [
@@ -767,9 +817,38 @@ def test_user_overlay_layer(ct_figure):
     (run,) = _groups(root, "landau-calphy-liquid")
     assert run.get("id") == "ax0-calphy-liquid-0"
     assert run.get("data-c") == "0.3"
-    assert _by_id(root)["ax0-layer-calphy-liquid"] is not None
-    with pytest.raises(ValueError):
-        tag(ax.plot([0, 1], [500, 500]), "not a layer")
+    assert list(_by_id(root)["ax0-layer-calphy-liquid"]) == [run]
+    for layer, kind in (("not a layer", None), ("layer", "not a kind")):
+        with pytest.raises(ValueError):
+            tag(ax.plot([0, 1], [500, 500]), layer, kind=kind)
+
+
+def test_element_names_and_repeated_ids(ct_figure):
+    ax = ct_figure.axes[0]
+    for _ in range(3):
+        tag(ax.plot([0.3, 0.3], [400, 900]), "runs", kind="run", name="Ca-Mg #1")
+    tag(ax.plot([0.3, 0.3], [400, 900]), "runs", kind="run", name=("Ca-Mg", 2.5))
+    tag(ax.plot([0.3, 0.3], [400, 900]), "runs", kind="run")
+    tag(ax.plot([0.3, 0.3], [400, 900]), "runs", kind="run")
+    _, elements, _ = _save(ct_figure)
+    assert [i for i, a in elements.items() if a["class"] == "landau-run"] == [
+        "ax0-run-Ca-Mg_1", "ax0-run-Ca-Mg_1_2", "ax0-run-Ca-Mg_1_3", "ax0-run-Ca_Mg-2_5", "ax0-run-0", "ax0-run-1"]
+
+
+def test_arguments(ct_figure, tmp_path):
+    """``fig`` may be an axes, ``fname`` a path; the two switches switch off what they name."""
+    _, default, raw = _save(ct_figure)
+    path = tmp_path / "diagram.svg"
+    assert save_layered_svg(ct_figure.axes[0], path) == default
+    assert path.read_bytes() == raw
+    assert save_layered_svg(ct_figure, str(path), inkscape=False, coexistence=False) == {
+        i: a for i, a in default.items() if a["class"] not in ("landau-two-phase", "landau-boundary")}
+    root = ET.fromstring(path.read_bytes())
+    assert all(INKSCAPE not in key for el in root.iter() for key in el.attrib)
+    assert b"inkscape:groupmode" in raw
+    with pytest.raises(ValueError, match="SVG"):
+        _save(ct_figure, format="png")
+    _save(ct_figure, format="svg")
 
 
 def test_tag_takes_nested_containers(ct_figure):
