@@ -20,8 +20,10 @@ import dill
 import numpy as np
 import pytest
 
+import landau
+import landau.phases
 from landau.interpolate.whitney import WhitneyRBFInterpolator
-from landau.phases import STATE_VERSION, Phase, TemperatureDependentLinePhase
+from landau.phases import Phase, TemperatureDependentLinePhase
 
 sys.path.insert(0, os.path.dirname(__file__))
 import pickleprobe
@@ -73,16 +75,41 @@ def test_phase_state_is_its_fields_and_a_version_tag(name):
     pickleprobe.values(name, phase)
     hash(phase)
     state = phase.__getstate__()
-    assert state.pop("__landau__")[0] == STATE_VERSION
+    assert state.pop("__landau__") == landau.__version__
     assert list(state) == [f.name for f in dataclasses.fields(phase)]
 
 
-def test_state_from_a_newer_layout_is_refused():
+@pytest.mark.parametrize(
+    ("written", "shown"), [("1.20.0", "landau 1.20.0"), (None, "landau <= 1.19")], ids=["tagged", "untagged"]
+)
+def test_state_older_than_the_minimum_is_refused(monkeypatch, written, shown):
+    monkeypatch.setattr(landau.phases, "MINIMUM_STATE_VERSION", "1.21.0")
     phase = pickleprobe.build("TDLP-SGTE")
     state = phase.__getstate__()
-    state["__landau__"] = (STATE_VERSION + 1, "99.0")
-    with pytest.raises(ValueError, match="newer than this landau"):
+    if written is None:
+        del state["__landau__"]
+    else:
+        state["__landau__"] = written
+    with pytest.raises(ValueError, match=rf"pickled by {shown},.*>= 1\.21\.0; install landau<1\.21\.0"):
         object.__new__(type(phase)).__setstate__(state)
+
+
+@pytest.mark.parametrize("written", ["1.21.0", "2.3.1", "not-a-version"])
+def test_state_at_or_above_the_minimum_loads(monkeypatch, written):
+    monkeypatch.setattr(landau.phases, "MINIMUM_STATE_VERSION", "1.21.0")
+    phase = pickleprobe.build("TDLP-SGTE")
+    state = phase.__getstate__()
+    state["__landau__"] = written
+    loaded = object.__new__(type(phase))
+    loaded.__setstate__(state)
+    assert loaded == phase
+
+
+def test_a_state_from_this_very_version_loads_below_the_minimum(monkeypatch):
+    """A development build without a release tag reports ``0.1.devN``; its own pickles must load."""
+    monkeypatch.setattr(landau.phases, "MINIMUM_STATE_VERSION", "99.0")
+    phase = pickleprobe.build("TDLP-SGTE")
+    assert pickle.loads(pickle.dumps(phase)) == phase
 
 
 # ---------------------------------------------------------------------------

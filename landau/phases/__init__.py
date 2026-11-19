@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from functools import lru_cache, cache, cached_property
 from typing import Iterable, Optional, ClassVar
 import warnings
+from packaging.version import InvalidVersion, Version
 from pyiron_snippets.deprecate import deprecate
 
 import matplotlib.pyplot as plt
@@ -46,12 +47,36 @@ def S(c):
     return kB * (se.entr(c) + se.entr(1 - c))
 
 
-STATE_VERSION = 1
-"""Layout of the state :meth:`Phase.__getstate__` writes.
+MINIMUM_STATE_VERSION = "0"
+"""The oldest landau whose pickled phases this landau loads.
 
-Bump it when a phase's fields change incompatibly, and migrate the older layout in
-``__setstate__``; a pickle from a newer layout is refused rather than half-loaded.
+Raise it to the release that changes a phase's fields incompatibly, unless
+``__setstate__`` can migrate the older layout.
 """
+
+
+def _check_state_version(cls, written):
+    """Refuse a state pickled by a landau older than :data:`MINIMUM_STATE_VERSION`.
+
+    *written* is the version stored in the state, ``None`` for landau <= 1.19, which
+    stored none.  A state written by this very version always loads, so a development
+    build without a release tag still round-trips its own pickles.  A version that does
+    not parse, on either side, is not checked.
+    """
+    from .. import __version__
+
+    if written == __version__:
+        return
+    try:
+        too_old = Version(written or "0") < Version(MINIMUM_STATE_VERSION)
+    except InvalidVersion:
+        return
+    if too_old:
+        raise ValueError(
+            f"{cls.__name__} was pickled by landau {written or '<= 1.19'}, but this landau ({__version__}) "
+            f"loads phases pickled by landau >= {MINIMUM_STATE_VERSION}; "
+            f"install landau<{MINIMUM_STATE_VERSION} to load it"
+        )
 
 
 def _warn_deprecated_phase(cls, instead):
@@ -97,7 +122,7 @@ class Phase(ABC):
     __str__ = __repr__
 
     def __getstate__(self):
-        """The dataclass fields and a ``"__landau__"`` tag of ``(STATE_VERSION, landau.__version__)``.
+        """The dataclass fields and a ``"__landau__"`` tag holding the landau version that wrote them.
 
         Attributes outside the fields -- the precomputed hashes, ``cached_property``
         values such as a fitted surface -- are derived from the fields and left out:
@@ -107,7 +132,7 @@ class Phase(ABC):
         from .. import __version__
 
         return {
-            "__landau__": (STATE_VERSION, __version__),
+            "__landau__": __version__,
             **{f.name: getattr(self, f.name) for f in dataclasses.fields(self)},
         }
 
@@ -118,12 +143,7 @@ class Phase(ABC):
         Like fleche's destructuring, this does not run ``__post_init__``, so derived
         attributes must be recomputable on first use.
         """
-        version, _ = state.get("__landau__", (0, None))
-        if version > STATE_VERSION:
-            raise ValueError(
-                f"{type(self).__name__} was pickled with state layout {version}, newer than this landau's "
-                f"{STATE_VERSION}; upgrade landau to load it"
-            )
+        _check_state_version(type(self), state.get("__landau__"))
         names = {f.name for f in dataclasses.fields(self)}
         for name, value in state.items():
             if name in names:

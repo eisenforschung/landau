@@ -120,11 +120,12 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
   `IdealSolution`, the interpolating phases, the ideal-mixing entropy `S(c)` and `check_concentration_interpolation`.
   User-facing classes are re-exported from `landau/__init__.py`;
   `Phase`/`AbstractLinePhase` stay under `landau.phases`.
-- Pickling: `Phase.__getstate__` returns the dataclass fields plus a `"__landau__": (STATE_VERSION, __version__)` tag;
-  `__setstate__` keeps only field names and refuses a newer `STATE_VERSION`.
-  Bump `STATE_VERSION` and migrate in `__setstate__` when a phase's fields change incompatibly.
+- Pickling: `Phase.__getstate__` returns the dataclass fields plus a `"__landau__": __version__` tag;
+  `__setstate__` keeps only field names and refuses a state written by a landau older than `MINIMUM_STATE_VERSION` (a state from the running version always loads, so untagged dev builds round-trip).
+  Raise `MINIMUM_STATE_VERSION` when a phase's fields change incompatibly, unless `__setstate__` can migrate the old layout.
   fleche's value stores rebuild a destructured dataclass with `object.__new__` and `setattr` per field, skipping both `__post_init__` and `__setstate__`;
-  so anything a phase derives outside its fields (`_hash`, `cached_property` values, `PhonopyQuasiHarmonicPhase._key`/`_lowest`/`_stable`) is computed on first use, never only in `__post_init__`.
+  so anything a phase derives outside its fields (`_hash`, `cached_property` values, `PhonopyQuasiHarmonicPhase._key`) is computed on first use, never only in `__post_init__`;
+  `PhonopyQuasiHarmonicPhase.__getattr__` replays `__post_init__` once for `_lowest`/`_stable`.
 - Deprecated, removal at 2.0: `RegularSolution` and `InterpolatingPhase` (use `FastInterpolatingPhase`, with `interpolator=RedlichKister(n)` for a regular solution), the typo alias `TemperatureDepandantLinePhase`, and the solution phases' `check_interpolation` methods, which forward to `check_concentration_interpolation`.
   `TemperatureDependentLinePhase.check_interpolation` is not deprecated.
   The suite, testplots and notebooks still construct the deprecated classes — new code should not.
