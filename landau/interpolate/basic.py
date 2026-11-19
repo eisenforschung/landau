@@ -90,8 +90,10 @@ class _CallableInterpolation(Interpolation):
     """Adapts a plain callable into an :class:`Interpolation`.
 
     Inherits the numerical :meth:`Interpolation.deriv`.  No fit in landau returns
-    one: a closure does not pickle and cannot be digested by its state, so each
-    fitted curve is a module-level class holding that state instead.
+    one: plain :mod:`pickle` refuses a local closure (dill and cloudpickle do not), and
+    fleche can only digest a closure by its code object, which every fit of one
+    interpolator shares.  Each fitted curve is a module-level class holding its fitted
+    state instead.
     """
 
     def __init__(self, func: Callable):
