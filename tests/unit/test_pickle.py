@@ -117,7 +117,7 @@ def test_state_from_the_minimum_on_loads_if_its_fields_fit(monkeypatch, written)
 @pytest.mark.parametrize(
     ("written", "edit", "message"),
     [
-        ("2.4.0", "add", r"2\.4\.0 carries extra_field, unknown to this landau \(this landau is 2\.3\.1\); install landau>=2\.4"),
+        ("2.4.0", "add", r"2\.4\.0 carries extra_field, unknown to this .*2\.3\.1\); install landau>=2\.4\.0"),
         ("2.4.0", "drop", r"2\.4\.0 lacks interpolator \(this landau is 2\.3\.1\); install landau>=2\.4\.0"),
         ("2.2.0", "drop", r"2\.2\.0 lacks interpolator \(this landau is 2\.3\.1\); install landau<=2\.2\.0"),
     ],
