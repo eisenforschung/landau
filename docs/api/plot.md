@@ -96,6 +96,7 @@ svg.querySelectorAll(".landau-phase").forEach((g) =>
 The two-phase regions and boundaries are invisible until a stylesheet shows them.
 They are built from the phase fields as drawn: the space between two fields of a c-T diagram is the two-phase region of the field to its left and the field to its right.
 A miscibility gap has the same field on both sides and is a region of one phase twice.
+A region ends at the three-phase tie-line of an invariant, also where the same two fields continue beyond it.
 Space with no field drawn on one side is no region.
 
 ```{eval-rst}

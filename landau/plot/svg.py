@@ -109,8 +109,9 @@ written with zero opacity, as presentation attributes rather than inline
 style, so a stylesheet can show them (``.landau-boundary path {stroke-opacity:
 1}``) and they catch pointer events without changing the picture.  In a c-T
 diagram tie-lines are horizontal: the space between two fields is the
-two-phase region of the field to its left and the field to its right.  A
-miscibility gap has the same field on both sides and is a region of one
+two-phase region of the field to its left and the field to its right, and
+ends at the three-phase tie-line of an invariant even where the same two
+fields continue beyond it.  A miscibility gap has the same field on both sides and is a region of one
 phase twice, with one boundary; space with no field drawn on a side -- the
 room around the diagram, or beside a field that has thinned out of the
 picture -- is no region.  In a mu-T diagram an edge of a field's outline is
@@ -810,14 +811,16 @@ def _add_coexistence(ax, added: list) -> list:
     """Add the two-phase regions and boundaries of a 2d phase diagram on ``ax``.
 
     Built from the phase fields ``_plot_phase_diagram`` drew and recorded on
-    the axes, and from nothing else:
+    the axes, with the tie-lines of the invariants it would draw:
 
     * c-T: tie-lines are horizontal, so a point between two fields lies in
       the two-phase region of the field to its left and the field to its
       right.  The space the fields leave free, cut at every temperature
       where a field begins or ends, falls into pieces that each have one
-      such pair of neighbours; pieces with the same pair that touch are one
-      region.  A piece with the same field on both sides is a miscibility
+      such pair of neighbours; pieces of one pair lying on top of each other
+      are one region, except across the three-phase tie-line of an
+      invariant, past which the same two fields can continue.  A piece with
+      the same field on both sides is a miscibility
       gap, one without a field on a side is no region.  The boundary of a
       phase against the other is the part of its field's outline along the
       region.
@@ -851,7 +854,12 @@ def _add_coexistence(ax, added: list) -> list:
         shape = shapely.union_all(_polygons(shapely.make_valid(shapely.Polygon((xy - offset) / scale))))
         if not shape.is_empty:
             fields.append((phase, unit, shape))
-    found = _regions(fields) if state["variables"][0] == "c" else _mu_boundaries(fields)
+    if state["variables"][0] == "c":
+        tie_lines = [((T - offset[1]) / scale[1], (c0 - offset[0]) / scale[0], (c1 - offset[0]) / scale[0])
+                     for T, c0, c1 in state["triples"]]
+        found = _regions(fields, tie_lines)
+    else:
+        found = _mu_boundaries(fields)
 
     z_lines = max(2.4, max(patch.get_zorder() for _, _, patch in state["fields"]) * (1 + 1e-9))
     for hit, kind, name, data, geom in found:
@@ -881,8 +889,12 @@ def _turning_heights(shape) -> set:
     return heights
 
 
-def _regions(fields) -> list:
-    """The two-phase regions of a c-T diagram and the boundaries along them."""
+def _regions(fields, tie_lines) -> list:
+    """The two-phase regions of a c-T diagram and the boundaries along them.
+
+    ``tie_lines`` are the three-phase tie-lines of the diagram's invariants,
+    each as its height and its two ends.
+    """
     shapes = np.array([shape for _, _, shape in fields], dtype=object)
     free = shapely.box(0, 0, 1, 1).difference(shapely.union_all(shapes))
     # between two neighbouring heights no field begins or ends, so the
@@ -906,10 +918,10 @@ def _regions(fields) -> list:
 
     regions = []
     for (i, j), parts in beside.items():
-        whole = shapely.union_all(parts)
-        # an opening: drops the slivers left where two fields meet a rounding error apart
-        whole = whole.buffer(-_SLIVER, join_style="mitre").buffer(_SLIVER, join_style="mitre").intersection(whole)
-        regions.extend(((fields[i][0], fields[j][0]), (i, j), part) for part in _polygons(whole))
+        for whole in _joined(parts, tie_lines):
+            # an opening: drops the slivers left where two fields meet a rounding error apart
+            whole = whole.buffer(-_SLIVER, join_style="mitre").buffer(_SLIVER, join_style="mitre").intersection(whole)
+            regions.extend(((fields[i][0], fields[j][0]), (i, j), part) for part in _polygons(whole))
     regions.sort(key=lambda r: (r[0], r[2].centroid.y, r[2].centroid.x))
 
     found, count = [], {}
@@ -925,6 +937,36 @@ def _regions(fields) -> list:
                               {"phase": fields[a][0], "unit": fields[a][1],
                                "against": fields[b][0], "against_unit": fields[b][1]}, line))
     return found
+
+
+def _joined(pieces, tie_lines) -> list:
+    """Join the pieces of free space between one pair of fields that lie on top of each other.
+
+    Not across the three-phase tie-line of an invariant: the same two fields
+    can lie beside the space above it and below it, which are two regions.
+    """
+    group = list(range(len(pieces)))
+
+    def find(k):
+        while group[k] != k:
+            k = group[k]
+        return k
+
+    for a, lower in enumerate(pieces):
+        y = lower.bounds[3]
+        for b, upper in enumerate(pieces):
+            if upper.bounds[1] != y:
+                continue
+            shared = lower.intersection(upper)
+            if shared.length == 0:
+                continue
+            x = shared.centroid.x
+            if not any(abs(y - height) <= _SNAP and c0 <= x <= c1 for height, c0, c1 in tie_lines):
+                group[find(a)] = find(b)
+    joined = {}
+    for k, piece in enumerate(pieces):
+        joined.setdefault(find(k), []).append(piece)
+    return [shapely.union_all(parts) for parts in joined.values()]
 
 
 def _mu_boundaries(fields) -> list:

@@ -454,8 +454,9 @@ def _coexistence(ax):
 @pytest.mark.parametrize("diagram, pairs", [
     ("eutectic_diagram", [("fcc", "hcp"), ("fcc", "liquid"), ("hcp", "liquid")]),
     ("split_solid_diagram", [("g", "g'"), ("g", "g'")]),
-    # alpha coexists with the liquid of either side of the gap; both lie between the same two fields
-    ("monotectic_diagram", [("alpha", "beta"), ("alpha", "liquid"), ("beta", "liquid"), ("liquid", "liquid")]),
+    # alpha coexists with the liquid of either side of the gap: two regions, apart along the monotectic tie-line
+    ("monotectic_diagram", [("alpha", "beta"), ("alpha", "liquid"), ("alpha", "liquid"), ("beta", "liquid"),
+                            ("liquid", "liquid")]),
 ])
 def test_two_phase_regions_are_where_the_frame_has_tie_lines(diagram, pairs, request):
     """The regions come from the drawn fields alone; the frame's tie-lines are the check on them.
@@ -547,7 +548,7 @@ def test_regions_do_not_depend_on_the_view(ct_figure, limits):
     assert coexistence() == before
 
 
-def test_regions_need_only_the_fields(eutectic_diagram):
+def test_regions_are_named_by_the_fields(eutectic_diagram):
     """A frame stripped of what says which phases coexist gives the same regions and boundaries."""
     def coexistence(df):
         fig, ax = plt.subplots()

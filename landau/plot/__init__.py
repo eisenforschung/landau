@@ -267,6 +267,14 @@ def _plot_triplepoints(df, ax=None, variables=None):
             tag(line, "transitions", kind="triple", t=T, mu=mu, phases=sorted(grp["phase"]))
 
 
+def _triple_tie_lines(df):
+    """``(T, c_min, c_max)`` of every triple point in a phase-diagram frame: the lines `_plot_triplepoints` draws."""
+    if "locus" not in df.columns:
+        return []
+    triple = df[df["locus"] == Locus.TRIPLE]
+    return [(T, grp["c"].min(), grp["c"].max()) for (_mu, T), grp in triple.groupby(["mu", "T"], sort=False)[["c"]]]
+
+
 _DELTA_MU = r"\Delta\mu"
 
 
@@ -406,10 +414,12 @@ def _plot_phase_diagram(
     if transition_temperatures:
         _annotate_transition_temperatures(df, polys, ax=ax, variables=variables)
     ax.set_ylabel(_column_label("T"))
-    # The fields as drawn: all save_layered_svg needs to add the two-phase regions and boundaries.
+    # What save_layered_svg builds the two-phase regions and boundaries from:
+    # the fields as drawn and the tie-lines of the invariants.
     ax._landau_phase_diagram = {
         "variables": variables,
         "fields": [(*(key if isinstance(key, tuple) else (key, 0)), p) for key, p in polys.items()],
+        "triples": _triple_tie_lines(df),
     }
 
 
