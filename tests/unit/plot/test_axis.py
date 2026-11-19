@@ -63,6 +63,18 @@ class TestSetAxisForMu:
         ax.set_xlim.assert_not_called()
         ax.set_xlabel.assert_called_once_with(r"$\Delta\mu_\mathrm{Cu}$ [eV]")
 
+    def test_refined_rows_outside_the_sampled_range_do_not_widen_xlim(self):
+        ax = _ax()
+        df = _df([0.2, 0.5, 0.8, 0.1, 1.3]).assign(refined=["no", "no", "no", "clausius-clapeyron", "clausius-clapeyron"])
+        _set_axis_for("mu", df, None, ax)
+        ax.set_xlim.assert_called_once_with(0.2, 0.8)
+
+    def test_frame_of_refined_rows_only_uses_them_all(self):
+        ax = _ax()
+        df = _df([0.1, 1.3]).assign(refined=["clausius-clapeyron", "clausius-clapeyron"])
+        _set_axis_for("mu", df, None, ax)
+        ax.set_xlim.assert_called_once_with(0.1, 1.3)
+
 
 def test_unknown_axis_raises():
     ax = _ax()
