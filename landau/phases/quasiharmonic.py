@@ -444,19 +444,14 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
         # Only reached when normal lookup fails: on a phase restored without
         # __post_init__ -- by Phase.__setstate__, or by fleche rebuilding a stored
         # dataclass with object.__new__ -- which keeps the fields but not these two.
+        # __post_init__ is idempotent on its own output, so it is replayed once here.
         # The instability warning was already raised when the phase was built.
-        if name == "_lowest":
-            value = tuple(_lowest_frequency(tp) for tp in self.thermal_properties)
-        elif name == "_stable":
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", DynamicalInstabilityWarning)
-                value = _select_stable_volumes(
-                    self.volumes_per_atom, self._lowest, self.min_frequency, self.name, self.eos
-                )
-        else:
+        if name not in ("_lowest", "_stable"):
             raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
-        object.__setattr__(self, name, value)
-        return value
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DynamicalInstabilityWarning)
+            self.__post_init__()
+        return object.__getattribute__(self, name)
 
     @cached_property
     def _key(self):
