@@ -67,6 +67,7 @@ docs = [
     "furo",
     "myst-nb",
     "sphinx-autodoc-typehints",
+    "sphinx-design",
 ]
 constraints = ["polyfit"]
 python-tsp = ["python-tsp>=0.4.2,<=0.5"]
