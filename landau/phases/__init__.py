@@ -56,26 +56,35 @@ Raise it to the release that changes a phase's fields incompatibly, unless
 
 
 def _check_state_version(cls, written):
-    """Refuse a state pickled by a landau older than :data:`MINIMUM_STATE_VERSION`.
+    """Refuse a state this landau cannot vouch for, by the version stored in it.
 
-    *written* is the version stored in the state, ``None`` for landau <= 1.19, which
-    stored none.  A state written by this very version always loads, so a development
-    build without a release tag still round-trips its own pickles.  A version that does
-    not parse, on either side, is not checked.
+    Refused are states pickled by a landau older than :data:`MINIMUM_STATE_VERSION`
+    and states pickled by a landau newer than this one, whose layout this one cannot
+    know.  *written* is ``None`` for landau <= 1.19, which stored no version.  A state
+    written by this very version always loads, so a development build without a
+    release tag still round-trips its own pickles.  A version that does not parse, on
+    either side, is not checked.
     """
     from .. import __version__
 
     if written == __version__:
         return
     try:
-        too_old = Version(written or "0") < Version(MINIMUM_STATE_VERSION)
+        version = Version(written or "0")
+        own = Version(__version__)
+        minimum = Version(MINIMUM_STATE_VERSION)
     except InvalidVersion:
         return
-    if too_old:
+    if version < minimum:
         raise ValueError(
             f"{cls.__name__} was pickled by landau {written or '<= 1.19'}, but this landau ({__version__}) "
             f"loads phases pickled by landau >= {MINIMUM_STATE_VERSION}; "
-            f"install landau<{MINIMUM_STATE_VERSION} to load it"
+            f"install landau<={written or '1.19'} to load it"
+        )
+    if version > own:
+        raise ValueError(
+            f"{cls.__name__} was pickled by landau {written}, newer than this landau ({__version__}); "
+            f"install landau>={written} to load it"
         )
 
 

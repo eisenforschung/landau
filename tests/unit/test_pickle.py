@@ -81,23 +81,37 @@ def test_phase_state_is_its_fields_and_a_version_tag(name):
 
 
 @pytest.mark.parametrize(
-    ("written", "shown"), [("1.20.0", "landau 1.20.0"), (None, "landau <= 1.19")], ids=["tagged", "untagged"]
+    ("written", "shown", "install"),
+    [("1.20.0", "landau 1.20.0", "1.20.0"), (None, "landau <= 1.19", "1.19")],
+    ids=["tagged", "untagged"],
 )
-def test_state_older_than_the_minimum_is_refused(monkeypatch, written, shown):
+def test_state_older_than_the_minimum_is_refused(monkeypatch, written, shown, install):
     monkeypatch.setattr(landau.phases, "MINIMUM_STATE_VERSION", "1.21.0")
+    monkeypatch.setattr(landau, "__version__", "2.3.1")
     phase = pickleprobe.build("TDLP-SGTE")
     state = phase.__getstate__()
     if written is None:
         del state["__landau__"]
     else:
         state["__landau__"] = written
-    with pytest.raises(ValueError, match=rf"pickled by {shown},.*>= 1\.21\.0; install landau<1\.21\.0"):
+    with pytest.raises(ValueError, match=rf"pickled by {shown},.*>= 1\.21\.0; install landau<={install} to load"):
         object.__new__(type(phase)).__setstate__(state)
 
 
-@pytest.mark.parametrize("written", ["1.21.0", "2.3.1", "not-a-version"])
-def test_state_at_or_above_the_minimum_loads(monkeypatch, written):
+def test_state_from_a_newer_landau_is_refused(monkeypatch):
+    monkeypatch.setattr(landau, "__version__", "2.3.1")
+    phase = pickleprobe.build("TDLP-SGTE")
+    state = phase.__getstate__()
+    state["__landau__"] = "2.4.0"
+    newer = r"pickled by landau 2\.4\.0, newer than this landau \(2\.3\.1\); install landau>=2\.4\.0"
+    with pytest.raises(ValueError, match=newer):
+        object.__new__(type(phase)).__setstate__(state)
+
+
+@pytest.mark.parametrize("written", ["1.21.0", "2.3.0", "2.3.1", "not-a-version"])
+def test_state_between_the_minimum_and_this_version_loads(monkeypatch, written):
     monkeypatch.setattr(landau.phases, "MINIMUM_STATE_VERSION", "1.21.0")
+    monkeypatch.setattr(landau, "__version__", "2.3.1")
     phase = pickleprobe.build("TDLP-SGTE")
     state = phase.__getstate__()
     state["__landau__"] = written
@@ -109,6 +123,7 @@ def test_state_at_or_above_the_minimum_loads(monkeypatch, written):
 def test_a_state_from_this_very_version_loads_below_the_minimum(monkeypatch):
     """A development build without a release tag reports ``0.1.devN``; its own pickles must load."""
     monkeypatch.setattr(landau.phases, "MINIMUM_STATE_VERSION", "99.0")
+    monkeypatch.setattr(landau, "__version__", "0.1.dev52+g405f853")
     phase = pickleprobe.build("TDLP-SGTE")
     assert pickle.loads(pickle.dumps(phase)) == phase
 
