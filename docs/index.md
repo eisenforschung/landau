@@ -9,6 +9,7 @@ A library to calculate thermodynamic equilibria and plot phase diagrams in the
 
 self
 installation
+fleche
 api
 notebooks
 publications
