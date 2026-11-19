@@ -99,6 +99,10 @@ def evaluated(objects):
         if hasattr(value, "semigrand_potential"):
             for T in (300.0, 900.0):
                 value.semigrand_potential(T, 0.05)
+        if type(value).__name__ == "ThermalProperties":
+            # what the quasi-harmonic phase does to it on every evaluation
+            value.temperatures = [300.0, 900.0]
+            value.run()
     return objects
 
 
@@ -114,17 +118,21 @@ def ase_objects():
 
 
 def phonopy_objects():
-    """``PhonopyQuasiHarmonicPhase`` if phonopy is installed; it has a hook of its own.
+    """``PhonopyQuasiHarmonicPhase`` and a bare ``ThermalProperties`` if phonopy is installed.
 
+    The phase is digested by its fields, its ``ThermalProperties`` through their hook.
     Built through the Einstein-solid helper the quasi-harmonic unit tests use, so
     the planted spectrum lives in one place.
     """
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "phases"))
     try:
-        from test_quasiharmonic import einstein_phase
+        from test_quasiharmonic import einstein_phase, einstein_phonopy
     except ImportError:
         return {}
-    return {"PhonopyQuasiHarmonicPhase": einstein_phase()}
+    return {
+        "PhonopyQuasiHarmonicPhase": einstein_phase(fresh=True),
+        "ThermalProperties": einstein_phonopy.__wrapped__(6.0).thermal_properties,
+    }
 
 
 def one(value):

@@ -20,8 +20,6 @@ Only types fleche cannot digest itself are hooked: :class:`~landau.refine.Refine
 and :class:`~landau.interpolate.FittedSurface` (plain classes, and no subclass of
 either is a dataclass), the plain :class:`~landau.interpolate.Interpolation`
 classes the fits return, and
-:class:`~landau.phases.quasiharmonic.PhonopyQuasiHarmonicPhase` (a dataclass, but
-holding opaque phonopy ``ThermalProperties``), and
 :class:`~landau.interpolate.whitney.WhitneyRBFInterpolator` (an sklearn-style
 estimator whose fitted state is a scipy ``RBFInterpolator`` and a ``ConvexHull``).
 Everything fleche already handles -- every
@@ -29,11 +27,14 @@ Everything fleche already handles -- every
 point-defect class and ``AbstractPolyMethod`` -- is left to its dataclass walk
 deliberately: fleche loads entry points lazily, on the first value it cannot
 digest, so hooking one of those would give it one digest before that happens and
-another after, making the cache key depend on call order.
+another after, making the cache key depend on call order.  A second reason holds
+for every dataclass: fleche's value stores file a destructured dataclass under its
+field-walk digest, so a hooked one would be stored under a key no lookup computes.
 
 That covers phases only because
 :class:`~landau.phases.TemperatureDependentLinePhase` and
-``PhonopyQuasiHarmonicPhase`` keep their hash out of the dataclass fields, as a
+:class:`~landau.phases.quasiharmonic.PhonopyQuasiHarmonicPhase` keep their hash
+(and the latter its comparison key) out of the dataclass fields, as a
 ``cached_property`` computed on first use.
 
 Every fitted interpolation is an instance of a module-level class holding its
@@ -44,12 +45,14 @@ closure is still refused -- two closures over one code object can be told apart
 only by what they captured, and fleche falls back to digesting the code object
 alone whenever that is itself indigestible (#449).
 
-:func:`spline_digest` and :func:`thermochem_digest` are the hooks here for types
-landau does not own: fleche refuses a fitted scipy spline and an ASE ``ThermoChem``.
-Both are stopgaps; hooks are global to every fleche user with landau installed, so
-they belong upstream (#449 for the spline, fleche-ase for the thermochem).
-:class:`~landau.phases.asewrapper.AsePhase` itself is left to the dataclass walk,
-which reaches its ``thermochem`` through the latter.
+:func:`spline_digest`, :func:`thermochem_digest` and
+:func:`thermal_properties_digest` are the hooks here for types landau does not
+own: fleche refuses a fitted scipy spline, an ASE ``ThermoChem`` and a phonopy
+``ThermalProperties``.  The first two are stopgaps; hooks are global to every
+fleche user with landau installed, so they belong upstream (#449 for the spline,
+fleche-ase for the thermochem).  :class:`~landau.phases.asewrapper.AsePhase` and
+``PhonopyQuasiHarmonicPhase`` are left to the dataclass walk, which reaches their
+``thermochem`` and ``thermal_properties`` through the latter two.
 """
 
 import dataclasses
@@ -73,7 +76,7 @@ from .interpolate.basic import (
 from .interpolate.softplus import SoftplusInterpolation, SoftplusSliceDerivative
 from .interpolate.whitney import WhitneyInterpolation, WhitneyRBFInterpolator, WhitneySlice
 from .phases import AsePhase, asewrapper
-from .phases.quasiharmonic import PhonopyQuasiHarmonicPhase  # importable without phonopy
+from .phases.quasiharmonic import PhonopyQuasiHarmonicPhase, _thermal_properties_state  # importable without phonopy
 from .refine import Refiner
 
 __all__ = [
@@ -81,6 +84,7 @@ __all__ = [
     "ase_phase_digest",
     "quasiharmonic_phase_digest",
     "spline_digest",
+    "thermal_properties_digest",
     "thermochem_digest",
     "whitney_rbf_digest",
     "digest_hooks",
@@ -154,15 +158,18 @@ def ase_phase_digest(phase: AsePhase) -> Digest:
     return digest(phase)
 
 
+@deprecate(
+    "fleche digests a PhonopyQuasiHarmonicPhase by its fields; call fleche.digest.digest instead", version="2.0"
+)
 def quasiharmonic_phase_digest(phase: PhonopyQuasiHarmonicPhase) -> Digest:
-    """Digest a :class:`~landau.phases.quasiharmonic.PhonopyQuasiHarmonicPhase`.
+    """Digest a :class:`~landau.phases.quasiharmonic.PhonopyQuasiHarmonicPhase`, as ``fleche.digest.digest`` does.
 
-    ``thermal_properties`` holds opaque phonopy objects, so the digest reuses the
-    phase's own identity key -- pickled bytes of each, taken at 0 K so the
-    temperature the phase last ran at cannot drift them -- keeping the digest in
-    step with the class's ``__eq__``/``__hash__`` by construction.
+    No longer registered as a hook, for the reason :func:`ase_phase_digest` is not:
+    a value store files a destructured dataclass under its field-walk digest.  With
+    :func:`thermal_properties_digest` registered, the field walk covers
+    ``thermal_properties`` too.
     """
-    return digest((type(phase).__name__, phase._key))
+    return digest(phase)
 
 
 def whitney_rbf_digest(estimator: WhitneyRBFInterpolator) -> Digest:
@@ -222,6 +229,24 @@ def thermochem_digest(thermochem) -> Digest:
     return digest((type(thermochem).__name__, asewrapper._thermochem_bytes(thermochem)))
 
 
+def thermal_properties_digest(thermal_properties) -> Digest:
+    """Digest a phonopy ``ThermalProperties`` by the spectrum it sums over.
+
+    That is its ``__dict__`` less what a run overwrites and what ``__init__`` derives
+    (:func:`~landau.phases.quasiharmonic._thermal_properties_state`), passed through
+    fleche's own digest: mode frequencies and mesh weights as arrays, the cutoff,
+    classical or quantum statistics, the band selection, and the formula units.  The
+    temperatures and results of the last run are left out, so evaluating a phase does
+    not move its key, and so is the backend (``_lang``).  Not the pickled bytes, which
+    carry those and differ between phonopy releases in layout as well as content.
+
+    Holds no q-points because the object holds none: frequencies and weights are all
+    the mode sum reads.  The state is phonopy's private layout, so a phonopy release
+    that renames an attribute re-keys entries (they miss once) rather than colliding.
+    """
+    return digest((type(thermal_properties).__name__, _thermal_properties_state(thermal_properties)))
+
+
 #: Hooks fleche loads from the ``fleche`` entry point group (see ``pyproject.toml``).
 #: Only types fleche cannot digest by itself appear here; see the module docstring
 #: for why covering the dataclasses too would make their digests order-dependent.
@@ -240,8 +265,13 @@ digest_hooks = [
     Hook(WhitneySlice, landau_digest),
     Hook(_CallableInterpolation, landau_digest),
     Hook(UnivariateSpline, spline_digest),
-    Hook(PhonopyQuasiHarmonicPhase, quasiharmonic_phase_digest),
     Hook(WhitneyRBFInterpolator, whitney_rbf_digest),
 ]
 if asewrapper.ase_alarm.message is None:
     digest_hooks.append(Hook(asewrapper.ThermoChem, thermochem_digest))
+try:
+    from phonopy.phonon.thermal_properties import ThermalProperties
+except ImportError:
+    pass
+else:
+    digest_hooks.append(Hook(ThermalProperties, thermal_properties_digest))

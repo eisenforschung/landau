@@ -50,6 +50,9 @@ T = np.linspace(600.0, 1400.0, 41)
 GRID_T = np.array([500.0, 1000.0, 1500.0])
 GRID_MU = np.array([-0.1, 0.05, 0.2])
 GRID_C = np.array([0.05, 0.3, 0.5, 0.8])
+#: The quasi-harmonic phase is computed, not fitted, at every temperature, so it is also
+#: compared on a finer grid from 0 K, through its thermal expansion.
+GRID_T_QHA = np.linspace(0.0, 1500.0, 16)
 
 
 def _free_energy(x, s):
@@ -83,10 +86,11 @@ def _ase_phase():
 
 
 def _quasiharmonic_phase():
+    """Einstein solids through real phonopy objects, softening with volume so the phase expands."""
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "phases"))
-    from test_quasiharmonic import einstein_phase
+    from test_quasiharmonic import grueneisen_phase
 
-    return einstein_phase(fresh=True)
+    return grueneisen_phase(fresh=True)
 
 
 #: name -> (builder, what to evaluate on): "phase" on GRID_T x GRID_MU, "T" or "c" on that grid.
@@ -158,7 +162,10 @@ def values(name, obj):
     """``obj`` evaluated on its grid, as a flat float array."""
     kind = CASES[name][1]
     if kind == "phase":
-        return np.array([[float(obj.semigrand_potential(t, mu)) for mu in GRID_MU] for t in GRID_T]).ravel()
+        phi = np.array([[float(obj.semigrand_potential(t, mu)) for mu in GRID_MU] for t in GRID_T]).ravel()
+        if name == "PhonopyQuasiHarmonicPhase":
+            return np.concatenate([phi, obj.line_free_energy(GRID_T_QHA)])
+        return phi
     return np.asarray(obj(GRID_T if kind == "T" else GRID_C), dtype=float).ravel()
 
 
@@ -206,8 +213,7 @@ def main(mode, root, serializer, inline):
         return values(name, obj).tolist()
 
     out = {}
-    # its ThermalProperties are indigestible, so fleche cannot store the phase field by field
-    for name in [n for n in available() if n != "PhonopyQuasiHarmonicPhase"]:
+    for name in available():
         if mode == "store":
             obj = make(name)
             out[name] = {"values": values(name, obj).tolist(), "used": use(name, build(name))}

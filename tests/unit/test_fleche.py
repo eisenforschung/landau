@@ -165,8 +165,7 @@ def test_no_hook_targets_a_dataclass():
     import dataclasses
 
     hooked = [h.type for h in digest_hooks if dataclasses.is_dataclass(h.type)]
-    # the one exception: its ThermalProperties are indigestible, so it never reaches a value store
-    assert [t.__name__ for t in hooked] == ["PhonopyQuasiHarmonicPhase"]
+    assert hooked == []
 
 
 # ---------------------------------------------------------------------------
@@ -349,8 +348,8 @@ def test_digestible_interpolations_are_not_refused():
 
 @needs_phonopy
 def test_quasiharmonic_phase_digest_follows_equality():
-    """Its phonopy ``ThermalProperties`` are opaque, so the digest rides the
-    identity key the class already compares and hashes by."""
+    """The field walk reaches the phonopy ``ThermalProperties`` through their hook, and
+    the phase compares by the same state the hook digests."""
     load_entry_points()
     a = einstein_phase(fresh=True)
     same = einstein_phase(fresh=True)
@@ -358,6 +357,107 @@ def test_quasiharmonic_phase_digest_follows_equality():
 
     assert a == same and digest(a) == digest(same)
     assert a != other and digest(a) != digest(other)
+
+
+def _thermal_properties(omega=5.0, **kwargs):
+    """A freshly built ``ThermalProperties`` of an Einstein solid; nothing else shares it."""
+    from test_quasiharmonic import einstein_phonopy
+
+    return einstein_phonopy.__wrapped__(omega, **kwargs).thermal_properties
+
+
+@needs_phonopy
+def test_thermal_properties_digest_tracks_the_spectrum():
+    """Frequencies, weights, cutoff and statistics each move the digest; an equal
+    object built separately does not."""
+    import copy
+
+    load_entry_points()
+    base = _thermal_properties()
+    assert digest(_thermal_properties()) == digest(base)
+
+    assert digest(_thermal_properties(omega=5.5)) != digest(base)
+    assert digest(_thermal_properties(classical=True)) != digest(base)
+    assert digest(_thermal_properties(mesh=(3, 3, 3))) != digest(base)
+
+    shifted = copy.deepcopy(base)
+    shifted._frequencies = shifted._frequencies.copy()
+    shifted._frequencies[1, 0] *= 1.001
+    assert digest(shifted) != digest(base)
+
+    reweighted = copy.deepcopy(base)
+    reweighted._weights = reweighted._weights.copy()
+    reweighted._weights[1] += 1
+    assert digest(reweighted) != digest(base)
+
+    cut = copy.deepcopy(base)
+    cut._cutoff_frequency = 1e-3
+    assert digest(cut) != digest(base)
+
+
+@needs_phonopy
+def test_thermal_properties_digest_survives_evaluation():
+    """The phase resets ``temperatures`` and reruns the object on every evaluation;
+    the digest of the object and of the phase must not see that."""
+    load_entry_points()
+    phase = einstein_phase(fresh=True)
+    before = digest(phase), [digest(tp) for tp in phase.thermal_properties]
+    phase.line_free_energy(np.array([0.0, 300.0, 1234.0]))
+    tp = phase.thermal_properties[0]
+    tp.temperatures = np.linspace(0.0, 2000.0, 11)
+    tp.run()
+    assert (digest(phase), [digest(tp) for tp in phase.thermal_properties]) == before
+    assert digest(phase) == digest(einstein_phase(fresh=True))
+
+
+@needs_phonopy
+def test_thermal_properties_digest_is_not_the_pickle():
+    """Two equal spectra whose pickles differ, because one was last run at another
+    temperature, digest equal."""
+    import pickle
+
+    load_entry_points()
+    a, b = _thermal_properties(), _thermal_properties()
+    b.temperatures = [500.0]
+    b.run()
+    assert pickle.dumps(a) != pickle.dumps(b)
+    assert digest(a) == digest(b)
+
+
+@needs_phonopy
+def test_quasiharmonic_phase_is_stored_under_its_digest():
+    """What a value store files a stored argument under must be what a lookup computes."""
+    load_entry_points()
+    phase = einstein_phase(fresh=True)
+    assert ValueMemory({}).save(phase) == digest(phase)
+
+
+@needs_phonopy
+def test_quasiharmonic_phase_hits_on_an_equal_but_distinct_phase():
+    calls = []
+
+    @fleche
+    def free_energy(phase):
+        calls.append(phase.name)
+        return float(phase.line_free_energy(900.0))
+
+    with cache(Cache(ValueMemory({}), CallMemory({}))):
+        first = free_energy(einstein_phase(fresh=True))
+        second = free_energy(einstein_phase(fresh=True))
+        free_energy(einstein_phase(omegas=6.0, fresh=True))
+
+    assert first == second
+    assert calls == ["einstein", "einstein"]
+
+
+@needs_phonopy
+def test_deprecated_quasiharmonic_phase_digest_is_the_field_digest():
+    from landau.fleche import quasiharmonic_phase_digest
+
+    load_entry_points()
+    phase = einstein_phase(fresh=True)
+    with pytest.warns(DeprecationWarning):
+        assert quasiharmonic_phase_digest(phase) == digest(phase)
 
 
 def test_whitney_rbf_digest_tracks_data_and_hyperparameters():
@@ -548,7 +648,7 @@ def fleche_round_trip(request, tmp_path_factory):
     return stored["cases"], loaded["cases"]
 
 
-@pytest.mark.parametrize("name", [n for n in pickleprobe.available() if n != "PhonopyQuasiHarmonicPhase"])
+@pytest.mark.parametrize("name", pickleprobe.available())
 def test_fleche_round_trip(fleche_round_trip, name):
     stored, loaded = (cases[name] for cases in fleche_round_trip)
     assert stored["made"] and stored["hit"]

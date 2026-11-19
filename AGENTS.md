@@ -124,7 +124,7 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
   `__setstate__` keeps only field names and refuses a newer `STATE_VERSION`.
   Bump `STATE_VERSION` and migrate in `__setstate__` when a phase's fields change incompatibly.
   fleche's value stores rebuild a destructured dataclass with `object.__new__` and `setattr` per field, skipping both `__post_init__` and `__setstate__`;
-  so anything a phase derives outside its fields (`_hash`, `cached_property` values, `PhonopyQuasiHarmonicPhase._lowest`/`_stable`) is computed on first use, never only in `__post_init__`.
+  so anything a phase derives outside its fields (`_hash`, `cached_property` values, `PhonopyQuasiHarmonicPhase._key`/`_lowest`/`_stable`) is computed on first use, never only in `__post_init__`.
 - Deprecated, removal at 2.0: `RegularSolution` and `InterpolatingPhase` (use `FastInterpolatingPhase`, with `interpolator=RedlichKister(n)` for a regular solution), the typo alias `TemperatureDepandantLinePhase`, and the solution phases' `check_interpolation` methods, which forward to `check_concentration_interpolation`.
   `TemperatureDependentLinePhase.check_interpolation` is not deprecated.
   The suite, testplots and notebooks still construct the deprecated classes — new code should not.
@@ -276,8 +276,10 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
   landau never imports fleche.
   Hooks only cover types fleche would otherwise reject;
   hooking a type fleche already digests would make digests depend on entry-point load order.
-  No dataclass is hooked except `PhonopyQuasiHarmonicPhase`: fleche's value stores file a destructured dataclass under its field-walk digest, so a hooked one would be stored under a key no lookup computes.
+  No dataclass is hooked: fleche's value stores file a destructured dataclass under its field-walk digest, so a hooked one would be stored under a key no lookup computes.
   `AsePhase` is digested by its fields, its `thermochem` through the stopgap `thermochem_digest` (its home is fleche-ase).
+  `PhonopyQuasiHarmonicPhase` is digested by its fields, its phonopy `ThermalProperties` through `thermal_properties_digest` (registered only when phonopy imports): their `__dict__` less run results, temperatures, backend and `__init__`-derived attributes (`quasiharmonic._thermal_properties_state`), never the pickled bytes.
+  The phase's `__eq__`/`hash` key (`_key`, a `cached_property`) is built from that same state.
   Fitted interpolation classes are hooked and digest by their state;
   a `_CallableInterpolation` around a closure raises `Indigestible` (two closures share one code object).
   `_hash` is a `cached_property`, not a dataclass field, so dataclass-walking digests don't fold in Python's per-process hash salt.
