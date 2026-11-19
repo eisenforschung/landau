@@ -121,7 +121,8 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
   User-facing classes are re-exported from `landau/__init__.py`;
   `Phase`/`AbstractLinePhase` stay under `landau.phases`.
 - Pickling: `Phase.__getstate__` returns the dataclass fields plus a `"__landau__": __version__` tag;
-  `__setstate__` keeps only field names and refuses a state written by a landau older than `MINIMUM_STATE_VERSION` or newer than the running one (a state from the running version always loads, so untagged dev builds round-trip).
+  `__setstate__` refuses a state written by a release older than `MINIMUM_STATE_VERSION` (a development build checks no version), and a state whose fields don't fit the class, naming the fields and both versions;
+  a newer landau's state is not refused by version, and an untagged (landau <= 1.19) state's non-field extras are dropped.
   Raise `MINIMUM_STATE_VERSION` when a phase's fields change incompatibly, unless `__setstate__` can migrate the old layout.
   fleche's value stores rebuild a destructured dataclass with `object.__new__` and `setattr` per field, skipping both `__post_init__` and `__setstate__`;
   so anything a phase derives outside its fields is a `cached_property` computed on first use (`_hash`, `PhonopyQuasiHarmonicPhase._key`/`_lowest`/`_stable`), never set in `__post_init__`;

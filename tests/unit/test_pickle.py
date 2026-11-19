@@ -80,6 +80,9 @@ def test_phase_state_is_its_fields_and_a_version_tag(name):
     assert list(state) == [f.name for f in dataclasses.fields(phase)]
 
 
+RELEASE = "2.3.1"
+
+
 @pytest.mark.parametrize(
     ("written", "shown", "install"),
     [("1.20.0", "landau 1.20.0", "1.20.0"), (None, "landau <= 1.19", "1.19")],
@@ -87,7 +90,7 @@ def test_phase_state_is_its_fields_and_a_version_tag(name):
 )
 def test_state_older_than_the_minimum_is_refused(monkeypatch, written, shown, install):
     monkeypatch.setattr(landau.phases, "MINIMUM_STATE_VERSION", "1.21.0")
-    monkeypatch.setattr(landau, "__version__", "2.3.1")
+    monkeypatch.setattr(landau, "__version__", RELEASE)
     phase = pickleprobe.build("TDLP-SGTE")
     state = phase.__getstate__()
     if written is None:
@@ -98,20 +101,11 @@ def test_state_older_than_the_minimum_is_refused(monkeypatch, written, shown, in
         object.__new__(type(phase)).__setstate__(state)
 
 
-def test_state_from_a_newer_landau_is_refused(monkeypatch):
-    monkeypatch.setattr(landau, "__version__", "2.3.1")
-    phase = pickleprobe.build("TDLP-SGTE")
-    state = phase.__getstate__()
-    state["__landau__"] = "2.4.0"
-    newer = r"pickled by landau 2\.4\.0, newer than this landau \(2\.3\.1\); install landau>=2\.4\.0"
-    with pytest.raises(ValueError, match=newer):
-        object.__new__(type(phase)).__setstate__(state)
-
-
-@pytest.mark.parametrize("written", ["1.21.0", "2.3.0", "2.3.1", "not-a-version"])
-def test_state_between_the_minimum_and_this_version_loads(monkeypatch, written):
+@pytest.mark.parametrize("written", ["1.21.0", "2.3.0", RELEASE, "2.4.0", "3.0.0", "not-a-version"])
+def test_state_from_the_minimum_on_loads_if_its_fields_fit(monkeypatch, written):
+    """A newer landau's state is not refused by version; it loads when its fields fit."""
     monkeypatch.setattr(landau.phases, "MINIMUM_STATE_VERSION", "1.21.0")
-    monkeypatch.setattr(landau, "__version__", "2.3.1")
+    monkeypatch.setattr(landau, "__version__", RELEASE)
     phase = pickleprobe.build("TDLP-SGTE")
     state = phase.__getstate__()
     state["__landau__"] = written
@@ -120,12 +114,38 @@ def test_state_between_the_minimum_and_this_version_loads(monkeypatch, written):
     assert loaded == phase
 
 
-def test_a_state_from_this_very_version_loads_below_the_minimum(monkeypatch):
-    """A development build without a release tag reports ``0.1.devN``; its own pickles must load."""
+@pytest.mark.parametrize(
+    ("written", "edit", "message"),
+    [
+        ("2.4.0", "add", r"2\.4\.0 carries extra_field, unknown to this landau \(this landau is 2\.3\.1\); install landau>=2\.4"),
+        ("2.4.0", "drop", r"2\.4\.0 lacks interpolator \(this landau is 2\.3\.1\); install landau>=2\.4\.0"),
+        ("2.2.0", "drop", r"2\.2\.0 lacks interpolator \(this landau is 2\.3\.1\); install landau<=2\.2\.0"),
+    ],
+    ids=["newer-extra", "newer-missing", "older-missing"],
+)
+def test_state_whose_fields_do_not_fit_names_the_mismatch(monkeypatch, written, edit, message):
+    monkeypatch.setattr(landau, "__version__", RELEASE)
+    phase = pickleprobe.build("TDLP-SGTE")
+    state = phase.__getstate__()
+    state["__landau__"] = written
+    if edit == "add":
+        state["extra_field"] = 1.0
+    else:
+        del state["interpolator"]
+    with pytest.raises(ValueError, match=message):
+        object.__new__(type(phase)).__setstate__(state)
+
+
+def test_a_development_build_ignores_the_minimum(monkeypatch):
+    """A shallow checkout reports ``0.1.devN``; it loads whatever fits."""
     monkeypatch.setattr(landau.phases, "MINIMUM_STATE_VERSION", "99.0")
     monkeypatch.setattr(landau, "__version__", "0.1.dev52+g405f853")
     phase = pickleprobe.build("TDLP-SGTE")
-    assert pickle.loads(pickle.dumps(phase)) == phase
+    state = phase.__getstate__()
+    state["__landau__"] = "1.20.0"
+    loaded = object.__new__(type(phase))
+    loaded.__setstate__(state)
+    assert loaded == phase
 
 
 # ---------------------------------------------------------------------------
