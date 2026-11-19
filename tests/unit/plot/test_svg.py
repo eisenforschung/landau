@@ -324,7 +324,9 @@ def test_mathtext_label_is_outlined_by_a_copy_underneath(eutectic_diagram):
     assert (under.get("class"), under.get("aria-hidden")) == ("landau-outline", "true")
     assert {"fill": "none", "stroke": "#ffffff", "stroke-width": "3"}.items() <= _style(under).items()
     assert "stroke" not in _style(over) and over.get("class") is None
-    assert "".join(under.itertext()).split() == "".join(over.itertext()).split() == list("MgSi2")
+    # one <tspan> per glyph or per font, depending on the matplotlib version
+    assert "".join(under.itertext()).split() == "".join(over.itertext()).split()
+    assert sorted("".join("".join(over.itertext()).split())) == sorted("MgSi2")
     # one glyph run needs no copy
     for name in (r"$\alpha$", "liquid"):
         (text,) = texts[name]
