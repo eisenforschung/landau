@@ -89,12 +89,12 @@ class Phase(ABC):
     __str__ = __repr__
 
     def __getstate__(self):
-        """The dataclass fields, without what is derived from them.
+        """Pickle the dataclass fields, not the whole ``__dict__`` pickle takes by default.
 
-        The precomputed hash and ``cached_property`` values such as a fitted surface are
-        left out and recomputed on first use: a hash taken in another interpreter is
-        stale (``hash`` is salted per process), and a cached fit may be a closure, which
-        plain :mod:`pickle` refuses.
+        ``cached_property`` values (``_hash``, a fitted surface) live in ``__dict__``
+        but not in ``fields()``; they are recomputed on first use.  A hash taken in
+        another interpreter is stale (``hash`` is salted per process), and a cached fit
+        may be a closure, which plain :mod:`pickle` refuses.
         """
         return {f.name: getattr(self, f.name) for f in dataclasses.fields(self)}
 
