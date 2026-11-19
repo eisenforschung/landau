@@ -400,22 +400,36 @@ def _tie_lines(bdf):
     ``transition``, ``c`` and ``phase``, ordered by ``(mu, T)`` and along ``c``
     within each.
     """
-    # a stable sort gathers each (mu, T) and keeps the c order within it
-    bdf = bdf.dropna(subset=["mu", "T"]).sort_values(["mu", "T"], kind="stable")
+    # rows without a (mu, T) belong to no group
+    bdf = bdf.dropna(subset=["mu", "T"])
+    # gather each (mu, T); the sort is stable, so the c order within it stays
+    bdf = bdf.sort_values(["mu", "T"], kind="stable")
     mu, T, c, phase = (bdf[k].to_numpy() for k in ("mu", "T", "c", "phase"))
+
+    # True on the first row of each (mu, T)
     first = np.ones(len(bdf), dtype=bool)
     first[1:] = (mu[1:] != mu[:-1]) | (T[1:] != T[:-1])
+    # True on the last row of each (mu, T): the row before the next first
     last = np.roll(first, -1)
+    # rows alone at their (mu, T)
     lone = np.flatnonzero(first & last)
-    left = np.flatnonzero(~last)  # every row but the last of its (mu, T) starts a tie-line to the next
-    names = np.array([f"{a}-{b}" for a, b in zip(phase[left], phase[left + 1])], dtype=object)
-    rows = np.concatenate([np.column_stack([left, left + 1]).ravel(), lone])
+    # every other row but the last of its group is the left end of a tie-line
+    left = np.flatnonzero(~last)
+    # its right end is the row after it
+    right = left + 1
+    # one name per tie-line, in ascending c
+    names = np.array([f"{a}-{b}" for a, b in zip(phase[left], phase[right])], dtype=object)
+
+    # the rows to emit: both ends of every tie-line, then the lone rows
+    rows = np.concatenate([np.column_stack([left, right]).ravel(), lone])
+    # the transition of each emitted row: a tie-line's name twice, a lone row's phase
     transition = np.concatenate([np.repeat(names, 2), phase[lone]])
-    # back into the order of the rows they come from
-    order = np.argsort(np.concatenate([np.repeat(left, 2), lone]), kind="stable")
-    rows = rows[order]
-    return pd.DataFrame({"mu": mu[rows], "T": T[rows], "transition": transition[order],
-                         "c": c[rows], "phase": phase[rows]})
+    # the input row each emitted row belongs with: a tie-line with its left end
+    source = np.concatenate([np.repeat(left, 2), lone])
+    # back into input order; stable, so the two ends of a tie-line stay left, right
+    order = np.argsort(source, kind="stable")
+    rows, transition = rows[order], transition[order]
+    return pd.DataFrame({"mu": mu[rows], "T": T[rows], "transition": transition, "c": c[rows], "phase": phase[rows]})
 
 
 def _rescale_T(t):
