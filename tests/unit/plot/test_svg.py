@@ -189,6 +189,48 @@ def test_returned_elements_are_the_elements_in_the_file(figure, request):
     assert len(elements) > 30
 
 
+def test_color_by_fill_is_one_field_element(eutectic_diagram):
+    fig, ax = plt.subplots()
+    plot_phase_diagram(eutectic_diagram, ax=ax, color_by="mu")
+    root, elements, raw = _save(fig)
+    plt.close(fig)
+    (field,) = _groups(root, "landau-field")
+    assert field.get("data-column") == "mu"
+    assert field.get("data-layer") == "scalar-field"
+    assert field.get("pointer-events") == "none"
+    assert [child.tag for child in field] == [f"{SVG}image"]
+    assert elements[field.get("id")] == {"class": "landau-field", "data-layer": "scalar-field", "data-column": "mu"}
+    (layer,) = [g for g in root.iter(f"{SVG}g") if g.get("data-layer") == "scalar-field"
+                and g.get("class") == "landau-layer"]
+    assert list(layer) == [field]
+    phases = _groups(root, "landau-phase")
+    assert len(phases) == 3
+    assert {g.get("pointer-events") for g in phases} == {"visible"}
+    assert b"landau-placeholder" not in raw
+
+
+def test_image_is_an_element(ct_figure):
+    ax = ct_figure.axes[0]
+    image = ax.imshow(np.arange(6.0).reshape(2, 3), extent=(0.6, 0.9, 300, 500), aspect="auto")
+    tag(image, "micrograph", sample=7)
+    root, elements, raw = _save(ct_figure)
+    (group,) = _groups(root, "landau-micrograph")
+    assert group.get("id") == "ax0-micrograph-0"
+    assert group.get("data-sample") == "7"
+    assert group.find(f".//{SVG}image") is not None
+    assert "ax0-micrograph-0" in elements
+    assert b"landau-placeholder" not in raw
+
+
+def test_hand_set_gid_of_an_image_kept(ct_figure):
+    ax = ct_figure.axes[0]
+    ax.imshow(np.arange(6.0).reshape(2, 3), extent=(0.6, 0.9, 300, 500), aspect="auto").set_gid("by-hand")
+    root, elements, raw = _save(ct_figure)
+    assert _by_id(root)["by-hand"].find(f".//{SVG}image") is not None
+    assert elements["by-hand"]["data-layer"] == "other"
+    assert b"landau-placeholder" not in raw
+
+
 def test_structural_ids_cannot_be_taken(ct_figure):
     ax = ct_figure.axes[0]
     for gid in ("ax0", "figure", "ax0-layer-phases"):

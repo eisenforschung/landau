@@ -202,7 +202,7 @@ def _plot_scalar_field(df, polys, column, variables, ax, cmap=None, norm=None, r
     mappable = ScalarMappable(norm=norm, cmap=cmap)
 
     for key, patch in polys.items():
-        phase, rep = key if isinstance(key, tuple) else (key, 0)
+        phase = key[0] if isinstance(key, tuple) else key
         region = shapely.Polygon(patch.get_xy())
         pts = data[phases == phase]
         pts = pts[shapely.intersects_xy(region, pts[:, 0], pts[:, 1])]
@@ -219,7 +219,8 @@ def _plot_scalar_field(df, polys, column, variables, ax, cmap=None, norm=None, r
             X, Y, Z, shading="gouraud", cmap=mappable.cmap, norm=norm, zorder=0, rasterized=True
         )
         mesh.set_clip_path(patch)
-        tag(mesh, "scalar-field", kind="field", name=(phase, rep), phase=phase, unit=rep, column=column)
+        # the meshes are rasterized into one image; all carry what that image is
+        tag(mesh, "scalar-field", kind="field", column=column)
     return mappable
 
 

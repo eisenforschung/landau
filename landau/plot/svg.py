@@ -32,7 +32,7 @@ pass over the XML.
   layer              contents
   ================== ====================================================
   background         the axes patch
-  scalar-field       ``color_by`` fills, one per phase field
+  scalar-field       the ``color_by`` fill, one raster image for all fields
   two-phase          two-phase regions of a c-T diagram (added on save)
   phases             phase fields (2d), phase curves (1d)
   boundaries         phase boundaries, one per phase pair (added on save)
@@ -69,7 +69,7 @@ pass over the XML.
   ====================== ==================================================
   phase                  ``phase``, ``unit`` (index of the field among the
                          phase's disconnected fields), ``label``
-  field                  ``phase``, ``unit``, ``column``
+  field                  ``column``
   two-phase              ``phases``, ``units``
   boundary               c-T: ``phase``, ``unit``, ``against``,
                          ``against-unit``; mu-T: ``phases``, ``units``
@@ -90,6 +90,10 @@ they are computed from the phase-field outlines when the figure is saved and
 written with zero opacity, as presentation attributes rather than inline
 style, so a stylesheet can show them (``.landau-boundary path {stroke-opacity:
 1}``) and they catch pointer events without changing the picture.
+
+A phase field catches pointer events whether it is filled or not
+(``pointer-events="visible"``); the ``color_by`` fill lets them through
+(``pointer-events="none"``).
 
 With ``inkscape=True`` every layer group is also an Inkscape layer
 (``inkscape:groupmode="layer"`` and ``inkscape:label``).
@@ -133,8 +137,14 @@ _G = f"{{{_SVG}}}g"
 _TEXT = f"{{{_SVG}}}text"
 _PATH = f"{{{_SVG}}}path"
 _DEFS = f"{{{_SVG}}}defs"
+_IMAGE = f"{{{_SVG}}}image"
 
 _TAG_ATTR = "_landau_svg"
+_PLACEHOLDER = "landau-placeholder-"
+# A phase field catches the pointer whether it is filled or, under a
+# color_by fill, only outlined; the fill itself lets the pointer through to
+# the field and the two-phase regions.
+_POINTER_EVENTS = {"phase": "visible", "field": "none"}
 _OUTLINE_ATTR = "_landau_outline"
 _LAYER_RE = re.compile(r"[A-Za-z0-9_-]+")
 _PREFIX_RE = re.compile(r"(?:[A-Za-z_][A-Za-z0-9_.-]*)?")
@@ -340,7 +350,7 @@ class _Session:
         if artist is None or id(artist) in self._assigned:
             return
         self._assigned.add(id(artist))
-        token = f"landau-placeholder-{len(self.entries)}"
+        token = f"{_PLACEHOLDER}{len(self.entries)}"
         self._gids[artist] = artist.get_gid()
         artist.set_gid(token)
         self.entries[token] = {
@@ -464,9 +474,15 @@ class _Layout:
 
     def apply(self, root):
         entries = self.session.entries
-        self.entry_of = {el: entries[el.get("id")] for el in root.iter(_G) if el.get("id") in entries}
         parents = {child: parent for parent in root.iter() for child in parent}
+        # matplotlib writes an image's gid on the <image> itself; give it a group like every other artist
+        for el in [el for el in root.iter() if el.tag != _G and el.get("id") in entries]:
+            _enclosing_group(el, parents).set("id", el.attrib.pop("id"))
+        self.entry_of = {el: entries[el.get("id")] for el in root.iter(_G) if el.get("id") in entries}
         containers = [(el, e) for el, e in self.entry_of.items() if e["kind"] in ("figure", "axes")]
+        for el, entry in containers:
+            if entry["kind"] == "axes":
+                self._group_rasters(el, entry["scope"], parents)
         # the figure and axes ids first: nothing else may take them
         for el, entry in containers:
             if entry["kind"] == "figure":
@@ -483,7 +499,36 @@ class _Layout:
             entry = self.entry_of.get(el)
             if entry is not None and entry["kind"] not in ("figure", "axes", "axis"):
                 self._annotate(el, entry)
+        for el in root.iter():
+            if (el.get("id") or "").startswith(_PLACEHOLDER):  # an artist that is no element
+                del el.attrib["id"]
         return self.elements
+
+    def _group_rasters(self, axes_el, scope, parents):
+        """Make an element of every raster image written directly into an axes.
+
+        Rasterized artists get no group of their own; neighbours are merged
+        into one image.  The image stands for the rasterized artists of the
+        axes that are missing from the file and takes their tag if they
+        share one.
+        """
+        images = [el for el in axes_el if el.tag == _IMAGE]
+        if not images:
+            return
+        written = {id(entry) for entry in self.entry_of.values()}
+        tags = [
+            (e["layer"], e["kind"], e["name"], e["data"])
+            for e in self.session.entries.values()
+            if e["scope"] == scope and id(e) not in written
+            and e["artist"].get_rasterized() and e["artist"].get_visible()
+        ]
+        shared = tags[0] if tags and all(t == tags[0] for t in tags) else None
+        for image in images:
+            group = _enclosing_group(image, parents)
+            if shared is not None:
+                layer, kind, name, data = shared
+                self.entry_of[group] = {"scope": scope, "layer": layer, "kind": kind, "name": name,
+                                        "data": data, "hit": None}
 
     def _new_id(self, eid):
         """``eid``, or ``eid_2``, ``eid_3``, ... if it is taken."""
@@ -598,10 +643,26 @@ class _Layout:
         for key, value in attrs.items():
             el.set(key, value)
         self.elements[eid] = attrs
+        if kind in _POINTER_EVENTS:
+            el.set("pointer-events", _POINTER_EVENTS[kind])
         if entry.get("outline") is not None:
             _stroke_text(el, entry["outline"])
         if entry.get("hit") is not None:
             _hit_target(el, entry["hit"])
+
+
+def _enclosing_group(el, parents):
+    """The ``<g>`` holding only ``el``: its parent if that is such a group without id, else a new one."""
+    parent = parents[el]
+    if parent.tag == _G and parent.get("id") is None and len(parent) == 1:
+        return parent
+    group = ET.Element(_G)
+    group.tail, el.tail = el.tail, None
+    parent.insert(list(parent).index(el), group)
+    parent.remove(el)
+    group.append(el)
+    parents[group], parents[el] = parent, group
+    return group
 
 
 def _stroke_text(el, outline):
