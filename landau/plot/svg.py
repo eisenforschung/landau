@@ -587,8 +587,8 @@ class _Layout:
 
 
 def _stroke_text(el, outline):
-    rgba = to_rgba(outline["color"])
-    stroke = (f"paint-order: stroke; stroke: {to_hex(rgba)}; stroke-width: {outline['width']:g}; "
+    rgba = to_rgba(outline["foreground"], outline.get("alpha"))
+    stroke = (f"paint-order: stroke; stroke: {to_hex(rgba)}; stroke-width: {outline['linewidth']:g}; "
               "stroke-linejoin: round")
     if rgba[3] != 1:
         stroke += f"; stroke-opacity: {rgba[3]:g}"

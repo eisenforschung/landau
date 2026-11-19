@@ -23,6 +23,7 @@ import landau.calculate as ldc
 from landau.features import Locus
 from landau.phases import LinePhase, kB
 from landau.plot import plot_1d_T_phase_diagram, plot_mu_phase_diagram, plot_phase_diagram, save_layered_svg
+from landau.plot.style import theme
 from landau.plot.svg import _add_coexistence, tag
 
 SVG = "{http://www.w3.org/2000/svg}"
@@ -53,6 +54,12 @@ def _by_id(root):
 def _render(fig):
     fig.canvas.draw()
     return np.asarray(fig.canvas.buffer_rgba()).copy()
+
+
+@pytest.fixture(autouse=True)
+def _restore_theme():
+    yield
+    theme.reset()
 
 
 @pytest.fixture
@@ -108,6 +115,43 @@ def test_phase_fields_and_labels(ct_figure, eutectic_diagram):
         assert text.text == g.get("data-phase")
         assert "paint-order: stroke" in text.get("style")
         assert elements[g.get("id")]["data-phase"] == g.get("data-phase")
+
+
+def _label_styles(root):
+    """The CSS declarations of every phase label's <text>, one dict per label."""
+    return [dict(d.strip().split(": ", 1) for d in g.find(f".//{SVG}text").get("style").split(";") if d.strip())
+            for g in _groups(root, "landau-label")]
+
+
+def test_label_outline_is_the_themes_stroke(eutectic_diagram):
+    theme.label_outline = {"linewidth": 5, "foreground": "red", "alpha": 0.25}
+    fig, ax = plt.subplots()
+    plot_phase_diagram(eutectic_diagram, ax=ax)
+    root, _, _ = _save(fig)
+    plt.close(fig)
+    styles = _label_styles(root)
+    assert len(styles) == 3
+    for style in styles:
+        assert style["paint-order"] == "stroke"
+        assert style["stroke"] == "#ff0000"
+        assert float(style["stroke-width"]) == 5
+        assert float(style["stroke-opacity"]) == 0.25
+
+
+@pytest.mark.parametrize("outline", [{}, {"linewidth": 2}, {"foreground": "yellow"},
+                                     {"linewidth": 2, "foreground": "k", "capstyle": "round"}])
+def test_label_outline_svg_cannot_express_stays_a_path_effect(eutectic_diagram, outline):
+    """Such a label keeps matplotlib's stroke: it is drawn as glyph outlines, not as text."""
+    theme.label_outline = outline
+    fig, ax = plt.subplots()
+    plot_phase_diagram(eutectic_diagram, ax=ax)
+    root, _, _ = _save(fig)
+    plt.close(fig)
+    labels = _groups(root, "landau-label")
+    assert len(labels) == 3
+    for g in labels:
+        assert g.find(f".//{SVG}text") is None
+        assert g.find(f".//{SVG}path") is not None
 
 
 def test_invariants(ct_figure, eutectic_diagram):

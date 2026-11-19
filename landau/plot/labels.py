@@ -39,11 +39,9 @@ def _text_with_outline(ax, x, y, s, *, outline_width=None, **kwargs):
     own = "path_effects" not in kwargs
     kwargs.setdefault("path_effects", [patheffects.withStroke(**stroke)])
     text = ax.text(x, y, s, **kwargs)
-    if own:
-        # lets save_layered_svg write the outline as an SVG stroke on live text
-        text._landau_outline = {
-            "effects": text.get_path_effects(), "width": stroke["linewidth"], "color": stroke["foreground"],
-        }
+    if own and {"linewidth", "foreground"} <= stroke.keys() <= {"linewidth", "foreground", "alpha"}:
+        # a stroke save_layered_svg can write as an SVG stroke on live text
+        text._landau_outline = {"effects": text.get_path_effects(), **stroke}
     return text
 
 
