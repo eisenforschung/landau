@@ -248,9 +248,11 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
   The save gives every artist a placeholder gid, lets matplotlib write the file, regroups the XML (`_Layout`) and restores the figure (`_Session`).
   Layer groups follow paint order — a layer interrupted by another layer's artist is written as several groups — so the file shows what `savefig` shows;
   `_assert_painted_as_savefig` in `tests/unit/plot/test_svg.py` checks that.
-  Two-phase regions and phase boundaries are invisible hit targets added only on save (`_add_coexistence`): shapes from the drawn field polygons, names only from the frame's tie-lines (`get_transitions`), nothing for a frame without `border` or `triple` rows.
+  Two-phase regions and phase boundaries are invisible hit targets added only on save (`_add_coexistence`), from the drawn field polygons alone, never from the frame.
+  In c-T the free space is cut at every temperature where a field's outline turns, and each piece is the region of the fields to its left and right (the same field twice for a miscibility gap, no region without a field on a side);
+  in mu-T an outline edge is the boundary with the nearest other field.
   Three private attributes couple the modules: `artist._landau_svg` (the tag),
-  `text._landau_outline` (set by `labels._text_with_outline` when the outline can be written as an SVG stroke) and `ax._landau_phase_diagram` (fields, sampled window and border rows, set by `_plot_phase_diagram`).
+  `text._landau_outline` (set by `labels._text_with_outline` when the outline can be written as an SVG stroke) and `ax._landau_phase_diagram` (the plotted variables and the field patches, set by `_plot_phase_diagram`).
   Not handled: axes of a `SubFigure` and child axes are not broken up into layers of their own.
 - 2d options: `legend`/`inline_legend` (inline labels at the polygon's pole of inaccessibility, with rotate/offset fallbacks),
   `triplepoints=None` (follows `transition_temperatures` unless set, `tielines=` is a deprecated alias),

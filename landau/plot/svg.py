@@ -104,17 +104,18 @@ pass over the XML.
   ``yoffset`` and ``other`` carry no data attributes.
 
 Two-phase regions and boundaries are not drawn by the plotting functions.
-They are worked out when the figure is saved, their shapes from the outlines
-of the phase fields as drawn and their phases from the tie-lines of the
-frame the diagram was plotted from, and written with zero opacity, as
-presentation attributes rather than inline style, so a stylesheet can show
-them (``.landau-boundary path {stroke-opacity: 1}``) and they catch pointer
-events without changing the picture.  A miscibility gap is a region of one
-phase twice, with one boundary where it lies inside a single field.  They do
-not depend on the axes limits.  None are written for a frame that does not
-say what coexists: one without ``border`` rows, or without the ``triple``
-rows that separate the regions meeting at an invariant; a gap inside one
-field of a mu-T diagram has no outline to be a boundary.
+They are built from the phase fields as drawn when the figure is saved and
+written with zero opacity, as presentation attributes rather than inline
+style, so a stylesheet can show them (``.landau-boundary path {stroke-opacity:
+1}``) and they catch pointer events without changing the picture.  In a c-T
+diagram tie-lines are horizontal: the space between two fields is the
+two-phase region of the field to its left and the field to its right.  A
+miscibility gap has the same field on both sides and is a region of one
+phase twice, with one boundary; space with no field drawn on a side -- the
+room around the diagram, or beside a field that has thinned out of the
+picture -- is no region.  In a mu-T diagram an edge of a field's outline is
+its boundary with the field nearest to it.  Neither depends on the axes
+limits.
 
 A phase field catches pointer events whether it is filled or not
 (``pointer-events="visible"``); the ``color_by`` fill lets them through
@@ -142,11 +143,7 @@ from matplotlib.colors import to_hex, to_rgba
 from matplotlib.patches import PathPatch
 from matplotlib.path import Path as MplPath
 from matplotlib.text import Text
-from scipy.spatial import cKDTree
 from shapely.ops import split
-
-from ..calculate import get_transitions
-from ..features import Locus
 
 __all__ = ["save_layered_svg", "tag"]
 
@@ -185,8 +182,8 @@ _PREFIX_RE = re.compile(r"(?:[A-Za-z_][A-Za-z0-9_.-]*)?")
 _AXIS_PARTS = ("grid", "ticks", "ticklabels", "label", "offset")
 
 # Geometry of the two-phase regions and boundaries, in units of the window the
-# diagram was sampled in (both axes scaled to [0, 1], so one tolerance fits a
-# c axis and a T axis).
+# phase fields span (both axes scaled to [0, 1], so one tolerance fits a c
+# axis and a T axis).
 _SNAP = 1e-4  # an outline within this distance of a region borders it
 _SLIVER = 1e-6  # a gap between fields narrower than twice this is a rounding error
 _MU_SNAP = 5e-3  # mu-T fields are trimmed apart by up to their buffer width
@@ -812,61 +809,49 @@ def _prefix_ids(root, prefix, keep):
 def _add_coexistence(ax, added: list) -> list:
     """Add the two-phase regions and boundaries of a 2d phase diagram on ``ax``.
 
-    ``_plot_phase_diagram`` recorded the fields it drew and the border rows
-    of the frame it drew them from.  The fields give every shape, the frame
-    every name:
+    Built from the phase fields ``_plot_phase_diagram`` drew and recorded on
+    the axes, and from nothing else:
 
-    * c-T: the window of the diagram not covered by a phase field, cut along
-      the frame's triple-point isotherms, falls apart into pieces.  A piece
-      holding tie-lines of one pair of phases is the two-phase region of
-      that pair -- twice the same phase for a miscibility gap.  The boundary
-      of a phase against the other is the part of its field's outline along
-      the region.
-    * mu-T: the fields tile the plane, so there are no regions.  Where the
-      outline of one field runs along another, the transition of the frame
-      nearest to it says which two phases meet there.
-
-    Nothing is written that the frame does not say: a piece without
-    tie-lines is no region, and neither is one whose tie-lines name several
-    pairs because the frame has no triple point to cut it at.
+    * c-T: tie-lines are horizontal, so a point between two fields lies in
+      the two-phase region of the field to its left and the field to its
+      right.  The space the fields leave free, cut at every temperature
+      where a field begins or ends, falls into pieces that each have one
+      such pair of neighbours; pieces with the same pair that touch are one
+      region.  A piece with the same field on both sides is a miscibility
+      gap, one without a field on a side is no region.  The boundary of a
+      phase against the other is the part of its field's outline along the
+      region.
+    * mu-T: the fields tile the plane, so there are no regions; an edge of a
+      field's outline is its boundary with the field nearest to it.
 
     The artists are appended to ``added`` as they are created, so the caller
     can remove them again even if a later one fails; ``added`` is returned.
     """
     state = getattr(ax, "_landau_phase_diagram", None)
-    if state is None or state["border"] is None:
+    if state is None:
         return added
     if any(patch.axes is not ax for _, _, patch in state["fields"]):  # cleared or changed since it was drawn
         return added
-    (x0, x1), (y0, y1) = state["extent"]
-    if not (x1 > x0 and y1 > y0):
+    outlines = [(phase, unit, np.asarray(patch.get_xy(), dtype=float)) for phase, unit, patch in state["fields"]]
+    outlines = [(phase, unit, xy) for phase, unit, xy in outlines if len(xy) and np.isfinite(xy).all()]
+    if not outlines:
         return added
-    offset, scale = np.array([x0, y0]), np.array([x1 - x0, y1 - y0])
+    every = np.concatenate([xy for _, _, xy in outlines])
+    offset, scale = every.min(axis=0), np.ptp(every, axis=0)
+    if not (scale > 0).all():
+        return added
 
-    # the window of the diagram scaled to the unit square, so one tolerance fits both axes
-
-    def to_frac(xy):
-        return (np.asarray(xy, dtype=float) - offset) / scale
+    # the window the fields span, scaled to the unit square so that one tolerance fits both axes
 
     def to_data(xy):
         return np.asarray(xy, dtype=float) * scale + offset
 
     fields = []
-    for phase, unit, patch in state["fields"]:
-        xy = to_frac(patch.get_xy())
-        if np.isfinite(xy).all():
-            shape = shapely.union_all(_polygons(shapely.make_valid(shapely.Polygon(xy))))
-            if not shape.is_empty:
-                fields.append((phase, unit, shape))
-    x = state["variables"][0]
-    ties = _tie_lines(state["border"], x)
-    if not fields or not len(ties["T"]):
-        return added
-    left, right = to_frac(np.column_stack([ties["left"], ties["T"]])), to_frac(np.column_stack([ties["right"], ties["T"]]))
-    if x == "c":
-        found = _regions(fields, ties, left, right, to_frac)
-    else:
-        found = _mu_boundaries(fields, ties, left)
+    for phase, unit, xy in outlines:
+        shape = shapely.union_all(_polygons(shapely.make_valid(shapely.Polygon((xy - offset) / scale))))
+        if not shape.is_empty:
+            fields.append((phase, unit, shape))
+    found = _regions(fields) if state["variables"][0] == "c" else _mu_boundaries(fields)
 
     z_lines = max(2.4, max(patch.get_zorder() for _, _, patch in state["fields"]) * (1 + 1e-9))
     for hit, kind, name, data, geom in found:
@@ -884,61 +869,47 @@ def _add_coexistence(ax, added: list) -> list:
     return added
 
 
-def _tie_lines(border, x):
-    """The tie-lines among the border rows of a frame, as :func:`~landau.calculate.get_transitions` pairs them.
-
-    Returns a dict of arrays with one entry per tie-line at finite ``mu``:
-    its ``T``, the two ``phases`` it joins, the coordinate ``x`` (``c`` or
-    ``mu``) of its ``left`` and ``right`` end, whether it is one of the
-    tie-lines of a ``triple`` point, and the ``(mu, T)`` it sits at.
-    """
-    tdf = get_transitions(border)
-    tdf = tdf[np.isfinite(tdf["mu"])]
-    keys = ["mu", "T", "transition"]
-    # a tie-line is two rows; a lone row is the edge of the sampled window
-    tdf = tdf[tdf.groupby(keys)["c"].transform("size") == 2].sort_values([*keys, "c"], kind="stable")
-    ends = tdf[["mu", "T", x]].to_numpy(dtype=float).reshape(-1, 2, 3)
-    at = ends[:, 0, :2]
-    triple = border.loc[border["locus"] == Locus.TRIPLE, ["mu", "T"]].to_numpy(dtype=float)
-    return {
-        "T": at[:, 1],
-        "left": ends[:, 0, 2],
-        "right": ends[:, 1, 2],
-        "phases": tdf["phase"].to_numpy().reshape(-1, 2),
-        "at": at,
-        "triple": np.array([(point == triple).all(axis=1).any() for point in at], dtype=bool),
-    }
+def _turning_heights(shape) -> set:
+    """The heights at which the outline of ``shape`` turns from rising to falling or back."""
+    heights = set()
+    for polygon in _polygons(shape):
+        for ring in (polygon.exterior, *polygon.interiors):
+            y = np.asarray(ring.coords)[:-1, 1]
+            y = y[y != np.roll(y, 1)]  # a level stretch turns once
+            turns = (y - np.roll(y, 1)) * (np.roll(y, -1) - y) < 0
+            heights.update(y[turns].tolist())
+    return heights
 
 
-def _regions(fields, ties, left, right, to_frac) -> list:
+def _regions(fields) -> list:
     """The two-phase regions of a c-T diagram and the boundaries along them."""
-    # a tie-line of a triple point lies on the cut between regions, one of no width inside a field
-    inner = ~ties["triple"] & (right[:, 0] > left[:, 0])
-    middle = (left[inner] + right[inner]) / 2
-    pairs = [tuple(sorted(pair)) for pair in ties["phases"][inner]]
-    parts = _polygons(shapely.box(0, 0, 1, 1).difference(shapely.union_all([shape for _, _, shape in fields])))
-    isotherms = np.unique(ties["T"][ties["triple"]])
-    for T in isotherms:
-        on = ties["triple"] & (ties["T"] == T)
-        y = to_frac([[0, T]])[0, 1]
-        cut = shapely.LineString([(left[on, 0].min() - 0.01, y), (right[on, 0].max() + 0.01, y)])
-        parts = [q for part in parts for q in _polygons(split(part, cut))]
-    # an opening: drops the slivers left where a field ends a rounding error short of the window
-    parts = [q for part in parts for q in _polygons(
-        part.buffer(-_SLIVER, join_style="mitre").buffer(_SLIVER, join_style="mitre").intersection(part))]
+    shapes = np.array([shape for _, _, shape in fields], dtype=object)
+    free = shapely.box(0, 0, 1, 1).difference(shapely.union_all(shapes))
+    # between two neighbouring heights no field begins or ends, so the
+    # fields left and right of a piece of free space are the same all over it
+    heights = sorted(set().union(*(_turning_heights(shape) for shape in shapes)))
+    cuts = shapely.MultiLineString([[(-1, y), (2, y)] for y in heights if 0 < y < 1])
+    pieces = [q for part in _polygons(free) for q in _polygons(split(part, cuts) if len(cuts.geoms) else part)]
+
+    def key(i):
+        return fields[i][0], fields[i][1]
+
+    beside = {}
+    for piece in pieces:
+        at = piece.representative_point()
+        left = shapely.bounds(shapely.intersection(shapely.LineString([(-1, at.y), (at.x, at.y)]), shapes))[:, 2]
+        right = shapely.bounds(shapely.intersection(shapely.LineString([(at.x, at.y), (2, at.y)]), shapes))[:, 0]
+        if np.isnan(left).all() or np.isnan(right).all():
+            continue  # open to one side: the margin of the diagram
+        pair = tuple(sorted((int(np.nanargmax(left)), int(np.nanargmin(right))), key=key))
+        beside.setdefault(pair, []).append(piece)
 
     regions = []
-    for part in parts:
-        named = {pair for pair, inside in zip(pairs, shapely.contains_xy(part, middle[:, 0], middle[:, 1])) if inside}
-        if len(named) != 1:
-            continue
-        (pa, pb), = named
-        if pa == pb:  # a gap lies inside one field of its phase or between two of them
-            sides = (_fields_along(part, fields, pa) * 2)[:2]
-        else:
-            sides = _fields_along(part, fields, pa)[:1] + _fields_along(part, fields, pb)[:1]
-        if len(sides) == 2:
-            regions.append(((pa, pb), tuple(sorted(sides, key=lambda i: (fields[i][0], fields[i][1]))), part))
+    for (i, j), parts in beside.items():
+        whole = shapely.union_all(parts)
+        # an opening: drops the slivers left where two fields meet a rounding error apart
+        whole = whole.buffer(-_SLIVER, join_style="mitre").buffer(_SLIVER, join_style="mitre").intersection(whole)
+        regions.extend(((fields[i][0], fields[j][0]), (i, j), part) for part in _polygons(whole))
     regions.sort(key=lambda r: (r[0], r[2].centroid.y, r[2].centroid.x))
 
     found, count = [], {}
@@ -956,54 +927,24 @@ def _regions(fields, ties, left, right, to_frac) -> list:
     return found
 
 
-def _fields_along(part, fields, phase) -> list:
-    """The indices of the fields of ``phase`` bordering ``part``, the one sharing most of its outline first."""
-    edge = part.boundary
-    along = sorted(((edge.intersection(shape.buffer(_SNAP)).length, i)
-                    for i, (p, _, shape) in enumerate(fields) if p == phase), reverse=True)
-    return [i for length, i in along if length > 0]
-
-
-def _mu_boundaries(fields, ties, at) -> list:
+def _mu_boundaries(fields) -> list:
     """The boundaries between the fields of a mu-T diagram."""
-    # every transition of the frame with the phases that meet there: a
-    # tie-line joins two, a triple point each pair of its three
-    points, meeting = [], []
-    for point in np.unique(at[ties["triple"]], axis=0):
-        on = ties["triple"] & (at == point).all(axis=1)
-        phases = sorted(set(ties["phases"][on].ravel()))
-        for n, pa in enumerate(phases):
-            for pb in phases[n + 1:]:
-                points.append(point)
-                meeting.append((pa, pb))
-    for point, pair in zip(at[~ties["triple"]], ties["phases"][~ties["triple"]]):
-        points.append(point)
-        meeting.append(tuple(sorted(pair)))
-    points, meeting = np.array(points), np.array(meeting, dtype=object).reshape(-1, 2)
-
     order = sorted(range(len(fields)), key=lambda i: (fields[i][0], fields[i][1]))
+    shapes = np.array([fields[i][2] for i in order], dtype=object)
     found, count = [], {}
-    for n, i in enumerate(order):
+    for n, i in enumerate(order[:-1]):
         pa, ua, sa = fields[i]
-        own = (meeting == pa).any(axis=1)
-        for j in order[n + 1:]:
-            pb, ub, sb = fields[j]
-            both = own & (meeting == pb).any(axis=1)
-            if pb == pa or not both.any() or sa.distance(sb) > _MU_SNAP:
+        edges = np.array([edge for polygon in _polygons(sa) for ring in (polygon.exterior, *polygon.interiors)
+                          for edge in zip(ring.coords[:-1], ring.coords[1:])])
+        # the field nearest to each edge of the outline, if any is near
+        away = shapely.distance(shapes[:, None], shapely.points(edges.mean(axis=1))[None, :])
+        away[n] = np.inf
+        nearest = np.where(away.min(axis=0) <= _MU_SNAP, away.argmin(axis=0), -1)
+        for m in range(n + 1, len(order)):
+            pb, ub, _ = fields[order[m]]
+            if pb == pa or not (nearest == m).any():
                 continue
-            line = _lines(sa.boundary.intersection(sb.buffer(_MU_SNAP)))
-            if line is None:
-                continue
-            # of the outline of pa along pb, the edges both ends of which have a transition
-            # with pb as the nearest of pa's transitions; a triple point is one with either partner
-            edges = np.array([edge for part in getattr(line, "geoms", [line])
-                              for edge in zip(part.coords[:-1], part.coords[1:])])
-            ends = edges.reshape(-1, 2)
-            to_pair = cKDTree(points[both]).query(ends)[0]
-            other = own & ~both
-            to_other = cKDTree(points[other]).query(ends)[0] if other.any() else np.full(len(ends), np.inf)
-            kept = edges[(to_pair <= to_other).reshape(-1, 2).all(axis=1)]
-            line = _lines(shapely.MultiLineString(list(kept))) if len(kept) else None
+            line = _lines(shapely.MultiLineString(list(edges[nearest == m])))
             if line is None or line.length < _MIN_LENGTH:
                 continue
             k = count[(pa, pb)] = count.get((pa, pb), -1) + 1

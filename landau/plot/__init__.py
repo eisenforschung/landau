@@ -406,15 +406,10 @@ def _plot_phase_diagram(
     if transition_temperatures:
         _annotate_transition_temperatures(df, polys, ax=ax, variables=variables)
     ax.set_ylabel(_column_label("T"))
-    # What save_layered_svg needs to add the two-phase regions and boundaries:
-    # the fields as drawn, the window they were sampled in and the rows of
-    # the frame that say which phases coexist where.
-    known = {"border", "locus"} <= set(df.columns)
+    # The fields as drawn: all save_layered_svg needs to add the two-phase regions and boundaries.
     ax._landau_phase_diagram = {
         "variables": variables,
         "fields": [(*(key if isinstance(key, tuple) else (key, 0)), p) for key, p in polys.items()],
-        "extent": [(v[np.isfinite(v)].min(), v[np.isfinite(v)].max()) for v in (df_stable[variables[0]], df_stable["T"])],
-        "border": df.loc[df["border"], ["mu", "T", "c", "phase", "locus", "border"]] if known else None,
     }
 
 

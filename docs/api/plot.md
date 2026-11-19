@@ -94,8 +94,9 @@ svg.querySelectorAll(".landau-phase").forEach((g) =>
 ```
 
 The two-phase regions and boundaries are invisible until a stylesheet shows them.
-Their shapes are the gaps between the phase fields as drawn and their phases come from the tie-lines of the frame, so a miscibility gap is a region of one phase twice.
-A frame without `border` or `triple` rows has none.
+They are built from the phase fields as drawn: the space between two fields of a c-T diagram is the two-phase region of the field to its left and the field to its right.
+A miscibility gap has the same field on both sides and is a region of one phase twice.
+Space with no field drawn on one side is no region.
 
 ```{eval-rst}
 .. automodule:: landau.plot.svg

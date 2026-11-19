@@ -454,11 +454,14 @@ def _coexistence(ax):
 @pytest.mark.parametrize("diagram, pairs", [
     ("eutectic_diagram", [("fcc", "hcp"), ("fcc", "liquid"), ("hcp", "liquid")]),
     ("split_solid_diagram", [("g", "g'"), ("g", "g'")]),
-    ("monotectic_diagram", [("alpha", "beta"), ("alpha", "liquid"), ("alpha", "liquid"), ("beta", "liquid"),
-                            ("liquid", "liquid")]),
+    # alpha coexists with the liquid of either side of the gap; both lie between the same two fields
+    ("monotectic_diagram", [("alpha", "beta"), ("alpha", "liquid"), ("beta", "liquid"), ("liquid", "liquid")]),
 ])
 def test_two_phase_regions_are_where_the_frame_has_tie_lines(diagram, pairs, request):
-    """Every tie-line lies in the region of its pair and spans it; no region is without tie-lines."""
+    """The regions come from the drawn fields alone; the frame's tie-lines are the check on them.
+
+    Every tie-line lies in the region of its pair and spans it; no region is without tie-lines.
+    """
     df = request.getfixturevalue(diagram)
     fig, ax = plt.subplots()
     plot_phase_diagram(df, ax=ax)
@@ -544,14 +547,29 @@ def test_regions_do_not_depend_on_the_view(ct_figure, limits):
     assert coexistence() == before
 
 
-def test_frame_without_triple_points_gets_no_regions(eutectic_diagram):
-    """The three two-phase fields are then one piece of the diagram, which the frame gives no single name."""
-    fig, ax = plt.subplots()
-    plot_phase_diagram(eutectic_diagram.drop(columns="locus"), ax=ax)
-    root, _, _ = _save(fig)
-    plt.close(fig)
-    assert len(_groups(root, "landau-phase")) == 3
-    assert _groups(root, "landau-two-phase") == [] and _groups(root, "landau-boundary") == []
+def test_regions_need_only_the_fields(eutectic_diagram):
+    """A frame stripped of what says which phases coexist gives the same regions and boundaries."""
+    def coexistence(df):
+        fig, ax = plt.subplots()
+        plot_phase_diagram(df, ax=ax)
+        _, elements, _ = _save(fig)
+        plt.close(fig)
+        return {i: a for i, a in elements.items() if a["class"] in ("landau-two-phase", "landau-boundary")}
+
+    expected = coexistence(eutectic_diagram)
+    assert len(expected) == 9
+    assert coexistence(eutectic_diagram.drop(columns=["locus", "boundary_id"])) == expected
+
+
+def test_space_beside_no_field_is_no_region(ct_figure):
+    """Only space with a field on either side is a region: not the room a user leaves around the diagram."""
+    ax = ct_figure.axes[0]
+    regions, _ = _coexistence(ax)
+    (x0, _, x1, _) = shapely.union_all([shape for _, shape in regions]).bounds
+    assert (x0, x1) == pytest.approx((0, 1), abs=C_TOL)
+    ax.set_xlim(-0.2, 1.2)
+    margins, _ = _coexistence(ax)
+    assert [shape.bounds for _, shape in margins] == [shape.bounds for _, shape in regions]
 
 
 def test_cleared_axes_has_no_regions(ct_figure, unary_diagram):
