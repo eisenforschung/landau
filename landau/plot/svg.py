@@ -135,8 +135,6 @@ _NAMESPACES = {
     "cc": "http://creativecommons.org/ns#",
     "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
 }
-for _prefix, _uri in _NAMESPACES.items():
-    ET.register_namespace(_prefix, _uri)
 
 _G = f"{{{_SVG}}}g"
 _TEXT = f"{{{_SVG}}}text"
@@ -303,6 +301,11 @@ def save_layered_svg(
     elements = layout.apply(root)
     if id_prefix:
         _prefix_ids(root, id_prefix, keep=layout.used)
+    # ElementTree keeps one prefix table per process; set it when serialising,
+    # so that neither importing landau changes it nor another library's
+    # entries turn the root into <ns0:svg>
+    for ns_prefix, uri in _NAMESPACES.items():
+        ET.register_namespace(ns_prefix, uri)
     out = ET.tostring(root, encoding="utf-8", xml_declaration=True)
     if hasattr(fname, "write"):
         fname.write(out)

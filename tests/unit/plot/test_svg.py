@@ -461,6 +461,15 @@ def test_deterministic(ct_figure):
     assert _save(ct_figure)[2] == _save(ct_figure)[2]
 
 
+def test_namespace_prefixes_do_not_depend_on_other_users_of_elementtree(ct_figure):
+    ET.register_namespace("", "http://example.com/another-default-namespace")
+    ET.register_namespace("link", "http://www.w3.org/1999/xlink")
+    _, _, raw = _save(ct_figure)
+    assert raw.startswith(b"<?xml version='1.0' encoding='utf-8'?>\n<svg ")
+    assert b"<ns0:" not in raw
+    assert set(re.findall(rb"\w+:href", raw)) == {b"xlink:href"}
+
+
 def test_id_prefix(ct_figure):
     root, elements, _ = _save(ct_figure, id_prefix="m1_")
     ids = _by_id(root)
