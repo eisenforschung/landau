@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+import dataclasses
 from dataclasses import dataclass
 from functools import lru_cache, cache, cached_property
 from typing import Iterable, Optional, ClassVar
@@ -45,6 +46,14 @@ def S(c):
     return kB * (se.entr(c) + se.entr(1 - c))
 
 
+STATE_VERSION = 1
+"""Layout of the state :meth:`Phase.__getstate__` writes.
+
+Bump it when a phase's fields change incompatibly, and migrate the older layout in
+``__setstate__``; a pickle from a newer layout is refused rather than half-loaded.
+"""
+
+
 def _warn_deprecated_phase(cls, instead):
     """Emit the deprecation warning for a solution phase superseded by :class:`FastInterpolatingPhase`.
 
@@ -86,6 +95,39 @@ class Phase(ABC):
         return f'{type(self).__name__}("{self.name}")'
 
     __str__ = __repr__
+
+    def __getstate__(self):
+        """The dataclass fields and a ``"__landau__"`` tag of ``(STATE_VERSION, landau.__version__)``.
+
+        Attributes outside the fields -- the precomputed hashes, ``cached_property``
+        values such as a fitted surface -- are derived from the fields and left out:
+        they are recomputed on first use, and a hash taken in another interpreter is
+        stale anyway (``hash`` is salted per process).
+        """
+        from .. import __version__
+
+        return {
+            "__landau__": (STATE_VERSION, __version__),
+            **{f.name: getattr(self, f.name) for f in dataclasses.fields(self)},
+        }
+
+    def __setstate__(self, state):
+        """Restore the dataclass fields from *state*, dropping anything else.
+
+        Accepts the full ``__dict__`` an older landau pickled, which carries no tag.
+        Like fleche's destructuring, this does not run ``__post_init__``, so derived
+        attributes must be recomputable on first use.
+        """
+        version, _ = state.get("__landau__", (0, None))
+        if version > STATE_VERSION:
+            raise ValueError(
+                f"{type(self).__name__} was pickled with state layout {version}, newer than this landau's "
+                f"{STATE_VERSION}; upgrade landau to load it"
+            )
+        names = {f.name for f in dataclasses.fields(self)}
+        for name, value in state.items():
+            if name in names:
+                object.__setattr__(self, name, value)
 
 
 @dataclass(frozen=True)
@@ -160,22 +202,25 @@ class TemperatureDependentLinePhase(AbstractLinePhase):
 
         object.__setattr__(self, "temperatures", to_ro_numpy(self.temperatures))
         object.__setattr__(self, "free_energies", to_ro_numpy(self.free_energies))
-        # precompute hash: hashing arrays every cache lookup is too expensive
-        # and we any way advertise as frozen.  Deliberately *not* a dataclass
-        # field: it is derived from the fields above, and being salted per
-        # interpreter (hash(bytes)) it would make any content digest built from
-        # dataclasses.fields() -- e.g. fleche's -- differ across processes.
-        object.__setattr__(
-            self,
-            "_hash",
-            hash(
-                (
-                    hash(self.fixed_concentration),
-                    hash(self.temperatures.tobytes()),
-                    hash(self.free_energies.tobytes()),
-                    hash(self.interpolator),
-                )
-            ),
+
+    @cached_property
+    def _hash(self):
+        """Hash of the fields, computed once: hashing arrays on every cache lookup is too expensive.
+
+        Deliberately *not* a dataclass field: being salted per interpreter
+        (``hash(bytes)``) it would make any content digest built from
+        ``dataclasses.fields()`` -- e.g. fleche's -- differ across processes.
+        Computed on first use rather than in ``__post_init__``, because a phase
+        restored without it (a pickle, or fleche rebuilding a stored dataclass with
+        ``object.__new__``) must still hash, and to its own interpreter's salt.
+        """
+        return hash(
+            (
+                hash(self.fixed_concentration),
+                hash(self.temperatures.tobytes()),
+                hash(self.free_energies.tobytes()),
+                hash(self.interpolator),
+            )
         )
 
     def __hash__(self):

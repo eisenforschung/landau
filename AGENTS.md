@@ -120,6 +120,11 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
   `IdealSolution`, the interpolating phases, the ideal-mixing entropy `S(c)` and `check_concentration_interpolation`.
   User-facing classes are re-exported from `landau/__init__.py`;
   `Phase`/`AbstractLinePhase` stay under `landau.phases`.
+- Pickling: `Phase.__getstate__` returns the dataclass fields plus a `"__landau__": (STATE_VERSION, __version__)` tag;
+  `__setstate__` keeps only field names and refuses a newer `STATE_VERSION`.
+  Bump `STATE_VERSION` and migrate in `__setstate__` when a phase's fields change incompatibly.
+  fleche's value stores rebuild a destructured dataclass with `object.__new__` and `setattr` per field, skipping both `__post_init__` and `__setstate__`;
+  so anything a phase derives outside its fields (`_hash`, `cached_property` values, `PhonopyQuasiHarmonicPhase._lowest`/`_stable`) is computed on first use, never only in `__post_init__`.
 - Deprecated, removal at 2.0: `RegularSolution` and `InterpolatingPhase` (use `FastInterpolatingPhase`, with `interpolator=RedlichKister(n)` for a regular solution), the typo alias `TemperatureDepandantLinePhase`, and the solution phases' `check_interpolation` methods, which forward to `check_concentration_interpolation`.
   `TemperatureDependentLinePhase.check_interpolation` is not deprecated.
   The suite, testplots and notebooks still construct the deprecated classes — new code should not.
@@ -146,7 +151,7 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
 - `asewrapper.py`: `AsePhase(AbstractLinePhase)` wrapping `ase.thermochemistry.ThermoChem`;
   Helmholtz, falling back to Gibbs at 1 atm;
   `atoms_per_formula` normalises per atom;
-  equality/hash by `pickle.dumps(thermochem)`.
+  equality/hash by the pickled thermochem without the `verbose` flag ASE writes on every evaluation (`_thermochem_bytes`).
 - `quasiharmonic.py`: `PhonopyQuasiHarmonicPhase(AbstractLinePhase)` evaluates `min_V [E(V) + F_vib(V, T)]` from phonopy `ThermalProperties` at any `T` instead of fitting a sampled `F(T)`.
   Mutates the `temperatures` of the phonopy objects it is given.
   `eos` is an `Interpolator` (default `PolyFit(8)`, fitted in a centred scaled volume coordinate, fixed parameter count — per-T selection would invent steps in `F(T)`) or one of `"vinet"`/`"birch_murnaghan"`/`"murnaghan"`.
@@ -159,7 +164,10 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
 - `basic.py`: `Interpolator` (factory, `fit(x, y) → Interpolation`) and `Interpolation` (callable fitted curve with `deriv() → Interpolation`);
   type-only subclasses `TemperatureInterpolator` / `ConcentrationInterpolator`.
   `deriv()` is analytic for `PolyFit` (`PolynomialInterpolation`, `coefficients` in ascending order), `SGTE` (`SGTEInterpolation`) and `RedlichKister` (`RedlichKisterInterpolation`);
-  everything else is closure-backed (`_CallableInterpolation`) and falls back to `NumericalDerivative`.
+  every other fit returns a module-level `Interpolation` class holding its fitted state, never a closure, so fits pickle and digest;
+  their derivatives fall back to `NumericalDerivative`.
+  `_CallableInterpolation` remains for wrapping a caller's own callable;
+  no fit in landau returns one.
   Also `SplineFit` (wraps `UnivariateSpline`, `smoothing=0` interpolates, `degree` clamped to `len(x)-1`), `StitchedFit` (sorts its input, `edge` clamped), `G_calphad`, `_scalarize`.
   `RedlichKister.fit` is one `numpy.linalg.lstsq` on the mixing basis (under-determined → minimum norm, terminals only → the chord).
 - 2-D: `SurfaceInterpolator.fit(T, c, H) → FittedSurface`, `FittedSurface.slice_at(T) → Interpolation`.
@@ -173,6 +181,7 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
   robust `loss` or `knee_bounds` force trust-region, `method='lm'` with either raises.
   `knee_bounds` requires `c_order=0`.
 - `whitney.py`: `WhitneyTemperatureInterpolator` (exported, constant-entropy continuation outside the data, an upper bound on a concave `F(T)`), the internal `WhitneyRBFInterpolator`, and `WhitneySurface2DInterpolator` (proposed for deprecation, #531 — slow, scale-dependent in T, invents negative curvature in c).
+  `WhitneyRBFInterpolator` pickles its hyperparameters and training data and refits on load, never the scipy `RBFInterpolator`/`ConvexHull`.
 - Every new 1-D interpolator gets a `CASES` entry in `tests/unit/interpolate/test_shape_contract.py`;
   a new `TemperatureInterpolator` must also be covered in `tests/regression/test_issue_428.py` (scalar in → Python scalar out, array shape preserved);
   that file currently covers only `WhitneyTemperatureInterpolator` and no guard test enforces the coverage.
@@ -267,8 +276,11 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
   landau never imports fleche.
   Hooks only cover types fleche would otherwise reject;
   hooking a type fleche already digests would make digests depend on entry-point load order.
-  Closure-backed fits raise `Indigestible` (two fits share one code object).
-  Per-instance `_hash` values are plain attributes, not dataclass fields, so dataclass-walking digests don't fold in Python's per-process hash salt.
+  No dataclass is hooked except `PhonopyQuasiHarmonicPhase`: fleche's value stores file a destructured dataclass under its field-walk digest, so a hooked one would be stored under a key no lookup computes.
+  `AsePhase` is digested by its fields, its `thermochem` through the stopgap `thermochem_digest` (its home is fleche-ase).
+  Fitted interpolation classes are hooked and digest by their state;
+  a `_CallableInterpolation` around a closure raises `Indigestible` (two closures share one code object).
+  `_hash` is a `cached_property`, not a dataclass field, so dataclass-walking digests don't fold in Python's per-process hash salt.
 
 ## Tests
 

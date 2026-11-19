@@ -1,3 +1,4 @@
+import copy
 import pickle
 
 import numpy as np
@@ -14,6 +15,22 @@ with ImportAlarm("ASE is required to use ASE phase wrappers. Install with pip in
 
 from . import AbstractLinePhase
 
+
+def _thermochem_bytes(thermochem) -> bytes:
+    """Pickled bytes of an ASE ``ThermoChem``, without the ``verbose`` attribute.
+
+    ASE's energy methods store the ``verbose`` argument they were last called with on the
+    object (e.g. ``HarmonicThermo.get_helmholtz_energy`` sets ``self.verbose``), so the
+    plain pickle of a thermochem changes the first time it is evaluated.  A fresh object
+    has no ``verbose``, so for one these are exactly ``pickle.dumps(thermochem)``.
+    """
+    if "verbose" not in vars(thermochem):
+        return pickle.dumps(thermochem)
+    clone = copy.copy(thermochem)
+    del clone.verbose
+    return pickle.dumps(clone)
+
+
 @dataclass(frozen=True)
 class AsePhase(AbstractLinePhase):
     """
@@ -21,7 +38,9 @@ class AsePhase(AbstractLinePhase):
 
     Equality and hashing compare ``thermochem`` by its pickled bytes so two
     ``AsePhase`` instances built from equivalent inputs compare equal even
-    though ASE's ``ThermoChem`` defaults to identity-based equality.
+    though ASE's ``ThermoChem`` defaults to identity-based equality.  The bytes
+    leave out the ``verbose`` flag ASE records on every evaluation, so a phase
+    keeps comparing equal to a fresh copy after it has been used.
 
     ``atoms_per_formula`` divides the energy returned by ``thermochem`` so the
     result is per atom (landau's convention).  Use 2 for an ASE ``IdealGasThermo``
@@ -76,7 +95,7 @@ class AsePhase(AbstractLinePhase):
             self.fixed_concentration,
             self.pressure,
             self.atoms_per_formula,
-            pickle.dumps(self.thermochem),
+            _thermochem_bytes(self.thermochem),
         )
 
     def __eq__(self, other):

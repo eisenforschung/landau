@@ -22,7 +22,7 @@ constants are phonopy's, chosen by the caller when they ran
 import pickle
 import warnings
 from dataclasses import dataclass, field, replace
-from functools import lru_cache
+from functools import cached_property, lru_cache
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -396,11 +396,33 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
             self, "_stable", _select_stable_volumes(per_atom, self._lowest, self.min_frequency, self.name, self.eos)
         )
         object.__setattr__(self, "_key", self._content_key())
+
+    def __getattr__(self, name):
+        # Only reached when normal lookup fails: on a phase restored without
+        # __post_init__ -- by Phase.__setstate__, or by fleche rebuilding a stored
+        # dataclass with object.__new__ -- which keeps the fields but not these two.
+        # The instability warning was already raised when the phase was built.
+        if name == "_lowest":
+            value = tuple(_lowest_frequency(tp) for tp in self.thermal_properties)
+        elif name == "_stable":
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DynamicalInstabilityWarning)
+                value = _select_stable_volumes(
+                    self.volumes_per_atom, self._lowest, self.min_frequency, self.name, self.eos
+                )
+        else:
+            raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
+        object.__setattr__(self, name, value)
+        return value
+
+    @cached_property
+    def _hash(self):
         # Deliberately *not* a dataclass field: it is derived from _key, and being
         # salted per interpreter (hash of pickled bytes) it would make any content
         # digest built from dataclasses.fields() -- e.g. fleche's -- differ across
-        # processes.  Same reasoning as AbstractLinePhase.__post_init__.
-        object.__setattr__(self, "_hash", hash(self._key))
+        # processes.  Computed on first use for the same reason as
+        # TemperatureDependentLinePhase._hash.
+        return hash(self._key)
 
     @classmethod
     def from_phonopy(cls, name, fixed_concentration, phonopys, energies, **kwargs):

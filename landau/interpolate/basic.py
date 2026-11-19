@@ -87,10 +87,11 @@ class NumericalDerivative(Interpolation):
 
 
 class _CallableInterpolation(Interpolation):
-    """Adapts a plain callable (closure) into an :class:`Interpolation`.
+    """Adapts a plain callable into an :class:`Interpolation`.
 
-    Inherits the numerical :meth:`Interpolation.deriv`, so interpolations built
-    from closures (stitched, softplus, Whitney) gain a derivative for free.
+    Inherits the numerical :meth:`Interpolation.deriv`.  No fit in landau returns
+    one: a closure does not pickle and cannot be digested by its state, so each
+    fitted curve is a module-level class holding that state instead.
     """
 
     def __init__(self, func: Callable):
@@ -261,12 +262,17 @@ class SplineFit(ConcentrationInterpolator):
         x = x[order]
         y = y[order]
         k = min(self.degree, len(x) - 1)
-        spline = UnivariateSpline(x, y, k=k, s=self.smoothing)
+        return SplineInterpolation(UnivariateSpline(x, y, k=k, s=self.smoothing))
 
-        def interpolation(c):
-            return _scalarize(spline(c))
 
-        return _CallableInterpolation(interpolation)
+class SplineInterpolation(Interpolation):
+    """A fitted :class:`~scipy.interpolate.UnivariateSpline`; returned by :meth:`SplineFit.fit`."""
+
+    def __init__(self, spline: UnivariateSpline):
+        self.spline = spline
+
+    def __call__(self, x: npt.ArrayLike) -> np.ndarray | float:
+        return _scalarize(self.spline(x))
 
 
 @dataclass(frozen=True, eq=True)
@@ -291,16 +297,22 @@ class SGTEInterpolation(Interpolation):
         return G_calphad(T, *self.parameters)
 
     def deriv(self) -> Interpolation:
-        """The analytic ``dG/dT`` as a callable interpolation."""
+        """The analytic ``dG/dT``."""
+        return SGTEDerivative(self.parameters)
+
+
+class SGTEDerivative(Interpolation):
+    """``dG/dT = pl*(ln(T) + 1) + sum_i i*p_i*T^(i-1)`` of an :class:`SGTEInterpolation` with the same parameters."""
+
+    def __init__(self, parameters: tuple[float, ...]):
+        self.parameters = tuple(parameters)
+
+    def __call__(self, T: npt.ArrayLike) -> np.ndarray | float:
         pl, *p = self.parameters
-
-        def dG(T):
-            T_arr = np.asarray(T, dtype=float)
-            with np.errstate(divide="ignore", invalid="ignore"):
-                g = pl * (np.log(T_arr) + 1.0) + sum(i * pi * T_arr ** (i - 1) for i, pi in enumerate(p) if i >= 1)
-            return g.item() if g.ndim == 0 else g
-
-        return _CallableInterpolation(dG)
+        T_arr = np.asarray(T, dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            g = pl * (np.log(T_arr) + 1.0) + sum(i * pi * T_arr ** (i - 1) for i, pi in enumerate(p) if i >= 1)
+        return g.item() if g.ndim == 0 else g
 
 
 @dataclass(frozen=True, eq=True)
@@ -387,12 +399,18 @@ class RedlichKisterInterpolation(Interpolation):
 
     def deriv(self) -> Interpolation:
         """The analytic ``d/dc`` from :meth:`_eval_mix_derivative`."""
-        # d/dc [ mix(c) + f0 + df*c ] = mix'(c) + df
-        rk_parameters = self.rk_parameters
-        df = self.df
-        return _CallableInterpolation(
-            lambda c: self._eval_mix_derivative(c, *rk_parameters) + df
-        )
+        return RedlichKisterDerivative(self.rk_parameters, self.df)
+
+
+class RedlichKisterDerivative(Interpolation):
+    """``d/dc`` of a :class:`RedlichKisterInterpolation`: ``mix'(c) + df``."""
+
+    def __init__(self, rk_parameters: np.ndarray, df: float):
+        self.rk_parameters = rk_parameters
+        self.df = df
+
+    def __call__(self, c: npt.ArrayLike) -> np.ndarray | float:
+        return RedlichKisterInterpolation._eval_mix_derivative(c, *self.rk_parameters) + self.df
 
 
 class CalphadFittedSurface(FittedSurface):
@@ -536,8 +554,6 @@ class StitchedFit(TemperatureInterpolator):
         t = t[order]
         f = f[order]
         edge = max(1, min(self.edge, len(t) // 2))
-        tmin = t[0]
-        tmax = t[-1]
         mid = self.interpolating.fit(t, f)
         low = None
         upp = None
@@ -545,16 +561,29 @@ class StitchedFit(TemperatureInterpolator):
             low = self.low.fit(t[:edge], f[:edge])
         if self.upp is not None:
             upp = self.upp.fit(t[-edge:], f[-edge:])
+        return StitchedInterpolation(mid, low, upp, t[0], t[-1])
 
-        def interpolation(t):
-            t = np.array(t)
-            f = mid(t)
-            if low is not None:
-                f = np.where(t < tmin, low(t), f)
-            if upp is not None:
-                f = np.where(t > tmax, upp(t), f)
-            if f.ndim == 0:
-                f = f.item()
-            return f
 
-        return _CallableInterpolation(interpolation)
+class StitchedInterpolation(Interpolation):
+    """``mid`` inside ``[tmin, tmax]``, ``low`` below and ``upp`` above it; returned by :meth:`StitchedFit.fit`.
+
+    A ``low`` or ``upp`` of ``None`` leaves ``mid`` to extrapolate on that side.
+    """
+
+    def __init__(self, mid: Interpolation, low: Interpolation | None, upp: Interpolation | None, tmin, tmax):
+        self.mid = mid
+        self.low = low
+        self.upp = upp
+        self.tmin = tmin
+        self.tmax = tmax
+
+    def __call__(self, t: npt.ArrayLike) -> np.ndarray | float:
+        t = np.array(t)
+        f = self.mid(t)
+        if self.low is not None:
+            f = np.where(t < self.tmin, self.low(t), f)
+        if self.upp is not None:
+            f = np.where(t > self.tmax, self.upp(t), f)
+        if f.ndim == 0:
+            f = f.item()
+        return f

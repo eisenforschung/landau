@@ -18,11 +18,10 @@ loader.  :func:`landau_digest` is exported for reuse on a custom type, via
 
 Only types fleche cannot digest itself are hooked: :class:`~landau.refine.Refiner`
 and :class:`~landau.interpolate.FittedSurface` (plain classes, and no subclass of
-either is a dataclass), the three plain
-:class:`~landau.interpolate.Interpolation` classes, and
-:class:`~landau.phases.asewrapper.AsePhase` and
-:class:`~landau.phases.quasiharmonic.PhonopyQuasiHarmonicPhase` (dataclasses, but
-holding an opaque ASE ``ThermoChem`` and phonopy ``ThermalProperties``), and
+either is a dataclass), the plain :class:`~landau.interpolate.Interpolation`
+classes the fits return, and
+:class:`~landau.phases.quasiharmonic.PhonopyQuasiHarmonicPhase` (a dataclass, but
+holding opaque phonopy ``ThermalProperties``), and
 :class:`~landau.interpolate.whitney.WhitneyRBFInterpolator` (an sklearn-style
 estimator whose fitted state is a scipy ``RBFInterpolator`` and a ``ConvexHull``).
 Everything fleche already handles -- every
@@ -33,23 +32,24 @@ digest, so hooking one of those would give it one digest before that happens and
 another after, making the cache key depend on call order.
 
 That covers phases only because
-:class:`~landau.phases.TemperatureDependentLinePhase` keeps its precomputed
-``_hash`` out of the dataclass fields; see the comment on its ``__post_init__``.
-``PhonopyQuasiHarmonicPhase`` keeps its own out for the same reason, though its
-hook means no digest reaches those fields anyway.
+:class:`~landau.phases.TemperatureDependentLinePhase` and
+``PhonopyQuasiHarmonicPhase`` keep their hash out of the dataclass fields, as a
+``cached_property`` computed on first use.
 
-Interpolations built from a closure (``SplineFit``, ``StitchedFit``,
-``SoftplusFit``, Whitney) are refused rather than digested -- two fits of one
-interpolator share a code object, and fleche falls back to digesting that alone
-whenever the state a closure captured is itself indigestible.  Narrowing the
-refusal to that case is open (#449).
-Fit from an ``Interpolator`` inside the cached function instead.
-``WhitneyFittedSurface`` is not among them: its whole state is one
-``WhitneyRBFInterpolator``, which the hook above digests.
+Every fitted interpolation is an instance of a module-level class holding its
+fitted state (``WhitneyInterpolation``, ``SplineInterpolation``,
+``StitchedInterpolation``, ...), digested here by that state.
+:class:`~landau.interpolate.basic._CallableInterpolation` around a user's own
+closure is still refused -- two closures over one code object can be told apart
+only by what they captured, and fleche falls back to digesting the code object
+alone whenever that is itself indigestible (#449).
 
-:func:`spline_digest` is the one hook here for a type landau does not own: fleche
-refuses a fitted scipy spline, so a function closing over one -- or taking one --
-cannot be cached at all.  It is a stopgap for #449.
+:func:`spline_digest` and :func:`thermochem_digest` are the hooks here for types
+landau does not own: fleche refuses a fitted scipy spline and an ASE ``ThermoChem``.
+Both are stopgaps; hooks are global to every fleche user with landau installed, so
+they belong upstream (#449 for the spline, fleche-ase for the thermochem).
+:class:`~landau.phases.asewrapper.AsePhase` itself is left to the dataclass walk,
+which reaches its ``thermochem`` through the latter.
 """
 
 import dataclasses
@@ -57,16 +57,22 @@ import types
 from collections.abc import Mapping
 
 from fleche.digest import Digest, Hook, Indigestible, digest
+from pyiron_snippets.deprecate import deprecate
 from scipy.interpolate import UnivariateSpline
 
 from .interpolate.basic import (
     FittedSurface,
     NumericalDerivative,
     PolynomialInterpolation,
+    RedlichKisterDerivative,
+    SGTEDerivative,
+    SplineInterpolation,
+    StitchedInterpolation,
     _CallableInterpolation,
 )
-from .interpolate.whitney import WhitneyRBFInterpolator
-from .phases import AsePhase
+from .interpolate.softplus import SoftplusInterpolation, SoftplusSliceDerivative
+from .interpolate.whitney import WhitneyInterpolation, WhitneyRBFInterpolator, WhitneySlice
+from .phases import AsePhase, asewrapper
 from .phases.quasiharmonic import PhonopyQuasiHarmonicPhase  # importable without phonopy
 from .refine import Refiner
 
@@ -75,6 +81,7 @@ __all__ = [
     "ase_phase_digest",
     "quasiharmonic_phase_digest",
     "spline_digest",
+    "thermochem_digest",
     "whitney_rbf_digest",
     "digest_hooks",
 ]
@@ -135,14 +142,16 @@ def landau_digest(obj) -> Digest:
     return digest((type(obj).__name__, state))
 
 
+@deprecate("fleche digests an AsePhase by its fields; call fleche.digest.digest instead", version="2.0")
 def ase_phase_digest(phase: AsePhase) -> Digest:
-    """Digest an :class:`~landau.phases.asewrapper.AsePhase`.
+    """Digest an :class:`~landau.phases.asewrapper.AsePhase`: the same as ``fleche.digest.digest(phase)``.
 
-    ``thermochem`` is an opaque ASE object, so the digest reuses the phase's own
-    identity key -- which pickles it -- keeping the digest in step with the
-    class's ``__eq__``/``__hash__`` by construction.
+    No longer registered as a hook.  fleche's value storages rebuild a stored
+    dataclass field by field and key it by the dataclass digest, so a phase
+    digested any other way is stored under a key no lookup computes.  With
+    :func:`thermochem_digest` registered, the field walk covers ``thermochem`` too.
     """
-    return digest((type(phase).__name__, phase._key()))
+    return digest(phase)
 
 
 def quasiharmonic_phase_digest(phase: PhonopyQuasiHarmonicPhase) -> Digest:
@@ -151,8 +160,7 @@ def quasiharmonic_phase_digest(phase: PhonopyQuasiHarmonicPhase) -> Digest:
     ``thermal_properties`` holds opaque phonopy objects, so the digest reuses the
     phase's own identity key -- pickled bytes of each, taken at 0 K so the
     temperature the phase last ran at cannot drift them -- keeping the digest in
-    step with the class's ``__eq__``/``__hash__`` by construction.  The same route
-    :func:`ase_phase_digest` takes for its ``ThermoChem``.
+    step with the class's ``__eq__``/``__hash__`` by construction.
     """
     return digest((type(phase).__name__, phase._key))
 
@@ -199,17 +207,41 @@ def spline_digest(spline: UnivariateSpline) -> Digest:
     return digest((type(spline).__name__, spline._eval_args, spline.ext))
 
 
+def thermochem_digest(thermochem) -> Digest:
+    """Digest an ASE ``ThermoChem`` by its pickled bytes, leaving out ``verbose``.
+
+    fleche refuses the object, so an :class:`~landau.phases.asewrapper.AsePhase`
+    stored with its fields destructured had no key for its ``thermochem``.  The
+    bytes are the ones :class:`~landau.phases.asewrapper.AsePhase` compares by:
+    ASE writes ``verbose`` on every evaluation, so a digest including it would move
+    the first time the phase is used.
+
+    Stopgap.  ``ThermoChem`` is an ASE type, and hooks are global to every fleche
+    user with landau installed; its home is fleche-ase.
+    """
+    return digest((type(thermochem).__name__, asewrapper._thermochem_bytes(thermochem)))
+
+
 #: Hooks fleche loads from the ``fleche`` entry point group (see ``pyproject.toml``).
 #: Only types fleche cannot digest by itself appear here; see the module docstring
 #: for why covering the dataclasses too would make their digests order-dependent.
 digest_hooks = [
-    Hook(AsePhase, ase_phase_digest),
     Hook(Refiner, landau_digest),
     Hook(FittedSurface, landau_digest),
     Hook(NumericalDerivative, landau_digest),
     Hook(PolynomialInterpolation, landau_digest),
+    Hook(SGTEDerivative, landau_digest),
+    Hook(RedlichKisterDerivative, landau_digest),
+    Hook(SplineInterpolation, landau_digest),
+    Hook(StitchedInterpolation, landau_digest),
+    Hook(SoftplusInterpolation, landau_digest),
+    Hook(SoftplusSliceDerivative, landau_digest),
+    Hook(WhitneyInterpolation, landau_digest),
+    Hook(WhitneySlice, landau_digest),
     Hook(_CallableInterpolation, landau_digest),
     Hook(UnivariateSpline, spline_digest),
     Hook(PhonopyQuasiHarmonicPhase, quasiharmonic_phase_digest),
     Hook(WhitneyRBFInterpolator, whitney_rbf_digest),
 ]
+if asewrapper.ase_alarm.message is None:
+    digest_hooks.append(Hook(asewrapper.ThermoChem, thermochem_digest))

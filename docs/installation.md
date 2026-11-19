@@ -49,16 +49,19 @@ Calling `diagram` again with phases rebuilt from the same data hits the cache,
 in this interpreter and in the next one. `landau` does not depend on `fleche`;
 the hook module is imported only by fleche's entry point loader.
 
-One case is deliberately refused rather than digested: a fitted
-`Interpolation` returned by an interpolator that builds it from a closure
-(`SplineFit`, `StitchedFit`, `SoftplusFit`, the Whitney interpolators). fleche
-digests a function from its code object alone, and two fits of one interpolator
-share that code object, so caching on them would return one result for two
-different curves. Pass the `Interpolator` and its samples into the cached
-function and fit there instead:
+Fitted interpolations — what `SplineFit`, `StitchedFit`, `SoftplusFit` and the
+Whitney interpolators return — are digested by their fitted state, and phases
+and fits pickle with plain `pickle`, `dill` or `cloudpickle`. A fleche value
+store that destructures a phase into its fields rebuilds it without running
+`__post_init__` or `__setstate__`, so it cannot check which landau wrote the
+entry; put `landau.__version__` into the `version=` of a cached function whose
+result holds landau objects:
 
 ```python
-@fleche
-def free_energy(interpolator, temperatures, energies, T):
-    return interpolator.fit(temperatures, energies)(T)
+import landau
+
+
+@fleche(version=f"1.{landau.__version__}")
+def phases(path):
+    ...
 ```
