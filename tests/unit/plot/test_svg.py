@@ -11,21 +11,18 @@ import json
 import re
 import xml.etree.ElementTree as ET
 from collections import Counter
+from dataclasses import dataclass
 
-import matplotlib
-
-matplotlib.use("Agg")
 import matplotlib as mpl
+
+mpl.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 import shapely
-
-import landau.calculate as ldc
-from dataclasses import dataclass
-
 from matplotlib.colors import to_hex
 
+import landau.calculate as ldc
 from landau.features import Locus
 from landau.phases import AbstractLinePhase, LinePhase, kB
 from landau.plot import (
@@ -300,10 +297,35 @@ def test_phase_fields_and_labels(ct_figure, eutectic_diagram):
         assert elements[g.get("id")]["data-phase"] == g.get("data-phase")
 
 
+def _style(el):
+    """The CSS declarations of an element's style attribute."""
+    return dict(d.strip().split(": ", 1) for d in el.get("style", "").split(";") if d.strip())
+
+
 def _label_styles(root):
     """The CSS declarations of every phase label's <text>, one dict per label."""
-    return [dict(d.strip().split(": ", 1) for d in g.find(f".//{SVG}text").get("style").split(";") if d.strip())
-            for g in _groups(root, "landau-label")]
+    return [_style(g.find(f".//{SVG}text")) for g in _groups(root, "landau-label")]
+
+
+def test_mathtext_label_is_outlined_by_a_copy_underneath(eutectic_diagram):
+    """Stroking the glyph runs of mathtext one by one would paint each run's outline over the run before."""
+    names = {"fcc": "Mg$_2$Si", "hcp": r"$\alpha$", "liquid": "liquid"}
+    df = eutectic_diagram.copy()
+    df["phase"] = df["phase"].map(names)
+    fig, ax = plt.subplots()
+    plot_phase_diagram(df, ax=ax)
+    root, _, _ = _save(fig)
+    plt.close(fig)
+    texts = {g.get("data-phase"): g.findall(f".//{SVG}text") for g in _groups(root, "landau-label")}
+    under, over = texts["Mg$_2$Si"]
+    assert (under.get("class"), under.get("aria-hidden")) == ("landau-outline", "true")
+    assert {"fill": "none", "stroke": "#ffffff", "stroke-width": "3"}.items() <= _style(under).items()
+    assert "stroke" not in _style(over) and over.get("class") is None
+    assert "".join(under.itertext()).split() == "".join(over.itertext()).split() == list("MgSi2")
+    # one glyph run needs no copy
+    for name in (r"$\alpha$", "liquid"):
+        (text,) = texts[name]
+        assert {"paint-order": "stroke", "stroke": "#ffffff", "stroke-width": "3"}.items() <= _style(text).items()
 
 
 def test_label_outline_is_the_themes_stroke(eutectic_diagram):

@@ -99,6 +99,7 @@ With ``inkscape=True`` every layer group is also an Inkscape layer
 (``inkscape:groupmode="layer"`` and ``inkscape:label``).
 """
 
+import copy
 import io
 import json
 import re
@@ -135,6 +136,7 @@ for _prefix, _uri in _NAMESPACES.items():
 
 _G = f"{{{_SVG}}}g"
 _TEXT = f"{{{_SVG}}}text"
+_TSPAN = f"{{{_SVG}}}tspan"
 _PATH = f"{{{_SVG}}}path"
 _DEFS = f"{{{_SVG}}}defs"
 _IMAGE = f"{{{_SVG}}}image"
@@ -224,10 +226,13 @@ def save_layered_svg(
             with a letter or underscore.
         text_as_text: Write text as ``<text>`` elements rather than glyph
             outlines (``svg.fonttype = 'none'``), so labels can be selected
-            and edited.  The white outline landau draws around its labels
+            and edited.  The outline landau draws around its labels
             becomes the text's own stroke (``paint-order: stroke``) instead
-            of a second, path-drawn copy.  The file then depends on the
-            viewer having the fonts.
+            of a second, path-drawn copy; a mathtext label of several glyph
+            runs gets a stroke-only ``<text class="landau-outline">`` under
+            it instead, so its group holds the text twice and ``data-phase``
+            is the name to read.  The file then depends on the viewer having
+            the fonts.
         inkscape: Mark every layer group as an Inkscape layer.
         coexistence: Add the two-phase regions and phase boundaries of every
             2d phase diagram in the figure (see :mod:`landau.plot.svg`).
@@ -666,14 +671,30 @@ def _enclosing_group(el, parents):
 
 
 def _stroke_text(el, outline):
+    """Write landau's label outline as an SVG stroke on the text in ``el``.
+
+    Text in one run is stroked in place, behind its own fill.  Mathtext is
+    written as one ``<tspan>`` per glyph run, and a viewer strokes and fills
+    them one after the other, so each run's stroke would paint over the run
+    before it; such text gets a stroke-only copy underneath instead.
+    """
     rgba = to_rgba(outline["foreground"], outline.get("alpha"))
-    stroke = (f"paint-order: stroke; stroke: {to_hex(rgba)}; stroke-width: {outline['linewidth']:g}; "
-              "stroke-linejoin: round")
+    stroke = f"stroke: {to_hex(rgba)}; stroke-width: {outline['linewidth']:g}; stroke-linejoin: round"
     if rgba[3] != 1:
         stroke += f"; stroke-opacity: {rgba[3]:g}"
-    for text in el.iter(_TEXT):
+    parents = {child: parent for parent in el.iter() for child in parent}
+    for text in list(el.iter(_TEXT)):
         style = text.get("style", "").rstrip("; ")
-        text.set("style", f"{style}; {stroke}" if style else stroke)
+        if len(text.findall(_TSPAN)) > 1:
+            under = copy.deepcopy(text)
+            under.tail = None
+            under.set("style", "; ".join(filter(None, [style, "fill: none", stroke])))
+            under.set("class", "landau-outline")
+            under.set("aria-hidden", "true")
+            parent = parents[text]
+            parent.insert(list(parent).index(text), under)
+        else:
+            text.set("style", "; ".join(filter(None, [style, "paint-order: stroke", stroke])))
 
 
 def _hit_target(el, hit):
