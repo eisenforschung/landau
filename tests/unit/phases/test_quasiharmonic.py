@@ -760,8 +760,8 @@ def test_unknown_equation_of_state_is_rejected():
 
 
 def test_phases_hash_and_compare_by_content():
-    # a ThermalProperties compares by identity, so the phase pickles them, as AsePhase
-    # does for its ThermoChem: two phases built from equivalent inputs must agree
+    # a ThermalProperties compares by identity, so the phase compares their content
+    # (frequencies, weights, cutoff, statistics): two phases built from equivalent inputs must agree
     a = planted_phase("p")
     b = planted_phase("p", fresh=True)
     assert a.thermal_properties[0] is not b.thermal_properties[0]
@@ -774,8 +774,8 @@ def test_phases_hash_and_compare_by_content():
 
 
 def test_equality_survives_being_evaluated():
-    # a ThermalProperties pickle carries the temperature it was last run at, and this class
-    # resets that on every evaluation, so a key read live would drift as the phase is used
+    # a ThermalProperties carries the temperature it was last run at, and this class resets
+    # that on every evaluation, so a key including it would drift as the phase is used
     a = planted_phase("p")
     b = planted_phase("p", fresh=True)
     a.line_free_energy(1234.0)

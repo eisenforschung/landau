@@ -19,10 +19,9 @@ constants are phonopy's, chosen by the caller when they ran
 :meth:`~phonopy.Phonopy.run_thermal_properties`.
 """
 
-import pickle
 import warnings
-from dataclasses import dataclass, field, replace
-from functools import lru_cache
+from dataclasses import dataclass, replace
+from functools import cached_property, lru_cache
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -235,6 +234,52 @@ def _lowest_frequency(thermal_properties):
     return float(np.min(thermal_properties._frequencies)) / get_physical_units().THzToEv
 
 
+#: ``ThermalProperties`` attributes left out of its identity.  The first two are what the
+#: phase resets and reruns on every evaluation; ``_lang`` picks the backend that runs the
+#: same mode sum; the rest are worked out in ``__init__`` from the attributes that are kept
+#: (frequencies, weights, cutoff, statistics), so they add nothing and differ between
+#: phonopy releases.  Every other attribute is kept, so state a new phonopy release adds
+#: is in the key until someone decides it does not belong there.
+_THERMAL_PROPERTIES_EXCLUDED = frozenset(
+    {
+        "_temperatures",
+        "_thermal_properties",
+        "_lang",
+        "_masked_freqs",
+        "_masked_weights",
+        "_num_modes",
+        "_num_integrated_modes",
+        "_zero_point_energy",
+        "_gamma_acoustic_included",
+        "_gamma_weight",
+    }
+)
+
+
+def _thermal_properties_state(thermal_properties):
+    """What makes a ``ThermalProperties`` the spectrum it is, as ``{attribute: value}``.
+
+    Its ``__dict__`` without :data:`_THERMAL_PROPERTIES_EXCLUDED`: the mode frequencies
+    (eV, after phonopy's band selection, ``pretend_real`` and Gamma-acoustic treatment),
+    the mesh weights, the cutoff, the statistics and whatever else the installed phonopy
+    stores.  None of it changes when the object is run at a new temperature, so neither
+    does anything keyed on it.  :class:`PhonopyQuasiHarmonicPhase` compares by this, and
+    ``landau.fleche`` digests it.
+    """
+    return {k: v for k, v in sorted(vars(thermal_properties).items()) if k not in _THERMAL_PROPERTIES_EXCLUDED}
+
+
+def _hashable(value):
+    """*value* as something ``==`` and ``hash`` can take; numpy arrays by dtype, shape and bytes."""
+    if isinstance(value, np.ndarray):
+        return ("ndarray", value.dtype.str, value.shape, np.ascontiguousarray(value).tobytes())
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, (list, tuple)):
+        return tuple(_hashable(v) for v in value)
+    return value
+
+
 @dataclass(frozen=True)
 class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
     """A fixed-concentration phase whose free energy is evaluated from phonon spectra.
@@ -353,7 +398,6 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
     the unconstrained minimum of the equation of state, which is extrapolating to reach
     it: smoother and further from anything that was computed.  Either way the
     :class:`EosExtrapolationWarning` fires."""
-    _key: tuple = field(default=(), init=False, repr=False)
 
     @phonopy_alarm
     def __post_init__(self):
@@ -391,16 +435,60 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
         if len(set(per_atom)) != len(per_atom):
             raise ValueError(f"the sampled volumes must be distinct, got {per_atom} per atom")
 
-        object.__setattr__(self, "_lowest", tuple(_lowest_frequency(tp) for tp in self.thermal_properties))
-        object.__setattr__(
-            self, "_stable", _select_stable_volumes(per_atom, self._lowest, self.min_frequency, self.name, self.eos)
+        # Selected now so the instability warning and the too-few-volumes error come at construction.
+        self._stable  # noqa: B018
+
+    @cached_property
+    def _lowest(self):
+        """Lowest mode of each sampled volume, in THz; see :func:`_lowest_frequency`."""
+        return tuple(_lowest_frequency(tp) for tp in self.thermal_properties)
+
+    @cached_property
+    def _stable(self):
+        """Indices of the volumes the equation of state is fitted through; see :func:`_select_stable_volumes`.
+
+        Not a dataclass field, like :attr:`_hash`: a phase restored without ``__post_init__``
+        (by plain pickle, which stores the fields only, or fleche's destructuring) computes it on first use,
+        and warns about dropped volumes again then.
+        """
+        return _select_stable_volumes(self.volumes_per_atom, self._lowest, self.min_frequency, self.name, self.eos)
+
+    @cached_property
+    def _key(self):
+        """Everything that makes this phase the phase it is; ``==`` and ``hash`` compare by it.
+
+        A :class:`~phonopy.phonon.thermal_properties.ThermalProperties` compares by
+        identity, so it enters as its content, :func:`_thermal_properties_state`: the
+        frequencies, weights, cutoff and statistics, and not the temperature it was last
+        run at, which this class resets on every evaluation.
+
+        Not a dataclass field, like :attr:`_hash`: fleche digests and stores a dataclass
+        by ``dataclasses.fields()``, and this is derived from the other fields.
+        """
+        spectra = tuple(
+            tuple((k, _hashable(v)) for k, v in _thermal_properties_state(tp).items())
+            for tp in self.thermal_properties
         )
-        object.__setattr__(self, "_key", self._content_key())
-        # Deliberately *not* a dataclass field: it is derived from _key, and being
-        # salted per interpreter (hash of pickled bytes) it would make any content
-        # digest built from dataclasses.fields() -- e.g. fleche's -- differ across
-        # processes.  Same reasoning as AbstractLinePhase.__post_init__.
-        object.__setattr__(self, "_hash", hash(self._key))
+        return (
+            self.name,
+            self.fixed_concentration,
+            self.volumes,
+            self.energies,
+            self.atoms_per_cell,
+            self.atoms_per_primitive_cell,
+            self.eos,
+            self.min_frequency,
+            self.extrapolate,
+            spectra,
+        )
+
+    @cached_property
+    def _hash(self):
+        # Deliberately *not* a dataclass field: it is salted per interpreter, so it would
+        # make any content digest built from dataclasses.fields() -- e.g. fleche's --
+        # differ across processes.  Computed on first use for the same reason as
+        # TemperatureDependentLinePhase._hash.
+        return hash(self._key)
 
     @classmethod
     def from_phonopy(cls, name, fixed_concentration, phonopys, energies, **kwargs):
@@ -444,36 +532,6 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
             atoms_per_cell=atoms_per_cell,
             atoms_per_primitive_cell=atoms_per_primitive_cell,
             **kwargs,
-        )
-
-    def _content_key(self):
-        """Everything that makes this phase the phase it is, computed once at construction.
-
-        A :class:`~phonopy.phonon.thermal_properties.ThermalProperties` compares by
-        identity, so it goes into the key as its pickled bytes -- the same route
-        :class:`~landau.phases.AsePhase` takes for its ``ThermoChem``.  Those bytes carry
-        the temperature the object was last run at, though, and this class resets that on
-        every evaluation.  Running each one at 0 K first reduces the key to the
-        frequencies, weights, cutoff and statistics, and freezing it here keeps it from
-        drifting as the phase is used.
-        """
-        pickled = []
-        for tp in self.thermal_properties:
-            tp.temperatures = np.array([0.0])
-            with np.errstate(over="ignore", invalid="ignore"):
-                tp.run()
-            pickled.append(pickle.dumps(tp))
-        return (
-            self.name,
-            self.fixed_concentration,
-            self.volumes,
-            self.energies,
-            self.atoms_per_cell,
-            self.atoms_per_primitive_cell,
-            self.eos,
-            self.min_frequency,
-            self.extrapolate,
-            tuple(pickled),
         )
 
     def __hash__(self):

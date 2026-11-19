@@ -120,6 +120,11 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
   `IdealSolution`, the interpolating phases, the ideal-mixing entropy `S(c)` and `check_concentration_interpolation`.
   User-facing classes are re-exported from `landau/__init__.py`;
   `Phase`/`AbstractLinePhase` stay under `landau.phases`.
+- Pickling: `Phase.__getstate__` returns the dataclass fields only, so neither the per-process salted `_hash` nor a cached closure fit is pickled;
+  there is no `__setstate__` and no version check.
+  fleche's value stores rebuild a destructured dataclass with `object.__new__` and `setattr` per field, skipping both `__post_init__` and `__setstate__`;
+  so anything a phase derives outside its fields is a `cached_property` computed on first use (`_hash`, `PhonopyQuasiHarmonicPhase._key`/`_lowest`/`_stable`), never set in `__post_init__`;
+  `__post_init__` only validates and normalises fields.
 - Deprecated, removal at 2.0: `RegularSolution` and `InterpolatingPhase` (use `FastInterpolatingPhase`, with `interpolator=RedlichKister(n)` for a regular solution), the typo alias `TemperatureDepandantLinePhase`, and the solution phases' `check_interpolation` methods, which forward to `check_concentration_interpolation`.
   `TemperatureDependentLinePhase.check_interpolation` is not deprecated.
   The suite, testplots and notebooks still construct the deprecated classes — new code should not.
@@ -146,7 +151,7 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
 - `asewrapper.py`: `AsePhase(AbstractLinePhase)` wrapping `ase.thermochemistry.ThermoChem`;
   Helmholtz, falling back to Gibbs at 1 atm;
   `atoms_per_formula` normalises per atom;
-  equality/hash by `pickle.dumps(thermochem)`.
+  equality/hash by the pickled thermochem without the `verbose` flag ASE writes on every evaluation (`_thermochem_bytes`).
 - `quasiharmonic.py`: `PhonopyQuasiHarmonicPhase(AbstractLinePhase)` evaluates `min_V [E(V) + F_vib(V, T)]` from phonopy `ThermalProperties` at any `T` instead of fitting a sampled `F(T)`.
   Mutates the `temperatures` of the phonopy objects it is given.
   `eos` is an `Interpolator` (default `PolyFit(8)`, fitted in a centred scaled volume coordinate, fixed parameter count — per-T selection would invent steps in `F(T)`) or one of `"vinet"`/`"birch_murnaghan"`/`"murnaghan"`.
@@ -160,6 +165,8 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
   type-only subclasses `TemperatureInterpolator` / `ConcentrationInterpolator`.
   `deriv()` is analytic for `PolyFit` (`PolynomialInterpolation`, `coefficients` in ascending order), `SGTE` (`SGTEInterpolation`) and `RedlichKister` (`RedlichKisterInterpolation`);
   everything else is closure-backed (`_CallableInterpolation`) and falls back to `NumericalDerivative`.
+  Closure fits pickle with dill and cloudpickle, not plain `pickle`;
+  phases pickle plainly because their cached fits are not part of their state.
   Also `SplineFit` (wraps `UnivariateSpline`, `smoothing=0` interpolates, `degree` clamped to `len(x)-1`), `StitchedFit` (sorts its input, `edge` clamped), `G_calphad`, `_scalarize`.
   `RedlichKister.fit` is one `numpy.linalg.lstsq` on the mixing basis (under-determined → minimum norm, terminals only → the chord).
 - 2-D: `SurfaceInterpolator.fit(T, c, H) → FittedSurface`, `FittedSurface.slice_at(T) → Interpolation`.
@@ -282,8 +289,15 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
   landau never imports fleche.
   Hooks only cover types fleche would otherwise reject;
   hooking a type fleche already digests would make digests depend on entry-point load order.
-  Closure-backed fits raise `Indigestible` (two fits share one code object).
-  Per-instance `_hash` values are plain attributes, not dataclass fields, so dataclass-walking digests don't fold in Python's per-process hash salt.
+  No dataclass is hooked: fleche's value stores file a destructured dataclass under its field-walk digest, so a hooked one would be stored under a key no lookup computes.
+  `AsePhase` is digested by its fields, its `thermochem` by fleche-ase's `BaseThermoChem` hook;
+  landau hooks no ASE type.
+  `PhonopyQuasiHarmonicPhase` is digested by its fields, its phonopy `ThermalProperties` through `thermal_properties_digest` (registered only when phonopy imports): their `__dict__` less run results, temperatures, backend and `__init__`-derived attributes (`quasiharmonic._thermal_properties_state`), never the pickled bytes.
+  The phase's `__eq__`/`hash` key (`_key`, a `cached_property`) is built from that same state.
+  `_CallableInterpolation` is hooked and digests through its closure, which fleche keys on the code object plus the captured values (an indigestible capture raises `Indigestible`, no code-only fallback);
+  so a key built on a bare fit moves with the Python version and with edits to the closure body.
+  The `UnivariateSpline` and `WhitneyRBFInterpolator` hooks exist for what those closures capture.
+  `_hash` is a `cached_property`, not a dataclass field, so dataclass-walking digests don't fold in Python's per-process hash salt.
 
 ## Tests
 

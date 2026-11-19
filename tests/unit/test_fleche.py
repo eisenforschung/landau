@@ -107,6 +107,12 @@ def test_digests_do_not_depend_on_entry_point_load_order(probes):
         assert probe["cold"] == probe["warm"]
 
 
+def test_digests_do_not_change_when_objects_are_used(probes):
+    """Evaluating must not move a digest: ASE, for one, writes onto its thermochem."""
+    for probe in probes:
+        assert probe["evaluated"] == probe["warm"]
+
+
 def test_probe_runs_really_had_different_hash_seeds(probes):
     """Guard against a vacuous pass.
 
@@ -148,17 +154,18 @@ def test_entry_point_loads_to_hooks():
     assert all(isinstance(h, Hook) for h in hooks)
 
 
-def test_ase_phase_hook_precedes_any_base_class_hook():
-    """Hooks match by ``isinstance`` and the first match wins.
+def test_no_hook_targets_a_dataclass():
+    """fleche digests a dataclass by its fields, and its value storages rely on that.
 
-    ``AsePhase`` needs its pickle-based digest rather than a field walk, so any
-    hook for one of its base classes must come after it.
+    A value store rebuilds a stored dataclass field by field and files it under the
+    field-walk digest, so a dataclass digested any other way would be stored under a
+    key no lookup computes.  Load order makes it worse: entry points load lazily, so
+    a hooked dataclass fleche can already walk gets one digest before and another after.
     """
-    types_ = [h.type for h in digest_hooks]
-    ase_at = types_.index(AsePhase) if AsePhase in types_ else None
-    assert ase_at is not None
-    later = types_[ase_at + 1 :]
-    assert not [t for t in later if issubclass(AsePhase, t)]
+    import dataclasses
+
+    hooked = [h.type for h in digest_hooks if dataclasses.is_dataclass(h.type)]
+    assert hooked == []
 
 
 # ---------------------------------------------------------------------------
@@ -223,22 +230,90 @@ def test_refiner_settings_move_the_digest(left, right):
 
 
 # ---------------------------------------------------------------------------
-# Closure-backed fits are refused rather than silently collided
+# Fitted interpolations are closures, digested by what they captured
 # ---------------------------------------------------------------------------
 
 
-def test_fleche_cannot_key_on_a_fitted_closure():
-    """The reason the refusal below exists, stated as an executable fact.
+def test_fleche_keys_a_closure_on_its_captures():
+    """Two closures out of one factory share a code object; fleche tells them apart by their cells."""
+    from scipy.interpolate import InterpolatedUnivariateSpline
 
-    Two fits of one interpolator share a code object, and since 0.22.1 fleche
-    falls back to digesting that alone whenever what a closure captured is
-    itself indigestible -- so a raw closure is not a usable key.
-    """
+    load_entry_points()
     x = np.linspace(0, 1, 10)
-    quadratic = SplineFit().fit(x, x**2)
-    cubic = SplineFit().fit(x, x**3)
-    assert quadratic(0.5) != cubic(0.5)
-    assert digest(quadratic.func.__code__) == digest(cubic.func.__code__)
+
+    def closure(power):
+        spline = InterpolatedUnivariateSpline(x, x**power)
+        return lambda c: spline(c)
+
+    quadratic, cubic = closure(2), closure(3)
+    assert digest(quadratic.__code__) == digest(cubic.__code__)
+    assert digest(quadratic) != digest(cubic)
+    assert digest(quadratic) == digest(closure(2))
+
+
+def test_a_closure_over_an_indigestible_capture_is_refused():
+    """No fallback to the code object alone, which would collide every closure of one factory."""
+    from landau.interpolate.basic import _CallableInterpolation
+
+    class Opaque:
+        pass
+
+    def closure(captured):
+        return lambda x: x if captured else -x
+
+    load_entry_points()
+    with pytest.raises(Indigestible):
+        digest(_CallableInterpolation(closure(Opaque())))
+
+
+#: Each kind of fit, fitted twice to the same data and once to different data.
+_T = np.linspace(100.0, 1000.0, 30)
+_C = np.linspace(0.0, 1.0, 9)
+_SURFACE_T, _SURFACE_C = np.repeat(_T[::5], 9), np.tile(_C, 6)
+
+
+def _fits(scale):
+    from landau.interpolate import (
+        RedlichKister,
+        SoftplusFit,
+        SoftplusSurface2DInterpolator,
+        StitchedFit,
+        WhitneySurface2DInterpolator,
+        WhitneyTemperatureInterpolator,
+    )
+
+    f_T = -_T * 1e-3 * scale
+    f_C = 0.1 * scale * np.sin(3 * _C)
+    H = -1e-3 * _SURFACE_T + 0.2 * scale * _SURFACE_C * (1 - _SURFACE_C)
+    return {
+        "Spline-fit": SplineFit().fit(_C, f_C),
+        "Stitched-fit": StitchedFit().fit(_T, f_T),
+        "Whitney-fit": WhitneyTemperatureInterpolator().fit(_T, f_T),
+        "Softplus-fit": SoftplusFit().fit(_T, f_T),
+        "SGTE-deriv": SGTE(3).fit(_T, f_T).deriv(),
+        "RK-deriv": RedlichKister(3).fit(_C, f_C).deriv(),
+        "Whitney2D-slice": WhitneySurface2DInterpolator().fit(_SURFACE_T, _SURFACE_C, H).slice_at(500.0),
+        "Softplus2D-slice-deriv": SoftplusSurface2DInterpolator()
+        .fit(_SURFACE_T, _SURFACE_C, H)
+        .slice_at(500.0)
+        .deriv(),
+    }
+
+
+@pytest.fixture(scope="module")
+def fits():
+    return _fits(1.0), _fits(1.0), _fits(2.0)
+
+
+@pytest.mark.parametrize("name", list(_fits(1.0)))
+def test_fitted_interpolations_digest_by_their_captures(fits, name):
+    from landau.interpolate.basic import _CallableInterpolation
+
+    load_entry_points()
+    one, same, other = (f[name] for f in fits)
+    assert type(one) is _CallableInterpolation
+    assert digest(one) == digest(same)
+    assert digest(one) != digest(other)
 
 
 # ---------------------------------------------------------------------------
@@ -264,38 +339,7 @@ def test_fitted_splines_digest_by_knots_and_coefficients():
     assert digest(quadratic) != digest(InterpolatedUnivariateSpline(x, x**2, ext=1))
 
 
-def test_spline_hook_separates_fits_of_one_interpolator():
-    """What the hook buys: a closure over a spline is no longer a dead end.
-
-    ``landau_digest`` still refuses the fitted object itself -- it refuses on
-    holding a plain function, not on holding something indigestible -- so this
-    pins the fact, not a behaviour change (#449).
-    """
-    load_entry_points()
-    x = np.linspace(0, 1, 10)
-    quadratic = SplineFit().fit(x, x**2)
-    cubic = SplineFit().fit(x, x**3)
-    assert digest(quadratic.func) != digest(cubic.func)
-
-
-@pytest.mark.parametrize("interpolator", ["spline", "stitched"])
-def test_closure_backed_interpolations_are_refused(interpolator):
-    from landau.interpolate import StitchedFit
-
-    load_entry_points()
-    if interpolator == "spline":
-        x = np.linspace(0, 1, 10)
-        fitted = SplineFit().fit(x, x**2)
-    else:
-        T = np.linspace(100, 1000, 30)
-        fitted = StitchedFit().fit(T, -T * 1e-3)
-
-    with pytest.raises(Indigestible, match="code object"):
-        digest(fitted)
-
-
-def test_digestible_interpolations_are_not_refused():
-    """The refusal must be aimed at closures only, not at fitted curves generally."""
+def test_interpolations_with_state_digest_by_it():
     T = np.linspace(100, 1000, 20)
     load_entry_points()
     assert digest(PolyFit(3).fit(T, T * 2.0)) != digest(PolyFit(3).fit(T, T * 3.0))
@@ -309,8 +353,8 @@ def test_digestible_interpolations_are_not_refused():
 
 @needs_phonopy
 def test_quasiharmonic_phase_digest_follows_equality():
-    """Its phonopy ``ThermalProperties`` are opaque, so the digest rides the
-    identity key the class already compares and hashes by."""
+    """The field walk reaches the phonopy ``ThermalProperties`` through their hook, and
+    the phase compares by the same state the hook digests."""
     load_entry_points()
     a = einstein_phase(fresh=True)
     same = einstein_phase(fresh=True)
@@ -318,6 +362,97 @@ def test_quasiharmonic_phase_digest_follows_equality():
 
     assert a == same and digest(a) == digest(same)
     assert a != other and digest(a) != digest(other)
+
+
+def _thermal_properties(omega=5.0, **kwargs):
+    """A freshly built ``ThermalProperties`` of an Einstein solid; nothing else shares it."""
+    from test_quasiharmonic import einstein_phonopy
+
+    return einstein_phonopy.__wrapped__(omega, **kwargs).thermal_properties
+
+
+@needs_phonopy
+def test_thermal_properties_digest_tracks_the_spectrum():
+    """Frequencies, weights, cutoff and statistics each move the digest; an equal
+    object built separately does not."""
+    import copy
+
+    load_entry_points()
+    base = _thermal_properties()
+    assert digest(_thermal_properties()) == digest(base)
+
+    assert digest(_thermal_properties(omega=5.5)) != digest(base)
+    assert digest(_thermal_properties(classical=True)) != digest(base)
+    assert digest(_thermal_properties(mesh=(3, 3, 3))) != digest(base)
+
+    shifted = copy.deepcopy(base)
+    shifted._frequencies = shifted._frequencies.copy()
+    shifted._frequencies[1, 0] *= 1.001
+    assert digest(shifted) != digest(base)
+
+    reweighted = copy.deepcopy(base)
+    reweighted._weights = reweighted._weights.copy()
+    reweighted._weights[1] += 1
+    assert digest(reweighted) != digest(base)
+
+    cut = copy.deepcopy(base)
+    cut._cutoff_frequency = 1e-3
+    assert digest(cut) != digest(base)
+
+
+@needs_phonopy
+def test_thermal_properties_digest_survives_evaluation():
+    """The phase resets ``temperatures`` and reruns the object on every evaluation;
+    the digest of the object and of the phase must not see that."""
+    load_entry_points()
+    phase = einstein_phase(fresh=True)
+    before = digest(phase), [digest(tp) for tp in phase.thermal_properties]
+    phase.line_free_energy(np.array([0.0, 300.0, 1234.0]))
+    tp = phase.thermal_properties[0]
+    tp.temperatures = np.linspace(0.0, 2000.0, 11)
+    tp.run()
+    assert (digest(phase), [digest(tp) for tp in phase.thermal_properties]) == before
+    assert digest(phase) == digest(einstein_phase(fresh=True))
+
+
+@needs_phonopy
+def test_thermal_properties_digest_is_not_the_pickle():
+    """Two equal spectra whose pickles differ, because one was last run at another
+    temperature, digest equal."""
+    import pickle
+
+    load_entry_points()
+    a, b = _thermal_properties(), _thermal_properties()
+    b.temperatures = [500.0]
+    b.run()
+    assert pickle.dumps(a) != pickle.dumps(b)
+    assert digest(a) == digest(b)
+
+
+@needs_phonopy
+def test_quasiharmonic_phase_is_stored_under_its_digest():
+    """What a value store files a stored argument under must be what a lookup computes."""
+    load_entry_points()
+    phase = einstein_phase(fresh=True)
+    assert ValueMemory({}).save(phase) == digest(phase)
+
+
+@needs_phonopy
+def test_quasiharmonic_phase_hits_on_an_equal_but_distinct_phase():
+    calls = []
+
+    @fleche
+    def free_energy(phase):
+        calls.append(phase.name)
+        return float(phase.line_free_energy(900.0))
+
+    with cache(Cache(ValueMemory({}), CallMemory({}))):
+        first = free_energy(einstein_phase(fresh=True))
+        second = free_energy(einstein_phase(fresh=True))
+        free_energy(einstein_phase(omegas=6.0, fresh=True))
+
+    assert first == second
+    assert calls == ["einstein", "einstein"]
 
 
 def test_whitney_rbf_digest_tracks_data_and_hyperparameters():
@@ -368,6 +503,26 @@ def test_ase_phase_digest_follows_equality():
 
     assert a == same and digest(a) == digest(same)
     assert a != other and digest(a) != digest(other)
+
+
+@needs_ase
+def test_ase_phase_digest_survives_evaluation():
+    """ASE writes the ``verbose`` flag it was last called with onto the thermochem."""
+    load_entry_points()
+    a = AsePhase("p", 0.0, HarmonicThermo(np.array([0.01, 0.02, 0.03])))
+    before = digest(a)
+    a.line_free_energy(np.array([300.0, 600.0]))
+    assert "verbose" in vars(a.thermochem)
+    assert digest(a) == before
+    assert digest(a.thermochem) == digest(HarmonicThermo(np.array([0.01, 0.02, 0.03])))
+
+
+@needs_ase
+def test_ase_phase_is_stored_under_its_digest():
+    """What a value store files a stored argument under must be what a lookup computes."""
+    load_entry_points()
+    a = AsePhase("p", 0.0, HarmonicThermo(np.array([0.01, 0.02, 0.03])))
+    assert ValueMemory({}).save(a) == digest(a)
 
 
 @needs_ase
@@ -438,6 +593,85 @@ def test_cached_function_accepts_refiners_and_phases_together():
         assert run(*args()) == 4
 
     assert len(calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# Round trip through a fleche cache, written and read by different interpreters
+# ---------------------------------------------------------------------------
+
+sys.path.insert(0, os.path.dirname(__file__))
+import pickleprobe
+
+_PICKLEPROBE = os.path.join(os.path.dirname(__file__), "pickleprobe.py")
+#: Shared with test_pickle.py: a refit Whitney RBF reproduces the original to round-off.
+_ATOL = 1e-12
+
+
+def _run_pickleprobe(mode, root, serializer, inline, hashseed):
+    env = dict(os.environ, PYTHONHASHSEED=str(hashseed))
+    out = subprocess.run(
+        [sys.executable, _PICKLEPROBE, mode, str(root), serializer, str(int(inline))],
+        env=env, capture_output=True, text=True, check=True,
+    )
+    return json.loads(out.stdout)
+
+
+@pytest.fixture(scope="module", params=[False, True], ids=["arrays-stored", "arrays-inline"])
+def fleche_round_trip(request, tmp_path_factory):
+    """Every case cached by one interpreter and read back by another, through a dill value store.
+
+    ``remaining_depth=2`` destructures a phase into its fields, so the reading side
+    rebuilds it with ``object.__new__`` and never runs ``__post_init__`` or
+    ``__setstate__``.  ``arrays-inline`` keeps numpy arrays inside their parent entry,
+    as graceland configures it, so fewer fields come back as separate entries.
+    """
+    pytest.importorskip("dill")
+    root = tmp_path_factory.mktemp("cache")
+    stored = _run_pickleprobe("store", root, "dill", request.param, hashseed=0)
+    loaded = _run_pickleprobe("load", root, "dill", request.param, hashseed=1)
+    assert stored["salt"] != loaded["salt"]
+    return stored["cases"], loaded["cases"]
+
+
+@pytest.mark.parametrize("name", pickleprobe.available())
+def test_fleche_round_trip(fleche_round_trip, name):
+    stored, loaded = (cases[name] for cases in fleche_round_trip)
+    assert stored["made"] and stored["hit"]
+    np.testing.assert_allclose(stored["used"], stored["values"], rtol=0, atol=_ATOL)
+    # a new interpreter finds both entries for an equal, freshly built object ...
+    assert loaded["made"] and loaded["hit"]
+    assert loaded["digest"] == stored["digest"]
+    # ... and what it reads back evaluates to what was stored
+    np.testing.assert_allclose(loaded["values"], stored["values"], rtol=0, atol=_ATOL)
+
+
+#: Digests of fresh phases computed by landau 1.19.0 (6e1d3ae) with fleche 0.22.4.
+#: Existing cache entries are keyed on these, so they must not move.  A fleche release
+#: that changes its digest wire format moves them legitimately; that arrives with a
+#: bump of the test-fleche pin.  AsePhase is left out: it digests by its fields now,
+#: and no value store could hold one before (its ThermoChem was indigestible).
+_PINNED = {
+    "LinePhase": "0c80b32f5fe3502dfcf30a3937fd25e5881ecc624a1ef0ed9cd0e217808ec4bf",
+    "TDLP-SGTE": "1a0ffe4c62382c0e97419b38c4d3fd387e47b084d7a4cd7a964e32515872d5ec",
+    "TDLP-Whitney": "b2b921583210d3d6684ce7496fa8222e23ded4ee8263b29a70c0ceebec19effb",
+    "TDLP-Stitched": "ed89e6cedf99174db4c8474480ea06be25d309b7a8eb6535998c4ed2235823bd",
+    "TDLP-Softplus": "8a1b87a7b9d9fc17dd3e9fbb0bae32a6ec41037ce2d8cfc4fd7d3c6b5608386a",
+    "IdealSolution-Whitney": "27a810563d32acd649f13a5c18ecf6e48f933ba499bddc14106cba2029b25140",
+    "Fast-RK-Whitney": "7f646ac7b460db20adc8112feb154c0763652aee220238e72ad80415f0bc60e7",
+    "Fast-Spline-Whitney": "796d3577ff8688a2c5f3be88ec5b6c064f69721766c1b58f6f87785167701027",
+    "Surface-Calphad-Whitney": "e74ff84d870f25c19c6beca5c7fdb2cdc0a3a810180688cedc294ee760823768",
+    "Surface-Whitney2D": "031b2bdbd8d373a6c322bffee4228f44ee05243c670b1fb7054144ee429bbc9b",
+    "Surface-Softplus": "8991993479a8e75c177cc23606cbc28959b93f69278c55bd586136f13fdc6855",
+}
+
+
+@pytest.mark.parametrize("name", list(_PINNED))
+def test_phase_digests_did_not_move(name):
+    load_entry_points()
+    phase = pickleprobe.build(name)
+    assert str(digest(phase)) == _PINNED[name]
+    pickleprobe.values(name, phase)
+    assert str(digest(phase)) == _PINNED[name]
 
 
 # ---------------------------------------------------------------------------

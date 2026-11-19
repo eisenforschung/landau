@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+import dataclasses
 from dataclasses import dataclass
 from functools import lru_cache, cache, cached_property
 from typing import Iterable, Optional, ClassVar
@@ -87,6 +88,16 @@ class Phase(ABC):
 
     __str__ = __repr__
 
+    def __getstate__(self):
+        """Pickle the dataclass fields, not the whole ``__dict__`` pickle takes by default.
+
+        ``cached_property`` values (``_hash``, a fitted surface) live in ``__dict__``
+        but not in ``fields()``; they are recomputed on first use.  A hash taken in
+        another interpreter is stale (``hash`` is salted per process), and a cached fit
+        may be a closure, which plain :mod:`pickle` refuses.
+        """
+        return {f.name: getattr(self, f.name) for f in dataclasses.fields(self)}
+
 
 @dataclass(frozen=True)
 class AbstractLinePhase(Phase):
@@ -160,22 +171,25 @@ class TemperatureDependentLinePhase(AbstractLinePhase):
 
         object.__setattr__(self, "temperatures", to_ro_numpy(self.temperatures))
         object.__setattr__(self, "free_energies", to_ro_numpy(self.free_energies))
-        # precompute hash: hashing arrays every cache lookup is too expensive
-        # and we any way advertise as frozen.  Deliberately *not* a dataclass
-        # field: it is derived from the fields above, and being salted per
-        # interpreter (hash(bytes)) it would make any content digest built from
-        # dataclasses.fields() -- e.g. fleche's -- differ across processes.
-        object.__setattr__(
-            self,
-            "_hash",
-            hash(
-                (
-                    hash(self.fixed_concentration),
-                    hash(self.temperatures.tobytes()),
-                    hash(self.free_energies.tobytes()),
-                    hash(self.interpolator),
-                )
-            ),
+
+    @cached_property
+    def _hash(self):
+        """Hash of the fields, computed once: hashing arrays on every cache lookup is too expensive.
+
+        Deliberately *not* a dataclass field: being salted per interpreter
+        (``hash(bytes)``) it would make any content digest built from
+        ``dataclasses.fields()`` -- e.g. fleche's -- differ across processes.
+        Computed on first use rather than in ``__post_init__``, because a phase
+        restored without it (a pickle, or fleche rebuilding a stored dataclass with
+        ``object.__new__``) must still hash, and to its own interpreter's salt.
+        """
+        return hash(
+            (
+                hash(self.fixed_concentration),
+                hash(self.temperatures.tobytes()),
+                hash(self.free_energies.tobytes()),
+                hash(self.interpolator),
+            )
         )
 
     def __hash__(self):

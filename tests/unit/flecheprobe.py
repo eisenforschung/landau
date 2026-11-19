@@ -11,6 +11,8 @@ would make every assertion here vacuously true.
 """
 
 import json
+import os
+import sys
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -77,9 +79,31 @@ def build():
             np.column_stack([GRID_T, GRID_C]), GRID_H
         ),
         "WhitneyFittedSurface": WhitneySurface2DInterpolator().fit(GRID_T, GRID_C, GRID_H),
+        **fitted_interpolations(),
         **ase_objects(),
         **phonopy_objects(),
     }
+
+
+def fitted_interpolations():
+    """What the fits and derivatives return: closures, each in a ``_CallableInterpolation``."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import pickleprobe
+
+    return {name: pickleprobe.build(name) for name, (_, kind) in pickleprobe.CASES.items() if kind != "phase"}
+
+
+def evaluated(objects):
+    """The same objects after use: a digest must not depend on what evaluating them caches or writes."""
+    for value in objects.values():
+        if hasattr(value, "semigrand_potential"):
+            for T in (300.0, 900.0):
+                value.semigrand_potential(T, 0.05)
+        if type(value).__name__ == "ThermalProperties":
+            # what the quasi-harmonic phase does to it on every evaluation
+            value.temperatures = [300.0, 900.0]
+            value.run()
+    return objects
 
 
 def ase_objects():
@@ -94,20 +118,21 @@ def ase_objects():
 
 
 def phonopy_objects():
-    """``PhonopyQuasiHarmonicPhase`` if phonopy is installed; it has a hook of its own.
+    """``PhonopyQuasiHarmonicPhase`` and a bare ``ThermalProperties`` if phonopy is installed.
 
+    The phase is digested by its fields, its ``ThermalProperties`` through their hook.
     Built through the Einstein-solid helper the quasi-harmonic unit tests use, so
     the planted spectrum lives in one place.
     """
-    import os
-    import sys
-
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "phases"))
     try:
-        from test_quasiharmonic import einstein_phase
+        from test_quasiharmonic import einstein_phase, einstein_phonopy
     except ImportError:
         return {}
-    return {"PhonopyQuasiHarmonicPhase": einstein_phase()}
+    return {
+        "PhonopyQuasiHarmonicPhase": einstein_phase(fresh=True),
+        "ThermalProperties": einstein_phonopy.__wrapped__(6.0).thermal_properties,
+    }
 
 
 def one(value):
@@ -121,7 +146,8 @@ def main():
     cold = {k: one(v) for k, v in build().items()}
     load_entry_points()
     warm = {k: one(v) for k, v in build().items()}
-    print(json.dumps({"salt": hash("x"), "cold": cold, "warm": warm}))
+    used = {k: one(v) for k, v in evaluated(build()).items()}
+    print(json.dumps({"salt": hash("x"), "cold": cold, "warm": warm, "evaluated": used}))
 
 
 if __name__ == "__main__":
