@@ -45,14 +45,15 @@ closure is still refused -- two closures over one code object can be told apart
 only by what they captured, and fleche falls back to digesting the code object
 alone whenever that is itself indigestible (#449).
 
-:func:`spline_digest`, :func:`thermochem_digest` and
-:func:`thermal_properties_digest` are the hooks here for types landau does not
-own: fleche refuses a fitted scipy spline, an ASE ``ThermoChem`` and a phonopy
-``ThermalProperties``.  The first two are stopgaps; hooks are global to every
-fleche user with landau installed, so they belong upstream (#449 for the spline,
-fleche-ase for the thermochem).  :class:`~landau.phases.asewrapper.AsePhase` and
-``PhonopyQuasiHarmonicPhase`` are left to the dataclass walk, which reaches their
-``thermochem`` and ``thermal_properties`` through the latter two.
+:func:`spline_digest` and :func:`thermal_properties_digest` are the hooks here for
+types landau does not own: fleche refuses a fitted scipy spline and a phonopy
+``ThermalProperties``.  The spline hook is a stopgap; hooks are global to every
+fleche user with landau installed, so it belongs upstream (#449).
+``PhonopyQuasiHarmonicPhase`` is left to the dataclass walk, which reaches its
+``thermal_properties`` through the latter.
+:class:`~landau.phases.asewrapper.AsePhase` is left to it too; its ``thermochem``
+is digested by `fleche-ase <https://pypi.org/project/fleche-ase/>`_, without which
+fleche refuses it.
 """
 
 import dataclasses
@@ -75,7 +76,7 @@ from .interpolate.basic import (
 )
 from .interpolate.softplus import SoftplusInterpolation, SoftplusSliceDerivative
 from .interpolate.whitney import WhitneyInterpolation, WhitneyRBFInterpolator, WhitneySlice
-from .phases import AsePhase, asewrapper
+from .phases import AsePhase
 from .phases.quasiharmonic import PhonopyQuasiHarmonicPhase, _thermal_properties_state  # importable without phonopy
 from .refine import Refiner
 
@@ -85,7 +86,6 @@ __all__ = [
     "quasiharmonic_phase_digest",
     "spline_digest",
     "thermal_properties_digest",
-    "thermochem_digest",
     "whitney_rbf_digest",
     "digest_hooks",
 ]
@@ -153,7 +153,7 @@ def ase_phase_digest(phase: AsePhase) -> Digest:
     No longer registered as a hook.  fleche's value storages rebuild a stored
     dataclass field by field and key it by the dataclass digest, so a phase
     digested any other way is stored under a key no lookup computes.  With
-    :func:`thermochem_digest` registered, the field walk covers ``thermochem`` too.
+    fleche-ase installed, the field walk covers ``thermochem`` too.
     """
     return digest(phase)
 
@@ -214,21 +214,6 @@ def spline_digest(spline: UnivariateSpline) -> Digest:
     return digest((type(spline).__name__, spline._eval_args, spline.ext))
 
 
-def thermochem_digest(thermochem) -> Digest:
-    """Digest an ASE ``ThermoChem`` by its pickled bytes, leaving out ``verbose``.
-
-    fleche refuses the object, so an :class:`~landau.phases.asewrapper.AsePhase`
-    stored with its fields destructured had no key for its ``thermochem``.  The
-    bytes are the ones :class:`~landau.phases.asewrapper.AsePhase` compares by:
-    ASE writes ``verbose`` on every evaluation, so a digest including it would move
-    the first time the phase is used.
-
-    Stopgap.  ``ThermoChem`` is an ASE type, and hooks are global to every fleche
-    user with landau installed; its home is fleche-ase.
-    """
-    return digest((type(thermochem).__name__, asewrapper._thermochem_bytes(thermochem)))
-
-
 def thermal_properties_digest(thermal_properties) -> Digest:
     """Digest a phonopy ``ThermalProperties`` by the spectrum it sums over.
 
@@ -267,8 +252,6 @@ digest_hooks = [
     Hook(UnivariateSpline, spline_digest),
     Hook(WhitneyRBFInterpolator, whitney_rbf_digest),
 ]
-if asewrapper.ase_alarm.message is None:
-    digest_hooks.append(Hook(asewrapper.ThermoChem, thermochem_digest))
 try:
     from phonopy.phonon.thermal_properties import ThermalProperties
 except ImportError:

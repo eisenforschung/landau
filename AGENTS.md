@@ -277,7 +277,8 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
   Hooks only cover types fleche would otherwise reject;
   hooking a type fleche already digests would make digests depend on entry-point load order.
   No dataclass is hooked: fleche's value stores file a destructured dataclass under its field-walk digest, so a hooked one would be stored under a key no lookup computes.
-  `AsePhase` is digested by its fields, its `thermochem` through the stopgap `thermochem_digest` (its home is fleche-ase).
+  `AsePhase` is digested by its fields, its `thermochem` by fleche-ase's `BaseThermoChem` hook;
+  landau hooks no ASE type.
   `PhonopyQuasiHarmonicPhase` is digested by its fields, its phonopy `ThermalProperties` through `thermal_properties_digest` (registered only when phonopy imports): their `__dict__` less run results, temperatures, backend and `__init__`-derived attributes (`quasiharmonic._thermal_properties_state`), never the pickled bytes.
   The phase's `__eq__`/`hash` key (`_key`, a `cached_property`) is built from that same state.
   Fitted interpolation classes are hooked and digest by their state;

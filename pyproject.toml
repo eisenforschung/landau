@@ -59,7 +59,9 @@ test = [
 # The tests it enables are the `fleche` marker below, run in their own env.
 # Pinned to one minor series: the hooks lean on fleche's entry point loading and
 # digest dispatch, so a new minor should arrive as a dependabot PR to review.
-test-fleche = ["fleche[dill]>=0.22.1,<0.23"]
+# fleche-ase digests the AsePhase thermochem; it requires fleche>=0.24, and fleche>=0.25
+# leaves numpy to fleche-numpy.
+test-fleche = ["fleche[dill,numpy]>=0.25,<0.26", "fleche-ase>=1.1.1,<2"]
 docs = [
     "sphinx",
     "furo",

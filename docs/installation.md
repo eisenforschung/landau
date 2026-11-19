@@ -49,6 +49,10 @@ Calling `diagram` again with phases rebuilt from the same data hits the cache,
 in this interpreter and in the next one. `landau` does not depend on `fleche`;
 the hook module is imported only by fleche's entry point loader.
 
+An `AsePhase` holds an ASE thermochemistry object, which fleche digests only with
+[fleche-ase](https://pypi.org/project/fleche-ase/) installed
+(`pip install fleche-ase`); without it a call taking an `AsePhase` runs uncached.
+
 Fitted interpolations — what `SplineFit`, `StitchedFit`, `SoftplusFit` and the
 Whitney interpolators return — are digested by their fitted state, and phases
 and fits pickle with plain `pickle`, `dill` or `cloudpickle`. A fleche value
