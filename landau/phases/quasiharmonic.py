@@ -435,23 +435,23 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
         if len(set(per_atom)) != len(per_atom):
             raise ValueError(f"the sampled volumes must be distinct, got {per_atom} per atom")
 
-        object.__setattr__(self, "_lowest", tuple(_lowest_frequency(tp) for tp in self.thermal_properties))
-        object.__setattr__(
-            self, "_stable", _select_stable_volumes(per_atom, self._lowest, self.min_frequency, self.name, self.eos)
-        )
+        # Selected now so the instability warning and the too-few-volumes error come at construction.
+        self._stable  # noqa: B018
 
-    def __getattr__(self, name):
-        # Only reached when normal lookup fails: on a phase restored without
-        # __post_init__ -- by Phase.__setstate__, or by fleche rebuilding a stored
-        # dataclass with object.__new__ -- which keeps the fields but not these two.
-        # __post_init__ is idempotent on its own output, so it is replayed once here.
-        # The instability warning was already raised when the phase was built.
-        if name not in ("_lowest", "_stable"):
-            raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DynamicalInstabilityWarning)
-            self.__post_init__()
-        return object.__getattribute__(self, name)
+    @cached_property
+    def _lowest(self):
+        """Lowest mode of each sampled volume, in THz; see :func:`_lowest_frequency`."""
+        return tuple(_lowest_frequency(tp) for tp in self.thermal_properties)
+
+    @cached_property
+    def _stable(self):
+        """Indices of the volumes the equation of state is fitted through; see :func:`_select_stable_volumes`.
+
+        Not a dataclass field, like :attr:`_hash`: a phase restored without ``__post_init__``
+        (by ``Phase.__setstate__`` or fleche's destructuring) computes it on first use,
+        and warns about dropped volumes again then.
+        """
+        return _select_stable_volumes(self.volumes_per_atom, self._lowest, self.min_frequency, self.name, self.eos)
 
     @cached_property
     def _key(self):

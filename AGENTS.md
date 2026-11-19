@@ -124,8 +124,8 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
   `__setstate__` keeps only field names and refuses a state written by a landau older than `MINIMUM_STATE_VERSION` (a state from the running version always loads, so untagged dev builds round-trip).
   Raise `MINIMUM_STATE_VERSION` when a phase's fields change incompatibly, unless `__setstate__` can migrate the old layout.
   fleche's value stores rebuild a destructured dataclass with `object.__new__` and `setattr` per field, skipping both `__post_init__` and `__setstate__`;
-  so anything a phase derives outside its fields (`_hash`, `cached_property` values, `PhonopyQuasiHarmonicPhase._key`) is computed on first use, never only in `__post_init__`;
-  `PhonopyQuasiHarmonicPhase.__getattr__` replays `__post_init__` once for `_lowest`/`_stable`.
+  so anything a phase derives outside its fields is a `cached_property` computed on first use (`_hash`, `PhonopyQuasiHarmonicPhase._key`/`_lowest`/`_stable`), never set in `__post_init__`;
+  `__post_init__` only validates and normalises fields.
 - Deprecated, removal at 2.0: `RegularSolution` and `InterpolatingPhase` (use `FastInterpolatingPhase`, with `interpolator=RedlichKister(n)` for a regular solution), the typo alias `TemperatureDepandantLinePhase`, and the solution phases' `check_interpolation` methods, which forward to `check_concentration_interpolation`.
   `TemperatureDependentLinePhase.check_interpolation` is not deprecated.
   The suite, testplots and notebooks still construct the deprecated classes — new code should not.
