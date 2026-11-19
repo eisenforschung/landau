@@ -3,6 +3,18 @@
 Notable changes to **landau.py**, newest first. Per-PR detail lives in the
 [GitHub releases](https://github.com/eisenforschung/landau/releases).
 
+## [1.19.1](https://github.com/eisenforschung/landau/compare/1.19.0...1.19.1) (2026-11-19)
+
+
+### Bug Fixes
+
+* make phases survive pickle and fleche, and let fleche digest fitted interpolations ([#589](https://github.com/eisenforschung/landau/issues/589)) ([050efaa](https://github.com/eisenforschung/landau/commit/050efaa435381b84260c7c0d3f26c6db75d9b8f1))
+
+
+### Performance Improvements
+
+* **calculate:** vectorise the tie-line pairing in get_transitions ([#592](https://github.com/eisenforschung/landau/issues/592)) ([ed2f1e7](https://github.com/eisenforschung/landau/commit/ed2f1e72c8a4d29cc96b0f5196a1c1f95a80f1d4))
+
 ## [1.19.0](https://github.com/eisenforschung/landau/compare/1.18.1...1.19.0) (2026-11-12)
 
 
