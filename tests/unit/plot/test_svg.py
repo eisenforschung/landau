@@ -7,7 +7,9 @@ sublayers. The two-phase regions are checked against the boundaries in the
 phase-diagram frame, and the figure must come out of the save as it went in.
 """
 import io
+import itertools
 import json
+import pickle
 import re
 import xml.etree.ElementTree as ET
 from collections import Counter
@@ -24,7 +26,8 @@ from matplotlib.colors import to_hex
 
 import landau.calculate as ldc
 from landau.features import Locus
-from landau.phases import AbstractLinePhase, IdealSolution, LinePhase, kB
+from landau.interpolate import RedlichKister
+from landau.phases import AbstractLinePhase, FastInterpolatingPhase, IdealSolution, LinePhase, kB
 from landau.plot import (
     get_phase_colors,
     plot_1d_mu_phase_diagram,
@@ -376,45 +379,187 @@ def test_invariants(ct_figure, eutectic_diagram):
     assert len(labels) == len(expected)
 
 
-def test_two_phase_regions(ct_figure, eutectic_diagram):
+def test_two_phase_regions(ct_figure):
     root, _, _ = _save(ct_figure)
     regions = _groups(root, "landau-two-phase")
     pairs = sorted(tuple(json.loads(g.get("data-phases"))) for g in regions)
     assert pairs == [("fcc", "hcp"), ("fcc", "liquid"), ("hcp", "liquid")]
     for g in regions:
-        path = g.find(f".//{SVG}path")
-        assert path.get("fill-opacity") == "0" and path.get("style") is None
+        assert g.get("id") == "ax0-two-phase-{}-{}-0".format(*json.loads(g.get("data-phases")))
+        assert g.get("data-units") == "[0, 0]"
+        (path,) = g.findall(f".//{SVG}path")
+        assert {k: path.get(k) for k in ("fill", "fill-opacity", "stroke", "style")} == {
+            "fill": "#808080", "fill-opacity": "0", "stroke": "none", "style": None}
 
     boundaries = _groups(root, "landau-boundary")
     sides = sorted((g.get("data-phase"), g.get("data-against")) for g in boundaries)
     assert sides == sorted([(a, b) for p in pairs for a, b in (p, p[::-1])])
     for g in boundaries:
-        path = g.find(f".//{SVG}path")
-        assert path.get("stroke-opacity") == "0" and path.get("fill") == "none"
+        assert g.get("id") == f"ax0-boundary-{g.get('data-phase')}-{g.get('data-against')}-0"
+        (path,) = g.findall(f".//{SVG}path")
+        assert {k: path.get(k) for k in ("fill", "stroke", "stroke-opacity", "stroke-width", "style")} == {
+            "fill": "none", "stroke": "#000000", "stroke-opacity": "0", "stroke-width": "1", "style": None}
 
 
-def test_two_phase_region_spans_the_coexisting_compositions(ct_figure, eutectic_diagram):
-    """The fcc+hcp region at T spans from hcp's to fcc's coexisting composition."""
-    ax = ct_figure.axes[0]
+@pytest.fixture(scope="module")
+def monotectic_diagram():
+    """Line phases alpha and beta under a liquid that demixes: a liquid+liquid dome on a monotectic."""
+    E_A, S_A, E_B, S_B, L0 = -2.8, 3.0 * kB, -2.35, 3.0 * kB, 0.25
+    alpha = LinePhase("alpha", fixed_concentration=0, line_energy=-3.0, line_entropy=1.0 * kB)
+    beta = LinePhase("beta", fixed_concentration=1, line_energy=-2.5, line_entropy=1.0 * kB)
+    controls = [LinePhase(f"l{i}", fixed_concentration=c, line_energy=(1 - c) * E_A + c * E_B + L0 * c * (1 - c),
+                          line_entropy=(1 - c) * S_A + c * S_B) for i, c in enumerate([0.0, 0.25, 0.5, 0.75, 1.0])]
+    liquid = FastInterpolatingPhase("liquid", phases=controls, add_entropy=True, interpolator=RedlichKister(2))
+    return ldc.calc_phase_diagram([alpha, beta, liquid], np.linspace(300.0, 1700.0, 30), mu=60, refine=True)
+
+
+def _frame_tie_lines(df):
+    """The two-phase tie-lines of a frame, wherever two states share a finite (mu, T).
+
+    One ``(T, c_left, c_right, phase_left, phase_right)`` each.
+    """
+    border = df[df["border"] & np.isfinite(df["mu"])]
+    ties = []
+    for (_mu, T), g in border.groupby(["mu", "T"]):
+        if len(g) == 2:  # three states are an invariant, one is the edge of the sampled window
+            g = g.sort_values("c")
+            ties.append((T, *g["c"], *g["phase"]))
+    return ties
+
+
+def _coexistence(ax):
+    """The regions and boundaries save_layered_svg would add to ``ax``, as ``(tag data, shapely geometry)``."""
     added = _add_coexistence(ax, [])
-    try:
-        (region,) = [a for a in added if a._landau_svg["data"].get("phases") == ["fcc", "hcp"]]
-        shape = shapely.Polygon(region.get_path().vertices)
-        rows = eutectic_diagram.query("refined == 'clausius-clapeyron'")
-        pair = rows.groupby(["mu", "T"]).filter(lambda g: set(g.phase) == {"fcc", "hcp"})
-        checked = 0
-        for T, g in pair.groupby("T"):
-            if not 400 < T < 750:
-                continue
-            c_hcp, c_fcc = g.set_index("phase").c[["hcp", "fcc"]]
-            cut = shape.intersection(shapely.LineString([(0, T), (1, T)]))
-            assert cut.bounds[0] == pytest.approx(c_hcp, abs=C_TOL)
-            assert cut.bounds[2] == pytest.approx(c_fcc, abs=C_TOL)
-            checked += 1
-        assert checked > 5
-    finally:
-        for a in added:
-            a.remove()
+    regions, boundaries = [], []
+    for artist in added:
+        data, path = artist._landau_svg["data"], artist.get_path()
+        starts = [*np.flatnonzero(path.codes == path.MOVETO), len(path.codes)]
+        rings = [path.vertices[i:j] for i, j in itertools.pairwise(starts)]
+        if artist._landau_svg["kind"] == "two-phase":
+            regions.append((data, shapely.Polygon(rings[0], rings[1:])))
+        else:
+            boundaries.append((data, shapely.MultiLineString(rings)))
+        artist.remove()
+    return regions, boundaries
+
+
+@pytest.mark.parametrize("diagram, pairs", [
+    ("eutectic_diagram", [("fcc", "hcp"), ("fcc", "liquid"), ("hcp", "liquid")]),
+    ("split_solid_diagram", [("g", "g'"), ("g", "g'")]),
+    ("monotectic_diagram", [("alpha", "beta"), ("alpha", "liquid"), ("alpha", "liquid"), ("beta", "liquid"),
+                            ("liquid", "liquid")]),
+])
+def test_two_phase_regions_are_where_the_frame_has_tie_lines(diagram, pairs, request):
+    """Every tie-line lies in the region of its pair and spans it; no region is without tie-lines."""
+    df = request.getfixturevalue(diagram)
+    fig, ax = plt.subplots()
+    plot_phase_diagram(df, ax=ax)
+    regions, boundaries = _coexistence(ax)
+    plt.close(fig)
+    assert sorted(tuple(data["phases"]) for data, _ in regions) == pairs
+    # a tie-line on the edge of the sampled window is on the outline of its region, not inside
+    T_min, T_max = df["T"].min(), df["T"].max()
+    ties = [t for t in _frame_tie_lines(df) if t[2] - t[1] > 3 * C_TOL and T_min < t[0] < T_max]
+    assert len(ties) > 100
+    holds = [[] for _ in regions]
+    for tie in ties:
+        T, c_left, c_right, *phases = tie
+        (n,) = [n for n, (_, shape) in enumerate(regions) if shape.contains(shapely.Point((c_left + c_right) / 2, T))]
+        data, shape = regions[n]
+        assert data["phases"] == sorted(phases)
+        holds[n].append(tie)
+        cut = shape.intersection(shapely.LineString([(c_left - 1, T), (c_right + 1, T)]))
+        assert cut.bounds[0] == pytest.approx(c_left, abs=C_TOL)
+        assert cut.bounds[2] == pytest.approx(c_right, abs=C_TOL)
+    for (data, shape), held in zip(regions, holds):
+        # a region too narrow for the tie-lines checked above still has some of its own pair
+        assert held or any(sorted(phases) == data["phases"] and shape.contains(shapely.Point((c_left + c_right) / 2, T))
+                           for T, c_left, c_right, *phases in _frame_tie_lines(df))
+    # a boundary is its own phase's side of a region: it passes through that phase's end of every tie-line there
+    assert len(boundaries) == sum(1 if len(set(data["phases"])) == 1 and len(set(data["units"])) == 1 else 2
+                                  for data, _ in regions)
+    for data, line in boundaries:
+        halfway = line.interpolate(0.5, normalized=True)
+        on_outline = [shape.exterior.distance(halfway) for _, shape in regions]
+        n = int(np.argmin(on_outline))
+        assert on_outline[n] < C_TOL
+        assert regions[n][0]["phases"] == sorted((data["phase"], data["against"]))
+        for T, c_left, c_right, p_left, p_right in holds[n]:
+            crossing = line.intersection(shapely.LineString([(c_left - 1, T), (c_right + 1, T)]))
+            ends = [c for c, phase in ((c_left, p_left), (c_right, p_right)) if phase == data["phase"]]
+            assert len(ends) == (2 if p_left == p_right and data["unit"] == data["against_unit"] else 1)
+            for c in ends:
+                assert crossing.distance(shapely.Point(c, T)) < C_TOL
+
+
+def test_miscibility_gap_is_a_region_of_one_phase(monotectic_diagram):
+    fig, ax = plt.subplots()
+    plot_phase_diagram(monotectic_diagram, ax=ax, transition_temperatures=True)
+    root, _, _ = _save(fig)
+    plt.close(fig)
+    (dome,) = [g for g in _groups(root, "landau-two-phase") if json.loads(g.get("data-phases")) == ["liquid", "liquid"]]
+    assert (dome.get("id"), dome.get("data-units")) == ("ax0-two-phase-liquid-liquid-0", "[0, 0]")
+    # the dome lies inside one field, whose outline along it is the one boundary
+    (binodal,) = [g for g in _groups(root, "landau-boundary") if g.get("data-against") == g.get("data-phase")]
+    assert (binodal.get("id"), binodal.get("data-phase")) == ("ax0-boundary-liquid-liquid-0", "liquid")
+    # the gap phase is two of the three states of the monotectic
+    invariants = sorted(json.loads(g.get("data-phases")) for g in _groups(root, "landau-triple"))
+    assert invariants == [["alpha", "beta", "liquid"], ["alpha", "liquid", "liquid"]]
+
+
+def test_regions_of_one_pair_are_numbered(split_solid_diagram):
+    fig, ax = plt.subplots()
+    plot_phase_diagram(split_solid_diagram, ax=ax)
+    _, elements, _ = _save(fig)
+    plt.close(fig)
+    regions = {i: a for i, a in elements.items() if a["class"] == "landau-two-phase"}
+    assert sorted(regions) == ["ax0-two-phase-g-g-0", "ax0-two-phase-g-g-1"]
+    # each lies between the compound and one of the two fields of g
+    assert sorted(a["data-units"] for a in regions.values()) == ["[0, 0]", "[1, 0]"]
+    assert sorted(i for i, a in elements.items() if a["class"] == "landau-boundary") == [
+        "ax0-boundary-g-g-0", "ax0-boundary-g-g-0_2", "ax0-boundary-g-g-1", "ax0-boundary-g-g-1_2"]
+
+
+@pytest.mark.parametrize("limits", [
+    {"xlim": (-0.02, 1.02), "ylim": (150, 1050)},  # margins around the diagram
+    {"xlim": (0.4, 1.0), "ylim": (700, 900)},  # the hcp field is out of view
+    {"xlim": (1.0, 0.0)},  # inverted
+])
+def test_regions_do_not_depend_on_the_view(ct_figure, limits):
+    def coexistence():
+        _, elements, _ = _save(ct_figure)
+        return {i: a for i, a in elements.items() if a["class"] in ("landau-two-phase", "landau-boundary")}
+
+    before = coexistence()
+    assert len(before) == 9
+    ct_figure.axes[0].set(**limits)
+    assert coexistence() == before
+
+
+def test_frame_without_triple_points_gets_no_regions(eutectic_diagram):
+    """The three two-phase fields are then one piece of the diagram, which the frame gives no single name."""
+    fig, ax = plt.subplots()
+    plot_phase_diagram(eutectic_diagram.drop(columns="locus"), ax=ax)
+    root, _, _ = _save(fig)
+    plt.close(fig)
+    assert len(_groups(root, "landau-phase")) == 3
+    assert _groups(root, "landau-two-phase") == [] and _groups(root, "landau-boundary") == []
+
+
+def test_cleared_axes_has_no_regions(ct_figure, unary_diagram):
+    ax = ct_figure.axes[0]
+    ax.clear()
+    plot_1d_T_phase_diagram(unary_diagram, ax=ax)
+    root, _, _ = _save(ct_figure)
+    assert len(_groups(root, "landau-curve")) > 0
+    assert _groups(root, "landau-two-phase") == [] and _groups(root, "landau-boundary") == []
+
+
+def test_pickled_figure_saves_the_same(ct_figure):
+    _, elements, _ = _save(ct_figure)
+    copy = pickle.loads(pickle.dumps(ct_figure))
+    assert _save(copy)[1] == elements
+    plt.close(copy)
 
 
 def test_ticks_and_ticklabels_separate(ct_figure):
@@ -488,14 +633,31 @@ def test_id_prefix(ct_figure):
         _save(ct_figure, id_prefix="1x")
 
 
-def test_mu_t_boundaries(eutectic_diagram):
+@pytest.mark.parametrize("diagram, pairs", [
+    ("eutectic_diagram", [("fcc", "hcp"), ("fcc", "liquid"), ("hcp", "liquid")]),
+    ("monotectic_diagram", [("alpha", "beta"), ("alpha", "liquid"), ("beta", "liquid")]),
+])
+def test_mu_t_boundaries_follow_the_transitions_of_their_pair(diagram, pairs, request):
+    df = request.getfixturevalue(diagram)
     fig, ax = plt.subplots()
-    plot_mu_phase_diagram(eutectic_diagram, ax=ax)
+    plot_mu_phase_diagram(df, ax=ax)
+    regions, boundaries = _coexistence(ax)
     root, _, _ = _save(fig)
     plt.close(fig)
-    assert _groups(root, "landau-two-phase") == []
-    pairs = sorted(tuple(json.loads(g.get("data-phases"))) for g in _groups(root, "landau-boundary"))
-    assert pairs == [("fcc", "hcp"), ("fcc", "liquid"), ("hcp", "liquid")]
+    assert regions == [] and _groups(root, "landau-two-phase") == []
+    assert sorted(tuple(json.loads(g.get("data-phases"))) for g in _groups(root, "landau-boundary")) == pairs
+    border = df[df["border"] & np.isfinite(df["mu"])]
+    T_range = np.ptp(df["T"])
+    for data, line in boundaries:
+        pair = tuple(data["phases"])
+        at = [(mu, T) for (mu, T), g in border.groupby(["mu", "T"]) if len(g) == 2 and tuple(sorted(g["phase"])) == pair]
+        assert len(at) > 5
+        Ts = [T for _, T in at]
+        # the boundary runs as far as the pair coexists: to the triple point a tracer step past its last transition
+        assert line.bounds[1] == pytest.approx(min(Ts), abs=0.01 * T_range)
+        assert line.bounds[3] == pytest.approx(max(Ts), abs=0.01 * T_range)
+        mu_range = np.ptp(border["mu"])
+        assert max(line.distance(shapely.Point(mu, T)) for mu, T in at) < 0.01 * mu_range
 
 
 def test_phase_names_sanitised(eutectic_diagram):
