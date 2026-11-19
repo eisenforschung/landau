@@ -22,9 +22,20 @@ import pytest
 import shapely
 
 import landau.calculate as ldc
+from dataclasses import dataclass
+
+from matplotlib.colors import to_hex
+
 from landau.features import Locus
-from landau.phases import LinePhase, kB
-from landau.plot import plot_1d_T_phase_diagram, plot_mu_phase_diagram, plot_phase_diagram, save_layered_svg
+from landau.phases import AbstractLinePhase, LinePhase, kB
+from landau.plot import (
+    get_phase_colors,
+    plot_1d_mu_phase_diagram,
+    plot_1d_T_phase_diagram,
+    plot_mu_phase_diagram,
+    plot_phase_diagram,
+    save_layered_svg,
+)
 from landau.plot.style import theme
 from landau.plot.svg import _add_coexistence, _name, tag
 
@@ -524,6 +535,72 @@ def test_hand_set_gid_kept(ct_figure):
     (g,) = [g for g in root.iter(f"{SVG}g") if g.get("id") == "calphy-solid-7"]
     assert g.get("data-layer") == "other"
     assert line.get_gid() == "calphy-solid-7"
+
+
+@dataclass(frozen=True)
+class _WindowedLinePhase(AbstractLinePhase):
+    """A line phase whose free energy is undefined above ``T_max``."""
+    name: str
+    energy: float
+    entropy: float
+    T_max: float
+
+    @property
+    def line_concentration(self):
+        return 0.0
+
+    def line_free_energy(self, T):
+        out = np.where(np.asarray(T, dtype=float) <= self.T_max, self.energy - T * self.entropy, np.nan)
+        return out.item() if out.ndim == 0 else out
+
+
+def _polymorphs(E0):
+    """Three polymorphs 30 and 60 meV apart, on an energy scale with its zero at ``-E0``."""
+    phases = [LinePhase("alpha", 0, E0, 1.0 * kB), LinePhase("beta", 0, E0 + 0.030, 1.2 * kB),
+              LinePhase("gamma", 0, E0 + 0.060, 1.3 * kB)]
+    return ldc.calc_phase_diagram(phases, np.linspace(300, 1500, 25), mu=0.0, keep_unstable=True), {}
+
+
+def _mirror_images():
+    """Phases whose curves are mirror images of each other once referred to AB."""
+    phases = [LinePhase("A", 0, 0.0), LinePhase("B", 1, 0.0), LinePhase("AB", 0.5, -0.5),
+              LinePhase("A3B", 0.25, -0.2), LinePhase("AB3", 0.75, -0.2)]
+    df = ldc.calc_phase_diagram(phases, 300.0, mu=np.linspace(-2, 2, 41), keep_unstable=True)
+    return df, {"reference_phase": "AB"}
+
+
+def _undefined_above_1500K():
+    phases = [LinePhase("bcc", 0, 0.0, 1.0 * kB), LinePhase("liquid", 0, 0.1, 2.0 * kB),
+              _WindowedLinePhase("qha", 0.02, 1.1 * kB, T_max=1500.0)]
+    return ldc.calc_phase_diagram(phases, np.linspace(300, 2000, 35), mu=0.0, keep_unstable=True), {}
+
+
+@pytest.mark.parametrize("frame", [
+    lambda: _polymorphs(0.0),
+    lambda: _polymorphs(-34800.0),  # all-electron total energies
+    _mirror_images,
+    _undefined_above_1500K,
+], ids=["polymorphs", "large-energy-zero", "mirror-images", "nan-free-energy"])
+def test_1d_curves_carry_the_phase_and_stability_they_are_drawn_with(frame):
+    df, kwargs = frame()
+    one_T = df["T"].nunique() == 1
+    fig, ax = plt.subplots()
+    (plot_1d_mu_phase_diagram if one_T else plot_1d_T_phase_diagram)(df, ax=ax, **kwargs)
+    drawn = sum(len(line.get_xdata()) > 0 for line in ax.lines)
+    root, _, _ = _save(fig)
+    plt.close(fig)
+    colors = {phase: to_hex(c) for phase, c in get_phase_colors(df.phase.unique(), palette="muted").items()}
+    curves = _groups(root, "landau-curve")
+    seen = set()
+    for g in curves:
+        style = dict(d.strip().split(": ", 1) for d in g.find(f"{SVG}path").get("style").split(";") if d.strip())
+        assert style["stroke"] == colors[g.get("data-phase")]
+        assert ("stroke-dasharray" in style) == (g.get("data-stable") == "false")
+        seen.add(g.get("data-phase"))
+    assert seen == set(colors)
+    # every line seaborn drew is a curve, the transition guides are the only other lines
+    assert len(curves) == drawn - len(_groups(root, "landau-transition"))
+    assert _groups(root, "landau-other") == []
 
 
 def test_unary_curves(unary_figure, unary_diagram):

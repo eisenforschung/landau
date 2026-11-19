@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import shapely
 from matplotlib.cm import ScalarMappable
-from matplotlib.colors import Normalize
+from matplotlib.colors import Normalize, to_rgba
 from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
 from scipy.spatial import QhullError
 from sklearn.preprocessing import StandardScaler
@@ -651,26 +651,32 @@ def _subtract_reference_phase(df, scan_col, reference_phase):
     return df
 
 
-def _tag_segment_lines(lines, df, scan_col):
+def _tag_segment_lines(lines, df, scan_col, palette):
     """Tag the curves seaborn drew for a 1d diagram with their phase.
 
-    seaborn draws one line per ``_seg_id`` without saying which; each line is
-    matched to the segment whose points it passes through.
+    seaborn draws one line per ``_seg_id`` without saying which.  A line has
+    the colour ``palette`` gives its phase and the points of its segment, in
+    the order seaborn sorts them and without the non-finite rows it drops.
     """
-    segments = {}
-    for seg_id, g in df.groupby("_seg_id", sort=False):
-        g = g.sort_values(scan_col)
-        # a segment is stable or not throughout; bridge rows join unstable ones
-        segments[seg_id] = (g["phase"].iloc[0], bool(g["stable"].all()),
-                            g[scan_col].to_numpy(dtype=float), g["phi"].to_numpy(dtype=float))
+    segments = []
+    for _seg_id, g in df.groupby("_seg_id", sort=False):
+        g = g[np.isfinite(g[scan_col]) & np.isfinite(g["phi"])].sort_values([scan_col, "phi"])
+        if len(g):
+            # a segment is stable or not throughout; bridge rows join unstable ones
+            segments.append((g["phase"].iloc[0], bool(g["stable"].all()),
+                             g[scan_col].to_numpy(dtype=float), g["phi"].to_numpy(dtype=float)))
     counts = {}
     for line in lines:
+        color = to_rgba(line.get_color())
         x, y = np.asarray(line.get_xdata(), dtype=float), np.asarray(line.get_ydata(), dtype=float)
-        for phase, stable, sx, sy in segments.values():
-            if len(sx) == len(x) and np.allclose(np.sort(sx), np.sort(x)) and np.allclose(np.sort(sy), np.sort(y)):
-                k = counts[phase] = counts.get(phase, -1) + 1
-                tag(line, "phases", kind="curve", name=(phase, k), phase=phase, stable=stable)
-                break
+        match = [i for i, (phase, _, sx, _) in enumerate(segments)
+                 if to_rgba(palette[phase]) == color and np.array_equal(sx, x)]
+        if len(match) > 1:  # two phases sharing a colour and a grid
+            match = [i for i in match if np.array_equal(segments[i][3], y)]
+        if match:
+            phase, stable, _, _ = segments.pop(match[0])
+            k = counts[phase] = counts.get(phase, -1) + 1
+            tag(line, "phases", kind="curve", name=(phase, k), phase=phase, stable=stable)
 
 
 @dataclass(frozen=True)
@@ -743,7 +749,7 @@ def _plot_1d_phase_diagram(
         units='_seg_id', estimator=None, errorbar=None,
         ax=ax,
     )
-    _tag_segment_lines(ax.lines[n_lines:], bridged, scan_col)
+    _tag_segment_lines(ax.lines[n_lines:], bridged, scan_col, palette)
 
     _add_1d_phase_legend(ax, df, scan_col=scan_col, top_labels=top_labels, side_labels=side_labels, ylim=ylim,
                          top_label_rotation=top_label_rotation)
