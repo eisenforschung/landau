@@ -21,10 +21,12 @@ pass over the XML.
 
 * ``<g id="{p}figure">`` -- the figure; ``<g id="{p}ax{i}">`` -- one per axes.
 * Inside each axes, one layer group per kind, ``<g id="{p}ax{i}-layer-{layer}"
-  class="landau-layer" data-layer="{layer}">``, stacked in the order their
-  first member was drawn; an artist whose ``zorder`` places it among another
-  layer's members is drawn with its own layer instead.  The layers landau
-  writes:
+  class="landau-layer" data-layer="{layer}">``, in the order the figure is
+  painted.  A layer is one group unless an artist of another layer is
+  painted between its members; it is then written as several groups that
+  share ``data-layer``, the later ones with ``_2``, ``_3``, ... appended to
+  the id, so select a layer by ``data-layer`` rather than by id.  The layers
+  landau writes:
 
   ================== ====================================================
   layer              contents
@@ -34,7 +36,9 @@ pass over the XML.
   two-phase          two-phase regions of a c-T diagram (added on save)
   phases             phase fields (2d), phase curves (1d)
   boundaries         phase boundaries, one per phase pair (added on save)
-  transitions        triple-point isotherms (2d), transition marks (1d)
+  transitions        triple-point isotherms (2d), transition guides (1d)
+  transition-ticks   ticks on the top spine at the transitions (1d)
+  transition-points  dots at the transitions (1d)
   labels             phase labels
   transition-labels  temperatures of invariants (2d), transition labels (1d)
   legend             the legend box
@@ -128,6 +132,7 @@ for _prefix, _uri in _NAMESPACES.items():
 _G = f"{{{_SVG}}}g"
 _TEXT = f"{{{_SVG}}}text"
 _PATH = f"{{{_SVG}}}path"
+_DEFS = f"{{{_SVG}}}defs"
 
 _TAG_ATTR = "_landau_svg"
 _OUTLINE_ATTR = "_landau_outline"
@@ -263,7 +268,7 @@ def save_layered_svg(
     layout = _Layout(session, id_prefix, inkscape)
     elements = layout.apply(root)
     if id_prefix:
-        _prefix_ids(root, id_prefix, keep=set(elements) | layout.layer_ids)
+        _prefix_ids(root, id_prefix, keep=layout.used)
     out = ET.tostring(root, encoding="utf-8", xml_declaration=True)
     if hasattr(fname, "write"):
         fname.write(out)
@@ -452,40 +457,48 @@ class _Layout:
         self.session = session
         self.prefix = prefix
         self.inkscape = inkscape
-        self.used = set()
+        self.used = set()  # every id written here
         self.elements = {}
         self.counters = {}
-        self.layer_ids = set()
+        self.entry_of = {}  # <g> element -> entry dict
 
     def apply(self, root):
-        groups = {el.get("id"): el for el in root.iter(_G) if el.get("id") in self.session.entries}
+        entries = self.session.entries
+        self.entry_of = {el: entries[el.get("id")] for el in root.iter(_G) if el.get("id") in entries}
         parents = {child: parent for parent in root.iter() for child in parent}
-        for token, el in groups.items():
-            entry = self.session.entries[token]
-            if entry["kind"] == "axis":
-                self._split_axis(el, entry, groups, parents)
-        for token, el in groups.items():
-            entry = self.session.entries[token]
-            if entry["kind"] in ("figure", "axes"):
-                scope = entry["scope"] if entry["kind"] == "axes" else "figure"
-                self._group_layers(el, scope, groups)
-        for token, el in groups.items():
-            entry = self.session.entries[token]
+        containers = [(el, e) for el, e in self.entry_of.items() if e["kind"] in ("figure", "axes")]
+        # the figure and axes ids first: nothing else may take them
+        for el, entry in containers:
             if entry["kind"] == "figure":
                 self._make_layer(el, f"{self.prefix}figure", "figure", "landau-figure")
-            elif entry["kind"] == "axes":
+            else:
                 el.set("data-axes", str(entry["data"]["axes"]))
                 self._make_layer(el, f"{self.prefix}{entry['scope']}", f"axes {entry['data']['axes']}", "landau-axes")
-            elif entry["kind"] != "axis":
+        for el, entry in list(self.entry_of.items()):
+            if entry["kind"] == "axis":
+                self._split_axis(el, entry, parents)
+        for el, entry in containers:
+            self._group_layers(el, entry["scope"])
+        for el in root.iter(_G):  # in the order they are painted
+            entry = self.entry_of.get(el)
+            if entry is not None and entry["kind"] not in ("figure", "axes", "axis"):
                 self._annotate(el, entry)
         return self.elements
+
+    def _new_id(self, eid):
+        """``eid``, or ``eid_2``, ``eid_3``, ... if it is taken."""
+        base, k = eid, 2
+        while eid in self.used:
+            eid = f"{base}_{k}"
+            k += 1
+        self.used.add(eid)
+        return eid
 
     def _layer_id(self, scope, layer):
         return f"{self.prefix}{scope}-layer-{layer}"
 
     def _make_layer(self, el, lid, label, cls="landau-layer", layer=None):
-        el.set("id", lid)
-        self.layer_ids.add(lid)
+        el.set("id", self._new_id(lid))
         el.set("class", cls)
         if layer is not None:
             el.set("data-layer", layer)
@@ -493,57 +506,61 @@ class _Layout:
             el.set(f"{{{_INKSCAPE}}}groupmode", "layer")
             el.set(f"{{{_INKSCAPE}}}label", label)
 
-    def _group_layers(self, parent, scope, groups):
+    def _group_layers(self, parent, scope):
         """Collect the children of an axes (or the figure) into layer groups.
 
-        Each layer's group takes the place of its first member, so layers are
-        stacked in the order their first member was drawn; members keep their
-        relative order.  Axes and axis children are layers themselves and stay
-        where they are.
+        The children keep the order they are painted in; each run of
+        neighbours that share a layer becomes one group.  Axes and axis
+        children are layers themselves and stay where they are.
         """
-        children = list(parent)
-        layer_of = {}
-        for child in list(children):
-            entry = self.session.entries.get(child.get("id")) if child.tag == _G else None
+        children = []
+        for child in list(parent):
+            entry = self.entry_of.get(child)
             untagged = entry is None or (entry["kind"] == "other" and entry["layer"] == "other")
             if untagged and child.tag == _G and len(child) == 0:
                 # an artist that drew nothing, such as a legend proxy line
                 parent.remove(child)
-                children.remove(child)
-                continue
-            if entry is None:
-                layer_of[child] = "other" if child.tag == _G else None
+                self.entry_of.pop(child, None)
+            else:
+                children.append(child)
+                parent.remove(child)
+        runs = {}
+        current = group = None
+        for child in children:
+            entry = self.entry_of.get(child)
+            if child.tag != _G:
+                layer = None
+            elif entry is None:
+                # an untagged matplotlib group: an element all the same
+                layer = "other"
+                self.entry_of[child] = {"scope": scope, "layer": "other", "kind": "other", "name": None,
+                                        "data": {}, "hit": None}
             elif entry["kind"] in ("axes", "figure"):
-                layer_of[child] = None
+                layer = None
             elif entry["kind"] == "axis":
-                layer_of[child] = None
+                layer = None
                 self._make_layer(child, self._layer_id(scope, entry["layer"]), entry["layer"], layer=entry["layer"])
             else:
-                layer_of[child] = entry["layer"]
-        for child in children:
-            parent.remove(child)
-        made = {}
-        for child in children:
-            layer = layer_of[child]
+                layer = entry["layer"]
             if layer is None:
                 parent.append(child)
+                if child.tag != _DEFS:  # definitions paint nothing and split no layer
+                    current = None
                 continue
-            if layer not in made:
+            if layer != current:
+                n = runs[layer] = runs.get(layer, 0) + 1
                 group = ET.SubElement(parent, _G)
-                self._make_layer(group, self._layer_id(scope, layer), layer, layer=layer)
-                made[layer] = group
-            made[layer].append(child)
-            if child.get("id") not in self.session.entries:
-                # an untagged matplotlib group: give it an element id all the same
-                self._annotate(child, {"scope": scope, "layer": "other", "kind": "other", "name": None,
-                                       "data": {}, "hit": None})
+                self._make_layer(group, self._layer_id(scope, layer), layer if n == 1 else f"{layer} ({n})",
+                                 layer=layer)
+                current = layer
+            group.append(child)
 
-    def _split_axis(self, axis_el, entry, groups, parents):
+    def _split_axis(self, axis_el, entry, parents):
         """Regroup an axis' ticks, tick labels, label and offset text into sublayers."""
         scope, layer = entry["scope"], entry["layer"]
         parts = {part: [] for part in _AXIS_PARTS}
         for el in list(axis_el.iter(_G)):
-            sub_entry = self.session.entries.get(el.get("id"))
+            sub_entry = self.entry_of.get(el)
             if el is axis_el or sub_entry is None or sub_entry["sub"] is None:
                 continue
             parts[sub_entry["sub"]].append(el)
@@ -572,12 +589,7 @@ class _Layout:
         eid = f"{self.prefix}{scope}-{kind}-{_name(name)}"
         if entry.get("keep_id"):
             eid = f"{self.prefix}{entry['keep_id']}"
-        if eid in self.used:
-            k = 2
-            while f"{eid}_{k}" in self.used:
-                k += 1
-            eid = f"{eid}_{k}"
-        self.used.add(eid)
+        eid = self._new_id(eid)
         el.set("id", eid)
         layer = entry["layer"] if entry.get("sub") is None else f"{entry['layer']}-{entry['sub']}"
         attrs = {"class": f"landau-{kind}", "data-layer": layer}

@@ -758,7 +758,7 @@ def _plot_1d_phase_diagram(
             tag(ax.axvline(xt, **theme.transition_guide),
                 "transitions", kind="transition", value=xt, phases=phases)
             tag(ax.scatter(xt, ft, **{"zorder": 10, **theme.invariant_marker}),
-                "transitions", kind="transition-point", value=xt, phases=phases)
+                "transition-points", kind="transition-point", value=xt, phases=phases)
             positions.append(xt)
             labels.append(axis.transition_label(xt, element))
         for text, xt in zip(_place_transition_labels(ax, positions, labels, side="left"), sorted(positions)):

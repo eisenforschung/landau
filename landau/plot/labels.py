@@ -795,7 +795,7 @@ def _add_1d_phase_legend(ax, df, scan_col, top_labels=True, side_labels=True, yl
         ax2.set_ticks(transitions)
         ax2.set_xticklabels([])
         ax2.tick_params(**theme.transition_tick)
-        tag(ax2, "transitions", kind="transition-ticks", values=transitions)
+        tag(ax2, "transition-ticks", values=transitions)
 
         # Phase-name labels near the top of the axis, centered between boundaries.
         # get_xaxis_transform(): x in data coords, y in axes [0,1] fraction.

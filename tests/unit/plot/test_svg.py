@@ -10,10 +10,12 @@ import io
 import json
 import re
 import xml.etree.ElementTree as ET
+from collections import Counter
 
 import matplotlib
 
 matplotlib.use("Agg")
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
@@ -51,6 +53,48 @@ def _by_id(root):
     return {el.get("id"): el for el in root.iter() if el.get("id") is not None}
 
 
+def _painted(root, skip=()):
+    """Every drawing leaf (path, use, image) outside <defs>, in the order it is painted.
+
+    ``skip`` holds group-id prefixes whose content is left out; the second
+    value returned is what was left out.
+    """
+    painted, skipped = [], []
+
+    def walk(el, out):
+        tag = el.tag.removeprefix(SVG)
+        if tag == "defs":
+            return
+        if tag == "g" and (el.get("id") or "").startswith(tuple(skip)) and skip:
+            out = skipped
+        if tag in ("path", "use", "image"):
+            out.append((tag, tuple(sorted(el.attrib.items()))))
+        for child in el:
+            walk(child, out)
+
+    walk(root, painted)
+    return painted, skipped
+
+
+def _assert_painted_as_savefig(fig):
+    """The layered file paints what a plain savefig paints, in the same order.
+
+    Ticks and tick labels are regrouped inside each axis, so axis content is
+    only checked for being all there.
+    """
+    with mpl.rc_context({"svg.hashsalt": "landau"}):
+        buf = io.BytesIO()
+        fig.savefig(buf, format="svg", metadata={"Date": None})
+    plain, axes_content = _painted(ET.fromstring(buf.getvalue()), skip=("matplotlib.axis",))
+    root, _, _ = _save(fig, coexistence=False, text_as_text=False)
+    layered, _ = _painted(root)
+    assert len(plain) > 10
+    assert Counter(layered) == Counter(plain) + Counter(axes_content)
+    axes_content = set(axes_content)
+    assert [leaf for leaf in layered if leaf not in axes_content] == plain
+    return root
+
+
 def _render(fig):
     fig.canvas.draw()
     return np.asarray(fig.canvas.buffer_rgba()).copy()
@@ -68,6 +112,92 @@ def ct_figure(eutectic_diagram):
     plot_phase_diagram(eutectic_diagram, ax=ax, transition_temperatures=True)
     yield fig
     plt.close(fig)
+
+
+@pytest.fixture(scope="module")
+def unary_diagram():
+    phases = [
+        LinePhase("bcc", 0, -2.0, 1.0 * kB),
+        LinePhase("fcc", 0, -2.02, 0.5 * kB),
+        LinePhase("liquid", 0, -1.8, 3.0 * kB),
+    ]
+    return ldc.calc_phase_diagram(phases, np.linspace(100, 1500, 80), mu=0.0, keep_unstable=True)
+
+
+@pytest.fixture
+def unary_figure(unary_diagram):
+    fig, ax = plt.subplots()
+    plot_1d_T_phase_diagram(unary_diagram, ax=ax)
+    yield fig
+    plt.close(fig)
+
+
+def _layers(root, scope="ax0"):
+    """``data-layer`` of every layer group of one axes, in document order."""
+    (axes,) = [g for g in root.iter(f"{SVG}g") if g.get("id") == scope]
+    return [g.get("data-layer") for g in axes.iter(f"{SVG}g") if g.get("class") == "landau-layer"]
+
+
+@pytest.mark.parametrize("plot, kwargs, own", [
+    (plot_phase_diagram, {"transition_temperatures": True}, {"labels", "transitions", "transition-labels"}),
+    (plot_phase_diagram, {"inline_legend": False}, {"legend"}),
+    (plot_mu_phase_diagram, {"transition_temperatures": True}, {"labels", "transitions", "transition-labels"}),
+])
+def test_2d_diagram_has_one_group_per_layer(eutectic_diagram, plot, kwargs, own):
+    fig, ax = plt.subplots()
+    plot(eutectic_diagram, ax=ax, **kwargs)
+    root = _assert_painted_as_savefig(fig)
+    plt.close(fig)
+    layers = _layers(root)
+    assert len(layers) == len(set(layers))
+    assert {"background", "phases", "spines", "xaxis", "yaxis"} | own <= set(layers)
+
+
+def test_1d_diagram_is_painted_as_savefig(unary_figure):
+    root = _assert_painted_as_savefig(unary_figure)
+    layers = _layers(root)
+    assert len(layers) == len(set(layers))
+    assert {"phases", "transitions", "transition-ticks", "transition-points", "labels"} <= set(layers)
+    order = [g.get("class") for g in root.iter(f"{SVG}g")
+             if g.get("class") in ("landau-curve", "landau-transition-point")]
+    # the dots are drawn on top of the curves they mark
+    assert order.index("landau-transition-point") > len(order) - 1 - order[::-1].index("landau-curve")
+
+
+def test_overlays_keep_their_place_in_the_stack(ct_figure):
+    """Untagged artists share the layer ``other`` but are painted on either side of the phase fields."""
+    ax = ct_figure.axes[0]
+    ax.axhline(700, color="0.5", zorder=0)
+    ax.plot([0.1, 0.5, 0.9], [300, 600, 400], "ko")
+    root = _assert_painted_as_savefig(ct_figure)
+    ids = [g.get("id") for g in root.iter(f"{SVG}g")
+           if g.get("class") == "landau-layer" and g.get("data-layer") in ("other", "phases")]
+    assert ids == ["ax0-layer-other", "ax0-layer-phases", "ax0-layer-other_2"]
+    labels = [g.get(f"{INKSCAPE}label") for g in root.iter(f"{SVG}g") if g.get("data-layer") == "other"
+              and g.get("class") == "landau-layer"]
+    assert labels == ["other", "other (2)"]
+
+
+@pytest.mark.parametrize("figure", ["ct_figure", "unary_figure"])
+def test_returned_elements_are_the_elements_in_the_file(figure, request):
+    root, elements, _ = _save(request.getfixturevalue(figure))
+    structure = ("landau-layer", "landau-axes", "landau-figure")
+    in_file = {g.get("id"): {k: v for k, v in g.attrib.items() if k == "class" or k.startswith("data-")}
+               for g in root.iter(f"{SVG}g")
+               if (g.get("class") or "").startswith("landau-") and g.get("class") not in structure}
+    assert elements == in_file
+    assert len(elements) > 30
+
+
+def test_structural_ids_cannot_be_taken(ct_figure):
+    ax = ct_figure.axes[0]
+    for gid in ("ax0", "figure", "ax0-layer-phases"):
+        ax.plot([0.5, 0.5], [400, 900])[0].set_gid(gid)
+    root, elements, _ = _save(ct_figure)
+    all_ids = [el.get("id") for el in root.iter() if el.get("id") is not None]
+    assert len(all_ids) == len(set(all_ids))
+    assert {"ax0_2", "figure_2", "ax0-layer-phases_2"} <= set(elements)
+    assert _by_id(root)["ax0"].get("class") == "landau-axes"
 
 
 def test_layer_groups(ct_figure):
@@ -354,17 +484,9 @@ def test_hand_set_gid_kept(ct_figure):
     assert line.get_gid() == "calphy-solid-7"
 
 
-def test_unary_curves():
-    phases = [
-        LinePhase("bcc", 0, -2.0, 1.0 * kB),
-        LinePhase("fcc", 0, -2.02, 0.5 * kB),
-        LinePhase("liquid", 0, -1.8, 3.0 * kB),
-    ]
-    df = ldc.calc_phase_diagram(phases, np.linspace(100, 1500, 80), mu=0.0, keep_unstable=True)
-    fig, ax = plt.subplots()
-    plot_1d_T_phase_diagram(df, ax=ax)
-    root, _, _ = _save(fig)
-    plt.close(fig)
+def test_unary_curves(unary_figure, unary_diagram):
+    df = unary_diagram
+    root, _, _ = _save(unary_figure)
     curves = _groups(root, "landau-curve")
     stable = {g.get("data-phase") for g in curves if g.get("data-stable") == "true"}
     assert stable == {"bcc", "fcc", "liquid"}
