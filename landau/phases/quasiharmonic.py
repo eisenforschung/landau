@@ -448,7 +448,7 @@ class PhonopyQuasiHarmonicPhase(AbstractLinePhase):
         """Indices of the volumes the equation of state is fitted through; see :func:`_select_stable_volumes`.
 
         Not a dataclass field, like :attr:`_hash`: a phase restored without ``__post_init__``
-        (by ``Phase.__setstate__`` or fleche's destructuring) computes it on first use,
+        (by plain pickle, which stores the fields only, or fleche's destructuring) computes it on first use,
         and warns about dropped volumes again then.
         """
         return _select_stable_volumes(self.volumes_per_atom, self._lowest, self.min_frequency, self.name, self.eos)

@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from functools import lru_cache, cache, cached_property
 from typing import Iterable, Optional, ClassVar
 import warnings
-from packaging.version import InvalidVersion, Version
 from pyiron_snippets.deprecate import deprecate
 
 import matplotlib.pyplot as plt
@@ -45,80 +44,6 @@ __all__ = [
 
 def S(c):
     return kB * (se.entr(c) + se.entr(1 - c))
-
-
-MINIMUM_STATE_VERSION = "0"
-"""The oldest landau whose pickled phases this landau loads.
-
-Raise it to the release that changes a phase's fields incompatibly, unless
-``__setstate__`` can migrate the older layout.
-"""
-
-
-def _is_development(version):
-    """Whether *version* is a development build, which loads any state it is given."""
-    try:
-        return Version(version).is_devrelease
-    except InvalidVersion:
-        return True
-
-
-def _check_state_version(cls, written):
-    """Refuse a state pickled by a release older than :data:`MINIMUM_STATE_VERSION`.
-
-    *written* is ``None`` for landau <= 1.19, which stored no version.  A development
-    build of landau (``0.1.devN`` in a shallow checkout, or a version that does not
-    parse) checks nothing.  A state from a newer landau is not refused by version:
-    :func:`_check_state_fields` names the mismatch if its fields do not fit.
-    """
-    from .. import __version__
-
-    if _is_development(__version__):
-        return
-    try:
-        too_old = Version(written or "0") < Version(MINIMUM_STATE_VERSION)
-    except InvalidVersion:
-        return
-    if too_old:
-        raise ValueError(
-            f"{cls.__name__} was pickled by landau {written or '<= 1.19'}, but this landau ({__version__}) "
-            f"loads phases pickled by landau >= {MINIMUM_STATE_VERSION}; "
-            f"install landau<={written or '1.19'} to load it"
-        )
-
-
-def _check_state_fields(cls, state, names):
-    """Refuse a state whose fields do not fit *cls*, naming the fields and both versions.
-
-    A state lacking a field is refused.  So is a tagged state carrying a field *cls*
-    does not declare; an untagged one (landau <= 1.19) carries its whole ``__dict__``,
-    hashes and cached values included, and those extras are dropped.
-    """
-    from .. import __version__
-
-    written = state.get("__landau__")
-    missing = [n for n in names if n not in state]
-    unknown = sorted(set(state) - set(names) - {"__landau__"}) if written is not None else []
-    if not missing and not unknown:
-        return
-    problems = []
-    if missing:
-        problems.append(f"lacks {', '.join(missing)}")
-    if unknown:
-        problems.append(f"carries {', '.join(unknown)}, unknown to this landau")
-    hint = ""
-    try:
-        newer = Version(written or "0") > Version(__version__)
-    except InvalidVersion:
-        newer = None
-    if newer is True:
-        hint = f"; install landau>={written} to load it"
-    elif newer is False:
-        hint = f"; install landau<={written or '1.19'} to load it"
-    raise ValueError(
-        f"{cls.__name__} pickled by landau {written or '<= 1.19'} {' and '.join(problems)} "
-        f"(this landau is {__version__}){hint}"
-    )
 
 
 def _warn_deprecated_phase(cls, instead):
@@ -164,33 +89,14 @@ class Phase(ABC):
     __str__ = __repr__
 
     def __getstate__(self):
-        """The dataclass fields and a ``"__landau__"`` tag holding the landau version that wrote them.
+        """The dataclass fields, without what is derived from them.
 
-        Attributes outside the fields -- the precomputed hashes, ``cached_property``
-        values such as a fitted surface -- are derived from the fields and left out:
-        they are recomputed on first use, and a hash taken in another interpreter is
-        stale anyway (``hash`` is salted per process).
+        The precomputed hash and ``cached_property`` values such as a fitted surface are
+        left out and recomputed on first use: a hash taken in another interpreter is
+        stale (``hash`` is salted per process), and a cached fit may be a closure, which
+        plain :mod:`pickle` refuses.
         """
-        from .. import __version__
-
-        return {
-            "__landau__": __version__,
-            **{f.name: getattr(self, f.name) for f in dataclasses.fields(self)},
-        }
-
-    def __setstate__(self, state):
-        """Restore the dataclass fields from *state*.
-
-        Accepts the full ``__dict__`` an older landau pickled, which carries no tag,
-        dropping what is not a field.
-        Like fleche's destructuring, this does not run ``__post_init__``, so derived
-        attributes must be recomputable on first use.
-        """
-        _check_state_version(type(self), state.get("__landau__"))
-        names = [f.name for f in dataclasses.fields(self)]
-        _check_state_fields(type(self), state, names)
-        for name in names:
-            object.__setattr__(self, name, state[name])
+        return {f.name: getattr(self, f.name) for f in dataclasses.fields(self)}
 
 
 @dataclass(frozen=True)

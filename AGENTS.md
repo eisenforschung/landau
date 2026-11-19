@@ -120,10 +120,8 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
   `IdealSolution`, the interpolating phases, the ideal-mixing entropy `S(c)` and `check_concentration_interpolation`.
   User-facing classes are re-exported from `landau/__init__.py`;
   `Phase`/`AbstractLinePhase` stay under `landau.phases`.
-- Pickling: `Phase.__getstate__` returns the dataclass fields plus a `"__landau__": __version__` tag;
-  `__setstate__` refuses a state written by a release older than `MINIMUM_STATE_VERSION` (a development build checks no version), and a state whose fields don't fit the class, naming the fields and both versions;
-  a newer landau's state is not refused by version, and an untagged (landau <= 1.19) state's non-field extras are dropped.
-  Raise `MINIMUM_STATE_VERSION` when a phase's fields change incompatibly, unless `__setstate__` can migrate the old layout.
+- Pickling: `Phase.__getstate__` returns the dataclass fields only, so neither the per-process salted `_hash` nor a cached closure fit is pickled;
+  there is no `__setstate__` and no version check.
   fleche's value stores rebuild a destructured dataclass with `object.__new__` and `setattr` per field, skipping both `__post_init__` and `__setstate__`;
   so anything a phase derives outside its fields is a `cached_property` computed on first use (`_hash`, `PhonopyQuasiHarmonicPhase._key`/`_lowest`/`_stable`), never set in `__post_init__`;
   `__post_init__` only validates and normalises fields.
@@ -182,7 +180,6 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
   robust `loss` or `knee_bounds` force trust-region, `method='lm'` with either raises.
   `knee_bounds` requires `c_order=0`.
 - `whitney.py`: `WhitneyTemperatureInterpolator` (exported, constant-entropy continuation outside the data, an upper bound on a concave `F(T)`), the internal `WhitneyRBFInterpolator`, and `WhitneySurface2DInterpolator` (proposed for deprecation, #531 — slow, scale-dependent in T, invents negative curvature in c).
-  `WhitneyRBFInterpolator` pickles its hyperparameters and training data and refits on load, never the scipy `RBFInterpolator`/`ConvexHull`.
 - Every new 1-D interpolator gets a `CASES` entry in `tests/unit/interpolate/test_shape_contract.py`;
   a new `TemperatureInterpolator` must also be covered in `tests/regression/test_issue_428.py` (scalar in → Python scalar out, array shape preserved);
   that file currently covers only `WhitneyTemperatureInterpolator` and no guard test enforces the coverage.

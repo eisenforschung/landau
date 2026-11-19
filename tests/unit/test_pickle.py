@@ -1,14 +1,12 @@
-"""Phases and fitted interpolations survive pickle, dill and cloudpickle.
+"""Phases survive pickle, dill and cloudpickle; fitted interpolations survive dill and cloudpickle.
 
-Every fit is an instance of a module-level class rather than a closure, so plain
-pickle handles it; a phase pickles its dataclass fields only, so a hash taken in the
-writing interpreter (salted per process) never reaches the reading one.  The cases
-live in ``pickleprobe.py``, shared with the fleche round trip in ``test_fleche.py``.
+A phase pickles its dataclass fields only, so a hash taken in the writing interpreter
+(salted per process) never reaches the reading one, and a cached fit, a closure that
+plain pickle refuses, is recomputed on first use.  The cases live in ``pickleprobe.py``,
+shared with the fleche round trip in ``test_fleche.py``.
 """
 
-import copyreg
 import dataclasses
-import io
 import json
 import os
 import pickle
@@ -20,9 +18,6 @@ import dill
 import numpy as np
 import pytest
 
-import landau
-import landau.phases
-from landau.interpolate.whitney import WhitneyRBFInterpolator
 from landau.phases import Phase, TemperatureDependentLinePhase
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -70,82 +65,12 @@ def test_round_trip_reproduces_the_values(name, serializer, evaluated):
 
 
 @pytest.mark.parametrize("name", PHASES)
-def test_phase_state_is_its_fields_and_a_version_tag(name):
+def test_phase_state_is_its_fields(name):
     """Derived attributes -- hashes, ``cached_property`` values -- are not pickled."""
     phase = pickleprobe.build(name)
     pickleprobe.values(name, phase)
     hash(phase)
-    state = phase.__getstate__()
-    assert state.pop("__landau__") == landau.__version__
-    assert list(state) == [f.name for f in dataclasses.fields(phase)]
-
-
-RELEASE = "2.3.1"
-
-
-@pytest.mark.parametrize(
-    ("written", "shown", "install"),
-    [("1.20.0", "landau 1.20.0", "1.20.0"), (None, "landau <= 1.19", "1.19")],
-    ids=["tagged", "untagged"],
-)
-def test_state_older_than_the_minimum_is_refused(monkeypatch, written, shown, install):
-    monkeypatch.setattr(landau.phases, "MINIMUM_STATE_VERSION", "1.21.0")
-    monkeypatch.setattr(landau, "__version__", RELEASE)
-    phase = pickleprobe.build("TDLP-SGTE")
-    state = phase.__getstate__()
-    if written is None:
-        del state["__landau__"]
-    else:
-        state["__landau__"] = written
-    with pytest.raises(ValueError, match=rf"pickled by {shown},.*>= 1\.21\.0; install landau<={install} to load"):
-        object.__new__(type(phase)).__setstate__(state)
-
-
-@pytest.mark.parametrize("written", ["1.21.0", "2.3.0", RELEASE, "2.4.0", "3.0.0", "not-a-version"])
-def test_state_from_the_minimum_on_loads_if_its_fields_fit(monkeypatch, written):
-    """A newer landau's state is not refused by version; it loads when its fields fit."""
-    monkeypatch.setattr(landau.phases, "MINIMUM_STATE_VERSION", "1.21.0")
-    monkeypatch.setattr(landau, "__version__", RELEASE)
-    phase = pickleprobe.build("TDLP-SGTE")
-    state = phase.__getstate__()
-    state["__landau__"] = written
-    loaded = object.__new__(type(phase))
-    loaded.__setstate__(state)
-    assert loaded == phase
-
-
-@pytest.mark.parametrize(
-    ("written", "edit", "message"),
-    [
-        ("2.4.0", "add", r"2\.4\.0 carries extra_field, unknown to this .*2\.3\.1\); install landau>=2\.4\.0"),
-        ("2.4.0", "drop", r"2\.4\.0 lacks interpolator \(this landau is 2\.3\.1\); install landau>=2\.4\.0"),
-        ("2.2.0", "drop", r"2\.2\.0 lacks interpolator \(this landau is 2\.3\.1\); install landau<=2\.2\.0"),
-    ],
-    ids=["newer-extra", "newer-missing", "older-missing"],
-)
-def test_state_whose_fields_do_not_fit_names_the_mismatch(monkeypatch, written, edit, message):
-    monkeypatch.setattr(landau, "__version__", RELEASE)
-    phase = pickleprobe.build("TDLP-SGTE")
-    state = phase.__getstate__()
-    state["__landau__"] = written
-    if edit == "add":
-        state["extra_field"] = 1.0
-    else:
-        del state["interpolator"]
-    with pytest.raises(ValueError, match=message):
-        object.__new__(type(phase)).__setstate__(state)
-
-
-def test_a_development_build_ignores_the_minimum(monkeypatch):
-    """A shallow checkout reports ``0.1.devN``; it loads whatever fits."""
-    monkeypatch.setattr(landau.phases, "MINIMUM_STATE_VERSION", "99.0")
-    monkeypatch.setattr(landau, "__version__", "0.1.dev52+g405f853")
-    phase = pickleprobe.build("TDLP-SGTE")
-    state = phase.__getstate__()
-    state["__landau__"] = "1.20.0"
-    loaded = object.__new__(type(phase))
-    loaded.__setstate__(state)
-    assert loaded == phase
+    assert list(phase.__getstate__()) == [f.name for f in dataclasses.fields(phase)]
 
 
 # ---------------------------------------------------------------------------
@@ -192,89 +117,6 @@ def test_hash_follows_the_fields_not_construction():
     a = TemperatureDependentLinePhase("A", 0.0, T, -T * 1e-3)
     assert hash(a) == hash(TemperatureDependentLinePhase("A", 0.0, T, -T * 1e-3))
     assert hash(a) != hash(TemperatureDependentLinePhase("A", 0.0, T, -T * 1.1e-3))
-
-
-# ---------------------------------------------------------------------------
-# Pickles written by landau <= 1.19
-# ---------------------------------------------------------------------------
-
-
-def _legacy_dumps(obj):
-    """Pickle *obj* the way landau <= 1.19 did, without the ``__getstate__`` methods added since.
-
-    Objects then reduced to their whole ``__dict__``: a phase with the ``_hash`` its
-    ``__post_init__`` set (salted in the writing interpreter, so stale in any other)
-    and any ``cached_property`` values, and a Whitney estimator with its fitted scipy
-    objects and scikit-learn's version tag.
-    """
-
-    class Legacy(pickle.Pickler):
-        def reducer_override(self, o):
-            if isinstance(o, Phase):
-                state = dict(vars(o))
-                if "_hash" in state:
-                    state["_hash"] = 12345  # what another interpreter's salt made of it
-                return copyreg.__newobj__, (type(o),), state
-            if isinstance(o, WhitneyRBFInterpolator):
-                return copyreg.__newobj__, (type(o),), {**vars(o), "_sklearn_version": "1.5.0"}
-            return NotImplemented
-
-    buf = io.BytesIO()
-    Legacy(buf).dump(obj)
-    return buf.getvalue()
-
-
-@pytest.mark.parametrize("evaluated", [False, True], ids=["fresh", "evaluated"])
-@pytest.mark.parametrize("name", PHASES)
-def test_pickles_from_before_getstate_still_load(name, evaluated):
-    phase = pickleprobe.build(name)
-    expected = pickleprobe.values(name, pickleprobe.build(name))
-    hash(phase)
-    if evaluated:
-        pickleprobe.values(name, phase)
-    blob = _legacy_dumps(phase)
-    _clear_landau_caches()
-    loaded = pickle.loads(blob)
-    assert "_hash" not in vars(loaded) or vars(loaded)["_hash"] != 12345
-    np.testing.assert_allclose(pickleprobe.values(name, loaded), expected, rtol=0, atol=ATOL)
-    fresh = pickleprobe.build(name)
-    assert loaded == fresh and hash(loaded) == hash(fresh)
-
-
-def test_legacy_pickle_keeps_a_fitted_whitney_surface():
-    """An evaluated surface phase pickled its fitted estimator, ``hull_`` and all."""
-    phase = pickleprobe.build("Surface-Whitney2D")
-    pickleprobe.values("Surface-Whitney2D", phase)
-    assert "_fitted_surface" in vars(phase)
-    surface = pickle.loads(_legacy_dumps(phase._fitted_surface))
-    assert surface._rbf.hull_ is not None
-    np.testing.assert_allclose(
-        surface.slice_at(1000.0)(pickleprobe.GRID_C),
-        phase._fitted_surface.slice_at(1000.0)(pickleprobe.GRID_C),
-        rtol=0,
-        atol=ATOL,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Whitney: refit on load instead of unpickling scipy internals
-# ---------------------------------------------------------------------------
-
-
-def test_whitney_estimator_pickles_its_data_not_its_fit():
-    X, y = np.c_[pickleprobe.T], pickleprobe.T * 1e-3
-    est = WhitneyRBFInterpolator(degree=1).fit(X, y)
-    state = est.__getstate__()
-    assert set(state) == {"params", "X", "y"}
-    assert state["params"] == est.get_params()
-    np.testing.assert_array_equal(state["X"], X)
-    np.testing.assert_array_equal(state["y"], y)
-
-
-def test_unfitted_whitney_estimator_round_trips():
-    est = pickle.loads(pickle.dumps(WhitneyRBFInterpolator(smoothing=1.0)))
-    assert est.get_params() == WhitneyRBFInterpolator(smoothing=1.0).get_params()
-    assert not hasattr(est, "rbf_")
 
 
 # ---------------------------------------------------------------------------

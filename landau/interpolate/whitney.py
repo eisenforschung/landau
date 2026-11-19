@@ -281,31 +281,6 @@ class WhitneyRBFInterpolator(BaseEstimator, RegressorMixin):
         from sklearn.metrics import r2_score
         return r2_score(y, self.predict(X))
 
-    def __getstate__(self):
-        """Hyperparameters plus, once fitted, the training data -- never the fitted scipy objects.
-
-        ``rbf_`` and ``hull_`` follow deterministically from those, so :meth:`__setstate__`
-        refits instead of unpickling scipy internals, which keeps a pickle loadable across
-        scipy versions.  ``rbf_.y``/``rbf_.d`` are the points and values the RBF was built from.
-        """
-        state = {"params": self.get_params()}
-        rbf = getattr(self, "rbf_", None)
-        if rbf is not None:
-            state["X"] = np.asarray(rbf.y)
-            state["y"] = np.asarray(rbf.d).reshape(-1)
-        return state
-
-    def __setstate__(self, state):
-        if "params" not in state:
-            # pickled by landau <= 1.19: scikit-learn's default, the whole __dict__
-            state = dict(state)
-            state.pop("_sklearn_version", None)
-            self.__dict__.update(state)
-            return
-        self.__dict__.update(state["params"])
-        if "X" in state:
-            self.fit(state["X"], state["y"])
-
 
 @dataclass(frozen=True, eq=True)
 class WhitneyTemperatureInterpolator(TemperatureInterpolator):
