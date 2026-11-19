@@ -227,9 +227,10 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
 - `__init__.py`: `plot_phase_diagram` (c–T) and `plot_mu_phase_diagram` (μ–T) share `_plot_phase_diagram`;
   `plot_1d_mu_phase_diagram` / `plot_1d_T_phase_diagram` share `_plot_1d_phase_diagram(df, scan_col, ...)`;
   `plot_excess_free_energy` (needs a `keep_unstable=True` frame, one axes for a single T, a FacetGrid otherwise);
-  `get_polygons`, `plot_polygons`, `get_phase_colors`, `cluster_phase`.
+  `get_polygons`, `plot_polygons`, `get_phase_colors`, `cluster_phase`;
+  `save_layered_svg`, re-exported from `svg.py`.
 - `labels.py`: every text-placement helper.
-  Imports go one way — `labels` imports from `style` but never from `plot/__init__.py`.
+  Imports go one way — `labels` imports from `style` and `svg` but never from `plot/__init__.py`, and `svg` imports from neither.
 - `style.py`: `theme`, a `Theme` dataclass with `rc` (a validating `mpl.RcParams` subclass) and one dict per drawn element (`phase_boundary`, `metastable`, `tie_line`, `transition_guide`, `transition_tick`, `invariant_marker`, `reference_line`, `region_label`, `curve_label`, `value_label`, `label_outline`) carrying that element's appearance keys (colour, line style, weight, alpha, occasionally a size such as the labels' relative `fontsize`);
   line widths, marker sizes and font sizes otherwise come from `lines.linewidth`/`lines.markersize`/`font.size`, scaled for line-phase markers by the plain field `line_phase_marker_scale`.
   Values derived from fields and rcParams come from `Theme` methods (`stability_dashes`, `reference_line_kwargs`, `line_phase_markersize`);
@@ -240,6 +241,17 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
   Call sites read element styles at draw time and merge them last over appearance kwargs (`color`, `zorder`), never over placement kwargs.
   `theme.rc` carries only keys that differ from matplotlib's defaults, since a default-valued key would only override the caller.
   On style conflicts the excess-free-energy plot follows the 1d/2d look.
+- `svg.py`: `save_layered_svg(fig, fname)` writes a figure as SVG with every artist in a `<g>` carrying an id, a `landau-{kind}` class and `data-*` attributes, grouped into layers;
+  its module docstring is the specification of that layout.
+  The plot functions say what each artist is with `tag(artists, layer, kind=, name=, **data)`, which only sets an attribute;
+  an artist a plot function draws without a `tag` lands in the layer `other`, as everything of `plot_excess_free_energy` still does.
+  The save gives every artist a placeholder gid, lets matplotlib write the file, regroups the XML (`_Layout`) and restores the figure (`_Session`).
+  Layer groups follow paint order — a layer interrupted by another layer's artist is written as several groups — so the file shows what `savefig` shows;
+  `_assert_painted_as_savefig` in `tests/unit/plot/test_svg.py` checks that.
+  Two-phase regions and phase boundaries are invisible hit targets added only on save (`_add_coexistence`): shapes from the drawn field polygons, names only from the frame's tie-lines (`get_transitions`), nothing for a frame without `border` or `triple` rows.
+  Three private attributes couple the modules: `artist._landau_svg` (the tag),
+  `text._landau_outline` (set by `labels._text_with_outline` when the outline can be written as an SVG stroke) and `ax._landau_phase_diagram` (fields, sampled window and border rows, set by `_plot_phase_diagram`).
+  Not handled: axes of a `SubFigure` and child axes are not broken up into layers of their own.
 - 2d options: `legend`/`inline_legend` (inline labels at the polygon's pole of inaccessibility, with rotate/offset fallbacks),
   `triplepoints=None` (follows `transition_temperatures` unless set, `tielines=` is a deprecated alias),
   `transition_temperatures=False` (labels `triple`/`congruent` rows — reads the `locus` tags, so unrefined frames draw nothing),

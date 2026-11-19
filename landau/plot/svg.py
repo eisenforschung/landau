@@ -1,6 +1,6 @@
 """Layered SVG export of landau figures.
 
-:func:`save_layered_svg` writes a figure as SVG in which every semantic part
+:func:`~landau.plot.save_layered_svg` writes a figure as SVG in which every semantic part
 of the plot -- each phase field, phase label, two-phase region, phase
 boundary, invariant, the legend, ticks, tick labels and axis labels -- is its
 own ``<g>`` element with a stable ``id``, a ``class`` and ``data-*``
@@ -8,9 +8,10 @@ attributes, grouped into one layer per kind.  Downstream code (a web page
 that highlights a phase on hover, a script that recolours a layer, an editor)
 can select on those instead of guessing which anonymous path is which.
 
-landau's plotting functions record what each artist they draw *is* (via
-:func:`tag`); nothing about the drawing changes.  The save then gives every
-artist a group id through :meth:`~matplotlib.artist.Artist.set_gid`, lets
+The functions plotting phase diagrams record what each artist they draw
+*is* (via :func:`tag`); nothing about the drawing changes.
+``plot_excess_free_energy`` does not yet, so its artists are written to the
+layer ``other``.  The save then gives every artist a group id through :meth:`~matplotlib.artist.Artist.set_gid`, lets
 matplotlib's SVG backend write the file, and rearranges the groups in one
 pass over the XML.
 
@@ -20,6 +21,11 @@ pass over the XML.
 ``fig.axes``.
 
 * ``<g id="{p}figure">`` -- the figure; ``<g id="{p}ax{i}">`` -- one per axes.
+  What belongs to the figure rather than to an axes -- its background, a
+  ``suptitle``, a figure legend -- is laid out the same way with ``figure``
+  in place of ``ax{i}``.  The axes of a ``SubFigure`` are written inside the
+  figure's layer ``other``, and a diagram on a child axes (an inset) is one
+  element of its parent axes, not broken up further.
 * Inside each axes, one layer group per kind, ``<g id="{p}ax{i}-layer-{layer}"
   class="landau-layer" data-layer="{layer}">``, in the order the figure is
   painted.  A layer is one group unless an artist of another layer is
@@ -50,7 +56,10 @@ pass over the XML.
                      keeps it as its id
   ================== ====================================================
 
-  Overlays tagged with :func:`tag` get the layer named there.
+  Overlays tagged with :func:`tag` get the layer named there.  An image
+  that stands for several artists (rasterized ones, or neighbouring
+  ``imshow`` images matplotlib composites) is one element; it takes their
+  tag if they share one.
 
 * Every element is ``<g id="{p}ax{i}-{kind}-{name}" class="landau-{kind}"
   data-layer="{layer}" ...>``.  ``name`` is built from what the element
@@ -79,13 +88,20 @@ pass over the XML.
                          ``mu``; 1d: ``value``
   curve                  ``phase``, ``stable`` (1d)
   transition             ``value``, ``phases`` (1d)
-  legend-label,          the attributes of the artist the entry stands for
-  legend-handle          (``phase``, ``unit``, ``label`` of a phase field);
+  transition-point       ``value``, ``phases`` (1d)
+  transition-ticks       ``values`` (1d)
+  legend-label           those of the artist the entry stands for
+                         (``phase``, ``unit``, ``label`` of a phase field);
                          none for the legend seaborn draws on a 1d diagram
-  xtick, ytick           ``value``, ``which``
+  legend-handle          as ``legend-label``
+  xtick, ytick           ``value``, ``which`` (``major``/``minor``)
+  xgrid, ygrid           ``value``, ``which``
   xticklabel, yticklabel ``value``, ``which``, ``text``
   xlabel, ylabel         ``text``
   ====================== ==================================================
+
+  The kinds ``background``, ``spine``, ``title``, ``legend``, ``xoffset``,
+  ``yoffset`` and ``other`` carry no data attributes.
 
 Two-phase regions and boundaries are not drawn by the plotting functions.
 They are worked out when the figure is saved, their shapes from the outlines
@@ -178,7 +194,7 @@ _MIN_LENGTH = 5e-3  # mu-T fields sharing a shorter stretch only touch at a corn
 
 
 def tag(artists, layer: str, *, kind: str | None = None, name=None, **data):
-    """Assign artists to a layer of :func:`save_layered_svg`'s output.
+    """Assign artists to a layer of :func:`~landau.plot.save_layered_svg`'s output.
 
     landau tags the artists it draws itself; use this to put an overlay drawn
     on top of a diagram into a layer of its own, e.g. ::
@@ -198,9 +214,10 @@ def tag(artists, layer: str, *, kind: str | None = None, name=None, **data):
         kind: Element kind, used in the element id and its class
             ``landau-{kind}``; defaults to ``layer``.
         name: Element name, used in the element id ``ax{i}-{kind}-{name}``.
-            A string is used as is (characters other than letters, digits,
-            ``_`` and ``-`` replaced by ``_``); a tuple is joined with ``-``
-            after the same replacement, ``-`` included, in each part.
+            Mathtext is reduced to its characters, every run of characters
+            other than letters, digits, ``_`` and ``-`` becomes one ``_``,
+            and those at either end are dropped; a tuple is joined with
+            ``-`` after the same replacement, ``-`` included, in each part.
             Defaults to a running number per kind.
         **data: Written as ``data-*`` attributes, the keys lower-cased and
             their underscores turned into hyphens.  Numbers are written
@@ -251,8 +268,8 @@ def save_layered_svg(
         id_prefix: Prepended to every id in the file -- the semantic ones and
             matplotlib's clip paths, glyphs and markers alike, with all
             references to them rewritten -- so several files can be inlined
-            into one HTML page without collisions.  Must be empty or start
-            with a letter or underscore.
+            into one HTML page without collisions.  Empty, or a letter or
+            underscore followed by letters, digits, ``_``, ``.`` and ``-``.
         text_as_text: Write text as ``<text>`` elements rather than glyph
             outlines (``svg.fonttype = 'none'``), so labels can be selected
             and edited.  The outline landau draws around its labels
@@ -261,7 +278,7 @@ def save_layered_svg(
             runs gets a stroke-only ``<text class="landau-outline">`` under
             it instead, so its group holds the text twice and ``data-phase``
             is the name to read.  The file then depends on the viewer having
-            the fonts.
+            the fonts.  ``False`` leaves ``svg.fonttype`` as it is configured.
         inkscape: Mark every layer group as an Inkscape layer.
         coexistence: Add the two-phase regions and phase boundaries of every
             2d phase diagram in the figure (see :mod:`landau.plot.svg`).
@@ -275,7 +292,8 @@ def save_layered_svg(
         ``data-layer`` and the ``data-*`` attributes).
     """
     if not _PREFIX_RE.fullmatch(id_prefix):
-        raise ValueError(f"id_prefix must be empty or start with a letter or underscore, got {id_prefix!r}")
+        raise ValueError("id_prefix must be empty or a letter or underscore followed by letters, digits, "
+                         f"'_', '.' and '-', got {id_prefix!r}")
     fmt = savefig_kwargs.pop("format", "svg")
     if fmt != "svg":
         raise ValueError(f"save_layered_svg writes SVG, got format={fmt!r}")

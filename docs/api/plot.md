@@ -62,12 +62,10 @@ with styled():
 
 ## Layered SVG export
 
-{func}`landau.plot.save_layered_svg` writes a figure as SVG with every phase
-field, label, two-phase region, phase boundary, invariant, the legend and the
-axes parts in their own `<g>` groups, each with a stable `id`, a `class` and
-`data-*` attributes naming the phases, so a web page or an editor can address
-them. Overlays drawn on top of a diagram join their own layer through
-{func}`landau.plot.svg.tag`.
+{func}`landau.plot.save_layered_svg` writes a figure as SVG with every phase field, label, two-phase region, phase boundary, invariant, the legend and the axes parts in their own `<g>` groups.
+Each group has a stable `id`, a `class` and `data-*` attributes naming the phases, so a web page or an editor can address it.
+The groups are collected in one layer per kind, in the order the figure is painted, so the file shows the same picture as `savefig`.
+Overlays drawn on top of a diagram join a layer of their own through {func}`landau.plot.svg.tag`.
 
 ```python
 import matplotlib.pyplot as plt
@@ -80,8 +78,8 @@ tag(ax.plot([0.3, 0.3], [600, 900], color="red"), "calphy-liquid", c=0.3)
 save_layered_svg(fig, "diagram.svg", id_prefix="CaMg_")
 ```
 
-In a page that inlines the file, the groups are selected by class and data
-attribute:
+In a page that inlines the file, the groups are selected by class and data attribute.
+Select a layer by `data-layer`, not by id: a layer with another layer's artist painted between its members is written as several groups.
 
 ```css
 .landau-phase:hover path { filter: brightness(0.9); }
@@ -94,6 +92,10 @@ attribute:
 svg.querySelectorAll(".landau-phase").forEach((g) =>
   g.addEventListener("click", () => showPhase(g.dataset.phase)));
 ```
+
+The two-phase regions and boundaries are invisible until a stylesheet shows them.
+Their shapes are the gaps between the phase fields as drawn and their phases come from the tie-lines of the frame, so a miscibility gap is a region of one phase twice.
+A frame without `border` or `triple` rows has none.
 
 ```{eval-rst}
 .. automodule:: landau.plot.svg
