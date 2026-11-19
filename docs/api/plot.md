@@ -59,3 +59,47 @@ with styled():
 .. automodule:: landau.plot.style
    :members:
 ```
+
+## Layered SVG export
+
+{func}`landau.plot.save_layered_svg` writes a figure as SVG with every phase field, label, two-phase region, phase boundary, invariant, the legend and the axes parts in their own `<g>` groups.
+Each group has a stable `id`, a `class` and `data-*` attributes naming the phases, so a web page or an editor can address it.
+The groups are collected in one layer per kind, in the order the figure is painted, so the file shows the same picture as `savefig`.
+Overlays drawn on top of a diagram join a layer of their own through {func}`landau.plot.svg.tag`.
+
+```python
+import matplotlib.pyplot as plt
+from landau.plot import plot_phase_diagram, save_layered_svg
+from landau.plot.svg import tag
+
+fig, ax = plt.subplots()
+plot_phase_diagram(df, ax=ax, transition_temperatures=True)
+tag(ax.plot([0.3, 0.3], [600, 900], color="red"), "calphy-liquid", c=0.3)
+save_layered_svg(fig, "diagram.svg", id_prefix="CaMg_")
+```
+
+In a page that inlines the file, the groups are selected by class and data attribute.
+Select a layer by `data-layer`, not by id: a layer with another layer's artist painted between its members is written as several groups.
+
+```css
+.landau-phase:hover path { filter: brightness(0.9); }
+.landau-two-phase:hover path { fill-opacity: 0.3; }
+.landau-boundary[data-phase="liquid"] path { stroke: red; stroke-opacity: 1; }
+.hide-labels [data-layer="labels"].landau-layer { display: none; }
+```
+
+```js
+svg.querySelectorAll(".landau-phase").forEach((g) =>
+  g.addEventListener("click", () => showPhase(g.dataset.phase)));
+```
+
+The two-phase regions and boundaries are invisible until a stylesheet shows them.
+They are built from the phase fields as drawn: the space between two fields of a c-T diagram is the two-phase region of the field to its left and the field to its right.
+A miscibility gap has the same field on both sides and is a region of one phase twice.
+A region ends at the three-phase tie-line of an invariant, also where the same two fields continue beyond it.
+Space with no field drawn on one side is no region.
+
+```{eval-rst}
+.. automodule:: landau.plot.svg
+   :members: tag
+```
