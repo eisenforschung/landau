@@ -455,16 +455,6 @@ def test_quasiharmonic_phase_hits_on_an_equal_but_distinct_phase():
     assert calls == ["einstein", "einstein"]
 
 
-@needs_phonopy
-def test_deprecated_quasiharmonic_phase_digest_is_the_field_digest():
-    from landau.fleche import quasiharmonic_phase_digest
-
-    load_entry_points()
-    phase = einstein_phase(fresh=True)
-    with pytest.warns(DeprecationWarning):
-        assert quasiharmonic_phase_digest(phase) == digest(phase)
-
-
 def test_whitney_rbf_digest_tracks_data_and_hyperparameters():
     """A fitted ``WhitneyRBFInterpolator`` holds a scipy ``RBFInterpolator`` and a
     ``ConvexHull``; both follow from the training data and the hyperparameters."""
@@ -603,16 +593,6 @@ def test_cached_function_accepts_refiners_and_phases_together():
         assert run(*args()) == 4
 
     assert len(calls) == 1
-
-
-@needs_ase
-def test_deprecated_ase_phase_digest_is_the_field_digest():
-    from landau.fleche import ase_phase_digest
-
-    load_entry_points()
-    a = AsePhase("p", 0.0, HarmonicThermo(np.array([0.01, 0.02, 0.03])))
-    with pytest.warns(DeprecationWarning):
-        assert ase_phase_digest(a) == digest(a)
 
 
 # ---------------------------------------------------------------------------
