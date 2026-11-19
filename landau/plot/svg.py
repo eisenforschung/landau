@@ -79,7 +79,9 @@ pass over the XML.
                          ``mu``; 1d: ``value``
   curve                  ``phase``, ``stable`` (1d)
   transition             ``value``, ``phases`` (1d)
-  legend-label           ``phase``, ``unit``
+  legend-label,          the attributes of the artist the entry stands for
+  legend-handle          (``phase``, ``unit``, ``label`` of a phase field);
+                         none for the legend seaborn draws on a 1d diagram
   xtick, ytick           ``value``, ``which``
   xticklabel, yticklabel ``value``, ``which``, ``text``
   xlabel, ylabel         ``text``
@@ -424,24 +426,24 @@ class _Session:
 
     def _tag_legend(self, legend, scope):
         self.assign(legend, scope, "legend", "legend")
-        phases = self._phases_by_label(legend.axes if legend.axes is not None else None)
-        for text, handle in zip(legend.texts, legend.legend_handles):
-            phase = phases.get(text.get_text())
-            data = {} if phase is None else {"phase": phase[0], "unit": phase[1]}
-            name = text.get_text() if phase is None else phase
+        sources = self._legend_sources(legend)
+        for i, (text, handle) in enumerate(zip(legend.texts, legend.legend_handles)):
+            info = getattr(sources[i], _TAG_ATTR, None) if sources else None
+            data = {} if info is None else info["data"]
+            name = text.get_text() if info is None or info["name"] is None else info["name"]
             self.assign(text, scope, "legend", "legend-label", name, data)
             self.assign(handle, scope, "legend", "legend-handle", name, data)
 
     @staticmethod
-    def _phases_by_label(ax):
-        if ax is None:
-            return {}
-        out = {}
-        for patch in ax.patches:
-            info = getattr(patch, _TAG_ATTR, None)
-            if info is not None and info["kind"] == "phase":
-                out[info["data"]["label"]] = (info["data"]["phase"], info["data"]["unit"])
-        return out
+    def _legend_sources(legend):
+        """The artists a legend's entries stand for, or ``None`` if it was not built from the labelled artists."""
+        axes = [legend.axes] if legend.axes is not None else legend.figure.axes
+        handles, labels = [], []
+        for ax in axes:
+            h, lab = ax.get_legend_handles_labels()
+            handles += h
+            labels += lab
+        return handles if labels == [text.get_text() for text in legend.texts] else None
 
     def drop_outlines(self):
         """Replace landau's path-effect outline of every tagged text by a stroke.

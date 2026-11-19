@@ -24,7 +24,7 @@ from matplotlib.colors import to_hex
 
 import landau.calculate as ldc
 from landau.features import Locus
-from landau.phases import AbstractLinePhase, LinePhase, kB
+from landau.phases import AbstractLinePhase, IdealSolution, LinePhase, kB
 from landau.plot import (
     get_phase_colors,
     plot_1d_mu_phase_diagram,
@@ -533,8 +533,60 @@ def test_legend_entries(eutectic_diagram):
     root, _, _ = _save(fig)
     plt.close(fig)
     (legend,) = _groups(root, "landau-legend")
-    entries = {g.get("data-phase") for g in legend.iter(f"{SVG}g") if g.get("class") == "landau-legend-label"}
-    assert entries == {"fcc", "hcp", "liquid"}
+    for kind in ("legend-label", "legend-handle"):
+        entries = [g for g in legend.iter(f"{SVG}g") if g.get("class") == f"landau-{kind}"]
+        assert sorted(g.get("data-phase") for g in entries) == ["fcc", "hcp", "liquid"]
+        for g in entries:
+            assert g.get("id") == f"ax0-{kind}-{g.get('data-phase')}-0"
+            assert g.get("data-unit") == "0"
+            assert g.get("data-layer") == "legend"
+
+
+@pytest.fixture(scope="module")
+def split_solid_diagram():
+    """A solid solution cut in two by a line compound stable at every T: ``g`` has two fields.
+
+    The second field of ``g`` is labelled ``g'``, like the compound.
+    """
+    solid = IdealSolution("g", LinePhase("gA", 0, -3.0, 1.0 * kB), LinePhase("gB", 1, -3.0, 1.0 * kB))
+    compound = LinePhase("g'", fixed_concentration=0.5, line_energy=-3.25, line_entropy=1.0 * kB)
+    return ldc.calc_phase_diagram([solid, compound], np.linspace(300.0, 900.0, 25), mu=60, refine=True)
+
+
+def test_legend_entry_stands_for_its_artist_not_its_label(split_solid_diagram):
+    fig, ax = plt.subplots()
+    plot_phase_diagram(split_solid_diagram, ax=ax, inline_legend=False)
+    fields = {(p.get_label(), to_hex(p.get_facecolor())): p._landau_svg["data"] for p in ax.patches}
+    assert sorted(label for label, _ in fields) == ["g", "g'", "g'"]
+    handles = ax.get_legend().legend_handles
+    root, _, _ = _save(fig)
+    plt.close(fig)
+    entries = _groups(root, "landau-legend-handle")
+    assert len(entries) == 3
+    for g, handle in zip(entries, handles):
+        data = fields[handle.get_label(), to_hex(handle.get_facecolor())]
+        assert (g.get("data-phase"), g.get("data-unit")) == (data["phase"], str(data["unit"]))
+
+
+def test_figure_legend_entries(eutectic_diagram):
+    fig, ax = plt.subplots()
+    plot_phase_diagram(eutectic_diagram, ax=ax)
+    fig.legend()
+    root, _, _ = _save(fig)
+    plt.close(fig)
+    entries = _groups(root, "landau-legend-label")
+    assert sorted(g.get("data-phase") for g in entries) == ["fcc", "hcp", "liquid"]
+    assert {g.get("id") for g in entries} == {f"figure-legend-label-{p}-0" for p in ("fcc", "hcp", "liquid")}
+
+
+def test_legend_of_other_artists_carries_no_phase(ct_figure):
+    ax = ct_figure.axes[0]
+    tag(ax.add_patch(plt.Rectangle((0.4, 300), 0.1, 50, label="window")), "overlay", kind="phase")
+    ax.legend(["only this"])
+    root, _, _ = _save(ct_figure)
+    (entry,) = _groups(root, "landau-legend-label")
+    assert entry.get("id") == "ax0-legend-label-only_this"
+    assert entry.get("data-phase") is None
 
 
 def test_user_overlay_layer(ct_figure):
