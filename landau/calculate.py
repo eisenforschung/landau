@@ -415,7 +415,8 @@ def _tie_lines(bdf):
     lone = np.flatnonzero(first & last)
     # every other row but the last of its group is the left end of a tie-line
     left = np.flatnonzero(~last)
-    # its right end is the row after it
+    # its right end is the row after it: that row has the exact same (mu, T),
+    # so the two states coexist, and it is the next one in c
     right = left + 1
     # one name per tie-line, in ascending c
     names = np.array([f"{a}-{b}" for a, b in zip(phase[left], phase[right])], dtype=object)
