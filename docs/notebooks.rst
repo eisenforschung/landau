@@ -9,6 +9,11 @@ Examples
    notebooks/TransitionTemperatures.ipynb
    notebooks/IdealSolution.ipynb
    notebooks/Intermetallics.ipynb
+   notebooks/PointDefects.ipynb
+   notebooks/ExcessFreeEnergy.ipynb
    notebooks/ClausiusClapeyron.ipynb
    notebooks/Toy.ipynb
    notebooks/MgCa/MgCa.ipynb
+   notebooks/ASE/FCC_BCC_Fe.ipynb
+   notebooks/ASE/EMT_CuAg.ipynb
+   notebooks/ASE/Hydrate.ipynb

@@ -318,6 +318,10 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
 
 Sphinx in `docs/` (myst-nb, furo), built by ReadTheDocs on Python 3.12;
 notebooks under `notebooks/` are included and must carry executed outputs.
+`docs/index.md` and `README.md` carry the same sections and text (example cards, installation, quickstart, pointers, citation), the README with absolute URLs so it renders on PyPI;
+change both together.
+Their figures in `docs/images/` are rendered by `scripts/readme_images.py`, each card from the system of the notebook it links to.
+The cards on the landing page are a `sphinx-design` grid.
 
 ## Open design directions
 
