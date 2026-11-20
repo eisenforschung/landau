@@ -32,6 +32,7 @@ from landau.plot.labels import (
     _add_inline_polygon_labels,
     _get_renderer,
     _group_overlapping_intervals,
+    _label_fits,
     _largest_inscribed_circle_center,
     _shapely_polygon,
     _text_with_outline,
@@ -565,6 +566,82 @@ def test_inline_offset_labels_far_apart_keep_pole_anchor():
     for t in (t1, t2):
         assert t.get_rotation() == 90
         assert t.get_position()[1] == pytest.approx(500, abs=2)
+    plt.close(fig)
+
+
+# --- _label_fits ---------------------------------------------------------------
+
+
+def _text_and_box_px(ax, label="ABCDEFGH", rotation=0):
+    """A centred label on `ax`, its renderer, and its rendered box in pixels as `(x0, y0, x1, y1)`."""
+    renderer = _get_renderer(ax.figure)
+    text = _text_with_outline(ax, 0.5, 500, label, ha="center", va="center", rotation=rotation)
+    return text, renderer, text.get_window_extent(renderer).extents
+
+
+def _data_rect_px(ax, x0, x1, y0, y1):
+    """A data-space rectangle as the pixel-space polygon `_add_inline_polygon_labels` hands to `_label_fits`."""
+    return _shapely_polygon(ax.transData.transform(_rect_patch(x0, x1, y0, y1).get_xy()))
+
+
+@pytest.mark.parametrize(
+    "grow, fits",
+    [
+        ((1.0, 1.0), True),  # a pixel of clearance all round
+        ((0.0, 0.0), True),  # the box itself: touching the outline still fits
+        ((-1.0, 1.0), False),  # a pixel too narrow on each side
+        ((1.0, -1.0), False),  # a pixel too short on each side
+    ],
+    ids=["clearance", "exact", "too-narrow", "too-short"],
+)
+def test_label_fits_threshold_is_the_rendered_box(grow, fits):
+    """The outcome flips exactly where the polygon stops covering the text's rendered box."""
+    fig, ax = _wide_axes()
+    text, renderer, (x0, y0, x1, y1) = _text_and_box_px(ax)
+    poly_px = shapely.box(x0 - grow[0], y0 - grow[1], x1 + grow[0], y1 + grow[1])
+    assert _label_fits(poly_px, text, renderer) is fits
+    plt.close(fig)
+
+
+def test_label_fits_needs_the_whole_box_inside():
+    """A polygon large enough for the label but shifted off it does not fit: size alone is not the test."""
+    fig, ax = _wide_axes()
+    text, renderer, (x0, y0, x1, y1) = _text_and_box_px(ax)
+    shift = (x1 - x0) / 2
+    assert not _label_fits(shapely.box(x0 - 1 + shift, y0 - 1, x1 + 1 + shift, y1 + 1), text, renderer)
+    plt.close(fig)
+
+
+def test_label_fits_in_wide_data_polygon():
+    fig, ax = _wide_axes()
+    text, renderer, _ = _text_and_box_px(ax)
+    assert _label_fits(_data_rect_px(ax, 0.1, 0.9, 100, 900), text, renderer)
+    plt.close(fig)
+
+
+def test_label_fits_follows_rotation_in_tall_narrow_polygon():
+    """A strip narrower than the horizontal text rejects it and accepts the same text rotated by 90 degrees."""
+    fig, ax = _wide_axes()
+    text, renderer, (x0, y0, x1, y1) = _text_and_box_px(ax)
+    width, height = x1 - x0, y1 - y0
+    assert width > height + 2  # the label is wider than tall, else rotating proves nothing
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    # Wide enough for the text's height, tall enough for its width, with a pixel to spare.
+    strip = shapely.box(cx - height / 2 - 1, cy - width / 2 - 1, cx + height / 2 + 1, cy + width / 2 + 1)
+    assert not _label_fits(strip, text, renderer)
+    text.set_rotation(90)
+    assert _label_fits(strip, text, renderer)
+    plt.close(fig)
+
+
+def test_label_fits_rejects_line_phase_polygon_in_both_orientations():
+    """A terminal line phase's polygon is narrower than the text either way, which sends its label beside it."""
+    fig, ax = _wide_axes()
+    text, renderer, _ = _text_and_box_px(ax)
+    poly_px = _data_rect_px(ax, 0.499, 0.501, 50, 950)
+    assert not _label_fits(poly_px, text, renderer)
+    text.set_rotation(90)
+    assert not _label_fits(poly_px, text, renderer)
     plt.close(fig)
 
 
