@@ -1181,7 +1181,38 @@ class _CCBase(Refiner):
         """
         return None
 
+    def _mu_window(self, cand) -> Bracket:
+        """Hook: the ``(mu_min, mu_max)`` the walk is confined to.
+
+        The walk is bounded in T by ``cand.T_min`` / ``cand.T_max`` and lands
+        its last step exactly on them. A line that runs into a pure component's
+        transition temperature has ``dmu*/dT`` diverging there, so one
+        ``dT_min`` step carries it arbitrarily far in mu: without a bound in mu
+        the last point of such a line falls wherever that step happens to land,
+        inside the sampled mu range or far outside it. The base implementation
+        returns an unbounded window, which leaves the walk as it is.
+        """
+        return (-np.inf, np.inf)
+
+    def _exit_temperature(self, cand, phases, T_in, T_out, mu_edge) -> float | None:
+        """Hook: the temperature between ``T_in`` and ``T_out`` at which the
+        line sits at ``mu_edge``, or ``None`` if it does not get there. Only
+        called with a finite edge of :meth:`_mu_window`."""
+        return None
+
     # -- shared trace skeleton ---------------------------------------------
+
+    def _window_exit(self, cand, phases, T_in, T_out, mu_edge):
+        """Points to emit when the walk leaves :meth:`_mu_window` between
+        ``T_in`` (the last kept step) and ``T_out``: the line's point on the
+        edge ``mu_edge``, if it has one there and it is globally stable."""
+        if not np.isfinite(mu_edge):
+            return []
+        T_exit = self._exit_temperature(cand, phases, T_in, T_out, mu_edge)
+        if T_exit is None:
+            return []
+        pt = self._emit(cand, T_exit, _StepResult(mu_star=mu_edge))
+        return [] if _dominated(pt, phases) else [pt]
 
     def _crossed_invariant(self, cand, phases, T_ok, mu_ok, T_dom, mu_dom, half_width):
         """Points to emit when the trace steps from the kept ``(T_ok, mu_ok)``
@@ -1201,6 +1232,11 @@ class _CCBase(Refiner):
         Stops on any of:
 
         * stepping past ``T_target`` (bounded walk);
+        * leaving :meth:`_mu_window`: the step that left is replaced by the
+          line's point on the window edge (:meth:`_window_exit`). A failed
+          step is given the same chance, on the edge the line was heading
+          for, since a line that runs out of the window while flattening onto
+          a pure component's transition temperature has no root one step on;
         * ``_refine_step`` raising :class:`ValueError` — used both for
           "natural" stops (the miscibility gap closed) and for
           downright failures (no root in the bracket). Either way the
@@ -1249,6 +1285,11 @@ class _CCBase(Refiner):
             return
 
         slope0 = self._seed_slope(cand, phases, T0, mu0)
+        mu_min, mu_max = self._mu_window(cand)
+
+        def edge_toward(drift):
+            # The window edge a line drifting by ``drift`` in mu is heading for.
+            return mu_max if drift > 0 else mu_min if drift < 0 else np.nan
 
         def boot(dT):
             # One bootstrap refinement at T0 + dT; returns (step, pt, drift).
@@ -1278,8 +1319,14 @@ class _CCBase(Refiner):
             # a root one dT_min away from a boundary seed. Both are
             # benign: leave the seed-only point alone, let the
             # straddle dedup downstream decide whether to absorb it.
+            yield from self._window_exit(
+                cand, phases, T0, T0 + dT_boot, edge_toward(slope0 * dT_boot))
             return
         T_b = T0 + dT_boot
+        if not mu_min <= step.mu_star <= mu_max:
+            yield from self._window_exit(
+                cand, phases, T0, T_b, edge_toward(step.mu_star - mu0))
+            return
         # Abort as soon as the pair goes metastable (see the docstring's
         # stop conditions) rather than tracing a tail run() would drop --
         # after solving the invariant it just crossed, if the subclass knows
@@ -1342,6 +1389,12 @@ class _CCBase(Refiner):
                 # Trace stops cleanly here — natural closure (gap_close
                 # in MiscibilityGapRefiner), or numerical failure of
                 # the corrector (e.g. brentq can't bracket a root).
+                yield from self._window_exit(
+                    cand, phases, T, T_next, edge_toward(dmu_dT * dT))
+                return
+            if not mu_min <= step.mu_star <= mu_max:
+                yield from self._window_exit(
+                    cand, phases, T, T_next, edge_toward(step.mu_star - mu_star))
                 return
             dmu_dT = (step.mu_star - mu_star) / dT
             pt = self._emit(cand, T_next, step)
@@ -1460,6 +1513,8 @@ class _InterCandidate:
     ``proj_p1`` and ``proj_p2`` are the in-simplex (T, mu) vertex
     centroids of each phase. The line between them is guaranteed to
     cross the boundary, so brentq always has a bracket for the seed.
+    ``mu_min`` and ``mu_max`` are the sampled mu range the trace stays in, as
+    ``T_min`` and ``T_max`` are in T.
     """
 
     phase1: str
@@ -1472,6 +1527,8 @@ class _InterCandidate:
     proj_p1: TMuPoint
     proj_p2: TMuPoint
     existing: TraceList = field(default=())
+    mu_min: float = -np.inf
+    mu_max: float = np.inf
 
 
 class ClausiusClapeyronRefiner(_CCBase):
@@ -1704,6 +1761,9 @@ class ClausiusClapeyronRefiner(_CCBase):
     def propose(self, df: pd.DataFrame) -> Iterator[_InterCandidate]:
         T_min = float(df["T"].min())
         T_max = float(df["T"].max())
+        mus = df["mu"].to_numpy(dtype=float)
+        mus = mus[np.isfinite(mus)]
+        mu_min, mu_max = float(mus.min()), float(mus.max())
         for simplex, n in _delaunay_simplices(df):
             if n != 2:
                 continue
@@ -1720,6 +1780,7 @@ class ClausiusClapeyronRefiner(_CCBase):
                 T_bracket=(T_lo, T_hi),
                 T_min=T_min, T_max=T_max,
                 proj_p1=p1xy, proj_p2=p2xy,
+                mu_min=mu_min, mu_max=mu_max,
             )
 
     def _pair_key(self, cand):
@@ -1782,6 +1843,20 @@ class ClausiusClapeyronRefiner(_CCBase):
     def _emit(self, cand, T, step):
         return RefinedPoint(
             T=T, mu=step.mu_star, phases=(cand.phase1, cand.phase2))
+
+    def _mu_window(self, cand):
+        return (cand.mu_min, cand.mu_max)
+
+    def _exit_temperature(self, cand, phases, T_in, T_out, mu_edge):
+        p1, p2 = phases[cand.phase1], phases[cand.phase2]
+        try:
+            return _find_one_point(
+                p1, p2,
+                lambda p, x: p.semigrand_potential(x, mu_edge),
+                (T_in, T_out),
+            )
+        except ValueError:
+            return None
 
 
 # -- Intra-phase miscibility gap ----------------------------------------------
