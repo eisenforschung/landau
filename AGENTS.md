@@ -344,6 +344,7 @@ check open PRs before starting anything adjacent.
   the constant-S continuation of a supercooled terminal liquid sits tens of meV/atom too high and can bend a liquidus near a eutectic;
   above the data constant S stays the default (#339 covers high-T extrapolation).
 - #463 — transition-temperature labels can drift too far from their invariant to attribute.
+- #595 — `get_polygons` cuts short the tail of a field that narrows towards zero width (how much depends on the poly method), so the layered SVG misses the two-phase regions beside the tail.
 - #81 (analytic SRO models), #33 (fast Legendre transforms), #59 (autodiff `concentration`), #62 (`src/` layout).
 
 ## Non-goals and settled decisions
