@@ -338,6 +338,11 @@ def _set_axis_for(axis_var: str, df_stable, element: str | None, ax) -> None:
         ax.set_xlim(0, 1)
         ax.set_xlabel(_column_label("c", element))
     elif axis_var == "mu":
+        # The axis spans the sampled grid: a refiner follows a coexistence line
+        # in T, and near a pure component's transition temperature one step can
+        # carry the line far past the last sampled mu.
+        if "refined" in df_stable.columns and (df_stable["refined"] == "no").any():
+            df_stable = df_stable[df_stable["refined"] == "no"]
         mus = df_stable["mu"].unique()
         mus = mus[np.isfinite(mus)]
         if len(mus) > 0:
