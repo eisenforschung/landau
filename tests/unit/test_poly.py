@@ -855,3 +855,28 @@ def test_to_mpl_polygon_valid_polygon_round_trips_coords():
     result = AbstractPolyMethod._to_mpl_polygon(shape)
     assert isinstance(result, Polygon)
     np.testing.assert_array_equal(result.get_xy(), np.asarray(shape.exterior.coords))
+
+
+def test_trim_overlaps_keeps_the_polygon_of_a_geometry_collection():
+    """Subtracting a neighbour that touches a near-collapsed corner returns the
+    polygon plus the collapsed corner as a line (GEOS 3.14); the polygon is kept."""
+    thin_corner = shapely.Polygon(
+        [(2.5110043280762717e-08, 362.6412363021421), (0.0, 362.64119129843897),
+         (0.023278186717200403, 402.8725155052157), (0.0, 815.9426804214906)]
+    )
+    neighbour = shapely.Polygon(
+        [(-5.551115123125783e-17, 815.9426804214906), (0.5426648626757327, 814.5436584928062),
+         (2.930988785010413e-14, 934.6938775510205)]
+    )
+    shapes = pd.Series({("thin", 0): thin_corner, ("neighbour", 0): neighbour})
+    trimmed = Concave()._trim_overlaps(shapes, shapes)
+    assert isinstance(trimmed["thin", 0], shapely.Polygon)
+    assert trimmed["thin", 0].area == pytest.approx(thin_corner.area, rel=1e-6)
+    assert AbstractPolyMethod._to_mpl_polygon(trimmed["thin", 0]) is not None
+
+
+def test_trim_overlaps_keeps_a_region_its_neighbour_covers():
+    inner, outer = shapely.box(0.4, 0.4, 0.6, 0.6), shapely.box(0.0, 0.0, 1.0, 1.0)
+    shapes = pd.Series({("inner", 0): inner, ("outer", 0): outer})
+    trimmed = Concave()._trim_overlaps(shapes, shapes)
+    assert trimmed["inner", 0].equals(inner)

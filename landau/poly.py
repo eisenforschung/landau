@@ -147,10 +147,11 @@ class AbstractPolyMethod(abc.ABC):
                     new = trimmed.difference(b_orig)
                 except shapely.errors.GEOSException:
                     continue
-                if not new.is_empty:
-                    trimmed = new
-                if isinstance(trimmed, shapely.MultiPolygon):
-                    trimmed = max(trimmed.geoms, key=shapely.area)
+                # A shared edge can leave lines or points behind next to the
+                # polygon, and a cut can split it; keep the largest polygon.
+                parts = [g for g in shapely.get_parts(new) if isinstance(g, shapely.Polygon) and not g.is_empty]
+                if parts:
+                    trimmed = max(parts, key=shapely.area)
             out[k] = trimmed
         return pd.Series(out, name=shapes.name).reindex(shapes.index)
 
