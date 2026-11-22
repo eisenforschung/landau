@@ -236,6 +236,9 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
   `plot_excess_free_energy` (needs a `keep_unstable=True` frame, one axes for a single T, a FacetGrid otherwise);
   `get_polygons`, `plot_polygons`, `get_phase_colors`, `cluster_phase`;
   `save_layered_svg`, re-exported from `svg.py`.
+  μ–T x-limits come from the unrefined rows when the frame has any (`_set_axis_for`): where a coexistence line flattens onto a terminal transition,
+  `dmu*/dT` diverges and one tracer step can land past the last sampled μ;
+  the polygons keep such vertices, clipped by the axes.
 - `labels.py`: every text-placement helper.
   Imports go one way — `labels` imports from `style` and `svg` but never from `plot/__init__.py`, and `svg` imports from neither.
 - `style.py`: `theme`, a `Theme` dataclass with `rc` (a validating `mpl.RcParams` subclass) and one dict per drawn element (`phase_boundary`, `metastable`, `tie_line`, `transition_guide`, `transition_tick`, `invariant_marker`, `reference_line`, `region_label`, `curve_label`, `value_label`, `label_outline`) carrying that element's appearance keys (colour, line style, weight, alpha, occasionally a size such as the labels' relative `fontsize`);
@@ -280,6 +283,7 @@ Every phase obeys a scalar-in/scalar-out, shape-preserving contract;
   The TSP classes are defined inside their `ImportAlarm` blocks, so with the extra missing the class does not exist at all — the usual import-works/instantiation-raises gate does not apply here.
   `make` returns a region's exact outline (a `LineString` for a line phase);
   `apply` widens only regions narrower than `min_c_width` everywhere (`_thicken`) and then subtracts neighbours' exact outlines (`_trim_overlaps`), so boundaries sit on the data and eutectic apexes stay sharp.
+  `_trim_overlaps` keeps the largest non-empty polygon part of each difference — a subtraction along a shared edge can leave stray lines (a `GeometryCollection`) or split the region — and a difference with no polygon part leaves the region as it was.
   `_segment_tsp_polygon` rotates the tour off an intra-segment edge before walking it (else a valid tour yields a self-intersecting ring).
   fast-tsp ≥ 0.2 rejects distances above 65535, hence `_integer_distances`.
 - `resample.py`: `resample_borders`, `RandomlyShiftedPhase` (bootstrap border resampling, draws from numpy's global RNG, #516).
@@ -349,6 +353,11 @@ check open PRs before starting anything adjacent.
   above the data constant S stays the default (#339 covers high-T extrapolation).
 - #463 — transition-temperature labels can drift too far from their invariant to attribute.
 - #595 — `get_polygons` cuts short the tail of a field that narrows towards zero width (how much depends on the poly method), so the layered SVG misses the two-phase regions beside the tail.
+- #559 (open PR) — rewrite the tracers and `TerminalRefiner` against `Axes` (`x`/`y` internals, `dT_max`/`dT_min` → `dx_max`/`dx_min` behind deprecation shims);
+  rebase anything touching tracer internals on it.
+- #600 (open PR, parked prototype) — bound Clausius–Clapeyron traces to the sampled μ window;
+  parked because tests pin that a trace crosses unsampled μ (a c–T diagram from a narrow μ grid needs it), so the μ-axis clamp in `plot` stands in;
+  μ–T polygons have no border points on the μ edges (the synthetic `mu = ±inf` rows are dropped as non-finite), so a trace ending short of the window leaves a sliver at that edge.
 - #81 (analytic SRO models), #33 (fast Legendre transforms), #59 (autodiff `concentration`), #62 (`src/` layout).
 
 ## Non-goals and settled decisions
