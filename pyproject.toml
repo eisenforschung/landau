@@ -61,7 +61,7 @@ test = [
 # digest dispatch, so a new minor should arrive as a dependabot PR to review.
 # fleche-ase digests the AsePhase thermochem; it requires fleche>=0.24, and fleche>=0.25
 # leaves numpy to fleche-numpy.
-test-fleche = ["fleche[dill,numpy]>=0.25,<0.26", "fleche-ase>=1.1.1,<2"]
+test-fleche = ["fleche[dill,numpy]>=0.25,<0.27", "fleche-ase>=1.1.1,<2"]
 docs = [
     "sphinx",
     "furo",
