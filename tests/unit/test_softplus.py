@@ -848,3 +848,80 @@ class TestSurfaceModelAndJac:
         np.testing.assert_allclose(
             J_shared[:, start:start + nc], sum(knee_blocks), rtol=1e-12
         )
+
+
+_ROBUST_LOSSES = ["soft_l1", "huber", "cauchy", "arctan"]
+
+
+class TestSolverKwargs:
+    """Mapping from ``method``/``loss``/scipy capability to a ``least_squares`` call.
+
+    The scipy-dependent branch is driven through the class variable
+    ``_LM_HAS_INTERNAL_SCALING``, so both sides run whatever scipy is installed.
+    """
+
+    F_SCALE = 0.25
+
+    @staticmethod
+    def _interp(monkeypatch, lm_scales, **kwargs):
+        monkeypatch.setattr(SoftplusSurface2DInterpolator, "_LM_HAS_INTERNAL_SCALING", lm_scales)
+        return SoftplusSurface2DInterpolator(**kwargs)
+
+    def _trf(self, loss):
+        return {"method": "trf", "loss": loss, "f_scale": self.F_SCALE, "x_scale": "jac"}
+
+    def test_default_follows_the_scipy_capability_for_a_linear_loss(self, monkeypatch):
+        scaled = self._interp(monkeypatch, True, f_scale=self.F_SCALE)
+        assert scaled._solver_kwargs() == {"method": "lm"}
+        unscaled = self._interp(monkeypatch, False, f_scale=self.F_SCALE)
+        assert unscaled._solver_kwargs() == self._trf("linear")
+
+    @pytest.mark.parametrize("lm_scales", [True, False])
+    @pytest.mark.parametrize("loss", _ROBUST_LOSSES)
+    def test_default_is_trust_region_for_a_robust_loss(self, monkeypatch, lm_scales, loss):
+        interp = self._interp(monkeypatch, lm_scales, loss=loss, f_scale=self.F_SCALE)
+        assert interp._solver_kwargs() == self._trf(loss)
+
+    @pytest.mark.parametrize("lm_scales", [True, False])
+    def test_explicit_method_overrides_the_scipy_capability(self, monkeypatch, lm_scales):
+        lm = self._interp(monkeypatch, lm_scales, method="lm", f_scale=self.F_SCALE)
+        assert lm._solver_kwargs() == {"method": "lm"}
+        trf = self._interp(monkeypatch, lm_scales, method="trf", f_scale=self.F_SCALE)
+        assert trf._solver_kwargs() == self._trf("linear")
+
+    @pytest.mark.parametrize("loss", _ROBUST_LOSSES)
+    def test_lm_with_a_robust_loss_is_rejected_at_construction(self, loss):
+        # ``_solver_kwargs`` returns a bare ``method="lm"`` dict without looking
+        # at the loss; this raise is what makes that safe.
+        with pytest.raises(ValueError, match="loss='linear'"):
+            SoftplusSurface2DInterpolator(method="lm", loss=loss)
+
+
+class TestVandermonde:
+    """Polynomial bases of the coupled fit: three in T, the slope's in 1/T."""
+
+    # Distinct, non-proportional abscissae so a swapped argument changes every
+    # non-constant column.
+    TN = np.array([-1.0, 0.0, 0.5, 2.0])
+    WN = np.array([3.0, -2.0, 1.0, 0.25])
+
+    @pytest.mark.parametrize("a_order,b_order,c_order,offset_order", [(1, 2, 1, 2), (0, 3, 2, 1)])
+    def test_shapes_follow_the_orders(self, a_order, b_order, c_order, offset_order):
+        interp = SoftplusSurface2DInterpolator(
+            a_order=a_order, b_order=b_order, c_order=c_order, offset_order=offset_order
+        )
+        shapes = [v.shape for v in interp._vandermonde(self.TN, self.WN)]
+        assert shapes == [(self.TN.size, n) for n in interp._orders]
+        assert interp._orders == (a_order + 1, b_order + 1, c_order + 1, offset_order + 1)
+
+    def test_slope_basis_is_in_inverse_temperature(self):
+        interp = SoftplusSurface2DInterpolator(**_SURFACE_ORDERS)
+        na, nb, nc, no = interp._orders
+        VTa, VWb, VTc, VTo = interp._vandermonde(self.TN, self.WN)
+        np.testing.assert_array_equal(VTa, np.vander(self.TN, na, increasing=True))
+        np.testing.assert_array_equal(VWb, np.vander(self.WN, nb, increasing=True))
+        np.testing.assert_array_equal(VTc, np.vander(self.TN, nc, increasing=True))
+        np.testing.assert_array_equal(VTo, np.vander(self.TN, no, increasing=True))
+        # Column 1 of an increasing Vandermonde matrix is the abscissa itself.
+        np.testing.assert_array_equal(VWb[:, 1], self.WN)
+        assert not np.array_equal(VWb[:, 1], self.TN)
