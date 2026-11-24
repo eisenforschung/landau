@@ -3,6 +3,14 @@
 Notable changes to **landau.py**, newest first. Per-PR detail lives in the
 [GitHub releases](https://github.com/eisenforschung/landau/releases).
 
+## [1.19.2](https://github.com/eisenforschung/landau/compare/1.19.1...1.19.2) (2026-11-24)
+
+
+### Bug Fixes
+
+* **plot:** take the mu axis limits from the sampled grid ([#599](https://github.com/eisenforschung/landau/issues/599)) ([adc73fd](https://github.com/eisenforschung/landau/commit/adc73fd77f169fb34d3c497a3e34b29d4d64a782))
+* **poly:** keep the polygon when trimming leaves a geometry collection ([#598](https://github.com/eisenforschung/landau/issues/598)) ([a303564](https://github.com/eisenforschung/landau/commit/a30356437096045f7396dd10a522eba1197e9935))
+
 ## [1.19.1](https://github.com/eisenforschung/landau/compare/1.19.0...1.19.1) (2026-11-19)
 
 
