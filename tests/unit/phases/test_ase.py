@@ -73,3 +73,55 @@ def test_ase_phase_set_dedup():
     p1 = AsePhase("ht", 0.3, thermochem=HarmonicThermo(vib_energies=[0.1]))
     p2 = AsePhase("ht", 0.3, thermochem=HarmonicThermo(vib_energies=[0.1]))
     assert {p1, p2} == {p1}
+
+
+def _h2_ideal_gas():
+    return IdealGasThermo(vib_energies=[0.1], geometry='linear', atoms=molecule('H2'), symmetrynumber=2, spin=0)
+
+
+def test_ase_phase_gibbs_defaults_to_one_atm():
+    ig = _h2_ideal_gas()
+    T = np.array([300.0, 400.0])
+
+    default = AsePhase("ig", 0.5, thermochem=ig).line_free_energy(T)
+    expected = [ig.get_gibbs_energy(t, pressure=101325.0, verbose=False) for t in T]
+    np.testing.assert_array_equal(default, expected)
+
+    # 1 bar is 1.3 % below 1 atm, which moves G by kT ln(101325 / 1e5).
+    one_bar = AsePhase("ig", 0.5, thermochem=ig, pressure=1e5).line_free_energy(T)
+    assert np.all(default > one_bar)
+
+
+def test_ase_phase_atoms_per_formula_halves_energy():
+    # Division by two is exact in floating point, so per-atom is exactly half per-molecule.
+    T = np.array([300.0, 400.0])
+
+    ig = _h2_ideal_gas()
+    per_molecule = AsePhase("ig", 0.5, thermochem=ig).line_free_energy(T)
+    per_atom = AsePhase("ig", 0.5, thermochem=ig, atoms_per_formula=2).line_free_energy(T)
+    np.testing.assert_array_equal(per_atom, per_molecule / 2)
+
+    ht = HarmonicThermo(vib_energies=[0.1])
+    per_formula = AsePhase("ht", 0.3, thermochem=ht).line_free_energy(T)
+    per_atom = AsePhase("ht", 0.3, thermochem=ht, atoms_per_formula=2).line_free_energy(T)
+    np.testing.assert_array_equal(per_atom, per_formula / 2)
+
+
+def test_ase_phase_prefers_helmholtz_over_gibbs():
+    class Both:
+        def get_helmholtz_energy(self, temperature, verbose=True):
+            return 1.0 * temperature
+
+        def get_gibbs_energy(self, temperature, pressure, verbose=True):
+            return -1.0 * temperature
+
+    assert AsePhase("both", 0.5, thermochem=Both(), pressure=1e5).line_free_energy(300.0) == 300.0
+
+
+def test_ase_phase_without_energy_method_raises():
+    class NoEnergy:
+        pass
+
+    phase = AsePhase("none", 0.5, thermochem=NoEnergy())
+    with pytest.raises(TypeError, match="NoEnergy exposes neither"):
+        phase.line_free_energy(300.0)
