@@ -1,9 +1,12 @@
 import numpy as np
-import warnings
-import importlib.util
-from landau.interpolate import PolyFit
-from hypothesis import given, strategies as st
+import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 from hypothesis.extra.numpy import arrays
+
+from landau.interpolate import PolyFit, basic
+
+CURVATURE_ATOL = 1e-8
 
 def test_PolyFit_fixed():
     x = np.linspace(0, 1, 10)
@@ -19,21 +22,28 @@ def test_PolyFit_auto():
     fit_auto = pf_auto.fit(x, y)
     assert np.allclose(fit_auto(x), y, atol=1e-5)
 
-def test_PolyFit_curvature():
-    x = np.linspace(0, 1, 10)
-    # Use concave data as Gibbs energy is concave
-    y_concave = -2 * x**2 + 3 * x + 1
-    pf_curve = PolyFit(nparam=3, enforce_curvature=True)
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        fit_curve = pf_curve.fit(x, y_concave)
+def _convex_samples():
+    """Convex data: the unconstrained fit reproduces it, a concave one cannot."""
+    x = np.linspace(0, 1, 15)
+    return x, 2 * x**2 - x + 0.5
 
-        if importlib.util.find_spec("polyfit") is None:
-            # If polyfit is missing, it should warn
-            assert any("enforce_curvature=True is only supported when the `polyfit` package" in str(warn.message) for warn in w)
+@pytest.mark.skipif(basic.polyfit is None, reason="needs the constraints extra (polyfit)")
+def test_PolyFit_curvature_constrains_the_fit():
+    x, y = _convex_samples()
+    fit = PolyFit(nparam=3, enforce_curvature=True).fit(x, y)
+    assert fit.deriv().deriv()(x).max() <= CURVATURE_ATOL
+    # The best concave fit to convex data is the least-squares line, so the fit
+    # still follows the data's trend; a constant would fail this.
+    assert np.allclose(fit(x), np.polyval(np.polyfit(x, y, 1), x), atol=CURVATURE_ATOL)
 
-        # It should still have produced a valid fit
-        assert np.allclose(fit_curve(x), y_concave, atol=1e-5)
+def test_PolyFit_curvature_warns_without_polyfit(monkeypatch):
+    monkeypatch.setattr(basic, "polyfit", None)
+    x, y = _convex_samples()
+    with pytest.warns(UserWarning, match="enforce_curvature=True is only supported when the `polyfit` package"):
+        fit = PolyFit(nparam=3, enforce_curvature=True).fit(x, y)
+    # The fallback is the unconstrained fit, which keeps the data's convexity.
+    assert np.array_equal(fit.coefficients, PolyFit(nparam=3).fit(x, y).coefficients)
+    assert np.allclose(fit(x), y, atol=1e-5)
 
 @given(
     coeffs=arrays(dtype=float, shape=st.integers(min_value=1, max_value=5), elements=st.floats(min_value=-10, max_value=10))
